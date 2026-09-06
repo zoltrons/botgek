@@ -40,7 +40,7 @@
   },
   "role_filter": null,
   "ai": {
-    "model": "meta-llama/llama-3.3-70b-instruct:free",
+    "model": "openrouter/free",
     "system_prompt": "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş."
   },
   "guilds": {}
