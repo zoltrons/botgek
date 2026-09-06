@@ -1,4 +1,4 @@
-name: Build and Release (Raspberry Pi & Linux)
+name: Build and Release (Raspberry Pi, Linux & Docker)
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
       - name: Run Cargo Test
         run: cargo test --verbose
 
-  # 2. Raspberry Pi (Debian) ve Linux Paketleme Aşaması
+  # 2. Raspberry Pi (Debian) ve Linux Çapraz Derleme (Hızlı Native Worker)
   build-and-package:
     name: Build for ${{ matrix.name }}
     needs: test
@@ -61,9 +61,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Install cross and cargo-deb
         run: |
-          # Hızlı kurulum için cargo-binstall kullan
           curl -LsSf https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz | tar -xvzf - -C /usr/local/bin
           cargo-binstall -y --force cross cargo-deb
 
@@ -73,7 +77,6 @@ jobs:
 
       - name: Package Debian (.deb)
         run: |
-          # cargo-deb ile hedefe özel .deb paketi oluştur
           cargo deb --target ${{ matrix.target }} --no-build -o target/botgek_${{ matrix.deb_arch }}.deb
 
       - name: Create Tarball Archive (.tar.gz)
@@ -81,7 +84,6 @@ jobs:
           mkdir -p dist
           BIN_PATH="target/${{ matrix.target }}/release/botgek"
           
-          # Paket klasörünü hazırla
           PKG_DIR="botgek-${{ matrix.name }}"
           mkdir -p "$PKG_DIR"
           cp "$BIN_PATH" "$PKG_DIR/"
@@ -109,3 +111,59 @@ jobs:
             dist/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 3. Ultra-Hızlı Multi-Arch Docker İmajı Paketleme (QEMU emülasyonsuz ~30sn)
+  docker-publish:
+    name: Publish Multi-Arch Docker Image
+    needs: build-and-package
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Organize binaries for Buildx
+        run: |
+          mkdir -p bin/amd64 bin/arm64 bin/armv7
+          
+          tar -xzvf botgek-linux-x86_64-amd64/botgek-linux-x86_64-amd64.tar.gz
+          cp botgek-linux-x86_64-amd64/botgek bin/amd64/
+
+          tar -xzvf botgek-raspberry-pi-64bit-arm64/botgek-raspberry-pi-64bit-arm64.tar.gz
+          cp botgek-raspberry-pi-64bit-arm64/botgek bin/arm64/
+
+          tar -xzvf botgek-raspberry-pi-32bit-armhf/botgek-raspberry-pi-32bit-armhf.tar.gz
+          cp botgek-raspberry-pi-32bit-armhf/botgek bin/armv7/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha,format=short
+
+      - name: Build and push Multi-Arch Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.prebuilt
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

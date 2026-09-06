@@ -5,15 +5,15 @@ FROM rust:1-bookworm AS builder
 
 WORKDIR /usr/src/botgek
 
-# Raspberry Pi derlemelerini hızlandırmak için bağımlılıkları önbellekle
-COPY Cargo.toml ./
+# Bağımlılıkları tam önbelleğe almak için Cargo.toml ve Cargo.lock kopyalanır
+COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release
-RUN rm -rf src
+RUN rm -rf src target/release/deps/botgek* target/release/botgek*
 
 # Gerçek kaynak kodları kopyala ve nihai binary'yi derle
 COPY src ./src
-RUN touch src/main.rs && cargo build --release
+RUN cargo build --release
 
 # =========================================================
 # Aşama 2: Minimal ve Güvenli Çalışma Zamanı (Runtime)

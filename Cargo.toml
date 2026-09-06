@@ -3,6 +3,7 @@ name = "botgek"
 version = "0.1.0"
 edition = "2021"
 authors = ["Eray"]
+license = "MIT"
 description = "Modern Discord link dönüştürücü botu (Twitter/X to FixupX/FxTwitter)"
 
 [dependencies]
@@ -30,7 +31,6 @@ tower-http = { version = "0.5", features = ["cors"] }
 name = "botgek"
 maintainer = "Eray"
 copyright = "2026 Eray"
-license = "MIT"
 extended-description = """\
 Modern Discord link converter bot for Twitter/X, TikTok, Instagram, Reddit, Bluesky \
 with WebUI control panel, role filtering, and sarcastic OpenRouter AI chat."""
