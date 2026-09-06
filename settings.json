@@ -40,56 +40,8 @@
   },
   "role_filter": null,
   "ai": {
-    "model": "google/gemma-4-31b-it:free",
-    "system_prompt": "Genel sistem promptu."
+    "model": "meta-llama/llama-3.3-70b-instruct:free",
+    "system_prompt": "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş."
   },
-  "guilds": {
-    "521700519413153792": {
-      "modules": {
-        "twitter": true,
-        "tiktok": false,
-        "instagram": true,
-        "reddit": true,
-        "bluesky": true,
-        "translation": true,
-        "ai_chat": true
-      },
-      "role_filters": {
-        "twitter": {
-          "mode": "blacklist",
-          "roles": [
-            "527126142088511488"
-          ]
-        },
-        "tiktok": {
-          "mode": "disabled",
-          "roles": []
-        },
-        "instagram": {
-          "mode": "disabled",
-          "roles": []
-        },
-        "reddit": {
-          "mode": "disabled",
-          "roles": []
-        },
-        "bluesky": {
-          "mode": "disabled",
-          "roles": []
-        },
-        "translation": {
-          "mode": "disabled",
-          "roles": []
-        },
-        "ai_chat": {
-          "mode": "disabled",
-          "roles": []
-        }
-      },
-      "ai": {
-        "model": "google/gemma-4-31b-it:free",
-        "system_prompt": "Bu sunucuya ozel zolti promptu."
-      }
-    }
-  }
+  "guilds": {}
 }

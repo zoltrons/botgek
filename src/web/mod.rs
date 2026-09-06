@@ -1042,7 +1042,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         </div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="mod-twitter" onchange="updateTileMeta()">
+                        <input type="checkbox" id="mod-twitter" onchange="onConfigModified(); updateTileMeta()">
                         <span class="toggle-track"></span>
                     </label>
                 </div>
@@ -1056,7 +1056,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         </div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="mod-tiktok" onchange="updateTileMeta()">
+                        <input type="checkbox" id="mod-tiktok" onchange="onConfigModified(); updateTileMeta()">
                         <span class="toggle-track"></span>
                     </label>
                 </div>
@@ -1070,7 +1070,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         </div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="mod-instagram" onchange="updateTileMeta()">
+                        <input type="checkbox" id="mod-instagram" onchange="onConfigModified(); updateTileMeta()">
                         <span class="toggle-track"></span>
                     </label>
                 </div>
@@ -1084,7 +1084,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         </div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="mod-reddit" onchange="updateTileMeta()">
+                        <input type="checkbox" id="mod-reddit" onchange="onConfigModified(); updateTileMeta()">
                         <span class="toggle-track"></span>
                     </label>
                 </div>
@@ -1098,7 +1098,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         </div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="mod-bluesky" onchange="updateTileMeta()">
+                        <input type="checkbox" id="mod-bluesky" onchange="onConfigModified(); updateTileMeta()">
                         <span class="toggle-track"></span>
                     </label>
                 </div>
@@ -1112,21 +1112,21 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         </div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="mod-translation" onchange="updateTileMeta()">
+                        <input type="checkbox" id="mod-translation" onchange="onConfigModified(); updateTileMeta()">
                         <span class="toggle-track"></span>
                     </label>
                 </div>
 
-                <div class="module-tile" onclick="toggleSwitch('mod-ai-chat')">
+                <div class="module-tile" onclick="toggleSwitch('mod-ai_chat')">
                     <div class="module-info">
                         <div class="module-icon">💬</div>
                         <div class="module-meta">
                             <div class="name">Sarcastic AI Chat</div>
-                            <div class="status-label mono" id="status-ai-chat">AKTİF</div>
+                            <div class="status-label mono" id="status-ai_chat">AKTİF</div>
                         </div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="mod-ai-chat" onchange="updateTileMeta()">
+                        <input type="checkbox" id="mod-ai_chat" onchange="onConfigModified(); updateTileMeta()">
                         <span class="toggle-track"></span>
                     </label>
                 </div>
@@ -1229,11 +1229,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <div class="ai-label">
                     <span>Model Seçimi (OpenRouter)</span>
                 </div>
-                <input type="text" class="text-input mono" id="ai-model-box" placeholder="google/gemma-4-31b-it:free">
+                <input type="text" class="text-input mono" id="ai-model-box" oninput="onConfigModified()" placeholder="meta-llama/llama-3.3-70b-instruct:free">
                 <div class="model-presets">
-                    <span class="preset-badge" onclick="setModelPreset('google/gemma-4-31b-it:free')">⚡ Gemma 4 31B (Önerilen)</span>
-                    <span class="preset-badge" onclick="setModelPreset('google/gemma-4-26b-a4b-it:free')">Gemma 4 26B</span>
-                    <span class="preset-badge" onclick="setModelPreset('nvidia/nemotron-3.5-lightning:free')">Nemotron 3.5</span>
+                    <span class="preset-badge" onclick="setModelPreset('meta-llama/llama-3.3-70b-instruct:free')">⚡ Llama 3.3 70B (Önerilen)</span>
+                    <span class="preset-badge" onclick="setModelPreset('google/gemma-2-9b-it:free')">Gemma 2 9B</span>
+                    <span class="preset-badge" onclick="setModelPreset('mistralai/mistral-7b-instruct:free')">Mistral 7B</span>
                     <span class="preset-badge" onclick="setModelPreset('openrouter/free')">Auto Free Router</span>
                 </div>
             </div>
@@ -1243,7 +1243,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                     <span>Sistem Ön Komutu (Bot Kişiliği)</span>
                     <span class="mono" id="char-counter" style="font-size: 11px; color: var(--text-muted);">0 karakter</span>
                 </div>
-                <textarea class="textarea-input" id="ai-prompt-box" oninput="updateCharCount()"></textarea>
+                <textarea class="textarea-input" id="ai-prompt-box" oninput="onConfigModified(); updateCharCount()"></textarea>
             </div>
         </section>
 
@@ -1292,7 +1292,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 ai_chat: { mode: "disabled", roles: [] },
             },
             ai: {
-                model: "google/gemma-4-31b-it:free",
+                model: "meta-llama/llama-3.3-70b-instruct:free",
                 system_prompt: ""
             },
             guilds: {}
@@ -1336,10 +1336,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             cfg.modules.reddit = document.getElementById('mod-reddit').checked;
             cfg.modules.bluesky = document.getElementById('mod-bluesky').checked;
             cfg.modules.translation = document.getElementById('mod-translation').checked;
-            cfg.modules.ai_chat = document.getElementById('mod-ai-chat').checked;
+            cfg.modules.ai_chat = document.getElementById('mod-ai_chat').checked;
 
             cfg.ai = cfg.ai || {};
-            cfg.ai.model = document.getElementById('ai-model-box').value.trim() || 'google/gemma-4-31b-it:free';
+            cfg.ai.model = document.getElementById('ai-model-box').value.trim() || 'meta-llama/llama-3.3-70b-instruct:free';
             cfg.ai.system_prompt = document.getElementById('ai-prompt-box').value.trim();
         }
 
@@ -1446,7 +1446,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             document.getElementById('mod-reddit').checked = !!cfg.modules.reddit;
             document.getElementById('mod-bluesky').checked = !!cfg.modules.bluesky;
             document.getElementById('mod-translation').checked = !!cfg.modules.translation;
-            document.getElementById('mod-ai-chat').checked = !!cfg.modules.ai_chat;
+            document.getElementById('mod-ai_chat').checked = !!cfg.modules.ai_chat;
             document.getElementById('ai-model-box').value = cfg.ai.model;
             document.getElementById('ai-prompt-box').value = cfg.ai.system_prompt;
             updateTileMeta();
@@ -1455,10 +1455,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         }
 
         function updateTileMeta() {
-            const list = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai-chat'];
+            const list = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai_chat'];
             let activeCount = 0;
             list.forEach(id => {
-                const el = document.getElementById('mod-' + id.replace('-','_'));
+                const el = document.getElementById('mod-' + id);
                 const isChecked = el ? el.checked : false;
                 const label = document.getElementById('status-' + id);
                 if (isChecked) {

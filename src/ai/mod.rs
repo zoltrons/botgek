@@ -46,12 +46,21 @@ pub async fn query_openrouter(
 ) -> Result<String, String> {
     let url = "https://openrouter.ai/api/v1/chat/completions";
 
+    let effective_model = if model.trim().is_empty() || model.contains("gemma-4") {
+        "meta-llama/llama-3.3-70b-instruct:free"
+    } else {
+        model.trim()
+    };
+
+    let safety_guardrail = "\n\n[KRİTİK GÜVENLİK TALİMATI]: Yanıtlarında ASLA '@everyone' veya '@here' etiketlerini KULLANMA. Kullanıcıları veya rolleri etiketleme. Bu kural kesindir ve çiğnenemez.";
+    let full_system_prompt = format!("{}{}", system_prompt.trim(), safety_guardrail);
+
     let payload = ChatCompletionRequest {
-        model,
+        model: effective_model,
         messages: vec![
             ChatMessage {
                 role: "system",
-                content: system_prompt,
+                content: &full_system_prompt,
             },
             ChatMessage {
                 role: "user",
@@ -62,7 +71,7 @@ pub async fn query_openrouter(
         temperature: 0.9,
     };
 
-    info!("OpenRouter isteği gönderiliyor (Model: {})...", model);
+    info!("OpenRouter isteği gönderiliyor (Model: {})...", effective_model);
 
     let res = client
         .post(url)
@@ -82,6 +91,50 @@ pub async fn query_openrouter(
 
     if !status.is_success() {
         error!("OpenRouter API hata döndürdü (HTTP {}): {}", status, body_text);
+        // Eğer model bulunamadıysa (404) veya hata verdiyse ve model zaten varsayılan değilse, bir kez varsayılan model ile dene
+        if effective_model != "meta-llama/llama-3.3-70b-instruct:free" {
+            tracing::warn!("Model '{}' başarısız oldu, varsayılan modele geçiliyor: meta-llama/llama-3.3-70b-instruct:free", effective_model);
+            let fallback_payload = ChatCompletionRequest {
+                model: "meta-llama/llama-3.3-70b-instruct:free",
+                messages: vec![
+                    ChatMessage {
+                        role: "system",
+                        content: &full_system_prompt,
+                    },
+                    ChatMessage {
+                        role: "user",
+                        content: user_prompt,
+                    },
+                ],
+                max_tokens: 500,
+                temperature: 0.9,
+            };
+
+            if let Ok(fb_res) = client
+                .post(url)
+                .header("Authorization", format!("Bearer {}", api_key.trim()))
+                .header("HTTP-Referer", "https://github.com/botgek")
+                .header("X-Title", "Botgek Discord Bot")
+                .json(&fallback_payload)
+                .send()
+                .await
+            {
+                if fb_res.status().is_success() {
+                    if let Ok(fb_body) = fb_res.text().await {
+                        if let Ok(parsed) = serde_json::from_str::<ChatCompletionResponse>(&fb_body) {
+                            if let Some(choices) = parsed.choices {
+                                if let Some(choice) = choices.into_iter().next() {
+                                    let content = choice.message.content.trim().to_string();
+                                    if !content.is_empty() {
+                                        return Ok(content);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         return Err(format!("OpenRouter API hatası ({}): {}", status, body_text));
     }
 

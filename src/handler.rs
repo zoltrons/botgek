@@ -136,14 +136,17 @@ impl EventHandler for Handler {
                     .await
                     {
                         Ok(reply) => {
+                            let safe_reply = sanitize_mentions(&reply);
+
                             // Güvenlik: LLM çıktısındaki @everyone veya rol etiketlerinin bildirim tetiklemesini engelle
                             let allowed_mentions = CreateAllowedMentions::new()
                                 .empty_roles()
+                                .empty_users()
                                 .everyone(false)
                                 .replied_user(true);
 
                             let builder = CreateMessage::new()
-                                .content(reply)
+                                .content(safe_reply)
                                 .reference_message(&msg)
                                 .allowed_mentions(allowed_mentions);
 
@@ -349,6 +352,41 @@ fn extract_author_id(content: &str) -> Option<UserId> {
         }
     }
     None
+}
+
+/// LLM veya kullanıcı girdilerinden kaynaklanan @everyone, @here veya rol pingleme risklerini
+/// sıfır genişlikli boşluk (zero-width space, U+200B) enjekte ederek tamamen etkisiz hale getirir.
+/// Bu sayede Discord mesajı metin olarak gösterse bile asla mention olarak algılamaz ve bildirim tetiklemez.
+pub fn sanitize_mentions(text: &str) -> String {
+    static RE_EVERYONE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"(?i)@\s*everyone").unwrap());
+    static RE_HERE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"(?i)@\s*here").unwrap());
+    static RE_ROLES: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"<@&(\d+)>").unwrap());
+
+    let step1 = RE_EVERYONE.replace_all(text, "@\u{200b}everyone");
+    let step2 = RE_HERE.replace_all(&step1, "@\u{200b}here");
+    let step3 = RE_ROLES.replace_all(&step2, "<@&\u{200b}$1>");
+
+    step3.into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_mentions() {
+        let input = "Selam @everyone ve @HERE, ayrıca @ everyone toplanın! Rol: <@&123456789>";
+        let cleaned = sanitize_mentions(input);
+
+        assert!(!cleaned.contains("@everyone"));
+        assert!(!cleaned.contains("@HERE"));
+        assert!(!cleaned.contains("@ everyone"));
+        assert!(!cleaned.contains("<@&123456789>"));
+
+        assert!(cleaned.contains("@\u{200b}everyone"));
+        assert!(cleaned.contains("@\u{200b}here"));
+        assert!(cleaned.contains("<@&\u{200b}123456789>"));
+    }
 }
 
 

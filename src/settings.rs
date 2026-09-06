@@ -59,7 +59,7 @@ pub struct AiSettings {
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
-            model: "google/gemma-4-31b-it:free".to_string(),
+            model: "meta-llama/llama-3.3-70b-instruct:free".to_string(),
             system_prompt: "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş.".to_string(),
         }
     }
@@ -134,7 +134,14 @@ impl AppSettings {
     pub fn get_guild_settings(&self, guild_id: Option<serenity::all::GuildId>) -> GuildSettings {
         if let Some(gid) = guild_id {
             if let Some(custom) = self.guilds.get(&gid.to_string()) {
-                return custom.clone();
+                let mut resolved = custom.clone();
+                if resolved.ai.system_prompt.trim().is_empty() {
+                    resolved.ai.system_prompt = self.ai.system_prompt.clone();
+                }
+                if resolved.ai.model.trim().is_empty() {
+                    resolved.ai.model = self.ai.model.clone();
+                }
+                return resolved;
             }
         }
         self.default_guild_settings()
@@ -260,7 +267,7 @@ mod tests {
         assert_eq!(deserialized.modules.tiktok, true);
         assert_eq!(deserialized.role_filters.twitter.mode, FilterMode::Disabled);
         assert_eq!(deserialized.role_filters.tiktok.mode, FilterMode::Disabled);
-        assert_eq!(deserialized.ai.model, "google/gemma-4-31b-it:free");
+        assert_eq!(deserialized.ai.model, "meta-llama/llama-3.3-70b-instruct:free");
     }
 
     #[test]
@@ -312,7 +319,7 @@ mod tests {
         // guild_2 ve None (DM) varsayılan ayarları korumalı
         let g2_settings = settings.get_guild_settings(Some(guild_2));
         assert_eq!(g2_settings.modules.twitter, true);
-        assert_eq!(g2_settings.ai.model, "google/gemma-4-31b-it:free");
+        assert_eq!(g2_settings.ai.model, "meta-llama/llama-3.3-70b-instruct:free");
 
         let dm_settings = settings.get_guild_settings(None);
         assert_eq!(dm_settings.modules.twitter, true);
