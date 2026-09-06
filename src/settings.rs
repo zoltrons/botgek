@@ -42,7 +42,7 @@ impl Default for FilterMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RoleFilterSettings {
     pub mode: FilterMode,
     /// Discord Rol ID'leri (örn: ["123456789012345678"])
@@ -64,11 +64,48 @@ impl Default for AiSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ModuleRoleFilters {
+    #[serde(default)]
+    pub twitter: RoleFilterSettings,
+    #[serde(default)]
+    pub tiktok: RoleFilterSettings,
+    #[serde(default)]
+    pub instagram: RoleFilterSettings,
+    #[serde(default)]
+    pub reddit: RoleFilterSettings,
+    #[serde(default)]
+    pub bluesky: RoleFilterSettings,
+    #[serde(default)]
+    pub translation: RoleFilterSettings,
+    #[serde(default)]
+    pub ai_chat: RoleFilterSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     pub modules: PlatformModules,
-    pub role_filter: RoleFilterSettings,
+    #[serde(default)]
+    pub role_filters: ModuleRoleFilters,
+    /// Geriye dönük uyumluluk için eski genel role_filter (varsa)
+    #[serde(default)]
+    pub role_filter: Option<RoleFilterSettings>,
     pub ai: AiSettings,
+}
+
+impl AppSettings {
+    pub fn get_role_filter(&self, module_key: &str) -> &RoleFilterSettings {
+        match module_key {
+            "twitter" => &self.role_filters.twitter,
+            "tiktok" => &self.role_filters.tiktok,
+            "instagram" => &self.role_filters.instagram,
+            "reddit" => &self.role_filters.reddit,
+            "bluesky" => &self.role_filters.bluesky,
+            "translation" => &self.role_filters.translation,
+            "ai_chat" => &self.role_filters.ai_chat,
+            _ => &self.role_filters.twitter,
+        }
+    }
 }
 
 fn resolve_settings_path() -> PathBuf {
@@ -87,7 +124,19 @@ impl AppSettings {
         if path.exists() && path.is_file() {
             match fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<AppSettings>(&content) {
-                    Ok(settings) => {
+                    Ok(mut settings) => {
+                        // Geriye dönük uyumluluk: Eski role_filter doluysa ve yeniler boşsa aktar
+                        if let Some(ref legacy) = settings.role_filter {
+                            if !legacy.roles.is_empty() && settings.role_filters.twitter.roles.is_empty() {
+                                settings.role_filters.twitter = legacy.clone();
+                                settings.role_filters.tiktok = legacy.clone();
+                                settings.role_filters.instagram = legacy.clone();
+                                settings.role_filters.reddit = legacy.clone();
+                                settings.role_filters.bluesky = legacy.clone();
+                                settings.role_filters.translation = legacy.clone();
+                                settings.role_filters.ai_chat = legacy.clone();
+                            }
+                        }
                         info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", path.display());
                         return settings;
                     }
@@ -146,8 +195,27 @@ mod tests {
 
         assert_eq!(deserialized.modules.twitter, true);
         assert_eq!(deserialized.modules.tiktok, true);
-        assert_eq!(deserialized.role_filter.mode, FilterMode::Disabled);
+        assert_eq!(deserialized.role_filters.twitter.mode, FilterMode::Disabled);
+        assert_eq!(deserialized.role_filters.tiktok.mode, FilterMode::Disabled);
         assert_eq!(deserialized.ai.model, "google/gemma-4-31b-it:free");
+    }
+
+    #[test]
+    fn test_per_module_role_filter() {
+        let mut settings = AppSettings::default();
+        settings.role_filters.twitter.mode = FilterMode::Blacklist;
+        settings.role_filters.twitter.roles = vec!["111".to_string()];
+
+        settings.role_filters.tiktok.mode = FilterMode::Allowlist;
+        settings.role_filters.tiktok.roles = vec!["222".to_string()];
+
+        assert_eq!(settings.get_role_filter("twitter").mode, FilterMode::Blacklist);
+        assert_eq!(settings.get_role_filter("twitter").roles, vec!["111".to_string()]);
+
+        assert_eq!(settings.get_role_filter("tiktok").mode, FilterMode::Allowlist);
+        assert_eq!(settings.get_role_filter("tiktok").roles, vec!["222".to_string()]);
+
+        assert_eq!(settings.get_role_filter("instagram").mode, FilterMode::Disabled);
     }
 
     #[test]

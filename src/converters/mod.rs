@@ -18,20 +18,21 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
     };
 
     // 1. Modül Etkinlik Kontrolü
-    let module_enabled = match parsed.platform {
-        parser::Platform::Twitter => settings.modules.twitter,
-        parser::Platform::TikTok => settings.modules.tiktok,
-        parser::Platform::Instagram => settings.modules.instagram,
-        parser::Platform::Reddit => settings.modules.reddit,
-        parser::Platform::Bluesky => settings.modules.bluesky,
+    let (module_enabled, module_key) = match parsed.platform {
+        parser::Platform::Twitter => (settings.modules.twitter, "twitter"),
+        parser::Platform::TikTok => (settings.modules.tiktok, "tiktok"),
+        parser::Platform::Instagram => (settings.modules.instagram, "instagram"),
+        parser::Platform::Reddit => (settings.modules.reddit, "reddit"),
+        parser::Platform::Bluesky => (settings.modules.bluesky, "bluesky"),
     };
 
     if !module_enabled {
         return;
     }
 
-    // 2. Rol Tabanlı Allowlist / Blacklist Filtresi
-    if settings.role_filter.mode != FilterMode::Disabled && !settings.role_filter.roles.is_empty() {
+    // 2. Modüle Özel Rol Tabanlı Allowlist / Blacklist Filtresi
+    let role_filter = settings.get_role_filter(module_key);
+    if role_filter.mode != FilterMode::Disabled && !role_filter.roles.is_empty() {
         let user_roles: Vec<String> = if let Some(ref member) = msg.member {
             member.roles.iter().map(|r| r.get().to_string()).collect()
         } else if let Some(guild_id) = msg.guild_id {
@@ -44,18 +45,18 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
             Vec::new()
         };
 
-        let has_matching_role = user_roles.iter().any(|r| settings.role_filter.roles.contains(r));
+        let has_matching_role = user_roles.iter().any(|r| role_filter.roles.contains(r));
 
-        match settings.role_filter.mode {
+        match role_filter.mode {
             FilterMode::Blacklist => {
                 if has_matching_role {
-                    info!("Kullanıcı kara listede (Blacklist rolü var), dönüştürme atlandı: {}", msg.author.id);
+                    info!("Kullanıcı modül kara listesinde ({}: Blacklist rolü var), dönüştürme atlandı: {}", module_key, msg.author.id);
                     return;
                 }
             }
             FilterMode::Allowlist => {
                 if !has_matching_role {
-                    info!("Kullanıcı beyaz listede değil (Allowlist rolü yok), dönüştürme atlandı: {}", msg.author.id);
+                    info!("Kullanıcı modül beyaz listesinde değil ({}: Allowlist rolü yok), dönüştürme atlandı: {}", module_key, msg.author.id);
                     return;
                 }
             }

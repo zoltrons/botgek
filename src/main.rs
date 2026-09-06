@@ -43,13 +43,6 @@ async fn main() {
     // Dinamik Ayarları Yükle (settings.json)
     let settings = Arc::new(RwLock::new(settings::AppSettings::load()));
 
-    // Minimal WebUI Sunucusunu Başlat (Arka planda)
-    let web_settings = settings.clone();
-    let web_port = config.web_port;
-    tokio::spawn(async move {
-        web::start_web_server(web_settings, web_port).await;
-    });
-
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -79,6 +72,15 @@ async fn main() {
             std::process::exit(1);
         }
     };
+
+    // Minimal WebUI Sunucusunu Başlat (Arka planda - Discord Http ve Cache ile)
+    let web_settings = settings.clone();
+    let web_port = config.web_port;
+    let web_http = client.http.clone();
+    let web_cache = client.cache.clone();
+    tokio::spawn(async move {
+        web::start_web_server(web_settings, web_port, web_http, web_cache).await;
+    });
 
 
     // CTRL+C ile güvenli durdurma sinyali dinleyicisi
