@@ -8,12 +8,42 @@
     "translation": true,
     "ai_chat": true
   },
+  "role_filters": {
+    "twitter": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "tiktok": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "instagram": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "reddit": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "bluesky": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "translation": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "ai_chat": {
+      "mode": "disabled",
+      "roles": []
+    }
+  },
   "role_filter": {
-    "mode": "blacklist",
+    "mode": "disabled",
     "roles": []
   },
   "ai": {
     "model": "google/gemma-4-31b-it:free",
-    "system_prompt": "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş."
+    "system_prompt": "Sen Botgek adinda zeki, hazircevap ve hafif alayci bir Discord botusun. Sadece Botgek oldugunu bil. Cevaplarin kisa (maksimum 1-2 cumle), zeki ve lafi gedigine koyan turden olsun. Asla robotik konusma, gevezelik yapma. Sadece Turkce konus."
   }
 }
