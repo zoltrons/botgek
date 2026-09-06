@@ -189,6 +189,28 @@ async fn save_settings(
         new_settings.ai.model.truncate(128);
     }
 
+    // Sunucuya özel ayarları doğrula ve temizle
+    new_settings.guilds.retain(|gid, _| {
+        !gid.is_empty() && gid.len() <= 25 && gid.chars().all(|c| c.is_ascii_digit())
+    });
+
+    for (_, guild_cfg) in new_settings.guilds.iter_mut() {
+        sanitize_roles(&mut guild_cfg.role_filters.twitter.roles);
+        sanitize_roles(&mut guild_cfg.role_filters.tiktok.roles);
+        sanitize_roles(&mut guild_cfg.role_filters.instagram.roles);
+        sanitize_roles(&mut guild_cfg.role_filters.reddit.roles);
+        sanitize_roles(&mut guild_cfg.role_filters.bluesky.roles);
+        sanitize_roles(&mut guild_cfg.role_filters.translation.roles);
+        sanitize_roles(&mut guild_cfg.role_filters.ai_chat.roles);
+
+        if guild_cfg.ai.system_prompt.len() > 4000 {
+            guild_cfg.ai.system_prompt.truncate(4000);
+        }
+        if guild_cfg.ai.model.len() > 128 {
+            guild_cfg.ai.model.truncate(128);
+        }
+    }
+
     if let Err(e) = new_settings.save() {
         error!("Ayarlar kaydedilirken hata: {:?}", e);
         return (
@@ -972,6 +994,34 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             </div>
         </header>
 
+        <!-- 0. SUNUCU SEÇİCİ (SERVER SWITCHER) -->
+        <section class="panel server-panel" style="border-color: rgba(99, 102, 241, 0.4); background: linear-gradient(180deg, rgba(99, 102, 241, 0.08) 0%, var(--surface) 100%); margin-bottom: 24px;">
+            <div class="panel-title-bar">
+                <div class="panel-heading">
+                    <span>🌐 Yapılandırılan Discord Sunucusu</span>
+                </div>
+                <span class="mono" id="server-custom-badge" style="font-size: 11px; padding: 3px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.15); color: var(--emerald); font-weight: 700;">GENEL VARSAYILAN</span>
+            </div>
+            <p class="panel-sub">Ayarları tüm sunucular için genel varsayılan olarak belirleyebilir veya sunucu seçerek o sunucuya özel modüller, rol kuralları ve AI prompt'u tanımlayabilirsiniz.</p>
+
+            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 16px;">
+                <div style="flex: 1; min-width: 260px;">
+                    <select id="server-select" class="text-input" style="font-size: 14px; font-weight: 600; cursor: pointer;" onchange="onServerChange()">
+                        <option value="global">🌐 Genel / Varsayılan Ayarlar (Tüm Sunucular)</option>
+                    </select>
+                </div>
+                <div id="server-custom-controls" style="display: none; align-items: center; gap: 10px;">
+                    <button type="button" id="btn-toggle-custom" onclick="toggleServerCustomSettings()" style="background: rgba(99, 102, 241, 0.15); border: 1px solid var(--border-glow); color: #fff; padding: 10px 16px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.2s;">
+                        ✨ Bu Sunucuya Özel Ayarla
+                    </button>
+                </div>
+            </div>
+
+            <div id="server-inheritance-notice" style="display: none; margin-top: 14px; padding: 10px 14px; border-radius: var(--radius-sm); background: rgba(6, 182, 212, 0.08); border: 1px solid rgba(6, 182, 212, 0.2); font-size: 12px; color: var(--cyan);">
+                ℹ️ Bu sunucu şu anda <strong>Genel Varsayılan</strong> ayarları miras alıyor. Ayarları değiştirdiğinizde veya "Özel Ayarla" butonuna tıkladığınızda bu sunucuya özgü kaydedilecektir.
+            </div>
+        </section>
+
         <!-- 1. MODÜL SEÇİCİ -->
         <section class="panel">
             <div class="panel-title-bar">
@@ -1218,9 +1268,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
     <script>
         let currentModule = 'twitter';
-        let discordRoles = []; // { id, name, color, position, guild_name }
+        let activeServer = 'global'; 
+        let rawGuildsList = []; 
+        let discordRoles = []; 
 
-        let state = {
+        let appSettings = {
             modules: {
                 twitter: true,
                 tiktok: true,
@@ -1242,143 +1294,210 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             ai: {
                 model: "google/gemma-4-31b-it:free",
                 system_prompt: ""
-            }
+            },
+            guilds: {}
         };
+
+        function getActiveConfig() {
+            if (activeServer === 'global') return appSettings;
+            return appSettings.guilds[activeServer] || appSettings;
+        }
+
+        function isServerCustomized(guildId) {
+            return !!(appSettings.guilds && appSettings.guilds[guildId]);
+        }
+
+        function ensureActiveConfigCustomized() {
+            if (activeServer === 'global') return;
+            if (!appSettings.guilds) appSettings.guilds = {};
+            if (!appSettings.guilds[activeServer]) {
+                appSettings.guilds[activeServer] = {
+                    modules: JSON.parse(JSON.stringify(appSettings.modules)),
+                    role_filters: JSON.parse(JSON.stringify(appSettings.role_filters)),
+                    ai: JSON.parse(JSON.stringify(appSettings.ai))
+                };
+            }
+        }
+
+        function onConfigModified() {
+            if (activeServer !== 'global' && !isServerCustomized(activeServer)) {
+                ensureActiveConfigCustomized();
+                updateServerSelectDropdown();
+                updateServerHeaderUI();
+            }
+        }
+
+        function commitDomToActiveConfig() {
+            const cfg = getActiveConfig();
+            cfg.modules = cfg.modules || {};
+            cfg.modules.twitter = document.getElementById('mod-twitter').checked;
+            cfg.modules.tiktok = document.getElementById('mod-tiktok').checked;
+            cfg.modules.instagram = document.getElementById('mod-instagram').checked;
+            cfg.modules.reddit = document.getElementById('mod-reddit').checked;
+            cfg.modules.bluesky = document.getElementById('mod-bluesky').checked;
+            cfg.modules.translation = document.getElementById('mod-translation').checked;
+            cfg.modules.ai_chat = document.getElementById('mod-ai-chat').checked;
+
+            cfg.ai = cfg.ai || {};
+            cfg.ai.model = document.getElementById('ai-model-box').value.trim() || 'google/gemma-4-31b-it:free';
+            cfg.ai.system_prompt = document.getElementById('ai-prompt-box').value.trim();
+        }
+
+        function onServerChange() {
+            commitDomToActiveConfig();
+            activeServer = document.getElementById('server-select').value;
+            updateServerHeaderUI();
+            filterDiscordRolesForActiveServer();
+            renderUI();
+        }
+
+        function toggleServerCustomSettings() {
+            if (activeServer === 'global') return;
+            if (isServerCustomized(activeServer)) {
+                if (confirm("Bu sunucuya özel ayarları silip Genel/Varsayılan ayarlara dönmek istediğinize emin misiniz?")) {
+                    delete appSettings.guilds[activeServer];
+                    updateServerSelectDropdown();
+                    updateServerHeaderUI();
+                    renderUI();
+                    showToast("Sunucu ayarları genel varsayılana sıfırlandı!");
+                }
+            } else {
+                ensureActiveConfigCustomized();
+                updateServerSelectDropdown();
+                updateServerHeaderUI();
+                renderUI();
+                showToast("Bu sunucu için özel ayarlar oluşturuldu!");
+            }
+        }
+
+        function updateServerHeaderUI() {
+            const badge = document.getElementById('server-custom-badge');
+            const btnToggle = document.getElementById('btn-toggle-custom');
+            const controls = document.getElementById('server-custom-controls');
+            if (activeServer === 'global') {
+                if(badge) badge.textContent = "GENEL VARSAYILAN";
+                if(controls) controls.style.display = "none";
+            } else {
+                if(controls) controls.style.display = "flex";
+                if (isServerCustomized(activeServer)) {
+                    if(badge) badge.textContent = "ÖZEL AYAR AKTİF";
+                    if(btnToggle) btnToggle.textContent = "🔄 Varsayılana Sıfırla";
+                } else {
+                    if(badge) badge.textContent = "MİRAS ALIYOR (GENEL)";
+                    if(btnToggle) btnToggle.textContent = "✨ Bu Sunucuya Özel Ayarla";
+                }
+            }
+        }
+
+        function updateServerSelectDropdown() {
+            const select = document.getElementById('server-select');
+            if (!select) return;
+            const prevVal = activeServer;
+            select.innerHTML = '<option value="global">🌐 Genel / Varsayılan Ayarlar</option>';
+            rawGuildsList.forEach(g => {
+                const opt = document.createElement('option');
+                opt.value = g.guild_id;
+                opt.textContent = `🏠 ${g.guild_name} ${isServerCustomized(g.guild_id) ? '(Özel)' : ''}`;
+                select.appendChild(opt);
+            });
+            select.value = prevVal;
+        }
+
+        function filterDiscordRolesForActiveServer() {
+            discordRoles = [];
+            rawGuildsList.forEach(g => {
+                if (activeServer === 'global' || g.guild_id === activeServer) {
+                    g.roles.forEach(r => discordRoles.push({...r, guild_name: g.guild_name}));
+                }
+            });
+            renderRolePickerList();
+            renderRoleChips();
+        }
 
         async function fetchSettings() {
             try {
                 const res = await fetch('/api/settings');
                 const data = await res.json();
-                
-                state.modules = data.modules || state.modules;
-                state.ai = data.ai || state.ai;
-                
-                if (data.role_filters) {
-                    state.role_filters = Object.assign(state.role_filters, data.role_filters);
-                } else if (data.role_filter) {
-                    const legacy = data.role_filter;
-                    ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai_chat'].forEach(m => {
-                        state.role_filters[m] = JSON.parse(JSON.stringify(legacy));
-                    });
-                }
-
+                appSettings.modules = data.modules || appSettings.modules;
+                appSettings.ai = data.ai || appSettings.ai;
+                appSettings.role_filters = data.role_filters || appSettings.role_filters;
+                appSettings.guilds = data.guilds || {};
+                updateServerSelectDropdown();
                 renderUI();
-            } catch (err) {
-                console.error("Ayarlar çekilemedi:", err);
-            }
+            } catch (err) { console.error(err); }
         }
 
         async function fetchDiscordRoles() {
             try {
                 const res = await fetch('/api/discord/roles');
                 if (res.ok) {
-                    const guilds = await res.json();
-                    discordRoles = [];
-                    guilds.forEach(g => {
-                        g.roles.forEach(r => {
-                            discordRoles.push({
-                                id: r.id,
-                                name: r.name,
-                                color: r.color,
-                                position: r.position,
-                                guild_name: g.guild_name
-                            });
-                        });
-                    });
-                    renderRolePickerList();
-                    renderRoleChips();
+                    rawGuildsList = await res.json();
+                    updateServerSelectDropdown();
+                    filterDiscordRolesForActiveServer();
                 }
-            } catch (err) {
-                console.warn("Discord rolleri alınamadı:", err);
-            }
+            } catch (err) { console.warn(err); }
         }
 
         function renderUI() {
-            // Modüller
-            document.getElementById('mod-twitter').checked = state.modules.twitter;
-            document.getElementById('mod-tiktok').checked = state.modules.tiktok;
-            document.getElementById('mod-instagram').checked = state.modules.instagram;
-            document.getElementById('mod-reddit').checked = state.modules.reddit;
-            document.getElementById('mod-bluesky').checked = state.modules.bluesky;
-            document.getElementById('mod-translation').checked = state.modules.translation;
-            document.getElementById('mod-ai-chat').checked = state.modules.ai_chat;
-
+            const cfg = getActiveConfig();
+            document.getElementById('mod-twitter').checked = !!cfg.modules.twitter;
+            document.getElementById('mod-tiktok').checked = !!cfg.modules.tiktok;
+            document.getElementById('mod-instagram').checked = !!cfg.modules.instagram;
+            document.getElementById('mod-reddit').checked = !!cfg.modules.reddit;
+            document.getElementById('mod-bluesky').checked = !!cfg.modules.bluesky;
+            document.getElementById('mod-translation').checked = !!cfg.modules.translation;
+            document.getElementById('mod-ai-chat').checked = !!cfg.modules.ai_chat;
+            document.getElementById('ai-model-box').value = cfg.ai.model;
+            document.getElementById('ai-prompt-box').value = cfg.ai.system_prompt;
             updateTileMeta();
-
-            // Aktif modülün sekmesini ve rozetlerini güncelle
-            selectRoleModule(currentModule, false);
-
-            // AI
-            document.getElementById('ai-model-box').value = state.ai.model;
-            document.getElementById('ai-prompt-box').value = state.ai.system_prompt;
             updateCharCount();
+            selectRoleModule(currentModule, false);
         }
 
         function updateTileMeta() {
             const list = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai-chat'];
             let activeCount = 0;
             list.forEach(id => {
-                const el = document.getElementById('mod-' + id);
-                if (!el) return;
-                const checked = el.checked;
+                const el = document.getElementById('mod-' + id.replace('-','_'));
+                const isChecked = el ? el.checked : false;
                 const label = document.getElementById('status-' + id);
-                if (checked) {
+                if (isChecked) {
                     activeCount++;
-                    if (label) {
-                        label.textContent = "AKTİF";
-                        label.style.color = "var(--emerald)";
-                    }
-                } else {
-                    if (label) {
-                        label.textContent = "DEVRE DIŞI";
-                        label.style.color = "var(--text-muted)";
-                    }
-                }
+                    if (label) { label.textContent = "AKTİF"; label.style.color = "var(--emerald)"; }
+                } else if (label) { label.textContent = "DEVRE DIŞI"; label.style.color = "var(--text-muted)"; }
             });
-            document.getElementById('active-modules-count').textContent = `${activeCount}/7 AKTİF`;
+            const countEl = document.getElementById('active-modules-count');
+            if (countEl) countEl.textContent = `${activeCount}/7 AKTİF`;
         }
 
         function toggleSwitch(id) {
             const el = document.getElementById(id);
-            if (el) {
-                el.checked = !el.checked;
-                updateTileMeta();
-            }
+            if (el) { el.checked = !el.checked; onConfigModified(); updateTileMeta(); }
         }
 
-        function selectRoleModule(modKey, markDirty = true) {
+        function selectRoleModule(modKey) {
             currentModule = modKey;
-
-            // Modül sekme butonlarını güncelle
             ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai_chat'].forEach(m => {
                 const btn = document.getElementById('modtab-' + m);
-                if (btn) {
-                    if (m === modKey) {
-                        btn.classList.add('active');
-                    } else {
-                        btn.classList.remove('active');
-                    }
-                }
+                if (btn) btn.classList.toggle('active', m === modKey);
             });
-
-            // Seçili modülün filtre modunu ve çipleri bas
-            const curFilter = getCurFilter();
-            setFilterModeUI(curFilter.mode);
+            const filter = getCurFilter();
+            setFilterModeUI(filter.mode);
             renderRoleChips();
             updateModuleBadges();
             renderRolePickerList();
         }
 
         function getCurFilter() {
-            if (!state.role_filters[currentModule]) {
-                state.role_filters[currentModule] = { mode: "disabled", roles: [] };
-            }
-            return state.role_filters[currentModule];
+            const cfg = getActiveConfig();
+            if (!cfg.role_filters) cfg.role_filters = {};
+            if (!cfg.role_filters[currentModule]) cfg.role_filters[currentModule] = { mode: "disabled", roles: [] };
+            return cfg.role_filters[currentModule];
         }
 
         function setFilterMode(mode) {
-            const filter = getCurFilter();
-            filter.mode = mode;
+            onConfigModified();
+            getCurFilter().mode = mode;
             setFilterModeUI(mode);
             updateModuleBadges();
         }
@@ -1386,50 +1505,21 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         function setFilterModeUI(mode) {
             ['disabled', 'blacklist', 'allowlist'].forEach(m => {
                 const btn = document.getElementById('tab-' + m);
-                if (btn) {
-                    if (m === mode) {
-                        btn.classList.add('active');
-                    } else {
-                        btn.classList.remove('active');
-                    }
-                }
+                if (btn) btn.classList.toggle('active', m === mode);
             });
-
             const badge = document.getElementById('filter-mode-badge');
-            if (mode === 'blacklist') {
-                badge.textContent = "KARA LİSTE AKTİF";
-                badge.style.color = "var(--rose)";
-                badge.style.background = "rgba(244, 63, 94, 0.12)";
-            } else if (mode === 'allowlist') {
-                badge.textContent = "BEYAZ LİSTE AKTİF";
-                badge.style.color = "var(--emerald)";
-                badge.style.background = "rgba(16, 185, 129, 0.12)";
-            } else {
-                badge.textContent = "DEVRE DIŞI";
-                badge.style.color = "var(--text-secondary)";
-                badge.style.background = "rgba(255, 255, 255, 0.06)";
+            if (badge) {
+                badge.textContent = mode === 'blacklist' ? "KARA LİSTE" : (mode === 'allowlist' ? "BEYAZ LİSTE" : "DEVRE DIŞI");
             }
         }
 
         function updateModuleBadges() {
+            const filters = getActiveConfig().role_filters || {};
             ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai_chat'].forEach(m => {
                 const badge = document.getElementById('badge-' + m);
                 if (!badge) return;
-
-                const f = state.role_filters[m];
-                if (!f || f.mode === 'disabled') {
-                    badge.textContent = "KAPALI";
-                    badge.style.color = "var(--text-muted)";
-                    badge.style.background = "rgba(255, 255, 255, 0.06)";
-                } else if (f.mode === 'blacklist') {
-                    badge.textContent = `⛔ ${f.roles.length}`;
-                    badge.style.color = "var(--rose)";
-                    badge.style.background = "rgba(244, 63, 94, 0.12)";
-                } else if (f.mode === 'allowlist') {
-                    badge.textContent = `✅ ${f.roles.length}`;
-                    badge.style.color = "var(--emerald)";
-                    badge.style.background = "rgba(16, 185, 129, 0.12)";
-                }
+                const f = filters[m];
+                badge.textContent = (!f || f.mode === 'disabled') ? "KAPALI" : (f.mode === 'blacklist' ? `⛔ ${f.roles.length}` : `✅ ${f.roles.length}`);
             });
         }
 
@@ -1485,6 +1575,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         }
 
         function toggleRole(roleId) {
+            onConfigModified();
             const filter = getCurFilter();
             const idx = filter.roles.indexOf(roleId);
             if (idx > -1) {
@@ -1497,26 +1588,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             updateModuleBadges();
         }
 
-        function toggleRolePicker(e) {
-            e.stopPropagation();
-            const dropdown = document.getElementById('role-picker-dropdown');
-            dropdown.classList.toggle('open');
-            if (dropdown.classList.contains('open')) {
-                document.getElementById('role-search-input').focus();
-            }
-        }
-
-        window.addEventListener('click', (e) => {
-            const dropdown = document.getElementById('role-picker-dropdown');
-            if (dropdown && dropdown.classList.contains('open')) {
-                if (!dropdown.contains(e.target) && e.target.id !== 'btn-toggle-picker') {
-                    dropdown.classList.remove('open');
-                }
-            }
-        });
-
         function filterRolePickerList() {
-            const q = document.getElementById('role-search-input').value.toLowerCase().trim();
+            const q = (document.getElementById('role-search-input').value || '').toLowerCase().trim();
             renderRolePickerList(q);
         }
 
@@ -1525,7 +1598,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             list.innerHTML = '';
 
             if (discordRoles.length === 0) {
-                list.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px;">Sunucuda rol bulunamadı veya bot henüz bağlanmadı.</div>';
+                list.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px;">Bu sunucu için rol bulunamadı.</div>';
                 return;
             }
 
@@ -1539,7 +1612,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
             filtered.forEach(role => {
                 const item = document.createElement('div');
-                item.className = 'role-dropdown-item';
+                item.className = 'role-picker-item';
                 item.onclick = (e) => {
                     e.stopPropagation();
                     toggleRole(role.id);
@@ -1582,6 +1655,27 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             });
         }
 
+        function toggleRolePicker(e) {
+            if (e) e.stopPropagation();
+            const dropdown = document.getElementById('role-picker-dropdown');
+            dropdown.classList.toggle('open');
+            if (dropdown.classList.contains('open')) {
+                const search = document.getElementById('role-search-input');
+                search.value = '';
+                renderRolePickerList('');
+                setTimeout(() => search.focus(), 50);
+            }
+        }
+
+        window.addEventListener('click', (e) => {
+            const dropdown = document.getElementById('role-picker-dropdown');
+            if (dropdown && dropdown.classList.contains('open')) {
+                if (!dropdown.contains(e.target) && !e.target.closest('#btn-toggle-picker')) {
+                    dropdown.classList.remove('open');
+                }
+            }
+        });
+
         function handleRoleInputKey(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -1589,61 +1683,55 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             }
         }
 
-        function addRoleFromInput() {
-            const input = document.getElementById('role-input-box');
-            const val = input.value.trim();
-            if (val) {
-                const ids = val.split(/[\s,]+/).filter(x => x.length > 0);
+        function addRoleFromInput() { 
+            const input = document.getElementById('role-input-box'); 
+            const v = input.value.trim(); 
+            if(v) { 
+                const ids = v.split(/[\s,]+/).filter(x => x.length > 0);
                 const filter = getCurFilter();
                 ids.forEach(id => {
                     if (/^\d+$/.test(id) && !filter.roles.includes(id)) {
+                        onConfigModified();
                         filter.roles.push(id);
                     }
                 });
-                input.value = '';
-                renderRoleChips();
+                input.value = ''; 
+                renderRoleChips(); 
                 renderRolePickerList();
-                updateModuleBadges();
+                updateModuleBadges(); 
             }
         }
 
-        function removeRole(index) {
-            const filter = getCurFilter();
-            filter.roles.splice(index, 1);
-            renderRoleChips();
+        function removeRole(i) { 
+            onConfigModified(); 
+            getCurFilter().roles.splice(i, 1); 
+            renderRoleChips(); 
             renderRolePickerList();
-            updateModuleBadges();
+            updateModuleBadges(); 
         }
 
-        function setModelPreset(modelName) {
-            document.getElementById('ai-model-box').value = modelName;
+        function setModelPreset(m) { 
+            onConfigModified(); 
+            document.getElementById('ai-model-box').value = m; 
         }
 
-        function updateCharCount() {
-            const len = document.getElementById('ai-prompt-box').value.length;
-            document.getElementById('char-counter').textContent = `${len} karakter`;
+        function updateCharCount() { 
+            document.getElementById('char-counter').textContent = document.getElementById('ai-prompt-box').value.length + " karakter"; 
         }
 
         async function saveSettingsToServer() {
-            state.modules.twitter = document.getElementById('mod-twitter').checked;
-            state.modules.tiktok = document.getElementById('mod-tiktok').checked;
-            state.modules.instagram = document.getElementById('mod-instagram').checked;
-            state.modules.reddit = document.getElementById('mod-reddit').checked;
-            state.modules.bluesky = document.getElementById('mod-bluesky').checked;
-            state.modules.translation = document.getElementById('mod-translation').checked;
-            state.modules.ai_chat = document.getElementById('mod-ai-chat').checked;
-
-            state.ai.model = document.getElementById('ai-model-box').value.trim() || 'google/gemma-4-31b-it:free';
-            state.ai.system_prompt = document.getElementById('ai-prompt-box').value.trim();
+            commitDomToActiveConfig();
 
             try {
                 const res = await fetch('/api/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(state)
+                    body: JSON.stringify(appSettings)
                 });
                 if (res.ok) {
-                    showToast("Ayarlar başarıyla güncellendi!");
+                    showToast("Tüm ayarlar başarıyla güncellendi!");
+                    updateServerSelectDropdown();
+                    updateServerHeaderUI();
                 } else {
                     alert("Ayarlar kaydedilirken hata meydana geldi.");
                 }

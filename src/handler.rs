@@ -47,9 +47,7 @@ impl EventHandler for Handler {
         }
 
         let current_user_id = ctx.cache.current_user().id;
-        let current_settings = {
-            self.settings.read().await.clone()
-        };
+        let current_settings = self.settings.read().await.get_guild_settings(msg.guild_id);
 
         // 1. Sosyal Medya Link Dönüştürme Kontrolü
         converters::handle_message(&ctx, &msg, &self.config, &current_settings).await;
@@ -73,6 +71,38 @@ impl EventHandler for Handler {
         };
 
         if (is_mentioned || is_reply_to_bot) && current_settings.modules.ai_chat {
+            // Modüle özel rol kontrolü (ai_chat)
+            let role_filter = current_settings.get_role_filter("ai_chat");
+            if role_filter.mode != crate::settings::FilterMode::Disabled && !role_filter.roles.is_empty() {
+                let user_roles: Vec<String> = if let Some(ref member) = msg.member {
+                    member.roles.iter().map(|r| r.get().to_string()).collect()
+                } else if let Some(guild_id) = msg.guild_id {
+                    if let Ok(member) = guild_id.member(&ctx.http, msg.author.id).await {
+                        member.roles.iter().map(|r| r.get().to_string()).collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+
+                let has_matching_role = user_roles.iter().any(|r| role_filter.roles.contains(r));
+                match role_filter.mode {
+                    crate::settings::FilterMode::Blacklist => {
+                        if has_matching_role {
+                            warn!("Kullanıcı AI chat modülü kara listesinde, atlandı: {}", msg.author.id);
+                            return;
+                        }
+                    }
+                    crate::settings::FilterMode::Allowlist => {
+                        if !has_matching_role {
+                            warn!("Kullanıcı AI chat modülü beyaz listesinde değil, atlandı: {}", msg.author.id);
+                            return;
+                        }
+                    }
+                    crate::settings::FilterMode::Disabled => {}
+                }
+            }
             if let Some(ref api_key) = self.config.openrouter_api_key {
                 // Hız sınırı (Rate limiting): Kullanıcı başına 3 saniye bekleme süresi
                 {
@@ -195,12 +225,40 @@ impl EventHandler for Handler {
         }
 
         // 2. Bayrak Emojisi ile Çeviri (🇹🇷, 🇬🇧, 🇩🇪 vb.)
-        let translation_enabled = {
-            self.settings.read().await.modules.translation
-        };
-
-        if !translation_enabled {
+        let guild_settings = self.settings.read().await.get_guild_settings(reaction.guild_id);
+        if !guild_settings.modules.translation {
             return;
+        }
+
+        // Modüle özel rol kontrolü (translation)
+        let role_filter = guild_settings.get_role_filter("translation");
+        if role_filter.mode != crate::settings::FilterMode::Disabled && !role_filter.roles.is_empty() {
+            let user_roles: Vec<String> = if let Some(guild_id) = reaction.guild_id {
+                if let Ok(member) = guild_id.member(&ctx.http, user_id).await {
+                    member.roles.iter().map(|r| r.get().to_string()).collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            let has_matching_role = user_roles.iter().any(|r| role_filter.roles.contains(r));
+            match role_filter.mode {
+                crate::settings::FilterMode::Blacklist => {
+                    if has_matching_role {
+                        warn!("Kullanıcı çeviri modülü kara listesinde, reaksiyon atlandı: {}", user_id);
+                        return;
+                    }
+                }
+                crate::settings::FilterMode::Allowlist => {
+                    if !has_matching_role {
+                        warn!("Kullanıcı çeviri modülü beyaz listesinde değil, reaksiyon atlandı: {}", user_id);
+                        return;
+                    }
+                }
+                crate::settings::FilterMode::Disabled => {}
+            }
         }
 
         if let Some(lang_code) = translation::emoji_to_lang_code(&reaction.emoji) {

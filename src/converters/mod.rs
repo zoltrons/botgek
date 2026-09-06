@@ -5,13 +5,13 @@ use serenity::all::{Context, CreateMessage, Message, ReactionType};
 use tracing::{error, info};
 
 use crate::config::Config;
-use crate::settings::{AppSettings, FilterMode};
+use crate::settings::{FilterMode, GuildSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
 
 /// Kullanıcının mesajındaki desteklenen sosyal medya linkini tespit eder ve dönüştürür.
 /// Format: <@User>[:](fixedLink) [**Platform**](<origLink>)\n> Alıntı
 /// Silme işlemi için kompakt 🗑️ reaksiyonu eklenir.
-pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, settings: &AppSettings) {
+pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, settings: &GuildSettings) {
     let parsed = match parser::parse_message(&msg.content, config) {
         Some(p) => p,
         None => return, // Desteklenen bir bağlantı bulunamadı

@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformModules {
     pub twitter: bool,
     pub tiktok: bool,
@@ -49,7 +50,7 @@ pub struct RoleFilterSettings {
     pub roles: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AiSettings {
     pub model: String,
     pub system_prompt: String,
@@ -82,6 +83,31 @@ pub struct ModuleRoleFilters {
     pub ai_chat: RoleFilterSettings,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GuildSettings {
+    #[serde(default)]
+    pub modules: PlatformModules,
+    #[serde(default)]
+    pub role_filters: ModuleRoleFilters,
+    #[serde(default)]
+    pub ai: AiSettings,
+}
+
+impl GuildSettings {
+    pub fn get_role_filter(&self, module_key: &str) -> &RoleFilterSettings {
+        match module_key {
+            "twitter" => &self.role_filters.twitter,
+            "tiktok" => &self.role_filters.tiktok,
+            "instagram" => &self.role_filters.instagram,
+            "reddit" => &self.role_filters.reddit,
+            "bluesky" => &self.role_filters.bluesky,
+            "translation" => &self.role_filters.translation,
+            "ai_chat" => &self.role_filters.ai_chat,
+            _ => &self.role_filters.twitter,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     pub modules: PlatformModules,
@@ -91,9 +117,29 @@ pub struct AppSettings {
     #[serde(default)]
     pub role_filter: Option<RoleFilterSettings>,
     pub ai: AiSettings,
+    /// Sunucuya özel ayarlar (Guild ID -> GuildSettings)
+    #[serde(default)]
+    pub guilds: HashMap<String, GuildSettings>,
 }
 
 impl AppSettings {
+    pub fn default_guild_settings(&self) -> GuildSettings {
+        GuildSettings {
+            modules: self.modules.clone(),
+            role_filters: self.role_filters.clone(),
+            ai: self.ai.clone(),
+        }
+    }
+
+    pub fn get_guild_settings(&self, guild_id: Option<serenity::all::GuildId>) -> GuildSettings {
+        if let Some(gid) = guild_id {
+            if let Some(custom) = self.guilds.get(&gid.to_string()) {
+                return custom.clone();
+            }
+        }
+        self.default_guild_settings()
+    }
+
     pub fn get_role_filter(&self, module_key: &str) -> &RoleFilterSettings {
         match module_key {
             "twitter" => &self.role_filters.twitter,
@@ -223,6 +269,36 @@ mod tests {
         assert_eq!(serde_json::to_string(&FilterMode::Blacklist).unwrap(), "\"blacklist\"");
         assert_eq!(serde_json::to_string(&FilterMode::Allowlist).unwrap(), "\"allowlist\"");
         assert_eq!(serde_json::to_string(&FilterMode::Disabled).unwrap(), "\"disabled\"");
+    }
+
+    #[test]
+    fn test_per_guild_settings_fallback_and_override() {
+        let mut settings = AppSettings::default();
+        let guild_1 = serenity::all::GuildId::new(123456789);
+        let guild_2 = serenity::all::GuildId::new(987654321);
+
+        // Varsayılan ayarlarda twitter açık
+        assert_eq!(settings.get_guild_settings(Some(guild_1)).modules.twitter, true);
+        assert_eq!(settings.get_guild_settings(None).modules.twitter, true);
+
+        // guild_1 için özel ayar: twitter kapalı, model farklı
+        let mut custom = settings.default_guild_settings();
+        custom.modules.twitter = false;
+        custom.ai.model = "custom/model".to_string();
+        settings.guilds.insert(guild_1.to_string(), custom);
+
+        // guild_1 özel ayarı almalı
+        let g1_settings = settings.get_guild_settings(Some(guild_1));
+        assert_eq!(g1_settings.modules.twitter, false);
+        assert_eq!(g1_settings.ai.model, "custom/model");
+
+        // guild_2 ve None (DM) varsayılan ayarları korumalı
+        let g2_settings = settings.get_guild_settings(Some(guild_2));
+        assert_eq!(g2_settings.modules.twitter, true);
+        assert_eq!(g2_settings.ai.model, "google/gemma-4-31b-it:free");
+
+        let dm_settings = settings.get_guild_settings(None);
+        assert_eq!(dm_settings.modules.twitter, true);
     }
 }
 
