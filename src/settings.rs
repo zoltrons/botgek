@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,15 +71,24 @@ pub struct AppSettings {
     pub ai: AiSettings,
 }
 
-const SETTINGS_FILE: &str = "settings.json";
+fn resolve_settings_path() -> PathBuf {
+    let p = Path::new("settings.json");
+    if p.is_dir() {
+        // Docker bind-mount hostta dosya olmadığı için otomatik klasör olarak açılmışsa
+        p.join("settings.json")
+    } else {
+        p.to_path_buf()
+    }
+}
 
 impl AppSettings {
     pub fn load() -> Self {
-        if Path::new(SETTINGS_FILE).exists() {
-            match fs::read_to_string(SETTINGS_FILE) {
+        let path = resolve_settings_path();
+        if path.exists() && path.is_file() {
+            match fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<AppSettings>(&content) {
                     Ok(settings) => {
-                        info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", SETTINGS_FILE);
+                        info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", path.display());
                         return settings;
                     }
                     Err(e) => {
@@ -98,12 +107,29 @@ impl AppSettings {
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
+        let path = resolve_settings_path();
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let temp_file = format!("{}.tmp", SETTINGS_FILE);
-        fs::write(&temp_file, json)?;
-        fs::rename(&temp_file, SETTINGS_FILE)?;
-        info!("Ayarlar '{}' dosyasına kaydedildi.", SETTINGS_FILE);
+
+        // Docker bind-mount durumunda inode korunması gerektiği için doğrudan dosyaya yazılır
+        if path.exists() && path.is_file() {
+            fs::write(&path, &json)?;
+            info!("Ayarlar '{}' dosyasına kaydedildi.", path.display());
+            return Ok(());
+        }
+
+        // Dosya henüz yoksa önce temp dosyaya yazıp rename dene, başarısız olursa doğrudan yaz
+        let temp_file = format!("{}.tmp", path.display());
+        if fs::write(&temp_file, &json).is_ok() {
+            if fs::rename(&temp_file, &path).is_err() {
+                fs::write(&path, &json)?;
+                let _ = fs::remove_file(&temp_file);
+            }
+        } else {
+            fs::write(&path, &json)?;
+        }
+
+        info!("Ayarlar '{}' dosyasına kaydedildi.", path.display());
         Ok(())
     }
 }
