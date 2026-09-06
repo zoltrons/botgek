@@ -3,10 +3,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Veya GHCR üzerinden yayınlanan imajı kullanmak isterseniz:
+    # image: ghcr.io/<kullanici_adiniz>/botgek:latest
     container_name: botgek
     restart: unless-stopped
+    ports:
+      # WebUI port eşlemesi (.env içindeki WEB_PORT veya varsayılan 3000)
+      - "${WEB_PORT:-3000}:3000"
     env_file:
       - .env
+    volumes:
+      # WebUI üzerinden yapılan ayarların (modüller, roller) kalıcı olması için:
+      - ./settings.json:/app/settings.json
     # Raspberry Pi için kaynak sınırları (isteğe bağlı güvenlik önlemi)
     deploy:
       resources:
