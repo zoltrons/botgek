@@ -100,7 +100,9 @@ impl AppSettings {
     pub fn save(&self) -> Result<(), std::io::Error> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        fs::write(SETTINGS_FILE, json)?;
+        let temp_file = format!("{}.tmp", SETTINGS_FILE);
+        fs::write(&temp_file, json)?;
+        fs::rename(&temp_file, SETTINGS_FILE)?;
         info!("Ayarlar '{}' dosyasına kaydedildi.", SETTINGS_FILE);
         Ok(())
     }

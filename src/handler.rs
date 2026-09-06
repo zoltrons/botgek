@@ -1,10 +1,16 @@
 use serenity::all::{
-    async_trait, Context, CreateMessage, EditMessage, EventHandler, Message, Permissions,
+    async_trait, Context, CreateAllowedMentions, CreateMessage, EditMessage, EventHandler, Message, Permissions,
     Reaction, ReactionType, Ready, UserId,
 };
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, warn};
+
+static AI_COOLDOWNS: Lazy<Mutex<HashMap<UserId, Instant>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 use crate::config::Config;
 use crate::converters;
@@ -68,6 +74,18 @@ impl EventHandler for Handler {
 
         if (is_mentioned || is_reply_to_bot) && current_settings.modules.ai_chat {
             if let Some(ref api_key) = self.config.openrouter_api_key {
+                // Hız sınırı (Rate limiting): Kullanıcı başına 3 saniye bekleme süresi
+                {
+                    let mut cooldowns = AI_COOLDOWNS.lock().await;
+                    if let Some(last_time) = cooldowns.get(&msg.author.id) {
+                        if last_time.elapsed() < Duration::from_secs(3) {
+                            warn!("AI hız sınırı aşıldı, istek atlandı: {}", msg.author.id);
+                            return;
+                        }
+                    }
+                    cooldowns.insert(msg.author.id, Instant::now());
+                }
+
                 let clean_query = msg.content
                     .replace(&format!("<@{}>", current_user_id), "")
                     .replace(&format!("<@!{}>", current_user_id), "")
@@ -88,9 +106,17 @@ impl EventHandler for Handler {
                     .await
                     {
                         Ok(reply) => {
+                            // Güvenlik: LLM çıktısındaki @everyone veya rol etiketlerinin bildirim tetiklemesini engelle
+                            let allowed_mentions = CreateAllowedMentions::new()
+                                .empty_roles()
+                                .everyone(false)
+                                .replied_user(true);
+
                             let builder = CreateMessage::new()
                                 .content(reply)
-                                .reference_message(&msg);
+                                .reference_message(&msg)
+                                .allowed_mentions(allowed_mentions);
+
                             if let Err(e) = msg.channel_id.send_message(&ctx.http, builder).await {
                                 error!("AI yanıtı Discord'a gönderilemedi: {:?}", e);
                             }

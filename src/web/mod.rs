@@ -1,7 +1,8 @@
 use axum::{
-    extract::State,
-    http::StatusCode,
-    response::{Html, IntoResponse},
+    extract::{DefaultBodyLimit, Request, State},
+    http::{HeaderValue, StatusCode},
+    middleware::{from_fn, Next},
+    response::{Html, IntoResponse, Response},
     routing::get,
     Json, Router,
 };
@@ -19,6 +20,8 @@ pub async fn start_web_server(settings: SharedSettings, port: u16) {
         .route("/", get(index_handler))
         .route("/api/settings", get(get_settings).post(save_settings))
         .route("/api/health", get(health_check))
+        .layer(from_fn(add_security_headers))
+        .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(settings);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -36,6 +39,15 @@ pub async fn start_web_server(settings: SharedSettings, port: u16) {
     }
 }
 
+async fn add_security_headers(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
+    headers.insert("Referrer-Policy", HeaderValue::from_static("strict-origin-when-cross-origin"));
+    response
+}
+
 async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
@@ -47,8 +59,26 @@ async fn get_settings(State(settings): State<SharedSettings>) -> impl IntoRespon
 
 async fn save_settings(
     State(settings): State<SharedSettings>,
-    Json(new_settings): Json<AppSettings>,
+    Json(mut new_settings): Json<AppSettings>,
 ) -> impl IntoResponse {
+    // Güvenlik & Doğrulama: Yalnızca geçerli sayısal Snowflake ID'lerini kabul et
+    new_settings.role_filter.roles.retain(|r| {
+        let trimmed = r.trim();
+        !trimmed.is_empty() && trimmed.len() <= 25 && trimmed.chars().all(|c| c.is_ascii_digit())
+    });
+
+    if new_settings.role_filter.roles.len() > 200 {
+        new_settings.role_filter.roles.truncate(200);
+    }
+
+    if new_settings.ai.system_prompt.len() > 4000 {
+        new_settings.ai.system_prompt.truncate(4000);
+    }
+
+    if new_settings.ai.model.len() > 128 {
+        new_settings.ai.model.truncate(128);
+    }
+
     if let Err(e) = new_settings.save() {
         error!("Ayarlar kaydedilirken hata: {:?}", e);
         return (
@@ -972,14 +1002,27 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             const container = document.getElementById('chips-container');
             container.innerHTML = '';
             if (!state.role_filter.roles || state.role_filter.roles.length === 0) {
-                container.innerHTML = '<span class="empty-chips-hint">Henüz eklenmiş bir rol ID\'si yok. Yukarıdaki kutudan ekleyebilirsiniz.</span>';
+                const hint = document.createElement('span');
+                hint.className = 'empty-chips-hint';
+                hint.textContent = "Henüz eklenmiş bir rol ID'si yok. Yukarıdaki kutudan ekleyebilirsiniz.";
+                container.appendChild(hint);
                 return;
             }
 
             state.role_filter.roles.forEach((roleId, index) => {
                 const chip = document.createElement('div');
                 chip.className = 'role-chip';
-                chip.innerHTML = `<span>#${roleId}</span><span class="role-chip-remove" onclick="removeRole(${index})">×</span>`;
+
+                const label = document.createElement('span');
+                label.textContent = '#' + roleId;
+
+                const removeBtn = document.createElement('span');
+                removeBtn.className = 'role-chip-remove';
+                removeBtn.textContent = '×';
+                removeBtn.onclick = () => removeRole(index);
+
+                chip.appendChild(label);
+                chip.appendChild(removeBtn);
                 container.appendChild(chip);
             });
         }
