@@ -1,0 +1,14 @@
+services:
+  botgek:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: botgek
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Raspberry Pi için kaynak sınırları (isteğe bağlı güvenlik önlemi)
+    deploy:
+      resources:
+        limits:
+          memory: 256M

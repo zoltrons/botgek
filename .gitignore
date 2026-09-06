@@ -1,0 +1,17 @@
+# Rust derleme dizini
+target/
+**/*.rs.bk
+
+# HASSAS DOSYALAR - Kesinlikle depoya eklenmez!
+.env
+*.env.local
+*.env.*.local
+
+# Loglar ve geçici dosyalar
+*.log
+
+# Editör ve işletim sistemi
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

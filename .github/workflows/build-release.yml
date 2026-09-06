@@ -1,0 +1,111 @@
+name: Build and Release (Raspberry Pi & Linux)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # 1. Test Aşaması
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Cargo Test
+        run: cargo test --verbose
+
+  # 2. Raspberry Pi (Debian) ve Linux Paketleme Aşaması
+  build-and-package:
+    name: Build for ${{ matrix.name }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            deb_arch: arm64
+            name: raspberry-pi-64bit-arm64
+          - target: armv7-unknown-linux-gnueabihf
+            arch: armhf
+            deb_arch: armhf
+            name: raspberry-pi-32bit-armhf
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+            deb_arch: amd64
+            name: linux-x86_64-amd64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross and cargo-deb
+        run: |
+          # Hızlı kurulum için cargo-binstall kullan
+          curl -LsSf https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz | tar -xvzf - -C /usr/local/bin
+          cargo-binstall -y --force cross cargo-deb
+
+      - name: Cross-compile Release Binary
+        run: |
+          cross build --release --target ${{ matrix.target }}
+
+      - name: Package Debian (.deb)
+        run: |
+          # cargo-deb ile hedefe özel .deb paketi oluştur
+          cargo deb --target ${{ matrix.target }} --no-build -o target/botgek_${{ matrix.deb_arch }}.deb
+
+      - name: Create Tarball Archive (.tar.gz)
+        run: |
+          mkdir -p dist
+          BIN_PATH="target/${{ matrix.target }}/release/botgek"
+          
+          # Paket klasörünü hazırla
+          PKG_DIR="botgek-${{ matrix.name }}"
+          mkdir -p "$PKG_DIR"
+          cp "$BIN_PATH" "$PKG_DIR/"
+          cp botgek.service "$PKG_DIR/"
+          cp .env.example "$PKG_DIR/"
+          cp settings.json "$PKG_DIR/"
+          cp README.md "$PKG_DIR/"
+          
+          tar -czvf "dist/botgek-${{ matrix.name }}.tar.gz" "$PKG_DIR"
+          cp target/botgek_${{ matrix.deb_arch }}.deb dist/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: botgek-${{ matrix.name }}
+          path: dist/*
+          retention-days: 30
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

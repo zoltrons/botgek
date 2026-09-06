@@ -1,0 +1,28 @@
+[Unit]
+Description=Botgek Discord Link Dönüştürücü ve AI Botu
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botgek
+Group=botgek
+WorkingDirectory=/var/lib/botgek
+EnvironmentFile=-/etc/botgek/botgek.env
+ExecStart=/usr/bin/botgek
+Restart=always
+RestartSec=5s
+
+# Güvenlik ve İzolasyon Ayarları
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Standart çıktıları journald'ye yönlendir
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=botgek
+
+[Install]
+WantedBy=multi-user.target

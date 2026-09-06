@@ -1,0 +1,19 @@
+{
+  "modules": {
+    "twitter": true,
+    "tiktok": true,
+    "instagram": true,
+    "reddit": true,
+    "bluesky": true,
+    "translation": true,
+    "ai_chat": true
+  },
+  "role_filter": {
+    "mode": "blacklist",
+    "roles": []
+  },
+  "ai": {
+    "model": "google/gemma-4-31b-it:free",
+    "system_prompt": "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Aksi belirtilmedikçe sadece Türkçe konuş."
+  }
+}

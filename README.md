@@ -1,0 +1,133 @@
+# 🤖 Botgek - Modern Discord Sosyal Medya Bağlantı Dönüştürücüsü & AI Asistanı (Rust)
+
+Discord sunucularında paylaşılan sosyal medya bağlantılarını (Twitter/X, TikTok, Instagram, Reddit, Bluesky) Discord'da kusursuz video, görsel ve metin önizlemesi sunan servislerle dönüştüren, **Rust (Serenity 0.12)** ile yazılmış yüksek performanslı Discord botu.
+
+Ayrıca **Cyber-Ops WebUI Kontrol Paneli**, **Rol Tabanlı Filtreleme (Allowlist/Blacklist)**, **Bayrak Reaksiyonuyla Çeviri** ve **OpenRouter AI ile Sarcastic Sohbet Asistanı** içerir.
+
+Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RAM) tüketerek 7/24 stabil çalışacak şekilde tasarlanmıştır.
+
+---
+
+## ✨ Temel Özellikler
+
+- 🔗 **5 Sosyal Medya Platformu:**
+  - 🐦 **Twitter / X** ➔ `fixupx.com`
+  - 🎵 **TikTok** ➔ `tnktok.com` (fxTikTok)
+  - 📷 **Instagram** ➔ `ddinstagram.com`
+  - 🤖 **Reddit** ➔ `rxddit.com`
+  - 🦋 **Bluesky** ➔ `fxbsky.app`
+- 🎯 **Kusursuz ve Sade Görünüm:**
+  - Ekranda çirkin uzun linkler yerine yalnızca `[:]({link}) [Platform](<orijinal>)` ve varsa kullanıcı notu alıntısı (`> not`) yer alır.
+  - 🙈 **Spoiler Desteği:** `||link||` olarak atılan mesajlar dönüştürüldüğünde de gizliliğini korur.
+- 🇹🇷 **Bayrak Emojisiyle Anında Çeviri:**
+  - Botun dönüştürdüğü mesaja bayrak emojisi (örn: 🇹🇷, 🇬🇧, 🇩🇪, 🇫🇷, 🇯🇵) bırakıldığında link otomatik olarak `/tr`, `/en` gibi dil parametrelerini alarak içeriği çevirir. Reaksiyon kaldırıldığında orijinal haline döner.
+- 🗑️ **Reaksiyonla Temizleme:**
+  - Mesaja eklenen `🗑️` emojisine orijinal mesaj sahibi veya sunucu yöneticisi/moderatörü bastığında mesaj anında silinir.
+- 💬 **Sarcastic OpenRouter AI Asistanı:**
+  - Bot etiketlendiğinde (`@botgekv2`) veya bota yanıt (Reply) verildiğinde akıllı, hazırcevap, hafif alaycı ve kısa (1-2 cümle) Türkçe cevaplar üretir.
+- 🎛️ **Cyber-Ops Minimal WebUI (`http://localhost:3000`):**
+  - Tüm modülleri tek tıkla açıp kapatma.
+  - **Rol Tabanlı Filtreleme:** İstemeyen roller için `Blacklist` veya sadece belirli roller için `Allowlist`.
+  - Sistem promptu ve AI modelini web arayüzünden anlık güncelleme.
+  - Yapılan tüm değişiklikler `settings.json` ile anında kalıcı olarak kaydedilir.
+
+---
+
+## 🚀 GitHub Actions ile Raspberry Pi Debian Derlemesi (CI/CD)
+
+Projede iki ayrı GitHub Actions iş akışı (Worker) tanımlıdır:
+
+1. **`build-release.yml` (Native Binary & Debian `.deb` Paketi):**
+   - Kod her `push` edildiğinde veya `PR` açıldığında testleri (`cargo test`) çalıştırır.
+   - `cross` aracıyla **Raspberry Pi 64-bit (`aarch64-unknown-linux-gnu`)** ve **Raspberry Pi 32-bit (`armv7-unknown-linux-gnueabihf`)** mimarilerine doğrudan Debian glibc uyumlu derleme yapar.
+   - Her derleme için `.deb` Debian paketi ve `.tar.gz` arşivi üreterek GitHub Actions Artifacts sekmesine yükler.
+   - Bir git etiketi (`v*`) basıldığında GitHub Releases sayfasına paketleri otomatik iliştirir.
+2. **`docker.yml` (Çoklu Mimari Docker İmajı):**
+   - `linux/amd64`, `linux/arm64` ve `linux/arm/v7` için Docker imajı derleyip GitHub Container Registry'ye (`ghcr.io`) yükler.
+
+---
+
+## 🍓 Raspberry Pi Debian Kurulumu
+
+### Seçenek 1: Debian Paketi ile Kurulum (`.deb`) — *En Kolay Yol*
+
+GitHub Actions sayfasından veya Releases sekmesinden mimarinize uygun `.deb` paketini indirin (`botgek_arm64.deb` veya `botgek_armhf.deb`):
+
+```bash
+# Paketi kurun
+sudo dpkg -i botgek_arm64.deb
+
+# Yapılandırma dosyanızı oluşturun ve düzenleyin
+sudo cp /etc/botgek/botgek.env.example /etc/botgek/botgek.env
+sudo nano /etc/botgek/botgek.env
+
+# Systemd servisini başlatın
+sudo systemctl enable --now botgek
+
+# Durum ve logları kontrol edin
+sudo systemctl status botgek
+sudo journalctl -u botgek -f
+```
+
+---
+
+### Seçenek 2: Tarball Arşivi & Kurulum Betiği (`deploy-rpi.sh`)
+
+```bash
+# Arşivi çıkarın ve dizine girin
+tar -xzvf botgek-raspberry-pi-64bit-arm64.tar.gz
+cd botgek-raspberry-pi-64bit-arm64
+
+# Otomatik kurulum betiğini root olarak çalıştırın
+sudo bash deploy-rpi.sh
+
+# .env dosyasını düzenleyip botu başlatın
+sudo nano /etc/botgek/botgek.env
+sudo systemctl start botgek
+```
+
+---
+
+### Seçenek 3: Docker ile Çalıştırma
+
+```bash
+# Projeyi çekin
+git clone <depo_adresi> botgek
+cd botgek
+
+# .env dosyasını ayarlayın
+cp .env.example .env
+nano .env
+
+# Docker Compose ile arka planda başlatın
+docker compose up -d --build
+```
+
+---
+
+## 🛠️ Discord Developer Portal İzinleri
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) adresine gidin.
+2. Botunuzun ayarlarından **Bot** sekmesine gelin:
+   - **`MESSAGE CONTENT INTENT`** seçeneğini mutlaka **AÇIK (Enabled)** yapın.
+3. **OAuth2 -> URL Generator** üzerinden botu sunucunuza şu yetkilerle davet edin:
+   - `Send Messages`, `Manage Messages`, `Embed Links`, `Read Message History`, `Add Reactions`.
+
+---
+
+## 📤 Projeyi GitHub'a Gönderme (Push)
+
+GitHub üzerinde yeni ve boş bir repository oluşturduktan sonra terminalinizde şu komutları çalıştırın:
+
+```bash
+# 1. Uzak depoyu ekleyin (kendi repo linkinizi yazın)
+git remote add origin https://github.com/KULLANICI_ADI/REPO_ADI.git
+
+# 2. Ana dala pushlayın
+git branch -M main
+git push -u origin main
+
+# 3. Yeni bir sürüm oluşturup Raspberry Pi derlemelerini GitHub Releases'e göndermek için:
+git tag v0.1.0
+git push origin v0.1.0
+```
