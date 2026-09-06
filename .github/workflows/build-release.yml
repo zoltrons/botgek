@@ -77,7 +77,7 @@ jobs:
 
       - name: Package Debian (.deb)
         run: |
-          cargo deb --target ${{ matrix.target }} --no-build -o target/botgek_${{ matrix.deb_arch }}.deb
+          cargo deb --target ${{ matrix.target }} --no-build --no-strip -o target/botgek_${{ matrix.deb_arch }}.deb
 
       - name: Create Tarball Archive (.tar.gz)
         run: |

@@ -34,7 +34,7 @@ copyright = "2026 Eray"
 extended-description = """\
 Modern Discord link converter bot for Twitter/X, TikTok, Instagram, Reddit, Bluesky \
 with WebUI control panel, role filtering, and sarcastic OpenRouter AI chat."""
-depends = "$auto, ca-certificates"
+depends = "libc6, ca-certificates"
 section = "net"
 priority = "optional"
 assets = [
@@ -42,5 +42,11 @@ assets = [
     ["botgek.service", "lib/systemd/system/botgek.service", "644"],
     [".env.example", "etc/botgek/botgek.env.example", "640"],
 ]
+
+[profile.release]
+strip = true
+opt-level = 3
+lto = true
+codegen-units = 1
 
 
