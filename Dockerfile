@@ -26,9 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Güvenlik: Root olmayan bir kullanıcı oluştur
-RUN useradd -m -u 1001 -U appuser
-USER appuser
 WORKDIR /app
 
 # Derlenen ikili dosyayı kopyala

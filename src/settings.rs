@@ -207,25 +207,43 @@ impl AppSettings {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
         // Docker bind-mount durumunda inode korunması gerektiği için doğrudan dosyaya yazılır
-        if path.exists() && path.is_file() {
-            fs::write(&path, &json)?;
-            info!("Ayarlar '{}' dosyasına kaydedildi.", path.display());
-            return Ok(());
-        }
-
-        // Dosya henüz yoksa önce temp dosyaya yazıp rename dene, başarısız olursa doğrudan yaz
-        let temp_file = format!("{}.tmp", path.display());
-        if fs::write(&temp_file, &json).is_ok() {
-            if fs::rename(&temp_file, &path).is_err() {
-                fs::write(&path, &json)?;
-                let _ = fs::remove_file(&temp_file);
-            }
+        let write_result = if path.exists() && path.is_file() {
+            fs::write(&path, &json)
         } else {
-            fs::write(&path, &json)?;
-        }
+            // Dosya henüz yoksa önce temp dosyaya yazıp rename dene, başarısız olursa doğrudan yaz
+            let temp_file = format!("{}.tmp", path.display());
+            if fs::write(&temp_file, &json).is_ok() {
+                if fs::rename(&temp_file, &path).is_err() {
+                    let res = fs::write(&path, &json);
+                    let _ = fs::remove_file(&temp_file);
+                    res
+                } else {
+                    Ok(())
+                }
+            } else {
+                fs::write(&path, &json)
+            }
+        };
 
-        info!("Ayarlar '{}' dosyasına kaydedildi.", path.display());
-        Ok(())
+        match write_result {
+            Ok(_) => {
+                info!("Ayarlar '{}' dosyasına kaydedildi.", path.display());
+                Ok(())
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    error!(
+                        "Ayarlar dosyasına ('{}') yazma izni reddedildi (Permission Denied)! \
+                        Docker bind-mount kullanıyorsanız host üzerinde 'chmod 666 settings.json' çalıştırın \
+                        veya docker-compose.yml içinde 'user: \"0:0\"' tanımlayın.",
+                        path.display()
+                    );
+                } else {
+                    error!("Ayarlar '{}' dosyasına kaydedilirken hata: {:?}", path.display(), e);
+                }
+                Err(e)
+            }
+        }
     }
 }
 
