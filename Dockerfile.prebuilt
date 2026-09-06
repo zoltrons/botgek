@@ -7,11 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
+RUN groupadd -g 1000 botgek && \
+    useradd -u 1000 -g botgek -m -s /bin/sh botgek && \
+    mkdir -p /app && chown -R botgek:botgek /app
 
+USER botgek
 WORKDIR /app
 
 ARG TARGETARCH
 ARG TARGETVARIANT
-COPY bin/${TARGETARCH}${TARGETVARIANT}/botgek /app/botgek
+COPY --chown=botgek:botgek bin/${TARGETARCH}${TARGETVARIANT}/botgek /app/botgek
 
 CMD ["/app/botgek"]

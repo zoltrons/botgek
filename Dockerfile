@@ -26,10 +26,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd -g 1000 botgek && \
+    useradd -u 1000 -g botgek -m -s /bin/sh botgek && \
+    mkdir -p /app && chown -R botgek:botgek /app
+
+USER botgek
 WORKDIR /app
 
 # Derlenen ikili dosyayı kopyala
-COPY --from=builder /usr/src/botgek/target/release/botgek /app/botgek
+COPY --from=builder --chown=botgek:botgek /usr/src/botgek/target/release/botgek /app/botgek
 
 # Botu çalıştır
 CMD ["/app/botgek"]

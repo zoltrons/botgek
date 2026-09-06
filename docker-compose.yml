@@ -7,8 +7,8 @@ services:
     # image: ghcr.io/<kullanici_adiniz>/botgek:latest
     container_name: botgek
     restart: unless-stopped
-    # Host volume dosya yazma izin sorunlarını (Permission Denied) engeller:
-    user: "0:0"
+    # Güvenlik: Container'ı root olmayan host standart kullanıcısı (1000:1000) ile çalıştırır:
+    user: "1000:1000"
     ports:
       # WebUI port eşlemesi (.env içindeki WEB_PORT veya varsayılan 3000)
       - "${WEB_PORT:-3000}:3000"

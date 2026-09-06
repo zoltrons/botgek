@@ -234,8 +234,7 @@ impl AppSettings {
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
                     error!(
                         "Ayarlar dosyasına ('{}') yazma izni reddedildi (Permission Denied)! \
-                        Docker bind-mount kullanıyorsanız host üzerinde 'chmod 666 settings.json' çalıştırın \
-                        veya docker-compose.yml içinde 'user: \"0:0\"' tanımlayın.",
+                        Host üzerinde 'sudo chown 1000:1000 settings.json' veya 'chmod 666 settings.json' çalıştırın.",
                         path.display()
                     );
                 } else {
