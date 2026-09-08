@@ -14,7 +14,7 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - 🐦 **Twitter / X** ➔ `fixupx.com`
   - 🎵 **TikTok** ➔ `tnktok.com` (fxTikTok)
   - 📷 **Instagram** ➔ `ddinstagram.com`
-  - 🤖 **Reddit** ➔ `rxddit.com`
+  - 🤖 **Reddit** ➔ `vxreddit.com`
   - 🦋 **Bluesky** ➔ `fxbsky.app`
 - 🎯 **Kusursuz ve Sade Görünüm:**
   - Ekranda çirkin uzun linkler yerine yalnızca `[:]({link}) [Platform](<orijinal>)` ve varsa kullanıcı notu alıntısı (`> not`) yer alır.

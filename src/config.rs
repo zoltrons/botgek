@@ -28,7 +28,7 @@ impl Config {
             .unwrap_or_else(|_| "ddinstagram.com".to_string());
 
         let reddit_domain = env::var("REDDIT_DOMAIN")
-            .unwrap_or_else(|_| "rxddit.com".to_string());
+            .unwrap_or_else(|_| "vxreddit.com".to_string());
 
         let bluesky_domain = env::var("BLUESKY_DOMAIN")
             .unwrap_or_else(|_| "fxbsky.app".to_string());

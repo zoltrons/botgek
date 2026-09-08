@@ -93,13 +93,34 @@ static INSTAGRAM_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 
 // ==================== REDDIT ====================
-static REDDIT_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:www\.|old\.)?reddit\.com/r/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
-        .expect("Geçersiz Spoiler Reddit regex deseni")
+// 1. Standart Gönderi: /r/subreddit/comments/id veya /(u|user)/username/comments/id
+static REDDIT_POST_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\|\|\s*https?://(?:(?:www|old|new|np)\.)?reddit\.com/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
+        .expect("Geçersiz Spoiler Reddit Post regex deseni")
 });
-static REDDIT_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"https?://(?:www\.|old\.)?reddit\.com/r/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
-        .expect("Geçersiz Reddit regex deseni")
+static REDDIT_POST_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"https?://(?:(?:www|old|new|np)\.)?reddit\.com/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
+        .expect("Geçersiz Reddit Post regex deseni")
+});
+
+// 2. Mobil Paylaşım Linki: /r/subreddit/s/share_id
+static REDDIT_SHARE_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\|\|\s*https?://(?:(?:www|old|new|np)\.)?reddit\.com/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
+        .expect("Geçersiz Spoiler Reddit Share regex deseni")
+});
+static REDDIT_SHARE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"https?://(?:(?:www|old|new|np)\.)?reddit\.com/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
+        .expect("Geçersiz Reddit Share regex deseni")
+});
+
+// 3. Kısa Linkler: redd.it/id veya /comments/id
+static REDDIT_SHORT_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\|\|\s*(?:https?://redd\.it/([a-zA-Z0-9]+)|https?://(?:(?:www|old|new|np)\.)?reddit\.com/comments/([a-zA-Z0-9]+))(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
+        .expect("Geçersiz Spoiler Reddit Short regex deseni")
+});
+static REDDIT_SHORT_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?:https?://redd\.it/([a-zA-Z0-9]+)|https?://(?:(?:www|old|new|np)\.)?reddit\.com/comments/([a-zA-Z0-9]+))(?:/[^\s]*)?/?(?:\?[^\s]*)?")
+        .expect("Geçersiz Reddit Short regex deseni")
 });
 
 // ==================== BLUESKY ====================
@@ -292,28 +313,83 @@ fn parse_instagram(raw_content: &str, domain: &str) -> Option<ParsedPost> {
 }
 
 fn parse_reddit(raw_content: &str, domain: &str) -> Option<ParsedPost> {
-    if let Some(caps) = REDDIT_SPOILER_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str();
-        let id = caps.get(2)?.as_str();
+    // 1. /r/sub/comments/id veya /(u|user)/username/comments/id (Spoiler)
+    if let Some(caps) = REDDIT_POST_SPOILER_REGEX.captures(raw_content) {
+        let prefix = caps.get(1)?.as_str();
+        let target = caps.get(2)?.as_str();
+        let id = caps.get(3)?.as_str();
+        let section = if prefix == "u" { "user" } else { prefix };
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &REDDIT_SPOILER_REGEX),
-            original_url: format!("https://www.reddit.com/r/{}/comments/{}", sub, id),
-            fixed_url: format!("https://{}/r/{}/comments/{}", domain, sub, id),
+            user_comment: extract_user_comment(raw_content, &REDDIT_POST_SPOILER_REGEX),
+            original_url: format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id),
+            fixed_url: format!("https://{}/{}/{}/comments/{}", domain, section, target, id),
         });
     }
-    if let Some(caps) = REDDIT_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str();
-        let id = caps.get(2)?.as_str();
+    // 1. /r/sub/comments/id veya /(u|user)/username/comments/id (Normal)
+    if let Some(caps) = REDDIT_POST_REGEX.captures(raw_content) {
+        let prefix = caps.get(1)?.as_str();
+        let target = caps.get(2)?.as_str();
+        let id = caps.get(3)?.as_str();
+        let section = if prefix == "u" { "user" } else { prefix };
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &REDDIT_REGEX),
-            original_url: format!("https://www.reddit.com/r/{}/comments/{}", sub, id),
-            fixed_url: format!("https://{}/r/{}/comments/{}", domain, sub, id),
+            user_comment: extract_user_comment(raw_content, &REDDIT_POST_REGEX),
+            original_url: format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id),
+            fixed_url: format!("https://{}/{}/{}/comments/{}", domain, section, target, id),
         });
     }
+
+    // 2. /r/sub/s/share_id (Mobil Paylaşım Linki - Spoiler)
+    if let Some(caps) = REDDIT_SHARE_SPOILER_REGEX.captures(raw_content) {
+        let sub = caps.get(1)?.as_str();
+        let share_id = caps.get(2)?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Reddit,
+            is_spoiler: true,
+            user_comment: extract_user_comment(raw_content, &REDDIT_SHARE_SPOILER_REGEX),
+            original_url: format!("https://www.reddit.com/r/{}/s/{}", sub, share_id),
+            fixed_url: format!("https://{}/r/{}/s/{}", domain, sub, share_id),
+        });
+    }
+    // 2. /r/sub/s/share_id (Mobil Paylaşım Linki - Normal)
+    if let Some(caps) = REDDIT_SHARE_REGEX.captures(raw_content) {
+        let sub = caps.get(1)?.as_str();
+        let share_id = caps.get(2)?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Reddit,
+            is_spoiler: false,
+            user_comment: extract_user_comment(raw_content, &REDDIT_SHARE_REGEX),
+            original_url: format!("https://www.reddit.com/r/{}/s/{}", sub, share_id),
+            fixed_url: format!("https://{}/r/{}/s/{}", domain, sub, share_id),
+        });
+    }
+
+    // 3. redd.it/id veya /comments/id (Kısa Linkler - Spoiler)
+    if let Some(caps) = REDDIT_SHORT_SPOILER_REGEX.captures(raw_content) {
+        let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Reddit,
+            is_spoiler: true,
+            user_comment: extract_user_comment(raw_content, &REDDIT_SHORT_SPOILER_REGEX),
+            original_url: format!("https://redd.it/{}", id),
+            fixed_url: format!("https://{}/comments/{}", domain, id),
+        });
+    }
+    // 3. redd.it/id veya /comments/id (Kısa Linkler - Normal)
+    if let Some(caps) = REDDIT_SHORT_REGEX.captures(raw_content) {
+        let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Reddit,
+            is_spoiler: false,
+            user_comment: extract_user_comment(raw_content, &REDDIT_SHORT_REGEX),
+            original_url: format!("https://redd.it/{}", id),
+            fixed_url: format!("https://{}/comments/{}", domain, id),
+        });
+    }
+
     None
 }
 
@@ -353,7 +429,7 @@ mod tests {
             twitter_domain: "fixupx.com".to_string(),
             tiktok_domain: "tnktok.com".to_string(),
             instagram_domain: "ddinstagram.com".to_string(),
-            reddit_domain: "rxddit.com".to_string(),
+            reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
             delete_original: true,
             openrouter_api_key: None,
@@ -429,7 +505,56 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/rust/comments/123456");
-        assert_eq!(parsed.fixed_url, "https://rxddit.com/r/rust/comments/123456");
+        assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/rust/comments/123456");
+        assert_eq!(parsed.is_spoiler, false);
+    }
+
+    #[test]
+    fn test_reddit_mobile_share() {
+        let cfg = dummy_config();
+        let content = "Buna bak https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234 harika";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        assert_eq!(parsed.platform, Platform::Reddit);
+        assert_eq!(parsed.original_url, "https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234");
+        assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/pcmasterrace/s/AbCdEf1234");
+        assert_eq!(parsed.is_spoiler, false);
+        assert_eq!(parsed.user_comment.as_deref(), Some("Buna bak  harika"));
+    }
+
+    #[test]
+    fn test_reddit_shortlink() {
+        let cfg = dummy_config();
+        let content = "https://redd.it/123456";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        assert_eq!(parsed.platform, Platform::Reddit);
+        assert_eq!(parsed.original_url, "https://redd.it/123456");
+        assert_eq!(parsed.fixed_url, "https://vxreddit.com/comments/123456");
+        assert_eq!(parsed.is_spoiler, false);
+    }
+
+    #[test]
+    fn test_reddit_user_post() {
+        let cfg = dummy_config();
+        let content = "https://www.reddit.com/u/someone/comments/abcdef12/";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        assert_eq!(parsed.platform, Platform::Reddit);
+        assert_eq!(parsed.original_url, "https://www.reddit.com/user/someone/comments/abcdef12");
+        assert_eq!(parsed.fixed_url, "https://vxreddit.com/user/someone/comments/abcdef12");
+    }
+
+    #[test]
+    fn test_reddit_spoiler() {
+        let cfg = dummy_config();
+        let content = "||https://old.reddit.com/r/news/comments/789xyz/breaking/||";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        assert_eq!(parsed.platform, Platform::Reddit);
+        assert_eq!(parsed.original_url, "https://www.reddit.com/r/news/comments/789xyz");
+        assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/news/comments/789xyz");
+        assert_eq!(parsed.is_spoiler, true);
     }
 
     #[test]
