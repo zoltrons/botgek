@@ -116,6 +116,7 @@ impl EventHandler for Handler {
                 // Hız sınırı (Rate limiting): Kullanıcı başına 3 saniye bekleme süresi
                 {
                     let mut cooldowns = AI_COOLDOWNS.lock().await;
+                    cooldowns.retain(|_, instant| instant.elapsed() < Duration::from_secs(10));
                     if let Some(last_time) = cooldowns.get(&msg.author.id) {
                         if last_time.elapsed() < Duration::from_secs(3) {
                             warn!("AI hız sınırı aşıldı, istek atlandı: {}", msg.author.id);
@@ -165,6 +166,13 @@ impl EventHandler for Handler {
                         }
                         Err(e) => {
                             error!("AI yanıtı üretilirken hata oluştu: {:?}", e);
+                            let notice = "Bu model şu an yanıt veremedi. Model slug'ını kontrol et veya Auto Free Router'a dön.";
+                            let builder = CreateMessage::new()
+                                .content(notice)
+                                .reference_message(&msg);
+                            if let Err(send_err) = msg.channel_id.send_message(&ctx.http, builder).await {
+                                error!("AI hata bildirimi gönderilemedi: {:?}", send_err);
+                            }
                         }
                     }
                 }
@@ -353,9 +361,10 @@ impl EventHandler for Handler {
     }
 }
 
-/// Mesaj başındaki <@123456789> formatından kullanıcı ID'sini çıkarır
+/// Mesaj başındaki <@123456789> veya <@!123456789> formatından kullanıcı ID'sini çıkarır
 fn extract_author_id(content: &str) -> Option<UserId> {
     if let Some(rest) = content.strip_prefix("<@") {
+        let rest = rest.strip_prefix('!').unwrap_or(rest);
         if let Some(end) = rest.find('>') {
             return rest[..end].parse::<u64>().ok().map(UserId::new);
         }
@@ -414,6 +423,19 @@ mod tests {
         assert!(!is_link_conversion_message("Evet, haklısın bu konuda."));
         assert!(!is_link_conversion_message("Selam! Ben Botgek."));
         assert!(!is_link_conversion_message(""));
+    }
+
+    #[test]
+    fn test_extract_author_id() {
+        assert_eq!(
+            extract_author_id("<@123456789>[:](url)"),
+            Some(UserId::new(123456789))
+        );
+        assert_eq!(
+            extract_author_id("<@!987654321>[:](url)"),
+            Some(UserId::new(987654321))
+        );
+        assert_eq!(extract_author_id("Normal mesaj"), None);
     }
 }
 

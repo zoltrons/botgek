@@ -29,18 +29,13 @@ impl Default for PlatformModules {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum FilterMode {
+    #[default]
     Disabled,
     Blacklist,
     Allowlist,
-}
-
-impl Default for FilterMode {
-    fn default() -> Self {
-        FilterMode::Disabled
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -59,7 +54,7 @@ pub struct AiSettings {
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
-            model: "google/gemma-4-31b-it:free".to_string(),
+            model: crate::ai::DEFAULT_MODEL.to_string(),
             system_prompt: "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş.".to_string(),
         }
     }
@@ -93,6 +88,9 @@ pub struct GuildSettings {
     pub ai: AiSettings,
 }
 
+static DEFAULT_DISABLED_FILTER: once_cell::sync::Lazy<RoleFilterSettings> =
+    once_cell::sync::Lazy::new(RoleFilterSettings::default);
+
 impl GuildSettings {
     pub fn get_role_filter(&self, module_key: &str) -> &RoleFilterSettings {
         match module_key {
@@ -103,7 +101,7 @@ impl GuildSettings {
             "bluesky" => &self.role_filters.bluesky,
             "translation" => &self.role_filters.translation,
             "ai_chat" => &self.role_filters.ai_chat,
-            _ => &self.role_filters.twitter,
+            _ => &DEFAULT_DISABLED_FILTER,
         }
     }
 }
@@ -145,19 +143,6 @@ impl AppSettings {
             }
         }
         self.default_guild_settings()
-    }
-
-    pub fn get_role_filter(&self, module_key: &str) -> &RoleFilterSettings {
-        match module_key {
-            "twitter" => &self.role_filters.twitter,
-            "tiktok" => &self.role_filters.tiktok,
-            "instagram" => &self.role_filters.instagram,
-            "reddit" => &self.role_filters.reddit,
-            "bluesky" => &self.role_filters.bluesky,
-            "translation" => &self.role_filters.translation,
-            "ai_chat" => &self.role_filters.ai_chat,
-            _ => &self.role_filters.twitter,
-        }
     }
 }
 
@@ -211,7 +196,7 @@ impl AppSettings {
     pub fn save(&self) -> Result<(), std::io::Error> {
         let path = resolve_settings_path();
         let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         // Docker bind-mount durumunda inode korunması gerektiği için doğrudan dosyaya yazılır
         let write_result = if path.exists() && path.is_file() {
@@ -263,11 +248,11 @@ mod tests {
         let json = serde_json::to_string_pretty(&settings).unwrap();
         let deserialized: AppSettings = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.modules.twitter, true);
-        assert_eq!(deserialized.modules.tiktok, true);
+        assert!(deserialized.modules.twitter);
+        assert!(deserialized.modules.tiktok);
         assert_eq!(deserialized.role_filters.twitter.mode, FilterMode::Disabled);
         assert_eq!(deserialized.role_filters.tiktok.mode, FilterMode::Disabled);
-        assert_eq!(deserialized.ai.model, "google/gemma-4-31b-it:free");
+        assert_eq!(deserialized.ai.model, crate::ai::DEFAULT_MODEL);
     }
 
     #[test]
@@ -279,13 +264,13 @@ mod tests {
         settings.role_filters.tiktok.mode = FilterMode::Allowlist;
         settings.role_filters.tiktok.roles = vec!["222".to_string()];
 
-        assert_eq!(settings.get_role_filter("twitter").mode, FilterMode::Blacklist);
-        assert_eq!(settings.get_role_filter("twitter").roles, vec!["111".to_string()]);
+        assert_eq!(settings.role_filters.twitter.mode, FilterMode::Blacklist);
+        assert_eq!(settings.role_filters.twitter.roles, vec!["111".to_string()]);
 
-        assert_eq!(settings.get_role_filter("tiktok").mode, FilterMode::Allowlist);
-        assert_eq!(settings.get_role_filter("tiktok").roles, vec!["222".to_string()]);
+        assert_eq!(settings.role_filters.tiktok.mode, FilterMode::Allowlist);
+        assert_eq!(settings.role_filters.tiktok.roles, vec!["222".to_string()]);
 
-        assert_eq!(settings.get_role_filter("instagram").mode, FilterMode::Disabled);
+        assert_eq!(settings.role_filters.instagram.mode, FilterMode::Disabled);
     }
 
     #[test]
@@ -302,8 +287,8 @@ mod tests {
         let guild_2 = serenity::all::GuildId::new(987654321);
 
         // Varsayılan ayarlarda twitter açık
-        assert_eq!(settings.get_guild_settings(Some(guild_1)).modules.twitter, true);
-        assert_eq!(settings.get_guild_settings(None).modules.twitter, true);
+        assert!(settings.get_guild_settings(Some(guild_1)).modules.twitter);
+        assert!(settings.get_guild_settings(None).modules.twitter);
 
         // guild_1 için özel ayar: twitter kapalı, model farklı
         let mut custom = settings.default_guild_settings();
@@ -313,16 +298,16 @@ mod tests {
 
         // guild_1 özel ayarı almalı
         let g1_settings = settings.get_guild_settings(Some(guild_1));
-        assert_eq!(g1_settings.modules.twitter, false);
+        assert!(!g1_settings.modules.twitter);
         assert_eq!(g1_settings.ai.model, "custom/model");
 
         // guild_2 ve None (DM) varsayılan ayarları korumalı
         let g2_settings = settings.get_guild_settings(Some(guild_2));
-        assert_eq!(g2_settings.modules.twitter, true);
-        assert_eq!(g2_settings.ai.model, "google/gemma-4-31b-it:free");
+        assert!(g2_settings.modules.twitter);
+        assert_eq!(g2_settings.ai.model, crate::ai::DEFAULT_MODEL);
 
         let dm_settings = settings.get_guild_settings(None);
-        assert_eq!(dm_settings.modules.twitter, true);
+        assert!(dm_settings.modules.twitter);
     }
 }
 

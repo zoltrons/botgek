@@ -135,6 +135,14 @@ static BLUESKY_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
 pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
+    // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
+    if !raw_content.contains("http://")
+        && !raw_content.contains("https://")
+        && !raw_content.contains("redd.it/")
+    {
+        return None;
+    }
+
     // 1. Twitter / X
     if let Some(post) = parse_twitter(raw_content, &config.twitter_domain) {
         return Some(post);
@@ -446,7 +454,7 @@ mod tests {
         assert_eq!(parsed.platform, Platform::Twitter);
         assert_eq!(parsed.original_url, "https://x.com/elonmusk/status/123456789");
         assert_eq!(parsed.fixed_url, "https://fixupx.com/elonmusk/status/123456789");
-        assert_eq!(parsed.is_spoiler, false);
+        assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Harika video  mutlaka izleyin"));
     }
 
@@ -457,7 +465,7 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Twitter);
-        assert_eq!(parsed.is_spoiler, true);
+        assert!(parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Gizli:"));
     }
 
@@ -470,7 +478,7 @@ mod tests {
         assert_eq!(parsed.platform, Platform::TikTok);
         assert_eq!(parsed.original_url, "https://www.tiktok.com/@scout2015/video/6718335390845095173");
         assert_eq!(parsed.fixed_url, "https://tnktok.com/@scout2015/video/6718335390845095173");
-        assert_eq!(parsed.is_spoiler, false);
+        assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment, None);
     }
 
@@ -506,7 +514,7 @@ mod tests {
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/rust/comments/123456");
         assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/rust/comments/123456");
-        assert_eq!(parsed.is_spoiler, false);
+        assert!(!parsed.is_spoiler);
     }
 
     #[test]
@@ -518,7 +526,7 @@ mod tests {
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234");
         assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/pcmasterrace/s/AbCdEf1234");
-        assert_eq!(parsed.is_spoiler, false);
+        assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Buna bak  harika"));
     }
 
@@ -531,7 +539,7 @@ mod tests {
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://redd.it/123456");
         assert_eq!(parsed.fixed_url, "https://vxreddit.com/comments/123456");
-        assert_eq!(parsed.is_spoiler, false);
+        assert!(!parsed.is_spoiler);
     }
 
     #[test]
@@ -554,7 +562,7 @@ mod tests {
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/news/comments/789xyz");
         assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/news/comments/789xyz");
-        assert_eq!(parsed.is_spoiler, true);
+        assert!(parsed.is_spoiler);
     }
 
     #[test]
@@ -566,7 +574,7 @@ mod tests {
         assert_eq!(parsed.platform, Platform::Bluesky);
         assert_eq!(parsed.original_url, "https://bsky.app/profile/alice.bsky.social/post/3k6abc123");
         assert_eq!(parsed.fixed_url, "https://fxbsky.app/profile/alice.bsky.social/post/3k6abc123");
-        assert_eq!(parsed.is_spoiler, true);
+        assert!(parsed.is_spoiler);
     }
 }
 

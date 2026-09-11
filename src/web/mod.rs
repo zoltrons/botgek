@@ -115,7 +115,7 @@ async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
                     })
                     .collect();
 
-                roles_list.sort_by(|a, b| b.position.cmp(&a.position));
+                roles_list.sort_by_key(|a| std::cmp::Reverse(a.position));
 
                 result.push(DiscordGuildRolesDto {
                     guild_id: guild.id.to_string(),
@@ -145,7 +145,7 @@ async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
                 })
                 .collect();
 
-            roles_list.sort_by(|a, b| b.position.cmp(&a.position));
+            roles_list.sort_by_key(|a| std::cmp::Reverse(a.position));
 
             result.push(DiscordGuildRolesDto {
                 guild_id: guild_id.to_string(),
@@ -181,20 +181,25 @@ async fn save_settings(
     sanitize_roles(&mut new_settings.role_filters.translation.roles);
     sanitize_roles(&mut new_settings.role_filters.ai_chat.roles);
 
-    if new_settings.ai.system_prompt.len() > 4000 {
-        new_settings.ai.system_prompt.truncate(4000);
+    fn safe_truncate_str(s: &mut String, max_bytes: usize) {
+        if s.len() > max_bytes {
+            let mut end = max_bytes;
+            while end > 0 && !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            s.truncate(end);
+        }
     }
 
-    if new_settings.ai.model.len() > 128 {
-        new_settings.ai.model.truncate(128);
-    }
+    safe_truncate_str(&mut new_settings.ai.system_prompt, 4000);
+    safe_truncate_str(&mut new_settings.ai.model, 128);
 
     // Sunucuya özel ayarları doğrula ve temizle
     new_settings.guilds.retain(|gid, _| {
         !gid.is_empty() && gid.len() <= 25 && gid.chars().all(|c| c.is_ascii_digit())
     });
 
-    for (_, guild_cfg) in new_settings.guilds.iter_mut() {
+    for guild_cfg in new_settings.guilds.values_mut() {
         sanitize_roles(&mut guild_cfg.role_filters.twitter.roles);
         sanitize_roles(&mut guild_cfg.role_filters.tiktok.roles);
         sanitize_roles(&mut guild_cfg.role_filters.instagram.roles);
@@ -203,12 +208,8 @@ async fn save_settings(
         sanitize_roles(&mut guild_cfg.role_filters.translation.roles);
         sanitize_roles(&mut guild_cfg.role_filters.ai_chat.roles);
 
-        if guild_cfg.ai.system_prompt.len() > 4000 {
-            guild_cfg.ai.system_prompt.truncate(4000);
-        }
-        if guild_cfg.ai.model.len() > 128 {
-            guild_cfg.ai.model.truncate(128);
-        }
+        safe_truncate_str(&mut guild_cfg.ai.system_prompt, 4000);
+        safe_truncate_str(&mut guild_cfg.ai.model, 128);
     }
 
     if let Err(e) = new_settings.save() {
@@ -1232,9 +1233,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <input type="text" class="text-input mono" id="ai-model-box" oninput="onConfigModified()" placeholder="google/gemma-4-31b-it:free">
                 <div class="model-presets">
                     <span class="preset-badge" onclick="setModelPreset('google/gemma-4-31b-it:free')">⚡ Gemma 4 31B (Önerilen)</span>
+                    <span class="preset-badge" onclick="setModelPreset('openrouter/free')">Auto Free Router</span>
                     <span class="preset-badge" onclick="setModelPreset('meta-llama/llama-3.3-70b-instruct:free')">Llama 3.3 70B</span>
                     <span class="preset-badge" onclick="setModelPreset('mistralai/mistral-7b-instruct:free')">Mistral 7B</span>
-                    <span class="preset-badge" onclick="setModelPreset('openrouter/free')">Auto Free Router</span>
                 </div>
             </div>
 

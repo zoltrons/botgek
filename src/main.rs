@@ -83,12 +83,24 @@ async fn main() {
     });
 
 
-    // CTRL+C ile güvenli durdurma sinyali dinleyicisi
+    // Güvenli durdurma sinyali dinleyicisi (CTRL+C ve Unix SIGTERM)
     let shard_manager = client.shard_manager.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Sinyal dinleyicisi başlatılamadı");
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM dinleyicisi başlatılamadı");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Sinyal dinleyicisi başlatılamadı");
+        }
         info!("Kapatma sinyali alındı. Shard yöneticisi durduruluyor...");
         shard_manager.shutdown_all().await;
     });
