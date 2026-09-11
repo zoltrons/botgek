@@ -1,12 +1,16 @@
+# syntax=docker/dockerfile:1.7
 # =========================================================
 # Ultra-Fast Multi-Arch Dockerfile (Pre-built Binaries)
 # =========================================================
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -g 1000 botgek && \
     useradd -u 1000 -g botgek -m -s /bin/sh botgek && \
     mkdir -p /app && chown -R botgek:botgek /app

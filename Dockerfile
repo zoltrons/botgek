@@ -1,27 +1,43 @@
+# syntax=docker/dockerfile:1.7
 # =========================================================
-# Aşama 1: Bağımlılıkları Önbelleğe Alma ve Derleme (Builder)
+# Aşama 1: Modern & Hızlı Derleme (Builder)
 # =========================================================
 FROM rust:1-bookworm AS builder
 
 WORKDIR /usr/src/botgek
 
-# Bağımlılıkları tam önbelleğe almak için Cargo.toml ve Cargo.lock kopyalanır
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release
-RUN rm -rf src target/release/deps/botgek* target/release/botgek*
+# LLD bağlayıcısını kurarak devasa Rust bağlama (linking) süresini 5-10 kat hızlandır
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends clang lld && rm -rf /var/lib/apt/lists/*
+ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
-# Gerçek kaynak kodları kopyala ve nihai binary'yi derle
+# 1. Adım: Bağımlılıkları önbelleğe al
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/usr/src/botgek/target,sharing=locked \
+    cargo build --release
+
+# 2. Adım: Gerçek kaynak kodları kopyala ve nihai binary'yi derle (önceki target cache'i yeniden kullanılır)
 COPY src ./src
-RUN cargo build --release
+RUN touch src/main.rs
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/usr/src/botgek/target,sharing=locked \
+    cargo build --release && \
+    cp target/release/botgek /usr/local/bin/botgek
 
 # =========================================================
 # Aşama 2: Minimal ve Güvenli Çalışma Zamanı (Runtime)
 # =========================================================
 FROM debian:bookworm-slim
 
-# HTTPS istekleri için CA sertifikaları ve zaman dilimi paketi
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# HTTPS istekleri için CA sertifikaları ve zaman dilimi paketi (önbellekli)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
@@ -34,7 +50,7 @@ USER botgek
 WORKDIR /app
 
 # Derlenen ikili dosyayı kopyala
-COPY --from=builder --chown=botgek:botgek /usr/src/botgek/target/release/botgek /app/botgek
+COPY --from=builder --chown=botgek:botgek /usr/local/bin/botgek /app/botgek
 
 # Botu çalıştır
 CMD ["/app/botgek"]
