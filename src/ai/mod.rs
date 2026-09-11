@@ -46,8 +46,8 @@ pub async fn query_openrouter(
 ) -> Result<String, String> {
     let url = "https://openrouter.ai/api/v1/chat/completions";
 
-    let effective_model = if model.trim().is_empty() || model.contains("gemma-4") {
-        "meta-llama/llama-3.3-70b-instruct:free"
+    let effective_model = if model.trim().is_empty() {
+        "google/gemma-4-31b-it:free"
     } else {
         model.trim()
     };
@@ -92,10 +92,10 @@ pub async fn query_openrouter(
     if !status.is_success() {
         error!("OpenRouter API hata döndürdü (HTTP {}): {}", status, body_text);
         // Eğer model bulunamadıysa (404) veya hata verdiyse ve model zaten varsayılan değilse, bir kez varsayılan model ile dene
-        if effective_model != "meta-llama/llama-3.3-70b-instruct:free" {
-            tracing::warn!("Model '{}' başarısız oldu, varsayılan modele geçiliyor: meta-llama/llama-3.3-70b-instruct:free", effective_model);
+        if effective_model != "google/gemma-4-31b-it:free" {
+            tracing::warn!("Model '{}' başarısız oldu, varsayılan modele geçiliyor: google/gemma-4-31b-it:free", effective_model);
             let fallback_payload = ChatCompletionRequest {
-                model: "meta-llama/llama-3.3-70b-instruct:free",
+                model: "google/gemma-4-31b-it:free",
                 messages: vec![
                     ChatMessage {
                         role: "system",

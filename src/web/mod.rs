@@ -1229,10 +1229,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <div class="ai-label">
                     <span>Model Seçimi (OpenRouter)</span>
                 </div>
-                <input type="text" class="text-input mono" id="ai-model-box" oninput="onConfigModified()" placeholder="meta-llama/llama-3.3-70b-instruct:free">
+                <input type="text" class="text-input mono" id="ai-model-box" oninput="onConfigModified()" placeholder="google/gemma-4-31b-it:free">
                 <div class="model-presets">
-                    <span class="preset-badge" onclick="setModelPreset('meta-llama/llama-3.3-70b-instruct:free')">⚡ Llama 3.3 70B (Önerilen)</span>
-                    <span class="preset-badge" onclick="setModelPreset('google/gemma-2-9b-it:free')">Gemma 2 9B</span>
+                    <span class="preset-badge" onclick="setModelPreset('google/gemma-4-31b-it:free')">⚡ Gemma 4 31B (Önerilen)</span>
+                    <span class="preset-badge" onclick="setModelPreset('meta-llama/llama-3.3-70b-instruct:free')">Llama 3.3 70B</span>
                     <span class="preset-badge" onclick="setModelPreset('mistralai/mistral-7b-instruct:free')">Mistral 7B</span>
                     <span class="preset-badge" onclick="setModelPreset('openrouter/free')">Auto Free Router</span>
                 </div>
@@ -1292,7 +1292,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 ai_chat: { mode: "disabled", roles: [] },
             },
             ai: {
-                model: "meta-llama/llama-3.3-70b-instruct:free",
+                model: "google/gemma-4-31b-it:free",
                 system_prompt: ""
             },
             guilds: {}
@@ -1339,7 +1339,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             cfg.modules.ai_chat = document.getElementById('mod-ai_chat').checked;
 
             cfg.ai = cfg.ai || {};
-            cfg.ai.model = document.getElementById('ai-model-box').value.trim() || 'meta-llama/llama-3.3-70b-instruct:free';
+            cfg.ai.model = document.getElementById('ai-model-box').value.trim() || 'google/gemma-4-31b-it:free';
             cfg.ai.system_prompt = document.getElementById('ai-prompt-box').value.trim();
         }
 

@@ -59,7 +59,7 @@ pub struct AiSettings {
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
-            model: "meta-llama/llama-3.3-70b-instruct:free".to_string(),
+            model: "google/gemma-4-31b-it:free".to_string(),
             system_prompt: "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş.".to_string(),
         }
     }
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(deserialized.modules.tiktok, true);
         assert_eq!(deserialized.role_filters.twitter.mode, FilterMode::Disabled);
         assert_eq!(deserialized.role_filters.tiktok.mode, FilterMode::Disabled);
-        assert_eq!(deserialized.ai.model, "meta-llama/llama-3.3-70b-instruct:free");
+        assert_eq!(deserialized.ai.model, "google/gemma-4-31b-it:free");
     }
 
     #[test]
@@ -319,7 +319,7 @@ mod tests {
         // guild_2 ve None (DM) varsayılan ayarları korumalı
         let g2_settings = settings.get_guild_settings(Some(guild_2));
         assert_eq!(g2_settings.modules.twitter, true);
-        assert_eq!(g2_settings.ai.model, "meta-llama/llama-3.3-70b-instruct:free");
+        assert_eq!(g2_settings.ai.model, "google/gemma-4-31b-it:free");
 
         let dm_settings = settings.get_guild_settings(None);
         assert_eq!(dm_settings.modules.twitter, true);

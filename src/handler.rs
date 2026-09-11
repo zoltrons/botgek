@@ -55,11 +55,20 @@ impl EventHandler for Handler {
         // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü
         let is_mentioned = msg.mentions.iter().any(|u| u.id == current_user_id);
         let is_reply_to_bot = if let Some(ref ref_msg) = msg.referenced_message {
-            ref_msg.author.id == current_user_id
+            if ref_msg.author.id == current_user_id {
+                // Link dönüştürme mesajlarına verilen yanıtlarda AI tetikleme
+                !is_link_conversion_message(&ref_msg.content)
+            } else {
+                false
+            }
         } else if let Some(ref msg_ref) = msg.message_reference {
             if let Some(msg_id) = msg_ref.message_id {
                 if let Ok(m) = msg.channel_id.message(&ctx.http, msg_id).await {
-                    m.author.id == current_user_id
+                    if m.author.id == current_user_id {
+                        !is_link_conversion_message(&m.content)
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -354,6 +363,13 @@ fn extract_author_id(content: &str) -> Option<UserId> {
     None
 }
 
+/// Link dönüştürme mesajlarını tespit eder.
+/// Format: `<@userid>[:](url) [**Platform**](<url>)` şeklindeki mesajlar.
+/// Bu mesajlara gelen yanıtlarda AI sohbet tetiklenmemeli.
+fn is_link_conversion_message(content: &str) -> bool {
+    content.starts_with("<@") && content.contains("[:](")
+}
+
 /// LLM veya kullanıcı girdilerinden kaynaklanan @everyone, @here veya rol pingleme risklerini
 /// sıfır genişlikli boşluk (zero-width space, U+200B) enjekte ederek tamamen etkisiz hale getirir.
 /// Bu sayede Discord mesajı metin olarak gösterse bile asla mention olarak algılamaz ve bildirim tetiklemez.
@@ -386,6 +402,18 @@ mod tests {
         assert!(cleaned.contains("@\u{200b}everyone"));
         assert!(cleaned.contains("@\u{200b}here"));
         assert!(cleaned.contains("<@&\u{200b}123456789>"));
+    }
+
+    #[test]
+    fn test_is_link_conversion_message() {
+        // Link dönüştürme mesajları (AI tetiklenmemeli)
+        assert!(is_link_conversion_message("<@123456789>[:](https://vxtwitter.com/user/status/123) [**Twitter**](<https://twitter.com/user/status/123>)"));
+        assert!(is_link_conversion_message("<@999>[:](https://vxtiktok.com/t/abc) [**TikTok**](<https://tiktok.com/t/abc>)"));
+
+        // AI sohbet yanıtları veya normal mesajlar (AI tetiklenmeli)
+        assert!(!is_link_conversion_message("Evet, haklısın bu konuda."));
+        assert!(!is_link_conversion_message("Selam! Ben Botgek."));
+        assert!(!is_link_conversion_message(""));
     }
 }
 
