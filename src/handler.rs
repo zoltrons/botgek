@@ -53,33 +53,27 @@ impl EventHandler for Handler {
         converters::handle_message(&ctx, &msg, &self.config, &current_settings).await;
 
         // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü
-        let is_mentioned = msg.mentions.iter().any(|u| u.id == current_user_id);
-        let is_reply_to_bot = if let Some(ref ref_msg) = msg.referenced_message {
-            if ref_msg.author.id == current_user_id {
-                // Link dönüştürme mesajlarına verilen yanıtlarda AI tetikleme
-                !is_link_conversion_message(&ref_msg.content)
-            } else {
-                false
-            }
+        let referenced_info = if let Some(ref ref_msg) = msg.referenced_message {
+            Some((ref_msg.author.id, ref_msg.content.clone()))
         } else if let Some(ref msg_ref) = msg.message_reference {
             if let Some(msg_id) = msg_ref.message_id {
-                if let Ok(m) = msg.channel_id.message(&ctx.http, msg_id).await {
-                    if m.author.id == current_user_id {
-                        !is_link_conversion_message(&m.content)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
+                msg.channel_id.message(&ctx.http, msg_id).await.ok().map(|m| (m.author.id, m.content))
             } else {
-                false
+                None
             }
         } else {
-            false
+            None
         };
 
-        if (is_mentioned || is_reply_to_bot) && current_settings.modules.ai_chat {
+        let is_mentioned = msg.mentions.iter().any(|u| u.id == current_user_id);
+        let should_trigger = should_trigger_ai_chat(
+            is_mentioned,
+            referenced_info.as_ref().map(|(id, _)| *id),
+            referenced_info.as_ref().map(|(_, content)| content.as_str()),
+            current_user_id,
+        );
+
+        if should_trigger && current_settings.modules.ai_chat {
             // Modüle özel rol kontrolü (ai_chat)
             let role_filter = current_settings.get_role_filter("ai_chat");
             if role_filter.mode != crate::settings::FilterMode::Disabled && !role_filter.roles.is_empty() {
@@ -375,8 +369,33 @@ fn extract_author_id(content: &str) -> Option<UserId> {
 /// Link dönüştürme mesajlarını tespit eder.
 /// Format: `<@userid>[:](url) [**Platform**](<url>)` şeklindeki mesajlar.
 /// Bu mesajlara gelen yanıtlarda AI sohbet tetiklenmemeli.
-fn is_link_conversion_message(content: &str) -> bool {
+pub fn is_link_conversion_message(content: &str) -> bool {
     content.starts_with("<@") && content.contains("[:](")
+}
+
+/// Mesajın AI sohbeti tetikleyip tetiklemeyeceğini belirler.
+/// Kurallar:
+/// 1. Mesaj botun bir link dönüştürme mesajına yanıtsa -> ASLA tetikleme (kullanıcının yanıtında mention olsa bile).
+/// 2. Mesaj botun AI sohbet veya diğer mesajlarına yanıtsa -> Tetikle.
+/// 3. Mesaj bota yanıt değilse ama bot etiketlenmişse -> Tetikle.
+/// 4. Diğer tüm durumlarda -> Tetikleme.
+pub fn should_trigger_ai_chat(
+    is_mentioned: bool,
+    referenced_author_id: Option<UserId>,
+    referenced_content: Option<&str>,
+    bot_id: UserId,
+) -> bool {
+    if let Some(author_id) = referenced_author_id {
+        if author_id == bot_id {
+            if let Some(content) = referenced_content {
+                if is_link_conversion_message(content) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    is_mentioned
 }
 
 /// LLM veya kullanıcı girdilerinden kaynaklanan @everyone, @here veya rol pingleme risklerini
@@ -436,6 +455,61 @@ mod tests {
             Some(UserId::new(987654321))
         );
         assert_eq!(extract_author_id("Normal mesaj"), None);
+    }
+
+    #[test]
+    fn test_should_trigger_ai_chat() {
+        let bot_id = UserId::new(100);
+        let user_id = UserId::new(200);
+
+        let link_conversion_content = "<@200>[:](https://vxtwitter.com/u/123) [**Twitter**](<https://x.com/u/123>)";
+        let ai_response_content = "Sen Botgek'e ne dedin öyle?";
+
+        // 1. Link dönüştürme mesajına verilen yanıt (Discord mention'ı açık olsa bile ASLA tetiklenmemeli)
+        assert!(!should_trigger_ai_chat(
+            true, // Discord reply otomatik bot mention eklese bile
+            Some(bot_id),
+            Some(link_conversion_content),
+            bot_id
+        ));
+
+        // 2. Botun AI yanıtına verilen yanıt (tetiklenmeli)
+        assert!(should_trigger_ai_chat(
+            true,
+            Some(bot_id),
+            Some(ai_response_content),
+            bot_id
+        ));
+        assert!(should_trigger_ai_chat(
+            false, // Mention toggle kapalı yanıt verilse bile tetiklenmeli
+            Some(bot_id),
+            Some(ai_response_content),
+            bot_id
+        ));
+
+        // 3. Direkt bot etiketleme (yanıt yok, mention var -> tetiklenmeli)
+        assert!(should_trigger_ai_chat(
+            true,
+            None,
+            None,
+            bot_id
+        ));
+
+        // 4. Başka bir kullanıcının mesajına yanıt verip botu etiketleme (tetiklenmeli)
+        assert!(should_trigger_ai_chat(
+            true,
+            Some(user_id),
+            Some("Buna baksana"),
+            bot_id
+        ));
+
+        // 5. Normal mesaj (etiket yok, yanıt yok -> tetiklenmemeli)
+        assert!(!should_trigger_ai_chat(
+            false,
+            None,
+            None,
+            bot_id
+        ));
     }
 }
 
