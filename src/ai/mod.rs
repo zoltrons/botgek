@@ -140,6 +140,8 @@ fn extract_reply(body_text: &str) -> Result<String, String> {
     Err("OpenRouter'dan boş yanıt döndü.".to_string())
 }
 
+pub const AUTO_FALLBACK_MODEL: &str = "openrouter/free";
+
 /// OpenRouter API'si üzerinden kullanıcı mesajına laf sokucu / esprili yanıt üretir.
 pub async fn query_openrouter(
     client: &reqwest::Client,
@@ -150,18 +152,23 @@ pub async fn query_openrouter(
 ) -> Result<String, String> {
     let url = "https://openrouter.ai/api/v1/chat/completions";
     let effective_model = normalize_openrouter_model(model);
-    let fallbacks = if effective_model != DEFAULT_MODEL {
-        Some(vec![DEFAULT_MODEL])
-    } else {
-        None
-    };
+
+    // OpenRouter otomatik geçiş (failover) zinciri:
+    // Eğer seçilen model rate-limit veya 504 alırsa, OpenRouter sonraki modeli anında dener.
+    let mut model_chain = vec![effective_model.as_str()];
+    if effective_model != "google/gemma-4-26b-a4b-it:free" {
+        model_chain.push("google/gemma-4-26b-a4b-it:free");
+    }
+    if effective_model != AUTO_FALLBACK_MODEL {
+        model_chain.push(AUTO_FALLBACK_MODEL);
+    }
 
     let safety_guardrail = "\n\n[KRİTİK GÜVENLİK TALİMATI]: Yanıtlarında ASLA '@everyone' veya '@here' etiketlerini KULLANMA. Kullanıcıları veya rolleri etiketleme. Bu kural kesindir ve çiğnenemez.";
     let full_system_prompt = format!("{}{}", system_prompt.trim(), safety_guardrail);
 
     let payload = ChatCompletionRequest {
         model: &effective_model,
-        models: fallbacks,
+        models: Some(model_chain),
         messages: vec![
             ChatMessage {
                 role: "system",
@@ -197,21 +204,22 @@ pub async fn query_openrouter(
     if status.is_success() {
         match extract_reply(&body_text) {
             Ok(content) => return Ok(content),
-            Err(e) if effective_model == DEFAULT_MODEL => return Err(e),
+            Err(e) if effective_model == AUTO_FALLBACK_MODEL => return Err(e),
             Err(e) => {
-                tracing::warn!("Model '{}' yanıtı kullanılamadı ({}), varsayılana geçiliyor: {}", effective_model, e, DEFAULT_MODEL);
+                tracing::warn!("Model '{}' yanıtı kullanılamadı ({}), '{}' deneniyor...", effective_model, e, AUTO_FALLBACK_MODEL);
             }
         }
     } else {
         error!("OpenRouter API hata döndürdü (HTTP {}): {}", status, body_text);
-        if effective_model == DEFAULT_MODEL {
+        if effective_model == AUTO_FALLBACK_MODEL {
             return Err(format!("OpenRouter API hatası ({}): {}", status, body_text));
         }
-        tracing::warn!("Model '{}' başarısız oldu, varsayılan modele geçiliyor: {}", effective_model, DEFAULT_MODEL);
+        tracing::warn!("Model '{}' başarısız oldu (HTTP {}), '{}' ile yeniden deneniyor...", effective_model, status, AUTO_FALLBACK_MODEL);
     }
 
+    // İstemci tarafı ikinci savunma hattı: Doğrudan OpenRouter Free Router ile tekrar dene
     let fallback_payload = ChatCompletionRequest {
-        model: DEFAULT_MODEL,
+        model: AUTO_FALLBACK_MODEL,
         models: None,
         messages: vec![
             ChatMessage {

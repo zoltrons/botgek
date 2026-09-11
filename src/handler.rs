@@ -160,7 +160,13 @@ impl EventHandler for Handler {
                         }
                         Err(e) => {
                             error!("AI yanıtı üretilirken hata oluştu: {:?}", e);
-                            let notice = "Bu model şu an yanıt veremedi. Model slug'ını kontrol et veya Auto Free Router'a dön.";
+                            let notice = if e.contains("429") || e.contains("504") || e.contains("rate-limited") {
+                                "Model sağlayıcısı (Google AI Studio) şu an yoğunluk veya hız sınırı nedeniyle geçici olarak yanıt veremedi. Lütfen birkaç saniye sonra tekrar dene."
+                            } else if e.contains("401") || e.contains("API key") {
+                                "OpenRouter API anahtarı geçersiz veya süresi dolmuş. Lütfen .env dosyasındaki OPENROUTER_API_KEY anahtarını yenileyin."
+                            } else {
+                                "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
+                            };
                             let builder = CreateMessage::new()
                                 .content(notice)
                                 .reference_message(&msg);
