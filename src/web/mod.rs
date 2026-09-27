@@ -1607,6 +1607,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 views: '<:metric:1553712416242798712>',
                 translation: '<:translation:1476614397249061056>',
                 twitter: '<:twitter:1476642012072920355>',
+                quote: '<:qutoe:1553728214998847569>',
             },
         };
 
@@ -1619,6 +1620,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             { key: 'views', label: 'Görüntülenme' },
             { key: 'translation', label: 'Çeviri notu' },
             { key: 'twitter', label: 'X / Twitter logosu' },
+            { key: 'quote', label: 'Alıntı göstergesi' },
         ];
 
         let appSettings = {

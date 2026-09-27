@@ -8,7 +8,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::media::with_size;
 use super::translate::{needs_turkish_translation, TARGET_LANGUAGE_CODE};
@@ -25,12 +25,14 @@ static TWEET_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 /// Gönderi verisini seçilen kaynaktan çeker.
 ///
-/// `engine.auto_translate` açıkken X'in **kendi çeviri servisi** kullanılır (Türkçe/İngilizce
-/// dışındaki gönderiler için):
-/// - FxTwitter/hibrit kaynağında istek dil ekli uçtan yapılır; yanıt orijinal metni ve
-///   X çevirisini birlikte içerir (tek istek, karar yerelde verilir).
-/// - Syndication kaynağında gönderi yabancı dildeyse X çevirisi için FxTwitter'a bir kez
-///   ek istek yapılır (syndication uç noktası çeviri içermez).
+/// Hızlı yol (tek istek):
+/// - Çeviri açıkken FxTwitter'ın dil ekli ucu kullanılır: metin, **X'in kendi çevirisi**,
+///   metrikler, topluluk notu ve medya tek yanıtta gelir.
+/// - Kaynak doğrudan `FxTwitter` seçildiyse de tek istek yapılır.
+///
+/// Diğer durumlarda X'in syidication ucu ile FxTwitter **paralel** istenir (toplam gecikme
+/// tek istek kadardır): X verisi esas alınır, eksik metrikler (repost, görüntülenme, alıntı)
+/// FxTwitter yanıtından tamamlanır.
 pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
@@ -45,69 +47,45 @@ pub async fn fetch(
         .ok_or_else(|| format!("Twitter gönderi kimliği yok: {}", parsed.original_url))?;
 
     let source = engine.twitter_source;
+    let translate = engine.auto_translate;
     debug!("X verisi çekiliyor (kaynak: {}, id: {id})", source.key());
 
-    // Çeviri açıkken ve kaynak FxTwitter ise: orijinal + X çevirisi tek istekte gelir.
-    if engine.auto_translate && source != TwitterSource::Syndication {
-        match from_fxtwitter(client, &parsed.original_url, &id, Some(TARGET_LANGUAGE_CODE)).await {
+    // 1) Hızlı yol: tek FxTwitter isteği (çeviri açıksa dil ekli uç orijinal + çeviri verir).
+    if source == TwitterSource::Fxtwitter || translate {
+        let language = translate.then_some(TARGET_LANGUAGE_CODE);
+        match from_fxtwitter(client, &parsed.original_url, &id, language).await {
             Ok(post) => return Ok(post),
-            Err(err) => warn!("X çeviri isteği başarısız, normal akışa düşülüyor ({id}): {err}"),
-        }
-    }
-
-    let mut post = match source {
-        TwitterSource::Syndication => from_syndication(client, &parsed.original_url, &id).await?,
-        TwitterSource::Fxtwitter => {
-            from_fxtwitter(client, &parsed.original_url, &id, None).await?
-        }
-        TwitterSource::Hybrid => match from_syndication(client, &parsed.original_url, &id).await {
-            Ok(post) => post,
             Err(err) => {
-                warn!("X syndication başarısız, fxtwitter deneniyor ({id}): {err}");
-                from_fxtwitter(client, &parsed.original_url, &id, None).await?
+                warn!("FxTwitter isteği başarısız ({id}): {err}");
+                if source == TwitterSource::Fxtwitter {
+                    return from_fxtwitter(client, &parsed.original_url, &id, None).await;
+                }
             }
-        },
-    };
-
-    if engine.auto_translate && source != TwitterSource::Fxtwitter {
-        // FxTwitter kaynağında çeviri isteği yukarıda denendi; burada tekrar denenmez.
-        apply_x_translation(client, &parsed.original_url, &id, &mut post).await;
+        }
     }
 
-    // Syndication uç noktası repost/görüntülenme/alıntı vermez; eksik metrikler
-    // FxTwitter'dan tamamlanır (çeviri isteği yapıldıysa o yanıt zaten doldurmuştur).
-    if source != TwitterSource::Fxtwitter {
-        enrich_stats(client, &parsed.original_url, &id, &mut post).await;
+    // 2) X syndication + FxTwitter aynı anda: biri hata verse de diğeri kullanılır.
+    let (x_result, fx_result) = tokio::join!(
+        from_syndication(client, &parsed.original_url, &id),
+        from_fxtwitter(client, &parsed.original_url, &id, None),
+    );
+
+    // Syndication repost/görüntülenme/alıntı vermez: paralel istenen yanıttan tamamlanır.
+    let fx_stats = fx_result.as_ref().ok().map(|post| post.stats.clone());
+    let mut post = match x_result {
+        Ok(post) => post,
+        Err(err) => {
+            warn!("X syndication başarısız, FxTwitter sonucu kullanılıyor ({id}): {err}");
+            fx_result.map_err(|fx_err| format!("{err} | {fx_err}"))?
+        }
+    };
+    if let Some(stats) = fx_stats {
+        merge_stats(&mut post.stats, &stats);
     }
 
     Ok(post)
 }
 
-/// Eksik etkileşim metriklerini (repost, görüntülenme, alıntı) FxTwitter'dan tamamlar.
-///
-/// X'in syndication uç noktası yalnızca yanıt ve beğeni sayısını verir; kartta repost ve
-/// görüntülenme eksik kalmasın diye tek ek istek yapılır (metrikler zaten tamsa istek yok).
-async fn enrich_stats(
-    client: &reqwest::Client,
-    original_url: &str,
-    id: &str,
-    post: &mut BuiltinPost,
-) {
-    if post.stats.reposts > 0 && post.stats.views.is_some() {
-        return;
-    }
-
-    match from_fxtwitter(client, original_url, id, None).await {
-        Ok(full) => {
-            merge_stats(&mut post.stats, &full.stats);
-            debug!(
-                "X metrikleri tamamlandı ({}): repost {}, görüntülenme {:?}",
-                id, post.stats.reposts, post.stats.views
-            );
-        }
-        Err(err) => warn!("X metrikleri alınamadı ({id}): {err}"),
-    }
-}
 
 /// Eksik alanları doldurur; kaynakta 0/`None` olan değerleri taze veriyle değiştirir.
 fn merge_stats(target: &mut Stats, fresh: &Stats) {
@@ -128,41 +106,6 @@ fn merge_stats(target: &mut Stats, fresh: &Stats) {
     }
 }
 
-/// Syndication ile çekilen gönderi Türkçe/İngilizce değilse X'in çevirisini uygular.
-/// Çeviri, FxTwitter'ın dil ekli ucundan (X'in çeviri servisi) alınır.
-async fn apply_x_translation(
-    client: &reqwest::Client,
-    original_url: &str,
-    id: &str,
-    post: &mut BuiltinPost,
-) {
-    if !needs_turkish_translation(post.language.as_deref()) {
-        return;
-    }
-
-    match from_fxtwitter(client, original_url, id, Some(TARGET_LANGUAGE_CODE)).await {
-        Ok(translated) => {
-            let Some(translation) = translated.translation else {
-                warn!("X çevirisi yanıtta bulunamadı ({id})");
-                return;
-            };
-            post.text = translated.text;
-            post.translation = Some(translation);
-            // Aynı yanıt tam metrikleri de içerir: syndication'ın eksik bıraktığı
-            // repost/görüntülenme alanları ek istek yapılmadan tamamlanır.
-            merge_stats(&mut post.stats, &translated.stats);
-            info!(
-                "X çevirisi uygulandı (kaynak: {}): {}",
-                post.translation
-                    .as_ref()
-                    .and_then(|t| t.source.as_deref())
-                    .unwrap_or("bilinmiyor"),
-                original_url
-            );
-        }
-        Err(err) => warn!("X çevirisi alınamadı ({id}): {err}"),
-    }
-}
 
 /// X'in syndication uç noktası token'ı doğrulamıyor; istemci tarafında üretilen
 /// deterministik token yeterli oluyor (referans JS: `((id / 1e15) * Math.PI).toString(36)`).

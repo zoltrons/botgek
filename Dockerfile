@@ -35,11 +35,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 FROM debian:bookworm-slim
 
 # HTTPS istekleri için CA sertifikaları ve zaman dilimi paketi (önbellekli)
+# ffmpeg: X'in animasyonlu GIF'leri sessiz mp4 olarak gelir; Discord mp4'leri oynatıcı
+# olarak gösterdiği için GIF'ler ffmpeg ile gerçek `.gif` dosyasına çevrilir.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 1000 botgek && \

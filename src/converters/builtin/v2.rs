@@ -16,7 +16,7 @@
 
 use serde_json::{Value, json};
 
-use super::render::{RenderOptions, ResolvedMedia, escape_markdown, format_count};
+use super::render::{RenderOptions, ResolvedMedia, escape_markdown, format_count, video_poster};
 use super::{BuiltinPost, Impersonation};
 use crate::converters::parser::Platform;
 use crate::settings::EmojiSettings;
@@ -75,7 +75,7 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     }
     if card.options.show_quote {
         if let Some(quote) = card.post.quote.as_deref() {
-            if let Some(component) = quote_component(quote) {
+            if let Some(component) = quote_component(quote, card.emojis) {
                 children.push(component);
             }
         }
@@ -155,20 +155,41 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
     format!("**{body}**")
 }
 
-/// Alıntılanan gönderi: küçük başlık + blok alıntı.
-fn quote_component(quote: &BuiltinPost) -> Option<Value> {
+/// Alıntılanan gönderi: `[Quote](link) from **Ad** ([**@kullanici**](profil))` başlığı + blok alıntı.
+fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value> {
     let body = quote.text.trim();
     let has_image = quote.media.iter().any(|media| media.is_image());
     if body.is_empty() && !has_image {
         return None;
     }
 
-    let mut label = format!("-# ↪ {}", escape_markdown(&quote.author.label()));
-    if quote.author.verified {
-        label.push_str(" ☑");
-    }
+    // Başlık: alıntı emojisi + `[Quote](alıntı linki) from **Ad** ([**@kullanici**](profil))`
+    // (fxembed düzeni). Alıntılanan gönderide medya varsa galeride gösterilir.
+    let author = quote.author.name.trim();
+    let author = if author.is_empty() {
+        quote.author.handle.trim().to_string()
+    } else {
+        escape_markdown(author)
+    };
 
-    let mut lines = vec![label];
+    let profile = quote.author.profile_url.as_deref().map(str::trim).filter(|url| !url.is_empty());
+    let handle = quote.author.handle.trim();
+    let from = match (handle.is_empty(), profile) {
+        (false, Some(profile)) => {
+            format!("from **{author}** ([**@{}**]({profile}))", escape_markdown(handle))
+        }
+        (false, None) => format!("from **{author}** (@{})", escape_markdown(handle)),
+        (true, _) => format!("from **{author}**"),
+    };
+
+    let url = quote.url.trim();
+    let quote_link = if url.is_empty() {
+        "Quote".to_string()
+    } else {
+        format!("[Quote]({url})")
+    };
+
+    let mut lines = vec![format!("-# {} {quote_link} {from}", emojis.quote())];
     if !body.is_empty() {
         for line in body.lines().take(8) {
             lines.push(format!("> {line}"));
@@ -186,9 +207,10 @@ fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
     match (&card.resolved.attached_video, &card.resolved.video_link) {
         // Video dosya olarak eklendiyse doğrudan kart içinde oynar.
         (Some(reference), _) => items.push(media_item(reference, post.sensitive)),
-        // İndirilemediyse kapak görseli + uzak video bağlantısı gösterilir.
+        // İndirilemediyse kapak görseli + uzak video bağlantısı gösterilir
+        // (kapak, video alıntıdan geldiyse alıntının kapağıdır).
         (None, Some(link)) => {
-            if let Some(poster) = post.poster_url() {
+            if let Some(poster) = video_poster(post) {
                 items.push(media_item(&poster, post.sensitive));
             }
             items.push(media_item(link, post.sensitive));
@@ -200,7 +222,9 @@ fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
         items.push(media_item(url, post.sensitive));
     }
 
-    if card.options.show_quote {
+    // Alıntının görseli yalnızca ana karta alınmadıysa eklenir; gönderiye medya
+    // eklenmemişse alıntının medyası zaten yukarıda yer alıyor (tekrar gösterilmez).
+    if card.options.show_quote && !card.resolved.quote_media {
         if let Some(quote) = card.post.quote.as_deref() {
             if let Some(image) = quote.media.iter().find(|media| media.is_image()) {
                 items.push(media_item(&image.url, quote.sensitive));
@@ -241,9 +265,9 @@ fn metrics_line(post: &BuiltinPost, options: &RenderOptions, emojis: &EmojiSetti
     if let Some(views) = stats.views.filter(|views| *views > 0) {
         parts.push(format!("{} {}", emojis.views(), format_count(views)));
     }
-    // X'in kendi şeridinde alıntı sayısı yok; varsa sonda gösterilir.
+    // X'in kendi şeridinde alıntı sayısı yok; varsa alıntı emojisiyle gösterilir.
     if stats.quotes > 0 {
-        parts.push(format!("❝ {}", format_count(stats.quotes)));
+        parts.push(format!("{} {}", emojis.quote(), format_count(stats.quotes)));
     }
 
     if parts.is_empty() {
@@ -581,6 +605,7 @@ mod tests {
             views: String::new(),
             translation: String::new(),
             twitter: String::new(),
+            quote: String::new(),
         };
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let lines = texts(&payload);
@@ -676,9 +701,75 @@ mod tests {
 
         let quote_text = texts(&payload)
             .into_iter()
-            .find(|text| text.contains("↪"))
+            .find(|text| text.contains("<:qutoe:"))
             .expect("alıntı bileşeni");
         assert!(quote_text.contains("> alıntı"), "alıntı: {quote_text}");
+        assert!(
+            quote_text.contains("[Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"),
+            "alıntı başlığı fxembed düzeninde olmalı: {quote_text}"
+        );
+        assert_eq!(
+            quote_text.lines().next().unwrap(),
+            "-# <:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"
+        );
+    }
+
+    #[test]
+    fn quote_header_links_the_handle_when_the_profile_is_known() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/Daykerpriest/status/2103751786901144035",
+            Author::new("Daykerpriest🐉", "Daykerpriest"),
+        );
+        quote.text = "alıntılanan metin".to_string();
+        quote.author.profile_url = Some("https://x.com/daykerpriest".to_string());
+        post.quote = Some(Box::new(quote));
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        let quote_text = texts(&payload)
+            .into_iter()
+            .find(|text| text.contains("<:qutoe:"))
+            .expect("alıntı bileşeni");
+
+        assert_eq!(
+            quote_text.lines().next().unwrap(),
+            "-# <:qutoe:1553728214998847569> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
+             from **Daykerpriest🐉** ([**@Daykerpriest**](https://x.com/daykerpriest))"
+        );
+        assert!(quote_text.contains("> alıntılanan metin"), "blok alıntı: {quote_text}");
+    }
+
+    #[test]
+    fn quoted_video_is_shown_when_the_post_has_no_media() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.text = "alıntı".to_string();
+        quote.media = vec![video("https://cdn/q.mp4", "https://cdn/q.jpg")];
+        post.quote = Some(Box::new(quote));
+
+        // İndirilemeyen video için kapak görseli + oynatma bağlantısı kartta gösterilir.
+        let resolved = ResolvedMedia {
+            video_link: Some("https://cdn/q.mp4".to_string()),
+            quote_media: true,
+            ..ResolvedMedia::default()
+        };
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+
+        assert_eq!(
+            gallery_urls(&payload),
+            vec!["https://cdn/q.jpg", "https://cdn/q.mp4"],
+            "alıntının videosu (kapağıyla) kartın içinde gösterilmeli"
+        );
     }
 
     #[test]

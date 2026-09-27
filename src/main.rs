@@ -43,8 +43,14 @@ async fn main() {
     // Dinamik Ayarları Yükle (settings.json)
     let settings = Arc::new(RwLock::new(settings::AppSettings::load()));
 
+    // HTTP/2 + bağlantı havuzu: paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması
+    // tekrarlanmaz → dönüşüm gecikmesi düşer.
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .pool_max_idle_per_host(8)
+        .tcp_nodelay(true)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 

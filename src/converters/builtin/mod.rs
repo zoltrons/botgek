@@ -8,6 +8,7 @@
 pub mod bluesky;
 pub mod media;
 pub mod opengraph;
+pub mod cache;
 pub mod raw;
 pub mod reddit;
 pub mod render;
@@ -259,18 +260,36 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
 // =====================================================================================
 
 /// Paylaşılan gönderinin verisini, platforma uygun kaynaktan çeker.
+/// Platforma göre gönderi verisini çeker. **Önbellek önce** denenir: aynı link kısa süre
+/// içinde tekrar paylaşıldığında ağ isteği yapılmaz (dönüşüm anında tamamlanır).
 pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
     engine: &EngineSettings,
 ) -> Result<BuiltinPost, String> {
-    match parsed.platform {
+    // Sonucu etkileyen ayarlar anahtara dahil edilir (kaynak + çeviri).
+    let key = format!(
+        "{}|{}|{}",
+        parsed.original_url,
+        engine.twitter_source.key(),
+        engine.auto_translate
+    );
+
+    if let Some(cached) = cache::get(&key).await {
+        debug!("Gönderi önbellekten alındı: {}", parsed.original_url);
+        return Ok((*cached).clone());
+    }
+
+    let post = match parsed.platform {
         Platform::Twitter => twitter::fetch(client, parsed, engine).await,
         Platform::Bluesky => bluesky::fetch(client, parsed).await,
         Platform::Reddit => reddit::fetch(client, parsed).await,
         Platform::TikTok => tiktok::fetch(client, parsed).await,
         Platform::Instagram => opengraph::fetch(client, parsed).await,
-    }
+    }?;
+
+    cache::put(key, &post).await;
+    Ok(post)
 }
 
 // =====================================================================================
@@ -735,6 +754,9 @@ pub async fn handle(
     config: &Config,
     engine: &EngineSettings,
 ) -> bool {
+    // Süre ölçümü: dönüşüm gecikmesi veri / medya / gönderim olarak log'lanır.
+    let started = std::time::Instant::now();
+
     let post = match fetch(client, parsed, engine).await {
         Ok(post) => post,
         Err(err) => {
@@ -742,11 +764,20 @@ pub async fn handle(
             return false;
         }
     };
+    let fetched = started.elapsed();
 
     let options = render::RenderOptions::from_engine(engine);
     let plan = render::plan_media(&post, &options);
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
+    let media_done = started.elapsed();
     let identity = engine.impersonate_user.then(|| Impersonation::from_message(msg));
+
+    debug!(
+        "Hazırlık: veri {} ms, medya {} ms ({})",
+        fetched.as_millis(),
+        (media_done - fetched).as_millis(),
+        parsed.original_url
+    );
 
     // 1) Modern bileşen düzeni: yalnızca seçilen kart stili izin veriyorsa.
     let modern_card = use_modern_card(engine.card_style, &post);
@@ -804,8 +835,11 @@ pub async fn handle(
     match send_classic(ctx, msg, client, config, parsed, &post, &resolved, &embeds, identity.as_ref()).await {
         Ok((message_id, impersonated)) => {
             info!(
-                "Mesaj native embed ile dönüştürüldü ({:?}, taklit: {}): {}",
-                parsed.platform, impersonated, parsed.original_url
+                "Mesaj native embed ile dönüştürüldü ({:?}, taklit: {}, toplam {} ms): {}",
+                parsed.platform,
+                impersonated,
+                started.elapsed().as_millis(),
+                parsed.original_url
             );
             finish(ctx, msg, config, message_id).await;
             true
