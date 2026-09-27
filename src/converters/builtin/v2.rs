@@ -12,7 +12,6 @@
 //! │ gönderi metni
 //! │ ────────────────────── (varsa) ince ayraç çizgisi ─────────
 //! │ > <:qutoe:...> [Quote](link) from **Ad** ([**@kullanici**](profil))
-//! │ >
 //! │ > alıntılanan metin            ← başlıkla aynı hizada (blok alıntı)
 //! │ -# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K
 //! │ -# <:twitter:...> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)
@@ -50,17 +49,6 @@ const TYPE_TEXT_DISPLAY: u64 = 10;
 const TYPE_MEDIA_GALLERY: u64 = 12;
 const TYPE_SEPARATOR: u64 = 14;
 const TYPE_CONTAINER: u64 = 17;
-
-/// Alıntı başlığı ile alıntılanan metni ayıran **boş alıntı satırı**.
-///
-/// Alıntı bloğunun girintisi ek boşluk karakterleriyle değil, blok alıntının (`> `)
-/// kendisiyle verilir: Discord `> ` satırlarına sol şerit + iç boşluk çizer. Başlık da aynı
-/// blok alıntının içinde olduğu için başlık ve alıntılanan metin **aynı hizada** başlar
-/// (ek boşluk karakteri kullanıldığında alt metin (13 px) ile gövde metni (16 px) farklı
-/// ölçeklendiği için girintiler hizasız kalıyordu). Boş bir alıntı satırı (`>`) alıntılanan
-/// metni başlıktan ayırır; ardışık `> ` satırları tek bir alıntı sayıldığı için şerit
-/// kesintisiz kalır (X/fxembed düzeni).
-const QUOTE_BLANK_LINE: &str = ">";
 
 /// Kartı oluşturmak için gereken tüm girdiler.
 pub struct V2Card<'a> {
@@ -199,7 +187,7 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
 
 /// Alıntılanan gönderi: tek satırlık başlık
 /// `[Quote](link) from **Ad** ([**@kullanici**](profil))` ve alıntılanan metin, **aynı blok
-/// alıntının** içinde; başlıktan sonra boş bir alıntı satırı bulunur (X/fxembed düzeni).
+/// alıntının** içinde ve başlığın hemen ardından gelir (X/fxembed düzeni).
 fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value> {
     let body = quote.text.trim();
     let has_image = quote.media.iter().any(|media| media.is_image());
@@ -235,12 +223,13 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value>
 
     // Başlık da alıntı bloğunun **içinde** durur: böylece başlık ile alıntılanan metin aynı
     // hizada başlar ve alıntının tamamı tek bir sol şeritle gruplanır (X/fxembed düzeni).
-    // Ek girinti/boşluk karakteri kullanılmaz; `-# ` alt metin işareti de kullanılmaz, çünkü
-    // Discord blok alıntı içindeki satırları yalnızca satır içi kurallarla işler (`-# `
-    // işareti alıntı içinde düz metin olarak görünürdü).
+    // Başlıktan sonra **boş bir alıntı satırı eklenmez**: o satır Discord'da ayrı, boş bir
+    // şerit parçası gibi görünüyordu; ardışık `> ` satırları tek alıntı sayılır. Ek
+    // girinti/boşluk karakteri ve `-# ` alt metin işareti de kullanılmaz, çünkü Discord
+    // blok alıntı içindeki satırları yalnızca satır içi kurallarla işler (`-# ` işareti
+    // alıntı içinde düz metin olarak görünürdü).
     let mut lines = vec![format!("> {} {quote_link} {from}", emojis.quote())];
     if !body.is_empty() {
-        lines.push(QUOTE_BLANK_LINE.to_string());
         for line in body.lines().take(8) {
             lines.push(format!("> {line}"));
         }
@@ -856,7 +845,7 @@ mod tests {
 
     /// Alıntı, kartın gövdesinden ince bir ayraç çizgisiyle ayrılır ve **tamamı** blok alıntı
     /// içinde durur: başlık ile alıntılanan metin aynı hizada başlar (X/fxembed düzeni),
-    /// arada boş bir alıntı satırı bulunur, ek girinti/boşluk karakteri kullanılmaz.
+    /// arada boş alıntı satırı olmadan, ek girinti/boşluk karakteri kullanılmadan.
     #[test]
     fn quote_block_is_quoted_and_separated_from_the_card_body() {
         let mut post = sample_post();
@@ -890,17 +879,20 @@ mod tests {
         let lines: Vec<&str> = quote_text.lines().collect();
         assert_eq!(
             lines.len(),
-            4,
-            "başlık + boş alıntı satırı + iki alıntı satırı bekleniyordu: {quote_text}"
+            3,
+            "başlık + iki alıntı satırı bekleniyordu (arada boş `>` satırı olmamalı): {quote_text}"
         );
         assert!(
             lines[0].starts_with("> ") && lines[0].contains("[Quote]"),
             "başlık blok alıntının ilk satırı olmalı: {}",
             lines[0]
         );
-        assert_eq!(lines[1], QUOTE_BLANK_LINE, "başlıktan sonra boş alıntı satırı olmalı");
-        assert_eq!(lines[2], "> satır bir");
-        assert_eq!(lines[3], "> satır iki");
+        assert_eq!(lines[1], "> satır bir");
+        assert_eq!(lines[2], "> satır iki");
+        assert!(
+            !lines.iter().any(|line| line.trim() == ">"),
+            "boş alıntı satırı eklenmemeli: {quote_text}"
+        );
 
         // Başlık ve alıntılanan metin aynı hizada: her satır blok alıntı olmalı ve girinti
         // için fazladan boşluk karakteri (em boşluğu / kırılmaz boşluk) kullanılmamalı.
@@ -931,7 +923,7 @@ mod tests {
     }
 
     /// Kullanıcının gönderdiği ekran görüntüsündeki (X alıntı düzeni) çıktının **birebir**
-    /// aynısı: başlık bloğun ilk satırı, arada boş alıntı satırı, alıntı metni satır satır.
+    /// aynısı: başlık bloğun ilk satırı, ardından alıntı metni satır satır (boş satır yok).
     #[test]
     fn quote_block_matches_the_reference_x_layout() {
         let mut post = sample_post();
@@ -957,7 +949,6 @@ mod tests {
             quote_text,
             "> <:qutoe:1553728214998847569> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
              from **durusal** ([**@gerginimhelll**](https://x.com/gerginimhelll))\n\
-             >\n\
              > Durusal neşesi gerçek değil\n\
              > O sırada durusal neşesi"
         );
