@@ -29,24 +29,38 @@ impl std::fmt::Debug for Config {
     }
 }
 
+/// Kullanıcı/WebUI girdisinden temiz bir alan adı üretir.
+/// `https://FixupX.com/` -> `fixupx.com`; geçersiz girdi -> `None`.
+///
+/// Yalnızca harf, rakam, tire, nokta ve port ayıracı (`:`) kabul edilir; bu sayede
+/// WebUI'dan yazılan domain değeri `[:](...)` Markdown linkini kıramaz.
+pub fn clean_domain(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_proto = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    let cleaned = without_proto.trim_end_matches('/').trim();
+    // En az bir nokta (alan adı) veya port ayıracı (`localhost:3000`) beklenir; bu sayede
+    // "alanadi" gibi eksik girdiler reddedilirken yerel test adresleri kabul edilir.
+    if cleaned.is_empty()
+        || cleaned.len() > 128
+        || !cleaned
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+        || !(cleaned.contains('.') || cleaned.contains(':'))
+    {
+        return None;
+    }
+    Some(cleaned.to_ascii_lowercase())
+}
+
 fn sanitize_domain(raw: Result<String, env::VarError>, default: &str) -> String {
     match raw {
-        Ok(val) => {
-            let trimmed = val.trim();
-            if trimmed.is_empty() {
-                return default.to_string();
-            }
-            let without_proto = trimmed
-                .strip_prefix("https://")
-                .or_else(|| trimmed.strip_prefix("http://"))
-                .unwrap_or(trimmed);
-            let cleaned = without_proto.trim_end_matches('/');
-            if cleaned.is_empty() {
-                default.to_string()
-            } else {
-                cleaned.to_string()
-            }
-        }
+        Ok(val) => clean_domain(&val).unwrap_or_else(|| default.to_string()),
         Err(_) => default.to_string(),
     }
 }
@@ -86,6 +100,30 @@ impl Config {
             openrouter_api_key,
             web_port,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_domain_normalizes_user_input() {
+        assert_eq!(clean_domain("  FixupX.com/  ").as_deref(), Some("fixupx.com"));
+        assert_eq!(clean_domain("https://vxtwitter.com").as_deref(), Some("vxtwitter.com"));
+        assert_eq!(clean_domain("http://tnktok.com/").as_deref(), Some("tnktok.com"));
+        assert_eq!(clean_domain("localhost:8080").as_deref(), Some("localhost:8080"));
+    }
+
+    #[test]
+    fn clean_domain_rejects_markdown_breaking_input() {
+        // `[:](...)` linkini kırıp ikinci bir link enjekte etme denemesi
+        assert_eq!(clean_domain("evil.com)](https://phish"), None);
+        assert_eq!(clean_domain("evil.com/status/1<td>"), None);
+        assert_eq!(clean_domain(""), None);
+        assert_eq!(clean_domain("   "), None);
+        assert_eq!(clean_domain("alanadi"), None, "nokta içermeyen alan adı geçersiz");
+        assert_eq!(clean_domain(&format!("{}.com", "a".repeat(200))), None);
     }
 }
 

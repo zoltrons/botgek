@@ -43,5 +43,32 @@
     "model": "google/gemma-4-31b-it:free",
     "system_prompt": "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş."
   },
+  "engine": {
+    "modes": {
+      "twitter": "builtin",
+      "tiktok": "proxy",
+      "instagram": "proxy",
+      "reddit": "builtin",
+      "bluesky": "builtin"
+    },
+    "domains": {
+      "twitter": "",
+      "tiktok": "",
+      "instagram": "",
+      "reddit": "",
+      "bluesky": ""
+    },
+    "twitter_source": "syndication",
+    "attach_images": true,
+    "attach_videos": true,
+    "max_images": 4,
+    "max_video_mb": 8,
+    "show_metrics": true,
+    "show_timestamp": true,
+    "show_community_note": true,
+    "show_quote": true,
+    "auto_translate": true,
+    "fallback_to_proxy": true
+  },
   "guilds": {}
 }

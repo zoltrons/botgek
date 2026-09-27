@@ -51,7 +51,7 @@ impl EventHandler for Handler {
         let current_settings = self.settings.read().await.get_guild_settings(msg.guild_id);
 
         // 1. Sosyal Medya Link Dönüştürme Kontrolü
-        converters::handle_message(&ctx, &msg, &self.config, &current_settings).await;
+        converters::handle_message(&ctx, &msg, &self.http_client, &self.config, &current_settings).await;
 
         // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü
         let referenced_info = if let Some(ref ref_msg) = msg.referenced_message {

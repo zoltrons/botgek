@@ -1,19 +1,43 @@
+pub mod builtin;
 pub mod parser;
 pub mod translation;
 
 use serenity::all::{Context, CreateMessage, Message, ReactionType};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
-use crate::settings::{FilterMode, GuildSettings};
+use crate::settings::{ConversionMode, EngineSettings, FilterMode, GuildSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
 use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 
+/// Ayarlardaki alan adı override'larını (WebUI) `.env` değerleriyle birleştirir.
+fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::PlatformDomains {
+    parser::PlatformDomains {
+        twitter: engine.domain_for("twitter", config),
+        tiktok: engine.domain_for("tiktok", config),
+        instagram: engine.domain_for("instagram", config),
+        reddit: engine.domain_for("reddit", config),
+        bluesky: engine.domain_for("bluesky", config),
+    }
+}
+
 /// Kullanıcının mesajındaki desteklenen sosyal medya linkini tespit eder ve dönüştürür.
-/// Format: <@User>[:](fixedLink) [**Platform**](<origLink>)\n> Alıntı
+///
+/// Dönüştürme, platformun ayarına göre iki motordan biriyle yapılır:
+/// - `builtin`: bot veriyi kendisi çeker ve native Discord embed'i üretir.
+/// - `proxy`: link harici bir önizleme servisine (fixupx.com vb.) yönlendirilir.
+///
+/// Proxy formatı: `<@User>[:](fixedLink) [**Platform**](<origLink>)\n> Alıntı`
 /// Silme işlemi için kompakt 🗑️ reaksiyonu eklenir.
-pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, settings: &GuildSettings) {
-    let parsed = match parser::parse_message(&msg.content, config) {
+pub async fn handle_message(
+    ctx: &Context,
+    msg: &Message,
+    client: &reqwest::Client,
+    config: &Config,
+    settings: &GuildSettings,
+) {
+    let domains = resolve_domains(&settings.engine, config);
+    let parsed = match parser::parse_message_with_domains(&msg.content, &domains) {
         Some(p) => p,
         None => return, // Desteklenen bir bağlantı bulunamadı
     };
@@ -65,14 +89,35 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         }
     }
 
-    // 3. Embed Formatı (Spoiler varsa gizle)
+    // 3. Motor Seçimi: native embed veya proxy yönlendirmesi
+    let platform_key = builtin::platform_key(parsed.platform);
+    if settings.engine.mode_for(platform_key) == ConversionMode::Builtin {
+        if builtin::handle(ctx, msg, client, &parsed, config, &settings.engine).await {
+            return;
+        }
+
+        if !settings.engine.fallback_to_proxy {
+            warn!(
+                "Native embed üretilemedi ve proxy yedeği kapalı, dönüştürme atlandı: {}",
+                parsed.original_url
+            );
+            return;
+        }
+
+        warn!(
+            "Native embed üretilemedi, proxy motoruna düşülüyor ({}): {}",
+            platform_key, parsed.original_url
+        );
+    }
+
+    // 4. Embed Formatı (Spoiler varsa gizle)
     let embed_part = if parsed.is_spoiler {
         format!("||[:]({})||", parsed.fixed_url)
     } else {
         format!("[:]({})", parsed.fixed_url)
     };
 
-    // 4. Mesajın link kısmı (her koşulda korunur)
+    // 5. Mesajın link kısmı (her koşulda korunur)
     let base_content = format!(
         "<@{}>{} [**{}**](<{}>)",
         msg.author.id,
@@ -81,7 +126,7 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         parsed.original_url
     );
 
-    // 5. Alıntı Formatı (Varsa) - her satır ayrı ayrı blok alıntı olarak işaretlenir
+    // 6. Alıntı Formatı (Varsa) - her satır ayrı ayrı blok alıntı olarak işaretlenir
     let quoted_comment = parsed.user_comment.as_ref().map(|comment| {
         let quoted: Vec<String> = comment.lines().map(|line| format!("> {line}")).collect();
         format!("\n{}", quoted.join("\n"))
@@ -109,7 +154,7 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         builder = builder.reference_message(message_ref.clone());
     }
 
-    // 6. Mesajı Gönder
+    // 7. Mesajı Gönder
     let sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
         Ok(m) => m,
         Err(e) => {
@@ -122,7 +167,7 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         parsed.platform, parsed.original_url
     );
 
-    // 7. Kompakt 🗑️ reaksiyonu ekle
+    // 8. Kompakt 🗑️ reaksiyonu ekle
     if let Err(e) = sent_msg
         .react(&ctx.http, ReactionType::Unicode("🗑️".to_string()))
         .await
@@ -130,7 +175,7 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
     }
 
-    // 8. Eski Mesajı Sil
+    // 9. Eski Mesajı Sil
     if config.delete_original {
         if let Err(e) = msg.delete(&ctx.http).await {
             error!("Orijinal mesaj silinirken hata oluştu: {:?}", e);

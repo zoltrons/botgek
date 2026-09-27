@@ -167,7 +167,49 @@ fn sanitize_urls(post: ParsedPost) -> ParsedPost {
 }
 
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
+/// Dönüştürme sırasında kullanılacak platform alan adları (proxy hedefleri).
+/// `.env` değerleri varsayılandır, WebUI üzerinden sunucu bazında değiştirilebilir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformDomains {
+    pub twitter: String,
+    pub tiktok: String,
+    pub instagram: String,
+    pub reddit: String,
+    pub bluesky: String,
+}
+
+impl Default for PlatformDomains {
+    fn default() -> Self {
+        Self {
+            twitter: "fixupx.com".to_string(),
+            tiktok: "tnktok.com".to_string(),
+            instagram: "ddinstagram.com".to_string(),
+            reddit: "vxreddit.com".to_string(),
+            bluesky: "fxbsky.app".to_string(),
+        }
+    }
+}
+
+impl From<&Config> for PlatformDomains {
+    fn from(config: &Config) -> Self {
+        Self {
+            twitter: config.twitter_domain.clone(),
+            tiktok: config.tiktok_domain.clone(),
+            instagram: config.instagram_domain.clone(),
+            reddit: config.reddit_domain.clone(),
+            bluesky: config.bluesky_domain.clone(),
+        }
+    }
+}
+
+/// `.env` değerleriyle dönüştürme yapar (geriye dönük uyumlu giriş noktası; testler kullanır).
+#[allow(dead_code)]
 pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
+    parse_message_with_domains(raw_content, &PlatformDomains::from(config))
+}
+
+/// Ayarlardan çözümlenmiş alan adlarıyla dönüştürme yapar.
+pub fn parse_message_with_domains(raw_content: &str, domains: &PlatformDomains) -> Option<ParsedPost> {
     // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
     if !raw_content.contains("http://")
         && !raw_content.contains("https://")
@@ -177,27 +219,27 @@ pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
     }
 
     // 1. Twitter / X
-    if let Some(post) = parse_twitter(raw_content, &config.twitter_domain) {
+    if let Some(post) = parse_twitter(raw_content, &domains.twitter) {
         return Some(sanitize_urls(post));
     }
 
     // 2. TikTok (okdargy/fxTikTok)
-    if let Some(post) = parse_tiktok(raw_content, &config.tiktok_domain) {
+    if let Some(post) = parse_tiktok(raw_content, &domains.tiktok) {
         return Some(sanitize_urls(post));
     }
 
     // 3. Instagram
-    if let Some(post) = parse_instagram(raw_content, &config.instagram_domain) {
+    if let Some(post) = parse_instagram(raw_content, &domains.instagram) {
         return Some(sanitize_urls(post));
     }
 
     // 4. Reddit
-    if let Some(post) = parse_reddit(raw_content, &config.reddit_domain) {
+    if let Some(post) = parse_reddit(raw_content, &domains.reddit) {
         return Some(sanitize_urls(post));
     }
 
     // 5. Bluesky
-    if let Some(post) = parse_bluesky(raw_content, &config.bluesky_domain) {
+    if let Some(post) = parse_bluesky(raw_content, &domains.bluesky) {
         return Some(sanitize_urls(post));
     }
 

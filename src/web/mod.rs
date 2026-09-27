@@ -207,6 +207,9 @@ async fn save_settings(
     safe_truncate_str(&mut new_settings.ai.system_prompt, 4000);
     safe_truncate_str(&mut new_settings.ai.model, 128);
 
+    // Link dönüştürme motoru: alan adları temizlenir, sayısal aralıklar güvenli sınıra çekilir
+    new_settings.engine.sanitize();
+
     // Sunucuya özel ayarları doğrula ve temizle
     new_settings.guilds.retain(|gid, _| {
         !gid.is_empty() && gid.len() <= 25 && gid.chars().all(|c| c.is_ascii_digit())
@@ -223,6 +226,8 @@ async fn save_settings(
 
         safe_truncate_str(&mut guild_cfg.ai.system_prompt, 4000);
         safe_truncate_str(&mut guild_cfg.ai.model, 128);
+
+        guild_cfg.engine.sanitize();
     }
 
     if let Err(e) = new_settings.save() {
@@ -889,6 +894,97 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             border-color: var(--primary);
         }
 
+        /* Link Motoru / Embed Studio */
+        .engine-row {
+            display: grid;
+            grid-template-columns: minmax(180px, 1fr) 170px minmax(180px, 1fr);
+            gap: 10px;
+            align-items: center;
+            background: var(--surface-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 10px;
+        }
+
+        .engine-platform {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .engine-platform .name {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .engine-note {
+            font-size: 10px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-muted);
+            margin-top: 2px;
+            letter-spacing: 0.3px;
+        }
+
+        .engine-note.on { color: var(--emerald); }
+        .engine-note.off { color: var(--text-muted); }
+
+        .option-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 10px;
+        }
+
+        .option-tile {
+            background: var(--surface-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.2s;
+        }
+
+        .option-tile:hover {
+            background: var(--surface-hover);
+            border-color: var(--border-glow);
+        }
+
+        .option-tile .name {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .option-tile .hint {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .number-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .engine-range {
+            width: 100%;
+            accent-color: var(--primary);
+            cursor: pointer;
+        }
+
+        @media (max-width: 700px) {
+            .engine-row { grid-template-columns: 1fr; }
+        }
+
         /* Floating Command Bar */
         .command-bar {
             position: fixed;
@@ -1261,6 +1357,143 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             </div>
         </section>
 
+        <!-- 4. LİNK DÖNÜŞTÜRME MOTORU (NATIVE EMBED / PROXY) -->
+        <section class="panel">
+            <div class="panel-title-bar">
+                <div class="panel-heading">
+                    <span>🔗 Link Dönüştürme Motoru (Native Embed)</span>
+                </div>
+                <span class="mono" id="engine-summary" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(6, 182, 212, 0.12); color: var(--cyan);">-</span>
+            </div>
+            <p class="panel-sub">
+                Her platform için <strong>Proxy</strong> (harici önizleme servisi) veya <strong>Native Embed</strong> (bot bağlantıyı kendi çözer, Discord embed'ini kendisi üretir) motorunu seçin.
+                Alan adı boş bırakılırsa .env değeri kullanılır. Native embed başarısız olursa proxy linkine düşülür.
+            </p>
+
+            <div class="ai-label" style="margin-top: 4px;">
+                <span>Platform Motorları</span>
+                <span class="mono" style="font-size: 10px; color: var(--text-muted);">MOTOR / YEDEK ALAN ADI</span>
+            </div>
+            <div id="engine-rows"></div>
+
+            <div class="ai-field-group" style="margin-top: 16px;">
+                <div class="ai-label"><span>Twitter / X Veri Kaynağı</span></div>
+                <select class="text-input" id="engine-twitter-source" onchange="onConfigModified(); updateEngineSummary()" style="cursor: pointer;">
+                    <option value="syndication">X Syndication (üçüncü taraf yok, ücretsiz)</option>
+                    <option value="fxtwitter">FxTwitter (görüntülenme, repost, topluluk notu)</option>
+                    <option value="hybrid">Hibrit (önce syndication, olmazsa fxtwitter)</option>
+                </select>
+            </div>
+            <div class="ai-label" style="margin-top: 16px;"><span>Embed İçeriği</span></div>
+            <div class="option-grid">
+                <div class="option-tile" onclick="toggleEngineOption('engine-auto-translate')">
+                    <div>
+                        <div class="name">Otomatik Türkçe çeviri</div>
+                        <div class="hint">Türkçe/İngilizce dışı X gönderileri (X'in çevirisi)</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-auto-translate" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+                <div class="option-tile" onclick="toggleEngineOption('engine-show-metrics')">
+                    <div>
+                        <div class="name">Etkileşim metrikleri</div>
+                        <div class="hint">Beğeni, repost, yanıt, görüntülenme</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-show-metrics" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+
+                <div class="option-tile" onclick="toggleEngineOption('engine-show-timestamp')">
+                    <div>
+                        <div class="name">Gönderi tarihi</div>
+                        <div class="hint">Discord'un göreli zaman gösterimi</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-show-timestamp" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+
+                <div class="option-tile" onclick="toggleEngineOption('engine-show-note')">
+                    <div>
+                        <div class="name">Topluluk notu</div>
+                        <div class="hint">Varsa X notu ayrı alan olarak</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-show-note" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+
+                <div class="option-tile" onclick="toggleEngineOption('engine-show-quote')">
+                    <div>
+                        <div class="name">Alıntılanan gönderi</div>
+                        <div class="hint">İkinci embed olarak göster</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-show-quote" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+            </div>
+            <div class="ai-label" style="margin-top: 16px;"><span>Medya Yükleme</span></div>
+            <div class="option-grid">
+                <div class="option-tile" onclick="toggleEngineOption('engine-attach-images')">
+                    <div>
+                        <div class="name">Görselleri dosya olarak ekle</div>
+                        <div class="hint">Tam çözünürlük, CDN bağımsız</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-attach-images" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+
+                <div class="option-tile" onclick="toggleEngineOption('engine-attach-videos')">
+                    <div>
+                        <div class="name">Videoları dosya olarak ekle</div>
+                        <div class="hint">Limit altındaysa indirilir</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-attach-videos" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+
+                <div class="option-tile" onclick="toggleEngineOption('engine-fallback')">
+                    <div>
+                        <div class="name">Proxy yedeği</div>
+                        <div class="hint">Native embed olmazsa proxy linki</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-fallback" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="number-row">
+                <div class="ai-field-group">
+                    <div class="ai-label">
+                        <span>Maks. Görsel Sayısı</span>
+                        <span class="mono" id="engine-max-images-value" style="font-size: 11px; color: var(--cyan);">4 adet</span>
+                    </div>
+                    <input type="range" class="engine-range" id="engine-max-images" min="1" max="10" step="1" oninput="onConfigModified(); updateEngineSummary()">
+                </div>
+
+                <div class="ai-field-group">
+                    <div class="ai-label">
+                        <span>Maks. Video Boyutu</span>
+                        <span class="mono" id="engine-max-video-value" style="font-size: 11px; color: var(--cyan);">8 MB</span>
+                    </div>
+                    <input type="range" class="engine-range" id="engine-max-video" min="1" max="50" step="1" oninput="onConfigModified(); updateEngineSummary()">
+                </div>
+            </div>
+        </section>
         <!-- Floating Command Bar -->
         <div class="command-bar">
             <div class="shortcut-hint">
@@ -1286,6 +1519,31 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         let rawGuildsList = []; 
         let discordRoles = []; 
 
+        // Link dönüştürme motoru sabitleri (Rust tarafındaki EngineSettings varsayılanlarıyla aynı)
+        const ENGINE_PLATFORMS = [
+            { key: 'twitter', name: 'Twitter / X', icon: '🐦' },
+            { key: 'tiktok', name: 'TikTok', icon: '🎵' },
+            { key: 'instagram', name: 'Instagram', icon: '📷' },
+            { key: 'reddit', name: 'Reddit', icon: '🤖' },
+            { key: 'bluesky', name: 'Bluesky', icon: '🦋' },
+        ];
+
+        const ENGINE_DEFAULTS = {
+            modes: { twitter: 'builtin', tiktok: 'proxy', instagram: 'proxy', reddit: 'builtin', bluesky: 'builtin' },
+            domains: { twitter: '', tiktok: '', instagram: '', reddit: '', bluesky: '' },
+            twitter_source: 'syndication',
+            attach_images: true,
+            attach_videos: true,
+            max_images: 4,
+            max_video_mb: 8,
+            show_metrics: true,
+            show_timestamp: true,
+            show_community_note: true,
+            show_quote: true,
+            auto_translate: true,
+            fallback_to_proxy: true,
+        };
+
         let appSettings = {
             modules: {
                 twitter: true,
@@ -1309,12 +1567,29 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 model: "google/gemma-4-31b-it:free",
                 system_prompt: ""
             },
+            engine: JSON.parse(JSON.stringify(ENGINE_DEFAULTS)),
             guilds: {}
         };
 
         function getActiveConfig() {
             if (activeServer === 'global') return appSettings;
             return appSettings.guilds[activeServer] || appSettings;
+        }
+
+        // Eksik motor alanları (eski kayıtlar) varsayılanlarla doldurulur.
+        function getEngineConfig(cfg) {
+            cfg.engine = cfg.engine || {};
+            const engine = cfg.engine;
+            if (!engine.modes) engine.modes = Object.assign({}, ENGINE_DEFAULTS.modes);
+            if (!engine.domains) engine.domains = Object.assign({}, ENGINE_DEFAULTS.domains);
+            ['twitter_source', 'attach_images', 'attach_videos', 'max_images', 'max_video_mb',
+             'show_metrics', 'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy']
+                .forEach(field => {
+                    if (engine[field] === undefined || engine[field] === null) {
+                        engine[field] = ENGINE_DEFAULTS[field];
+                    }
+                });
+            return engine;
         }
 
         function isServerCustomized(guildId) {
@@ -1328,7 +1603,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 appSettings.guilds[activeServer] = {
                     modules: JSON.parse(JSON.stringify(appSettings.modules)),
                     role_filters: JSON.parse(JSON.stringify(appSettings.role_filters)),
-                    ai: JSON.parse(JSON.stringify(appSettings.ai))
+                    ai: JSON.parse(JSON.stringify(appSettings.ai)),
+                    engine: JSON.parse(JSON.stringify(getEngineConfig(appSettings)))
                 };
             }
         }
@@ -1355,6 +1631,45 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             cfg.ai = cfg.ai || {};
             cfg.ai.model = document.getElementById('ai-model-box').value.trim() || 'google/gemma-4-31b-it:free';
             cfg.ai.system_prompt = document.getElementById('ai-prompt-box').value.trim();
+
+            commitEngineDomToConfig(cfg);
+        }
+
+        // Link motoru alanlarını DOM'dan aktif config'e yazar (değerler güvenli aralığa çekilir).
+        function commitEngineDomToConfig(cfg) {
+            const engine = getEngineConfig(cfg);
+
+            ENGINE_PLATFORMS.forEach(p => {
+                const modeEl = document.getElementById('engine-mode-' + p.key);
+                const domainEl = document.getElementById('engine-domain-' + p.key);
+                if (modeEl && modeEl.value) engine.modes[p.key] = modeEl.value;
+                if (domainEl) engine.domains[p.key] = domainEl.value.trim();
+            });
+
+            const sourceEl = document.getElementById('engine-twitter-source');
+            if (sourceEl) engine.twitter_source = sourceEl.value;
+
+            const isChecked = (id) => {
+                const el = document.getElementById(id);
+                return el ? el.checked : false;
+            };
+            const rangedNumber = (id, fallback, min, max) => {
+                const el = document.getElementById(id);
+                const value = el ? parseInt(el.value, 10) : NaN;
+                if (Number.isNaN(value)) return fallback;
+                return Math.min(max, Math.max(min, value));
+            };
+
+            engine.attach_images = isChecked('engine-attach-images');
+            engine.attach_videos = isChecked('engine-attach-videos');
+            engine.fallback_to_proxy = isChecked('engine-fallback');
+            engine.auto_translate = isChecked('engine-auto-translate');
+            engine.show_metrics = isChecked('engine-show-metrics');
+            engine.show_timestamp = isChecked('engine-show-timestamp');
+            engine.show_community_note = isChecked('engine-show-note');
+            engine.show_quote = isChecked('engine-show-quote');
+            engine.max_images = rangedNumber('engine-max-images', ENGINE_DEFAULTS.max_images, 1, 10);
+            engine.max_video_mb = rangedNumber('engine-max-video', ENGINE_DEFAULTS.max_video_mb, 1, 50);
         }
 
         function onServerChange() {
@@ -1435,6 +1750,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 appSettings.modules = data.modules || appSettings.modules;
                 appSettings.ai = data.ai || appSettings.ai;
                 appSettings.role_filters = data.role_filters || appSettings.role_filters;
+                appSettings.engine = data.engine || appSettings.engine;
                 appSettings.guilds = data.guilds || {};
                 updateServerSelectDropdown();
                 renderUI();
@@ -1463,9 +1779,100 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             document.getElementById('mod-ai_chat').checked = !!cfg.modules.ai_chat;
             document.getElementById('ai-model-box').value = cfg.ai.model;
             document.getElementById('ai-prompt-box').value = cfg.ai.system_prompt;
+            renderEngineUI(cfg);
             updateTileMeta();
             updateCharCount();
             selectRoleModule(currentModule, false);
+        }
+
+        // Platform motor satırlarını (mod + yedek alan adı) yeniden çizer.
+        function renderEngineUI(cfg) {
+            const container = document.getElementById('engine-rows');
+            if (!container) return;
+            const engine = getEngineConfig(cfg);
+
+            container.innerHTML = ENGINE_PLATFORMS.map(p => `
+                <div class="engine-row">
+                    <div class="engine-platform">
+                        <span class="module-icon" style="width: 32px; height: 32px; font-size: 15px;">${p.icon}</span>
+                        <div>
+                            <div class="name">${p.name}</div>
+                            <div class="engine-note" id="engine-note-${p.key}">-</div>
+                        </div>
+                    </div>
+                    <select class="text-input" id="engine-mode-${p.key}" onchange="onConfigModified(); updateEngineNote('${p.key}'); updateEngineSummary()" style="cursor: pointer;">
+                        <option value="proxy">Proxy</option>
+                        <option value="builtin">Native Embed</option>
+                    </select>
+                    <input type="text" class="text-input mono" id="engine-domain-${p.key}" placeholder="yedek alan adı (boş = .env)" oninput="onConfigModified()">
+                </div>
+            `).join('');
+
+            ENGINE_PLATFORMS.forEach(p => {
+                const modeEl = document.getElementById('engine-mode-' + p.key);
+                const domainEl = document.getElementById('engine-domain-' + p.key);
+                if (modeEl) modeEl.value = engine.modes[p.key] || 'proxy';
+                if (domainEl) domainEl.value = engine.domains[p.key] || '';
+                updateEngineNote(p.key);
+            });
+
+            const sourceEl = document.getElementById('engine-twitter-source');
+            if (sourceEl) sourceEl.value = engine.twitter_source;
+
+            const setChecked = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.checked = !!value;
+            };
+            setChecked('engine-attach-images', engine.attach_images);
+            setChecked('engine-attach-videos', engine.attach_videos);
+            setChecked('engine-fallback', engine.fallback_to_proxy);
+            setChecked('engine-auto-translate', engine.auto_translate);
+            setChecked('engine-show-metrics', engine.show_metrics);
+            setChecked('engine-show-timestamp', engine.show_timestamp);
+            setChecked('engine-show-note', engine.show_community_note);
+            setChecked('engine-show-quote', engine.show_quote);
+
+            const imagesEl = document.getElementById('engine-max-images');
+            const videoEl = document.getElementById('engine-max-video');
+            if (imagesEl) imagesEl.value = engine.max_images;
+            if (videoEl) videoEl.value = engine.max_video_mb;
+
+            updateEngineSummary();
+        }
+
+        function updateEngineNote(platformKey) {
+            const modeEl = document.getElementById('engine-mode-' + platformKey);
+            const noteEl = document.getElementById('engine-note-' + platformKey);
+            if (!modeEl || !noteEl) return;
+            const builtin = modeEl.value === 'builtin';
+            noteEl.textContent = builtin ? 'NATIVE EMBED' : 'PROXY';
+            noteEl.classList.toggle('on', builtin);
+            noteEl.classList.toggle('off', !builtin);
+        }
+
+        function toggleEngineOption(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.checked = !el.checked;
+            onConfigModified();
+            updateEngineSummary();
+        }
+
+        function updateEngineSummary() {
+            const cfg = getActiveConfig();
+            const engine = getEngineConfig(cfg);
+            const modes = engine.modes || ENGINE_DEFAULTS.modes;
+            const builtinCount = ENGINE_PLATFORMS.filter(p => modes[p.key] === 'builtin').length;
+
+            const imagesEl = document.getElementById('engine-max-images');
+            const videoEl = document.getElementById('engine-max-video');
+            const imagesLabel = document.getElementById('engine-max-images-value');
+            const videoLabel = document.getElementById('engine-max-video-value');
+            if (imagesLabel && imagesEl) imagesLabel.textContent = imagesEl.value + ' adet';
+            if (videoLabel && videoEl) videoLabel.textContent = videoEl.value + ' MB';
+
+            const summary = document.getElementById('engine-summary');
+            if (summary) summary.textContent = builtinCount + '/' + ENGINE_PLATFORMS.length + ' NATIVE EMBED';
         }
 
         function updateTileMeta() {

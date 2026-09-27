@@ -16,6 +16,12 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - 📷 **Instagram** ➔ `ddinstagram.com`
   - 🤖 **Reddit** ➔ `vxreddit.com`
   - 🦋 **Bluesky** ➔ `fxbsky.app`
+- 🧩 **Built-in (Native) Embed Motoru — Proxy'ye Alternatif:**
+  - Bot bağlantıyı harici bir önizleme servisine yönlendirmek yerine gönderiyi **kendisi çözer**, Discord embed'ini kendisi üretir: yazar/ad/avatar, doğrulama işareti, gönderi metni, etkileşim metrikleri, gönderi tarihi, alıntılanan gönderi (ikinci embed), topluluk notu ve medya galerisi.
+  - 🖼️ **Medya yükleme:** Görseller ve videolar (limit altındaysa) mesaja **dosya olarak** eklenir; böylece önizleme kaynak CDN'e (veya proxy servisine) bağımlı olmaz. İndirilemeyen medya otomatik olarak uzak URL'e düşer.
+  - 🔀 **Platform bazlı motor seçimi:** Her platform için `Proxy` veya `Native Embed` seçilebilir; native embed başarısız olursa isteğe bağlı olarak proxy linkine düşülür (`fallback_to_proxy`).
+  - 🌐 **Veri kaynakları:** X için `X Syndication` (üçüncü taraf/API anahtarı yok), `FxTwitter` (görüntülenme, repost, topluluk notu) veya `Hibrit`; Reddit için herkese açık JSON, Bluesky için XRPC, TikTok için oEmbed, Instagram için OpenGraph + proxy yedeği.
+  - 🇹🇷 **Otomatik Türkçe çeviri:** Türkçe ve İngilizce **dışındaki** X gönderileri **X'in kendi çeviri servisiyle** otomatik Türkçeye çevrilir (embedded.gallery / fxembed ile aynı yöntem: dil ekli uç, sağlayıcı X'in çevirisi). Çevrilen gönderinin alt bilgisine `🌐 de → tr` notu eklenir; Türkçe/İngilizce gönderiler olduğu gibi bırakılır.
 - 🎯 **Kusursuz ve Sade Görünüm:**
   - Ekranda çirkin uzun linkler yerine yalnızca `[:]({link}) [Platform](<orijinal>)` ve varsa kullanıcı notu alıntısı (`> not`) yer alır.
   - 🙈 **Spoiler Desteği:** `||link||` olarak atılan mesajlar dönüştürüldüğünde de gizliliğini korur.
@@ -27,6 +33,7 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - Bot etiketlendiğinde (`@botgekv2`) veya bota yanıt (Reply) verildiğinde akıllı, hazırcevap, hafif alaycı ve kısa (1-2 cümle) Türkçe cevaplar üretir.
 - 🎛️ **Cyber-Ops Minimal WebUI (`http://localhost:3000`):**
   - Tüm modülleri tek tıkla açıp kapatma.
+  - **Link Dönüştürme Motoru paneli:** Platform bazlı `Proxy` / `Native Embed` seçimi, yedek proxy alan adları (`.env` değerini geçersiz kılar), X veri kaynağı, **otomatik Türkçe çeviri**, medya yükleme ve embed içeriği seçenekleri (metrik, tarih, topluluk notu, alıntı, maks. görsel sayısı, maks. video boyutu).
   - **Rol Tabanlı Filtreleme:** İstemeyen roller için `Blacklist` veya sadece belirli roller için `Allowlist`.
   - Sistem promptu ve AI modelini web arayüzünden anlık güncelleme.
   - Yapılan tüm değişiklikler `settings.json` ile anında kalıcı olarak kaydedilir.
