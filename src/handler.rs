@@ -55,10 +55,17 @@ impl EventHandler for Handler {
 
         // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü
         let referenced_info = if let Some(ref ref_msg) = msg.referenced_message {
-            Some((ref_msg.author.id, ref_msg.content.clone()))
+            Some((ref_msg.author.id, ref_msg.content.clone(), is_converted_message(ref_msg).await))
         } else if let Some(ref msg_ref) = msg.message_reference {
             if let Some(msg_id) = msg_ref.message_id {
-                msg.channel_id.message(&ctx.http, msg_id).await.ok().map(|m| (m.author.id, m.content))
+                match msg.channel_id.message(&ctx.http, msg_id).await {
+                    Ok(referenced) => Some((
+                        referenced.author.id,
+                        referenced.content.clone(),
+                        is_converted_message(&referenced).await,
+                    )),
+                    Err(_) => None,
+                }
             } else {
                 None
             }
@@ -69,8 +76,9 @@ impl EventHandler for Handler {
         let is_mentioned = msg.mentions.iter().any(|u| u.id == current_user_id);
         let should_trigger = should_trigger_ai_chat(
             is_mentioned,
-            referenced_info.as_ref().map(|(id, _)| *id),
-            referenced_info.as_ref().map(|(_, content)| content.as_str()),
+            referenced_info.as_ref().map(|(id, _, _)| *id),
+            referenced_info.as_ref().map(|(_, content, _)| content.as_str()),
+            referenced_info.as_ref().map(|(_, _, converted)| *converted).unwrap_or(false),
             current_user_id,
         );
 
@@ -199,20 +207,28 @@ impl EventHandler for Handler {
 
         // 1. Silme İşlemi (🗑️)
         if reaction.emoji == ReactionType::Unicode("🗑️".to_string()) {
-            let target_msg = match reaction.message(&ctx.http).await {
-                Ok(m) => m,
-                Err(e) => {
-                    error!("Silme reaksiyon mesajı alınamadı: {:?}", e);
-                    return;
+            // Taklit (webhook) mesajlarında yazar kaydı tutulur; proxy mesajlarında
+            // mesaj gövdesindeki `<@id>` etiketi kullanılır.
+            let recorded_author = crate::converters::builtin::original_author(reaction.message_id).await;
+            let original_author_id = match recorded_author {
+                Some(author) => Some(author),
+                None => {
+                    let target_msg = match reaction.message(&ctx.http).await {
+                        Ok(m) => m,
+                        Err(e) => {
+                            error!("Silme reaksiyon mesajı alınamadı: {:?}", e);
+                            return;
+                        }
+                    };
+
+                    // Mesaj bu bot tarafından atılmamışsa işlem yapma
+                    if target_msg.author.id != current_user_id {
+                        return;
+                    }
+
+                    extract_author_id(&target_msg.content)
                 }
             };
-
-            // Mesaj bu bot tarafından atılmamışsa işlem yapma
-            if target_msg.author.id != current_user_id {
-                return;
-            }
-
-            let original_author_id = extract_author_id(&target_msg.content);
             let is_author = original_author_id == Some(user_id);
 
             let is_admin_or_mod = if let Some(guild_id) = reaction.guild_id {
@@ -237,7 +253,7 @@ impl EventHandler for Handler {
                     "Reaksiyon ile mesaj silme onaylandı. Silen: {} (Orijinal Yazar: {:?})",
                     user_id, original_author_id
                 );
-                if let Err(e) = target_msg.delete(&ctx.http).await {
+                if let Err(e) = reaction.channel_id.delete_message(&ctx.http, reaction.message_id).await {
                     error!("Mesaj silinirken hata oluştu: {:?}", e);
                 }
             } else {
@@ -285,6 +301,12 @@ impl EventHandler for Handler {
         }
 
         if let Some(lang_code) = translation::emoji_to_lang_code(&reaction.emoji) {
+            // Native embed mesajları çeviri durumunu kendi kartında taşır ve proxy linki
+            // içermez; bayrak reaksiyonu yalnızca proxy mesajlarını günceller.
+            if crate::converters::builtin::is_native_message(reaction.message_id).await {
+                return;
+            }
+
             let mut target_msg = match reaction.message(&ctx.http).await {
                 Ok(m) => m,
                 Err(e) => {
@@ -375,16 +397,30 @@ fn extract_author_id(content: &str) -> Option<UserId> {
     None
 }
 
+/// Mesaj Botgek'in link dönüştürme mesajı mı? Proxy mesajları metninden, taklit
+/// (webhook) mesajları ise kayıtlı mesaj kimliğinden tanınır.
+async fn is_converted_message(msg: &Message) -> bool {
+    is_link_conversion_message(&msg.content) || crate::converters::builtin::is_native_message(msg.id).await
+}
+
 /// Link dönüştürme mesajlarını tespit eder.
-/// Format: `<@userid>[:](url) [**Platform**](<url>)` şeklindeki mesajlar.
+/// Format: `<@userid> [**Platform**](<url>)` veya taklit modunda
+/// `<@userid> [Platform](url)` (eski kayıtlarda `[:](url)` biçimi de tanınır).
 /// Bu mesajlara gelen yanıtlarda AI sohbet tetiklenmemeli.
 pub fn is_link_conversion_message(content: &str) -> bool {
-    content.starts_with("<@") && content.contains("[:](")
+    if !content.starts_with("<@") {
+        return false;
+    }
+    const LINK_MARKERS: [&str; 5] = ["[Twitter](", "[TikTok](", "[Instagram](", "[Reddit](", "[Bluesky]("];
+    content.contains("[:](")
+        || content.contains("[**")
+        || LINK_MARKERS.iter().any(|marker| content.contains(marker))
 }
 
 /// Mesajın AI sohbeti tetikleyip tetiklemeyeceğini belirler.
 /// Kurallar:
-/// 1. Mesaj botun bir link dönüştürme mesajına yanıtsa -> ASLA tetikleme (kullanıcının yanıtında mention olsa bile).
+/// 1. Mesaj botun bir link dönüştürme (native/proxy) mesajına yanıtsa -> ASLA tetikleme
+///    (kullanıcının yanıtında mention olsa bile).
 /// 2. Mesaj botun AI sohbet veya diğer mesajlarına yanıtsa -> Tetikle.
 /// 3. Mesaj bota yanıt değilse ama bot etiketlenmişse -> Tetikle.
 /// 4. Diğer tüm durumlarda -> Tetikleme.
@@ -392,8 +428,14 @@ pub fn should_trigger_ai_chat(
     is_mentioned: bool,
     referenced_author_id: Option<UserId>,
     referenced_content: Option<&str>,
+    referenced_is_conversion: bool,
     bot_id: UserId,
 ) -> bool {
+    // Taklit edilen mesajlarda yazar bot olmadığı için ayrıca kontrol edilir.
+    if referenced_is_conversion {
+        return false;
+    }
+
     if let Some(author_id) = referenced_author_id {
         if author_id == bot_id {
             if let Some(content) = referenced_content {
@@ -446,11 +488,16 @@ mod tests {
         // Link dönüştürme mesajları (AI tetiklenmemeli)
         assert!(is_link_conversion_message("<@123456789>[:](https://vxtwitter.com/user/status/123) [**Twitter**](<https://twitter.com/user/status/123>)"));
         assert!(is_link_conversion_message("<@999>[:](https://vxtiktok.com/t/abc) [**TikTok**](<https://tiktok.com/t/abc>)"));
+        // Yeni biçim: link hilesi yok, okunabilir masked link
+        assert!(is_link_conversion_message("<@123456789> [Twitter](https://x.com/user/status/123)"));
+        assert!(is_link_conversion_message("<@123456789> [Reddit](https://www.reddit.com/r/rust/comments/abc/x/)"));
 
         // AI sohbet yanıtları veya normal mesajlar (AI tetiklenmeli)
         assert!(!is_link_conversion_message("Evet, haklısın bu konuda."));
         assert!(!is_link_conversion_message("Selam! Ben Botgek."));
         assert!(!is_link_conversion_message(""));
+        // Kullanıcının kendi mesajı link içerse bile dönüştürme mesajı sayılmaz
+        assert!(!is_link_conversion_message("[Twitter](https://x.com/user/status/123)"));
     }
 
     #[test]
@@ -472,6 +519,7 @@ mod tests {
         let user_id = UserId::new(200);
 
         let link_conversion_content = "<@200>[:](https://vxtwitter.com/u/123) [**Twitter**](<https://x.com/u/123>)";
+        let new_link_conversion_content = "<@200> [Twitter](https://x.com/u/123)";
         let ai_response_content = "Sen Botgek'e ne dedin öyle?";
 
         // 1. Link dönüştürme mesajına verilen yanıt (Discord mention'ı açık olsa bile ASLA tetiklenmemeli)
@@ -479,6 +527,23 @@ mod tests {
             true, // Discord reply otomatik bot mention eklese bile
             Some(bot_id),
             Some(link_conversion_content),
+            false,
+            bot_id
+        ));
+        assert!(!should_trigger_ai_chat(
+            true,
+            Some(bot_id),
+            Some(new_link_conversion_content),
+            false,
+            bot_id
+        ));
+
+        // 1b. Taklit (webhook) dönüştürme mesajına yanıt: yazar bot değil, kayıt bilgisi ile engellenir
+        assert!(!should_trigger_ai_chat(
+            true,
+            Some(user_id),
+            Some(new_link_conversion_content),
+            true,
             bot_id
         ));
 
@@ -487,12 +552,14 @@ mod tests {
             true,
             Some(bot_id),
             Some(ai_response_content),
+            false,
             bot_id
         ));
         assert!(should_trigger_ai_chat(
             false, // Mention toggle kapalı yanıt verilse bile tetiklenmeli
             Some(bot_id),
             Some(ai_response_content),
+            false,
             bot_id
         ));
 
@@ -501,6 +568,7 @@ mod tests {
             true,
             None,
             None,
+            false,
             bot_id
         ));
 
@@ -509,6 +577,7 @@ mod tests {
             true,
             Some(user_id),
             Some("Buna baksana"),
+            false,
             bot_id
         ));
 
@@ -517,6 +586,7 @@ mod tests {
             false,
             None,
             None,
+            false,
             bot_id
         ));
     }

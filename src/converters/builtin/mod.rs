@@ -8,22 +8,31 @@
 pub mod bluesky;
 pub mod media;
 pub mod opengraph;
+pub mod raw;
 pub mod reddit;
 pub mod render;
 pub mod tiktok;
 pub mod translate;
 pub mod twitter;
+pub mod v2;
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use serenity::all::{Context, CreateMessage, Message, ReactionType};
+use once_cell::sync::Lazy;
+use serenity::all::{
+    ChannelId, Context, CreateMessage, Message, MessageFlags, MessageId, ReactionType, UserId, WebhookId,
+};
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use super::parser::{ParsedPost, Platform};
 use crate::config::Config;
-use crate::settings::EngineSettings;
+use crate::settings::{EmojiSettings, EngineSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
 use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
+
 
 /// Dış servis istekleri için zaman aşımı (mesaj gönderimini uzun süre bloklamamalı).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
@@ -496,11 +505,214 @@ mod tests {
     }
 }
 
+
 // =====================================================================================
 // MESAJ AKIŞI
 // =====================================================================================
 
-/// Native embed akışı. Veri çekilemez veya embed üretilemezse `false` döner; bu durumda
+/// Taklit için kullanılan webhook adı (kanalda tek bir tane tutulup yeniden kullanılır).
+const WEBHOOK_NAME: &str = "Botgek Native Embed";
+/// Taklit edilen mesajların orijinal yazarı bu sayıya kadar hatırlanır
+/// (🗑️ silme izni ve AI koruması aynı oturum boyunca çalışır).
+const MAX_REMEMBERED_AUTHORS: usize = 4096;
+
+/// Kanaldaki taklit webhook'u (kimlik + token).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NamedWebhook {
+    id: WebhookId,
+    token: String,
+}
+
+/// Kanal → webhook önbelleği. `None`: kanalda webhook kullanılamıyor (yetki yok veya DM);
+/// her mesajda yeniden denenmez.
+static CHANNEL_WEBHOOKS: Lazy<Mutex<HashMap<ChannelId, Option<NamedWebhook>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+/// Taklit edilen mesaj → orijinal yazar eşlemesi (🗑️ izni ve AI koruması için).
+static MESSAGE_AUTHORS: Lazy<Mutex<HashMap<MessageId, UserId>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+/// Components V2 gönderimi Discord tarafından reddedilirse (ör. eski API) bir daha denenmez.
+static V2_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Mesajı paylaşan kullanıcının görünen adı ve avatarı (webhook taklidi).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Impersonation {
+    pub username: String,
+    pub avatar_url: Option<String>,
+}
+
+impl Impersonation {
+    /// Sunucu takma adı → global görünen ad → kullanıcı adı sırasıyla adı,
+    /// kullanıcının avatarını seçer.
+    pub fn from_message(msg: &Message) -> Self {
+        let author = &msg.author;
+        let raw_name = msg
+            .member
+            .as_ref()
+            .and_then(|member| member.nick.clone())
+            .filter(|nick| !nick.trim().is_empty())
+            .or_else(|| author.global_name.clone().filter(|name| !name.trim().is_empty()))
+            .unwrap_or_else(|| author.name.clone());
+
+        let avatar = author
+            .avatar_url()
+            // Discord webhook avatarlarında png/webp güvenilir: webp bağlantısını png'ye çevir.
+            .map(|url| url.replace(".webp", ".png"));
+
+        Self {
+            username: sanitize_webhook_name(&raw_name),
+            avatar_url: avatar,
+        }
+    }
+}
+
+/// Webhook adını Discord kurallarına uygun hâle getirir: `@` temizlenir, yasaklı
+/// kelimeler nötrlenir, 80 karaktere kısaltılır.
+pub fn sanitize_webhook_name(name: &str) -> String {
+    let mut cleaned = name.trim().trim_start_matches('@').to_string();
+    for (from, to) in [("discord", "d!scord"), ("Discord", "D!scord"), ("clyde", "c!yde"), ("Clyde", "C!yde")]
+    {
+        cleaned = cleaned.replace(from, to);
+    }
+    let cleaned: String = cleaned.trim().chars().take(80).collect();
+    if cleaned.trim().is_empty() {
+        "Botgek".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Taklit edilen mesajın orijinal yazarını kaydeder.
+pub async fn remember_author(message_id: MessageId, author: UserId) {
+    let mut authors = MESSAGE_AUTHORS.lock().await;
+    if authors.len() >= MAX_REMEMBERED_AUTHORS {
+        authors.clear();
+    }
+    authors.insert(message_id, author);
+}
+
+/// Taklit edilen mesajın orijinal yazarı (🗑️ silme izni bu bilgiyle verilir).
+pub async fn original_author(message_id: MessageId) -> Option<UserId> {
+    MESSAGE_AUTHORS.lock().await.get(&message_id).copied()
+}
+
+/// Bu mesaj Botgek'in taklit (webhook) mesajı mı? (native embed → AI tetiklenmez)
+pub async fn is_native_message(message_id: MessageId) -> bool {
+    MESSAGE_AUTHORS.lock().await.contains_key(&message_id)
+}
+
+// -------------------------------------------------------------------------------------
+// TAKLİT WEBHOOK'U
+// -------------------------------------------------------------------------------------
+
+/// Kanalın taklit webhook'unu döner: önbellekte yoksa botun kendi webhook'unu arar,
+/// hiç yoksa oluşturur. `refresh` önbelleği zorla yeniler (eskimiş token için).
+async fn channel_webhook(
+    ctx: &Context,
+    client: &reqwest::Client,
+    config: &Config,
+    channel_id: ChannelId,
+    refresh: bool,
+) -> Option<NamedWebhook> {
+    {
+        let cache = CHANNEL_WEBHOOKS.lock().await;
+        if !refresh {
+            if let Some(entry) = cache.get(&channel_id) {
+                return entry.clone();
+            }
+        }
+    }
+    CHANNEL_WEBHOOKS.lock().await.remove(&channel_id);
+
+    match resolve_webhook(ctx, client, config, channel_id).await {
+        Ok(Some(webhook)) => {
+            CHANNEL_WEBHOOKS.lock().await.insert(channel_id, Some(webhook.clone()));
+            Some(webhook)
+        }
+        Ok(None) => {
+            warn!("Taklit webhook'u için token alınamadı ({}): mesaj bot adına gönderilecek", channel_id);
+            CHANNEL_WEBHOOKS.lock().await.insert(channel_id, None);
+            None
+        }
+        Err(err) => {
+            warn!(
+                "Taklit webhook'u kullanılamıyor ({}): {} — mesaj bot adına gönderilecek",
+                channel_id, err
+            );
+            // Kalıcı ret (yetki yok veya DM kanalı) önbelleğe yazılır; geçici ağ hatalarında
+            // bir sonraki mesajda yeniden denenir.
+            if is_discord_rejection(&err) {
+                CHANNEL_WEBHOOKS.lock().await.insert(channel_id, None);
+            }
+            None
+        }
+    }
+}
+
+/// Kanaldaki bot webhook'unu bulur; yoksa `WEBHOOK_NAME` adıyla oluşturur.
+async fn resolve_webhook(
+    ctx: &Context,
+    client: &reqwest::Client,
+    config: &Config,
+    channel_id: ChannelId,
+) -> Result<Option<NamedWebhook>, String> {
+    let hooks = raw::list_channel_webhooks(client, &config.discord_token, channel_id).await?;
+    let bot_id = ctx.cache.current_user().id.get();
+
+    // Yalnızca bu botun oluşturduğu, token'ı olan gelen (incoming) webhook'lar yeniden kullanılır.
+    let existing = hooks.iter().find(|hook| {
+        hook.get("type").and_then(|kind| kind.as_u64()) == Some(1)
+            && hook.get("user").and_then(|user| user.get("id")).and_then(|id| id.as_str())
+                == Some(bot_id.to_string().as_str())
+    });
+
+    let created;
+    let value = match existing {
+        Some(hook) => hook,
+        None => {
+            created = raw::create_channel_webhook(client, &config.discord_token, channel_id, WEBHOOK_NAME).await?;
+            &created
+        }
+    };
+
+    match raw::webhook_credentials(value) {
+        Some((id, token)) => Ok(Some(NamedWebhook { id, token })),
+        None => Err("Webhook kimliği/token'ı okunamadı".to_string()),
+    }
+}
+
+/// Webhook üzerinden ham gövde gönderir; token eskimişse bir kez yenileyip tekrar dener.
+async fn send_via_webhook(
+    ctx: &Context,
+    client: &reqwest::Client,
+    config: &Config,
+    channel_id: ChannelId,
+    payload: &serde_json::Value,
+    files: &[serenity::all::CreateAttachment],
+) -> Result<MessageId, String> {
+    let mut last_error = "Webhook kullanılamıyor".to_string();
+
+    for attempt in 0..2 {
+        let Some(webhook) = channel_webhook(ctx, client, config, channel_id, attempt > 0).await else {
+            return Err(last_error);
+        };
+
+        match raw::execute_webhook(client, webhook.id, &webhook.token, payload, files).await {
+            Ok(Some(message_id)) => return Ok(message_id),
+            Ok(None) => last_error = "Webhook yanıtında mesaj kimliği yok".to_string(),
+            Err(err) => last_error = err,
+        }
+    }
+
+    // İki denemede de başarısız: önbelleği bırak, sonraki mesajda yeniden çözümlenir.
+    CHANNEL_WEBHOOKS.lock().await.remove(&channel_id);
+    Err(last_error)
+}
+
+// -------------------------------------------------------------------------------------
+// GÖNDERİM
+// -------------------------------------------------------------------------------------
+
+/// Native embed akışı. Veri çekilemez veya mesaj gönderilemezse `false` döner; bu durumda
 /// çağıran taraf (ayar açıksa) proxy motoruna düşer.
 pub async fn handle(
     ctx: &Context,
@@ -521,44 +733,217 @@ pub async fn handle(
     let options = render::RenderOptions::from_engine(engine);
     let plan = render::plan_media(&post, &options);
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
-    let embeds = render::build_embeds(&post, &options, &resolved);
+    let identity = engine.impersonate_user.then(|| Impersonation::from_message(msg));
 
+    // 1) Modern bileşen düzeni: metin + medya tek kart içinde (video kartın içinde oynar).
+    if engine.components_v2 && !V2_UNAVAILABLE.load(Ordering::Relaxed) {
+        let attempt = send_components_v2(
+            ctx,
+            msg,
+            client,
+            config,
+            parsed,
+            &post,
+            &options,
+            &resolved,
+            &engine.emojis,
+            identity.as_ref(),
+        )
+        .await;
+
+        match attempt {
+            Ok((message_id, impersonated)) => {
+                info!(
+                    "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}): {}",
+                    parsed.platform, impersonated, parsed.original_url
+                );
+                finish(ctx, msg, config, message_id).await;
+                return true;
+            }
+            Err(err) => {
+                if is_discord_rejection(&err) {
+                    // Kalıcı ret (ör. API sürümü Components V2'yi desteklemiyor): tekrar denenmez.
+                    V2_UNAVAILABLE.store(true, Ordering::Relaxed);
+                }
+                warn!(
+                    "Components V2 gönderilemedi ({}): {} — klasik embed'e düşülüyor",
+                    parsed.original_url, err
+                );
+            }
+        }
+    }
+
+    // 2) Klasik embed (+ istenirse taklit webhook'u)
+    let embeds = render::build_embeds(&post, &options, &resolved);
     if embeds.is_empty() {
         warn!("Native embed üretilemedi ({}): gösterilecek içerik yok", parsed.original_url);
         return false;
     }
 
-    let content = build_content(msg, parsed, &post, &resolved);
+    match send_classic(ctx, msg, client, config, parsed, &post, &resolved, &embeds, identity.as_ref()).await {
+        Ok((message_id, impersonated)) => {
+            info!(
+                "Mesaj native embed ile dönüştürüldü ({:?}, taklit: {}): {}",
+                parsed.platform, impersonated, parsed.original_url
+            );
+            finish(ctx, msg, config, message_id).await;
+            true
+        }
+        Err(err) => {
+            error!("Native embed mesajı gönderilemedi: {}", err);
+            false
+        }
+    }
+}
 
+/// Components V2 kartını gönderir. Taklit istenmişse önce webhook denenir, olmazsa
+/// mesaj bot adına gönderilir (kart yine tek parça kalır).
+#[allow(clippy::too_many_arguments)]
+async fn send_components_v2(
+    ctx: &Context,
+    msg: &Message,
+    client: &reqwest::Client,
+    config: &Config,
+    parsed: &ParsedPost,
+    post: &BuiltinPost,
+    options: &render::RenderOptions,
+    resolved: &render::ResolvedMedia,
+    emojis: &EmojiSettings,
+    identity: Option<&Impersonation>,
+) -> Result<(MessageId, bool), String> {
+    let allowed_mentions = serde_json::to_value(build_selective_allowed_mentions(msg)).ok();
+    let mut payload = v2::build_payload(&v2::V2Card {
+        post,
+        options,
+        resolved,
+        emojis,
+        user_comment: parsed.user_comment.as_deref(),
+        impersonation: identity,
+        allowed_mentions,
+    });
+
+    // Bot mesajında orijinal mesaja yanıt bağlantısı korunur (webhook mesajları yanıtlayamaz).
+    match msg.message_reference.as_ref().and_then(|reference| serde_json::to_value(reference).ok()) {
+        Some(reference) => payload["message_reference"] = reference,
+        None => {}
+    }
+
+    if identity.is_some() {
+        let mut webhook_payload = payload.clone();
+        if let Some(object) = webhook_payload.as_object_mut() {
+            object.remove("message_reference");
+        }
+
+        match send_via_webhook(ctx, client, config, msg.channel_id, &webhook_payload, &resolved.attachments).await {
+            Ok(message_id) => return Ok((message_id, true)),
+            Err(err) => warn!("Components V2 taklit gönderimi başarısız ({}): {}", msg.id, err),
+        }
+    }
+
+    let message_id =
+        raw::send_channel_message(client, &config.discord_token, msg.channel_id, &payload, &resolved.attachments)
+            .await?;
+    Ok((message_id, false))
+}
+
+/// Klasik embed mesajını gönderir. Taklit istenmişse webhook üzerinden (kullanıcı adı ve
+/// avatarı ile) gönderilir; webhook kullanılamıyorsa bot mesajına düşer.
+#[allow(clippy::too_many_arguments)]
+async fn send_classic(
+    ctx: &Context,
+    msg: &Message,
+    client: &reqwest::Client,
+    config: &Config,
+    parsed: &ParsedPost,
+    post: &BuiltinPost,
+    resolved: &render::ResolvedMedia,
+    embeds: &[serenity::all::CreateEmbed],
+    identity: Option<&Impersonation>,
+) -> Result<(MessageId, bool), String> {
+    if let Some(identity) = identity {
+        let allowed_mentions = serde_json::to_value(build_selective_allowed_mentions(msg)).unwrap_or_default();
+        let payload = classic_payload(msg.author.id, parsed, post, resolved, embeds, identity, allowed_mentions)?;
+        match send_via_webhook(ctx, client, config, msg.channel_id, &payload, &resolved.attachments).await {
+            Ok(message_id) => return Ok((message_id, true)),
+            Err(err) => warn!("Taklit mesaj gönderilemedi ({}): {} — bot adına gönderiliyor", msg.id, err),
+        }
+    }
+
+    // Bot mesajı: kullanıcı etiketi korunur (🗑️ silme izni bu etiketten okunur).
+    let content = build_content(msg.author.id, parsed, post, resolved, true);
     let mut builder = CreateMessage::new()
         .content(content)
         .allowed_mentions(build_selective_allowed_mentions(msg))
-        .embeds(embeds);
+        .flags(MessageFlags::SUPPRESS_EMBEDS)
+        .embeds(embeds.to_vec());
 
     if !resolved.attachments.is_empty() {
         builder = builder.add_files(resolved.attachments.clone());
     }
-
-    // Eğer orijinal mesaj bir yanıtsa, bot da aynı mesaja yanıt versin
-    if let Some(ref message_ref) = msg.message_reference {
-        builder = builder.reference_message(message_ref.clone());
+    if let Some(reference) = &msg.message_reference {
+        builder = builder.reference_message(reference.clone());
     }
 
-    let sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
-        Ok(m) => m,
-        Err(e) => {
-            error!("Native embed mesajı gönderilemedi: {:?}", e);
-            return false;
-        }
-    };
+    let sent = msg
+        .channel_id
+        .send_message(&ctx.http, builder)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    Ok((sent.id, false))
+}
 
-    info!(
-        "Mesaj native embed ile dönüştürüldü ({:?}): {}",
-        parsed.platform, parsed.original_url
-    );
+/// Klasik embed gövdesini ham webhook isteği için JSON'a çevirir.
+/// `SUPPRESS_EMBEDS` sayesinde metindeki link için Discord kendi önizlemesini üretmez;
+/// bu yüzden link `< >` ile sarılmaz.
+fn classic_payload(
+    author_id: UserId,
+    parsed: &ParsedPost,
+    post: &BuiltinPost,
+    resolved: &render::ResolvedMedia,
+    embeds: &[serenity::all::CreateEmbed],
+    identity: &Impersonation,
+    allowed_mentions: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let embeds: Vec<serde_json::Value> = embeds
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Embed serileştirilemedi: {e}"))?;
 
-    if let Err(e) = sent_msg
-        .react(&ctx.http, ReactionType::Unicode("🗑️".to_string()))
+    let attachments: Vec<serde_json::Value> = resolved
+        .attachments
+        .iter()
+        .enumerate()
+        .map(|(id, file)| serde_json::json!({"id": id, "filename": file.filename}))
+        .collect();
+
+    let mut payload = serde_json::json!({
+        "content": build_content(author_id, parsed, post, resolved, false),
+        "embeds": embeds,
+        "attachments": attachments,
+        "flags": MessageFlags::SUPPRESS_EMBEDS,
+        "username": identity.username,
+        "allowed_mentions": allowed_mentions,
+    });
+
+    if let Some(avatar) = &identity.avatar_url {
+        payload["avatar_url"] = serde_json::json!(avatar);
+    }
+
+    Ok(payload)
+}
+
+
+/// Mesaj gönderildikten sonraki ortak adımlar: yazar kaydı, 🗑️ reaksiyonu, orijinali silme.
+///
+/// Yazar kaydı sayesinde taklit edilen (veya Components V2 ile gönderilen) mesajlarda
+/// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
+async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
+    remember_author(message_id, msg.author.id).await;
+
+    if let Err(e) = msg
+        .channel_id
+        .create_reaction(&ctx.http, message_id, ReactionType::Unicode("🗑️".to_string()))
         .await
     {
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
@@ -569,32 +954,34 @@ pub async fn handle(
             error!("Orijinal mesaj silinirken hata oluştu: {:?}", e);
         }
     }
-
-    true
 }
 
-/// Proxy akışıyla aynı gövdeyi üretir: `<@kullanıcı>[:](link) [**Platform**](<orijinal>)`.
-/// Native linkler `<...>` ile sarıldığı için Discord ikinci bir embed üretmez; metindeki
-/// `[:](` işareti `handler::is_link_conversion_message` tarafından da tanınır.
+/// Discord'un 4xx yanıtı kalıcı bir ret anlamına gelir (ağ hatasından farklı olarak
+/// tekrar denemek anlamsızdır).
+fn is_discord_rejection(error: &str) -> bool {
+    error.starts_with("Discord 4")
+}
+
+/// Klasik akışın mesaj gövdesi: `[Twitter](gönderi linki)`.
+///
+/// Link artık `< >` ile sarılmaz; Discord'un kendi önizlemesini üretmemesi için mesaja
+/// `SUPPRESS_EMBEDS` bayrağı eklenir. Kullanıcı etiketi yalnızca mesaj bot adına
+/// gönderilirken eklenir (taklit modunda mesaj zaten kullanıcının kendisi gibi görünür).
 fn build_content(
-    msg: &Message,
+    author_id: UserId,
     parsed: &ParsedPost,
     post: &BuiltinPost,
     resolved: &render::ResolvedMedia,
+    mention_author: bool,
 ) -> String {
-    let link_part = if parsed.is_spoiler {
-        format!("||[:](<{}>)||", post.url)
-    } else {
-        format!("[:](<{}>)", post.url)
-    };
+    let link = format!("[{}]({})", parsed.platform.display_name(), post.url);
+    let link = if parsed.is_spoiler { format!("||{link}||") } else { link };
 
-    let base_content = format!(
-        "<@{}>{} [**{}**](<{}>)",
-        msg.author.id,
-        link_part,
-        parsed.platform.display_name(),
-        parsed.original_url
-    );
+    let base_content = if mention_author {
+        format!("<@{author_id}> {link}")
+    } else {
+        link
+    };
 
     let quoted_comment = parsed.user_comment.as_ref().map(|comment| {
         let quoted: Vec<String> = comment.lines().map(|line| format!("> {line}")).collect();
@@ -604,7 +991,7 @@ fn build_content(
     let video_line = resolved
         .video_link
         .as_ref()
-        .map(|link| format!("\n[🎬 Videoyu aç](<{link}>)"));
+        .map(|link| format!("\n[🎬 Videoyu aç]({link})"));
 
     let mut content = match &quoted_comment {
         Some(comment) => format!("{base_content}{comment}"),
@@ -623,5 +1010,118 @@ fn build_content(
     }
 
     truncate_chars(&content, DISCORD_CONTENT_LIMIT)
+}
+
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+    use crate::converters::builtin::{Author, BuiltinPost};
+
+    fn parsed() -> ParsedPost {
+        ParsedPost {
+            platform: Platform::Twitter,
+            is_spoiler: false,
+            user_comment: None,
+            original_url: "https://x.com/kullanici/status/1".to_string(),
+            fixed_url: "https://fixupx.com/kullanici/status/1".to_string(),
+        }
+    }
+
+    fn post() -> BuiltinPost {
+        BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/kullanici/status/1",
+            Author::new("Ad", "kullanici"),
+        )
+    }
+
+    #[test]
+    fn content_shows_the_link_as_a_masked_platform_link() {
+        let content = build_content(
+            UserId::new(123),
+            &parsed(),
+            &post(),
+            &render::ResolvedMedia::default(),
+            false,
+        );
+        assert_eq!(content, "[Twitter](https://x.com/kullanici/status/1)");
+        assert!(!content.contains("<https://"), "link hilesi kalmamalı: {content}");
+        assert!(!content.contains("[:]("), "eski işaret kalmamalı: {content}");
+    }
+
+    #[test]
+    fn content_mentions_the_author_only_for_bot_messages() {
+        let with_mention = build_content(
+            UserId::new(123),
+            &parsed(),
+            &post(),
+            &render::ResolvedMedia::default(),
+            true,
+        );
+        assert!(with_mention.starts_with("<@123> [Twitter]("), "içerik: {with_mention}");
+    }
+
+    #[test]
+    fn content_keeps_comment_spoiler_and_video_fallback() {
+        let mut parsed = parsed();
+        parsed.user_comment = Some("şuna bak".to_string());
+        parsed.is_spoiler = true;
+
+        let resolved = render::ResolvedMedia {
+            video_link: Some("https://cdn/v1.mp4".to_string()),
+            ..render::ResolvedMedia::default()
+        };
+        let content = build_content(UserId::new(9), &parsed, &post(), &resolved, false);
+
+        assert!(content.starts_with("||[Twitter](https://x.com/kullanici/status/1)||"), "içerik: {content}");
+        assert!(content.contains("\n> şuna bak"), "içerik: {content}");
+        assert!(content.contains("[🎬 Videoyu aç](https://cdn/v1.mp4)"), "içerik: {content}");
+    }
+
+    #[test]
+    fn webhook_names_are_sanitized_for_discord_rules() {
+        assert_eq!(sanitize_webhook_name("  Eray  "), "Eray");
+        assert_eq!(sanitize_webhook_name("@eray"), "eray");
+        assert_eq!(sanitize_webhook_name(""), "Botgek");
+        assert_eq!(sanitize_webhook_name("   "), "Botgek");
+        assert_eq!(sanitize_webhook_name("Discord Clyde"), "D!scord C!yde");
+        assert_eq!(sanitize_webhook_name(&"a".repeat(120)).chars().count(), 80);
+    }
+
+    #[test]
+    fn classic_webhook_payload_suppresses_discord_previews() {
+        let identity = Impersonation {
+            username: "Eray".to_string(),
+            avatar_url: Some("https://cdn.example/a.png".to_string()),
+        };
+        let embeds = vec![serenity::all::CreateEmbed::new().title("başlık")];
+        let payload = classic_payload(
+            UserId::new(5),
+            &parsed(),
+            &post(),
+            &render::ResolvedMedia::default(),
+            &embeds,
+            &identity,
+            serde_json::json!({"parse": []}),
+        )
+        .unwrap();
+
+        assert_eq!(payload["username"], "Eray");
+        assert_eq!(payload["avatar_url"], "https://cdn.example/a.png");
+        assert_eq!(payload["flags"], MessageFlags::SUPPRESS_EMBEDS.bits());
+        assert_eq!(payload["content"], "[Twitter](https://x.com/kullanici/status/1)");
+        assert_eq!(payload["embeds"][0]["title"], "başlık");
+        assert_eq!(payload["attachments"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn remembered_authors_can_be_queried() {
+        let message_id = MessageId::new(777);
+        assert_eq!(original_author(message_id).await, None);
+        remember_author(message_id, UserId::new(42)).await;
+        assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
+        assert!(is_native_message(message_id).await);
+    }
 }
 

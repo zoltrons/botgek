@@ -68,7 +68,18 @@
     "show_community_note": true,
     "show_quote": true,
     "auto_translate": true,
-    "fallback_to_proxy": true
+    "fallback_to_proxy": true,
+    "impersonate_user": true,
+    "components_v2": true,
+    "emojis": {
+      "verified": "<:verified:1553709836859084841>",
+      "replies": "<:comment:1553712370302451782>",
+      "reposts": "<:rt:1553712344939495424>",
+      "likes": "<:like:1553712395057365102>",
+      "views": "<:metric:1553712416242798712>",
+      "translation": "<:translation:1476614397249061056>",
+      "twitter": "<:twitter:1476642012072920355>"
+    }
   },
   "guilds": {}
 }

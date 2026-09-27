@@ -975,6 +975,19 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             margin-top: 10px;
         }
 
+        /* Modern kart emoji seti: kompakt metin alanları */
+        .emoji-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .emoji-grid .text-input {
+            padding: 8px 10px;
+            font-size: 12px;
+        }
+
         .engine-range {
             width: 100%;
             accent-color: var(--primary);
@@ -1368,6 +1381,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <p class="panel-sub">
                 Her platform için <strong>Proxy</strong> (harici önizleme servisi) veya <strong>Native Embed</strong> (bot bağlantıyı kendi çözer, Discord embed'ini kendisi üretir) motorunu seçin.
                 Alan adı boş bırakılırsa .env değeri kullanılır. Native embed başarısız olursa proxy linkine düşülür.
+                <strong>Modern kart</strong> açıkken gönderi, Discord'un yeni Components V2 düzeniyle tek kart olarak gönderilir:
+                hesabın profil resmi kartın sağ üstünde, video/görseller kartın içinde; alt satırlarda metrikler ve
+                <span class="mono">[Link]</span> kartın içinde durur.
+                <strong>Taklit</strong> açıkken mesaj, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönderilir;
+                böylece mesajda link/mention hilelerine gerek kalmaz.
             </p>
 
             <div class="ai-label" style="margin-top: 4px;">
@@ -1440,6 +1458,30 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                     </label>
                 </div>
             </div>
+            <div class="ai-label" style="margin-top: 16px;"><span>Gönderim Biçimi</span></div>
+            <div class="option-grid">
+                <div class="option-tile" onclick="toggleEngineOption('engine-components-v2')">
+                    <div>
+                        <div class="name">Modern kart (Components V2)</div>
+                        <div class="hint">Video ve galeri kartın içinde; link kart içinde durur</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-components-v2" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+
+                <div class="option-tile" onclick="toggleEngineOption('engine-impersonate')">
+                    <div>
+                        <div class="name">Kullanıcıyı taklit et</div>
+                        <div class="hint">Mesaj kullanıcının adı/avatarıyla webhook olarak gider (Manage Webhooks izni gerekir)</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-impersonate" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+            </div>
             <div class="ai-label" style="margin-top: 16px;"><span>Medya Yükleme</span></div>
             <div class="option-grid">
                 <div class="option-tile" onclick="toggleEngineOption('engine-attach-images')">
@@ -1493,6 +1535,16 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                     <input type="range" class="engine-range" id="engine-max-video" min="1" max="50" step="1" oninput="onConfigModified(); updateEngineSummary()">
                 </div>
             </div>
+
+            <div class="ai-label" style="margin-top: 16px;">
+                <span>Modern Kart Emoji Seti</span>
+                <span class="mono" style="font-size: 10px; color: var(--text-muted);">BOŞ = UNICODE</span>
+            </div>
+            <p class="panel-sub" style="margin-top: 6px;">
+                Sunucunuzdaki özel emojileri <span class="mono">&lt;:ad:id&gt;</span> biçiminde yazın (boş bırakılan alan Unicode emoji kullanır).
+                Bu emojiler yalnızca <strong>Modern kart (Components V2)</strong> açıkken görünür.
+            </p>
+            <div class="emoji-grid" id="engine-emoji-grid"></div>
         </section>
         <!-- Floating Command Bar -->
         <div class="command-bar">
@@ -1542,7 +1594,29 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             show_quote: true,
             auto_translate: true,
             fallback_to_proxy: true,
+            impersonate_user: true,
+            components_v2: true,
+            emojis: {
+                verified: '<:verified:1553709836859084841>',
+                replies: '<:comment:1553712370302451782>',
+                reposts: '<:rt:1553712344939495424>',
+                likes: '<:like:1553712395057365102>',
+                views: '<:metric:1553712416242798712>',
+                translation: '<:translation:1476614397249061056>',
+                twitter: '<:twitter:1476642012072920355>',
+            },
         };
+
+        // Modern kartta kullanılan özel emoji alanları (Rust tarafındaki EmojiSettings ile aynı)
+        const ENGINE_EMOJI_FIELDS = [
+            { key: 'verified', label: 'Doğrulama işareti' },
+            { key: 'replies', label: 'Yanıt' },
+            { key: 'reposts', label: 'Repost' },
+            { key: 'likes', label: 'Beğeni' },
+            { key: 'views', label: 'Görüntülenme' },
+            { key: 'translation', label: 'Çeviri notu' },
+            { key: 'twitter', label: 'X / Twitter logosu' },
+        ];
 
         let appSettings = {
             modules: {
@@ -1582,8 +1656,15 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             const engine = cfg.engine;
             if (!engine.modes) engine.modes = Object.assign({}, ENGINE_DEFAULTS.modes);
             if (!engine.domains) engine.domains = Object.assign({}, ENGINE_DEFAULTS.domains);
+            if (!engine.emojis) engine.emojis = Object.assign({}, ENGINE_DEFAULTS.emojis);
+            Object.keys(ENGINE_DEFAULTS.emojis).forEach(key => {
+                if (engine.emojis[key] === undefined || engine.emojis[key] === null) {
+                    engine.emojis[key] = ENGINE_DEFAULTS.emojis[key];
+                }
+            });
             ['twitter_source', 'attach_images', 'attach_videos', 'max_images', 'max_video_mb',
-             'show_metrics', 'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy']
+             'show_metrics', 'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
+             'impersonate_user', 'components_v2']
                 .forEach(field => {
                     if (engine[field] === undefined || engine[field] === null) {
                         engine[field] = ENGINE_DEFAULTS[field];
@@ -1664,6 +1745,13 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             engine.attach_videos = isChecked('engine-attach-videos');
             engine.fallback_to_proxy = isChecked('engine-fallback');
             engine.auto_translate = isChecked('engine-auto-translate');
+            engine.impersonate_user = isChecked('engine-impersonate');
+            engine.components_v2 = isChecked('engine-components-v2');
+
+            ENGINE_EMOJI_FIELDS.forEach(field => {
+                const el = document.getElementById('engine-emoji-' + field.key);
+                if (el) engine.emojis[field.key] = el.value.trim();
+            });
             engine.show_metrics = isChecked('engine-show-metrics');
             engine.show_timestamp = isChecked('engine-show-timestamp');
             engine.show_community_note = isChecked('engine-show-note');
@@ -1816,6 +1904,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 updateEngineNote(p.key);
             });
 
+            renderEngineEmojiInputs(engine);
+
             const sourceEl = document.getElementById('engine-twitter-source');
             if (sourceEl) sourceEl.value = engine.twitter_source;
 
@@ -1827,6 +1917,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             setChecked('engine-attach-videos', engine.attach_videos);
             setChecked('engine-fallback', engine.fallback_to_proxy);
             setChecked('engine-auto-translate', engine.auto_translate);
+            setChecked('engine-impersonate', engine.impersonate_user);
+            setChecked('engine-components-v2', engine.components_v2);
             setChecked('engine-show-metrics', engine.show_metrics);
             setChecked('engine-show-timestamp', engine.show_timestamp);
             setChecked('engine-show-note', engine.show_community_note);
@@ -1838,6 +1930,26 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             if (videoEl) videoEl.value = engine.max_video_mb;
 
             updateEngineSummary();
+        }
+
+        // Modern kart emoji alanlarını (bir kez) oluşturur ve mevcut değerleri yazar.
+        function renderEngineEmojiInputs(engine) {
+            const container = document.getElementById('engine-emoji-grid');
+            if (!container) return;
+            const emojis = engine.emojis || ENGINE_DEFAULTS.emojis;
+
+            container.innerHTML = ENGINE_EMOJI_FIELDS.map(field => `
+                <div class="ai-field-group">
+                    <div class="ai-label"><span>${field.label}</span></div>
+                    <input type="text" class="text-input mono" id="engine-emoji-${field.key}"
+                           placeholder="${ENGINE_DEFAULTS.emojis[field.key]}" oninput="onConfigModified()">
+                </div>
+            `).join('');
+
+            ENGINE_EMOJI_FIELDS.forEach(field => {
+                const el = document.getElementById('engine-emoji-' + field.key);
+                if (el) el.value = emojis[field.key] || '';
+            });
         }
 
         function updateEngineNote(platformKey) {
@@ -1872,7 +1984,13 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             if (videoLabel && videoEl) videoLabel.textContent = videoEl.value + ' MB';
 
             const summary = document.getElementById('engine-summary');
-            if (summary) summary.textContent = builtinCount + '/' + ENGINE_PLATFORMS.length + ' NATIVE EMBED';
+            if (summary) {
+                const extras = [];
+                if (engine.components_v2) extras.push('V2 KART');
+                if (engine.impersonate_user) extras.push('TAKLİT');
+                summary.textContent = builtinCount + '/' + ENGINE_PLATFORMS.length + ' NATIVE EMBED'
+                    + (extras.length ? ' • ' + extras.join(' • ') : '');
+            }
         }
 
         function updateTileMeta() {

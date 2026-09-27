@@ -19,11 +19,21 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
 - 🧩 **Built-in (Native) Embed Motoru — Proxy'ye Alternatif:**
   - Bot bağlantıyı harici bir önizleme servisine yönlendirmek yerine gönderiyi **kendisi çözer**, Discord embed'ini kendisi üretir: yazar/ad/avatar, doğrulama işareti, gönderi metni, etkileşim metrikleri, gönderi tarihi, alıntılanan gönderi (ikinci embed), topluluk notu ve medya galerisi.
   - 🖼️ **Medya yükleme:** Görseller ve videolar (limit altındaysa) mesaja **dosya olarak** eklenir; böylece önizleme kaynak CDN'e (veya proxy servisine) bağımlı olmaz. İndirilemeyen medya otomatik olarak uzak URL'e düşer.
+  - 🧱 **Modern kart (Components V2):** Gönderi, Discord'un yeni bileşen düzeniyle (`Container` + `Text Display` + `Media Gallery`) **tek kart** olarak, X'in kendi embed'ine benzer şekilde gönderilir:
+    - hesabın **profil resmi** kartın sağ üstünde küçük resim (`Section` + `Thumbnail`) olarak durur
+    - `**Ad <:verified:...> ([@kullanici](profil))**`
+    - gönderi metni (+ varsa alıntı/kullanıcı notu)
+    - `-# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K`
+    - `-# <:twitter:...> • <t:...:R> • [Link](gönderi)`
+    - Video ve görseller **kartın içinde** oynar/görünür (klasik embed'lerde Discord bot mesajlarında `video` alanını göstermez); sol kenarda renkli çubuk kullanılmaz.
+    - Kullanılan emojiler WebUI'dan (`<:ad:id>` biçiminde) değiştirilebilir; boş bırakılan alan Unicode emojiye düşer, böylece emojinin bulunmadığı sunucularda kart bozulmaz. Discord bileşenleri reddederse otomatik olarak klasik embed'e düşülür.
+  - 🎭 **Kullanıcıyı taklit etme (webhook):** Mesaj, paylaşan kullanıcının **adı ve avatarıyla** gönderilir (`Manage Webhooks` izni gerekir). Böylece `<@kullanıcı>` etiketi ve `<link>` sarma hilesi gibi workaround'lara ihtiyaç kalmaz; mesaj sanki kullanıcı linki kendisi paylaşmış gibi görünür. Webhook kullanılamıyorsa mesaj bot adına gönderilir.
   - 🔀 **Platform bazlı motor seçimi:** Her platform için `Proxy` veya `Native Embed` seçilebilir; native embed başarısız olursa isteğe bağlı olarak proxy linkine düşülür (`fallback_to_proxy`).
   - 🌐 **Veri kaynakları:** X için `X Syndication` (üçüncü taraf/API anahtarı yok), `FxTwitter` (görüntülenme, repost, topluluk notu) veya `Hibrit`; Reddit için herkese açık JSON, Bluesky için XRPC, TikTok için oEmbed, Instagram için OpenGraph + proxy yedeği.
   - 🇹🇷 **Otomatik Türkçe çeviri:** Türkçe ve İngilizce **dışındaki** X gönderileri **X'in kendi çeviri servisiyle** otomatik Türkçeye çevrilir (embedded.gallery / fxembed ile aynı yöntem: dil ekli uç, sağlayıcı X'in çevirisi). Çevrilen gönderinin alt bilgisine `🌐 de → tr` notu eklenir; Türkçe/İngilizce gönderiler olduğu gibi bırakılır.
 - 🎯 **Kusursuz ve Sade Görünüm:**
-  - Ekranda çirkin uzun linkler yerine yalnızca `[:]({link}) [Platform](<orijinal>)` ve varsa kullanıcı notu alıntısı (`> not`) yer alır.
+  - Native embed mesajlarında görünür metin sadece `[Twitter](gönderi linki)` (+ varsa kullanıcı notu alıntısı `> not`) olur; linkler `< >` ile sarılmaz, mesaja `SUPPRESS_EMBEDS` bayrağı eklendiği için Discord ayrıca önizleme üretmez.
+  - Proxy motorunda ise klasik `[:]({link}) [Platform](<orijinal>)` biçimi kullanılır.
   - 🙈 **Spoiler Desteği:** `||link||` olarak atılan mesajlar dönüştürüldüğünde de gizliliğini korur.
 - 🇹🇷 **Bayrak Emojisiyle Anında Çeviri:**
   - Botun dönüştürdüğü mesaja bayrak emojisi (örn: 🇹🇷, 🇬🇧, 🇩🇪, 🇫🇷, 🇯🇵) bırakıldığında link otomatik olarak `/tr`, `/en` gibi dil parametrelerini alarak içeriği çevirir. Reaksiyon kaldırıldığında orijinal haline döner.
@@ -33,7 +43,7 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - Bot etiketlendiğinde (`@botgekv2`) veya bota yanıt (Reply) verildiğinde akıllı, hazırcevap, hafif alaycı ve kısa (1-2 cümle) Türkçe cevaplar üretir.
 - 🎛️ **Cyber-Ops Minimal WebUI (`http://localhost:3000`):**
   - Tüm modülleri tek tıkla açıp kapatma.
-  - **Link Dönüştürme Motoru paneli:** Platform bazlı `Proxy` / `Native Embed` seçimi, yedek proxy alan adları (`.env` değerini geçersiz kılar), X veri kaynağı, **otomatik Türkçe çeviri**, medya yükleme ve embed içeriği seçenekleri (metrik, tarih, topluluk notu, alıntı, maks. görsel sayısı, maks. video boyutu).
+  - **Link Dönüştürme Motoru paneli:** Platform bazlı `Proxy` / `Native Embed` seçimi, yedek proxy alan adları (`.env` değerini geçersiz kılar), X veri kaynağı, **otomatik Türkçe çeviri**, gönderim biçimi (**Components V2 kartı**, **kullanıcıyı taklit etme**), medya yükleme ve embed içeriği seçenekleri (metrik, tarih, topluluk notu, alıntı, maks. görsel sayısı, maks. video boyutu).
   - **Rol Tabanlı Filtreleme:** İstemeyen roller için `Blacklist` veya sadece belirli roller için `Allowlist`.
   - Sistem promptu ve AI modelini web arayüzünden anlık güncelleme.
   - Yapılan tüm değişiklikler `settings.json` ile anında kalıcı olarak kaydedilir.

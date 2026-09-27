@@ -174,6 +174,123 @@ impl ProxyDomains {
 
 /// Tek mesajda ek olarak yüklenecek maksimum görsel sayısı sınırı.
 pub const MAX_IMAGES_RANGE: std::ops::RangeInclusive<u8> = 1..=10;
+
+/// Components V2 kartında kullanılacak özel emoji seti.
+///
+/// Discord özel emojiyi yalnızca `<:ad:id>` / `<a:ad:id>` biçiminde gösterir. Alan boş
+/// bırakılırsa Unicode varsayılan (ör. `❤️`) kullanılır; böylece emojinin bulunmadığı
+/// sunucularda kart bozulmaz. Bu emojiler yalnızca modern (Components V2) kartta görünür.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct EmojiSettings {
+    /// Doğrulanmış hesap işareti (yazar satırında).
+    pub verified: String,
+    pub replies: String,
+    pub reposts: String,
+    pub likes: String,
+    pub views: String,
+    /// Çeviri notunun başındaki işaret (`de → tr`).
+    pub translation: String,
+    /// Platform göstergesi — X/Twitter için kullanılır (diğer platformlarda adı yazılır).
+    pub twitter: String,
+}
+
+impl Default for EmojiSettings {
+    /// Botgek sunucusuna yüklenmiş varsayılan emoji seti.
+    fn default() -> Self {
+        Self {
+            verified: "<:verified:1553709836859084841>".to_string(),
+            replies: "<:comment:1553712370302451782>".to_string(),
+            reposts: "<:rt:1553712344939495424>".to_string(),
+            likes: "<:like:1553712395057365102>".to_string(),
+            views: "<:metric:1553712416242798712>".to_string(),
+            translation: "<:translation:1476614397249061056>".to_string(),
+            twitter: "<:twitter:1476642012072920355>".to_string(),
+        }
+    }
+}
+
+impl EmojiSettings {
+    /// Geçersiz girdiler boşaltılır (boş alan Unicode varsayılana düşer).
+    pub fn sanitize(&mut self) {
+        for value in [
+            &mut self.verified,
+            &mut self.replies,
+            &mut self.reposts,
+            &mut self.likes,
+            &mut self.views,
+            &mut self.translation,
+            &mut self.twitter,
+        ] {
+            let cleaned = value.trim().to_string();
+            *value = if valid_emoji(&cleaned) { cleaned } else { String::new() };
+        }
+    }
+
+    /// Doğrulama işareti (özel emoji ayarlıysa o, değilse Unicode).
+    pub fn verified(&self) -> &str {
+        pick(&self.verified, "☑")
+    }
+
+    pub fn replies(&self) -> &str {
+        pick(&self.replies, "💬")
+    }
+
+    pub fn reposts(&self) -> &str {
+        pick(&self.reposts, "🔁")
+    }
+
+    pub fn likes(&self) -> &str {
+        pick(&self.likes, "❤️")
+    }
+
+    pub fn views(&self) -> &str {
+        pick(&self.views, "👁️")
+    }
+
+    pub fn translation(&self) -> &str {
+        pick(&self.translation, "🌐")
+    }
+
+    /// X/Twitter göstergesi; ayarlı değilse `None` (yerine platform adı yazılır).
+    pub fn twitter(&self) -> Option<&str> {
+        (!self.twitter.is_empty()).then_some(self.twitter.as_str())
+    }
+}
+
+fn pick<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.is_empty() {
+        fallback
+    } else {
+        value
+    }
+}
+
+/// `<:ad:id>` / `<a:ad:id>` biçimini veya kısa bir Unicode emojiyi kabul eder.
+/// Markdown'ı bozabilecek karakterler (`[`, `]`, `(`, `)`, `` ` `` ...) reddedilir.
+fn valid_emoji(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+
+    if let Some(body) = value.strip_prefix("<:").or_else(|| value.strip_prefix("<a:")) {
+        let Some(body) = body.strip_suffix('>') else {
+            return false;
+        };
+        let mut parts = body.split(':');
+        let (Some(name), Some(id), None) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        return name.len() >= 2
+            && name.len() <= 32
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && (17..=20).contains(&id.len())
+            && id.chars().all(|c| c.is_ascii_digit());
+    }
+
+    value.chars().count() <= 8 && !value.chars().any(|c| "[\\]()`<>|*_~".contains(c) || c.is_control())
+}
+
 /// Discord'un (boost'suz sunucularda) yüklenen dosya limiti 10 MB'tır; üzerine çıkılırsa
 /// video indirilmez, link olarak paylaşılır.
 pub const MAX_VIDEO_MB_RANGE: std::ops::RangeInclusive<u8> = 1..=50;
@@ -208,6 +325,14 @@ pub struct EngineSettings {
     pub auto_translate: bool,
     /// Native embed üretilemezse otomatik olarak proxy linkine düş.
     pub fallback_to_proxy: bool,
+    /// Mesajı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönder ("taklit").
+    /// Bu sayede mesajda `<@kullanıcı>` etiketi ve `[:](...)` gibi link hileleri gerekmez.
+    pub impersonate_user: bool,
+    /// Modern bileşen düzeni (Components V2): metin ve medya tek kart içinde gösterilir.
+    /// Video/görseller Media Gallery bileşeniyle kartın içinde oynar, link kartın içinde durur.
+    pub components_v2: bool,
+    /// Modern kartta kullanılan özel emoji seti (boş alan → Unicode varsayılan).
+    pub emojis: EmojiSettings,
 }
 
 impl Default for EngineSettings {
@@ -226,6 +351,9 @@ impl Default for EngineSettings {
             show_quote: true,
             auto_translate: true,
             fallback_to_proxy: true,
+            impersonate_user: true,
+            components_v2: true,
+            emojis: EmojiSettings::default(),
         }
     }
 }
@@ -266,6 +394,8 @@ impl EngineSettings {
         if !MAX_VIDEO_MB_RANGE.contains(&self.max_video_mb) {
             self.max_video_mb = self.max_video_mb.clamp(1, 50);
         }
+
+        self.emojis.sanitize();
     }
 }
 
@@ -681,6 +811,81 @@ mod tests {
         // WebUI aralık dışı değer gönderirse güvenli sınıra çekilir
         assert_eq!(settings.engine.max_video_mb, MAX_VIDEO_MB_RANGE.end().to_owned());
         assert_eq!(settings.engine.domains.twitter, "vxtwitter.com");
+        // Yeni alanlar JSON'da yoksa varsayılanları alır
+        assert!(settings.engine.impersonate_user);
+        assert!(settings.engine.components_v2);
+        assert_eq!(
+            settings.engine.emojis.verified(),
+            "<:verified:1553709836859084841>",
+            "emoji seti JSON'da yoksa varsayılan (yüklenmiş) emojiler kullanılır"
+        );
+    }
+
+    #[test]
+    fn emoji_settings_validate_custom_emojis_and_fall_back_to_unicode() {
+        let mut emojis = EmojiSettings::default();
+        emojis.sanitize();
+        assert_eq!(emojis.replies(), "<:comment:1553712370302451782>");
+        assert_eq!(emojis.twitter(), Some("<:twitter:1476642012072920355>"));
+
+        // Boş alanlar Unicode varsayılana düşer
+        let mut empty = EmojiSettings {
+            verified: String::new(),
+            replies: String::new(),
+            reposts: String::new(),
+            likes: String::new(),
+            views: String::new(),
+            translation: String::new(),
+            twitter: String::new(),
+        };
+        empty.sanitize();
+        assert_eq!(empty.verified(), "☑");
+        assert_eq!(empty.replies(), "💬");
+        assert_eq!(empty.reposts(), "🔁");
+        assert_eq!(empty.likes(), "❤️");
+        assert_eq!(empty.views(), "👁️");
+        assert_eq!(empty.translation(), "🌐");
+        assert_eq!(empty.twitter(), None);
+    }
+
+    #[test]
+    fn emoji_sanitize_rejects_invalid_values() {
+        let mut emojis = EmojiSettings {
+            // ID çok kısa
+            verified: "<:verified:123>".to_string(),
+            // markdown linkini kırma denemesi
+            replies: "<:comment:1234>](https://evil.example)".to_string(),
+            // animasyonlu emoji (geçerli)
+            reposts: "<a:rt:1553712344939495424>".to_string(),
+            // Unicode emoji (geçerli)
+            likes: "💖".to_string(),
+            // fazla uzun Unicode (geçersiz)
+            views: "bu bir emoji değil".to_string(),
+            translation: "<:translation:1476614397249061056>".to_string(),
+            twitter: " <:twitter:1476642012072920355> ".to_string(),
+        };
+        emojis.sanitize();
+
+        assert_eq!(emojis.verified(), "☑", "geçersiz ID boşaltılmalı");
+        assert_eq!(emojis.replies(), "💬", "markdown kıran girdi reddedilmeli");
+        assert_eq!(emojis.reposts(), "<a:rt:1553712344939495424>");
+        assert_eq!(emojis.likes(), "💖");
+        assert_eq!(emojis.views(), "👁️");
+        assert_eq!(emojis.twitter(), Some("<:twitter:1476642012072920355>"), "baştaki/sondaki boşluk temizlenir");
+    }
+
+    #[test]
+    fn engine_submission_flags_round_trip_through_json() {
+        let mut settings = AppSettings::default();
+        settings.engine.impersonate_user = false;
+        settings.engine.components_v2 = false;
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let parsed: AppSettings = serde_json::from_str(&json).unwrap();
+
+        assert!(!parsed.engine.impersonate_user);
+        assert!(!parsed.engine.components_v2);
+        assert!(parsed.engine.attach_videos);
     }
 
     #[test]
