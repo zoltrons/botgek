@@ -186,9 +186,7 @@ fn build_main_embed(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
     }
     if !author_label.is_empty() {
         let mut author = CreateEmbedAuthor::new(truncate_chars(&author_label, EMBED_AUTHOR_LIMIT));
-        if let Some(avatar) = &post.author.avatar {
-            author = author.icon_url(avatar.clone());
-        }
+        // Profil resmi (author icon) kullanılmaz: kartta avatar gösterilmez.
         if let Some(profile) = &post.author.profile_url {
             author = author.url(profile.clone());
         }
@@ -297,10 +295,8 @@ fn build_quote_embed(quote: &BuiltinPost) -> Option<CreateEmbed> {
         author_label.push_str(" ☑");
     }
 
-    let mut author = CreateEmbedAuthor::new(truncate_chars(&author_label, EMBED_AUTHOR_LIMIT));
-    if let Some(avatar) = &quote.author.avatar {
-        author = author.icon_url(avatar.clone());
-    }
+    let author = CreateEmbedAuthor::new(truncate_chars(&author_label, EMBED_AUTHOR_LIMIT));
+    // Alıntı embed'inde de profil resmi kullanılmaz.
 
     let mut embed = CreateEmbed::new()
         .color(dim_colour(platform_color(quote.platform)))
@@ -387,6 +383,26 @@ mod tests {
         assert!(footer.contains("❤️ 1.2K"), "footer: {footer}");
         assert!(footer.contains("👁️ 2.5M"), "footer: {footer}");
         assert!(value["timestamp"].is_string());
+    }
+
+    #[test]
+    fn author_section_shows_no_profile_picture() {
+        let mut post = sample_post();
+        post.author.avatar = Some("https://pbs.twimg.com/profile_images/1/kucuk.jpg".to_string());
+        post.author.profile_url = Some("https://x.com/kullanici".to_string());
+        post.author.verified = true;
+
+        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
+        let value = serde_json::to_value(&embeds[0]).expect("embed serileşmeli");
+
+        // Profil resmi kartta gösterilmez; yalnızca ad + profil linki kalır.
+        assert!(value["author"]["icon_url"].is_null(), "avatar ikonu eklenmemeli");
+        assert_eq!(value["author"]["url"], "https://x.com/kullanici");
+        assert_eq!(value["author"]["name"], "Ad (@kullanici) ☑");
+
+        let footer = value["footer"]["text"].as_str().unwrap();
+        assert!(footer.contains("🔁 12K"), "footer: {footer}");
+        assert!(footer.contains("👁️ 2.5M"), "footer: {footer}");
     }
 
     #[test]

@@ -74,7 +74,58 @@ pub async fn fetch(
         apply_x_translation(client, &parsed.original_url, &id, &mut post).await;
     }
 
+    // Syndication uç noktası repost/görüntülenme/alıntı vermez; eksik metrikler
+    // FxTwitter'dan tamamlanır (çeviri isteği yapıldıysa o yanıt zaten doldurmuştur).
+    if source != TwitterSource::Fxtwitter {
+        enrich_stats(client, &parsed.original_url, &id, &mut post).await;
+    }
+
     Ok(post)
+}
+
+/// Eksik etkileşim metriklerini (repost, görüntülenme, alıntı) FxTwitter'dan tamamlar.
+///
+/// X'in syndication uç noktası yalnızca yanıt ve beğeni sayısını verir; kartta repost ve
+/// görüntülenme eksik kalmasın diye tek ek istek yapılır (metrikler zaten tamsa istek yok).
+async fn enrich_stats(
+    client: &reqwest::Client,
+    original_url: &str,
+    id: &str,
+    post: &mut BuiltinPost,
+) {
+    if post.stats.reposts > 0 && post.stats.views.is_some() {
+        return;
+    }
+
+    match from_fxtwitter(client, original_url, id, None).await {
+        Ok(full) => {
+            merge_stats(&mut post.stats, &full.stats);
+            debug!(
+                "X metrikleri tamamlandı ({}): repost {}, görüntülenme {:?}",
+                id, post.stats.reposts, post.stats.views
+            );
+        }
+        Err(err) => warn!("X metrikleri alınamadı ({id}): {err}"),
+    }
+}
+
+/// Eksik alanları doldurur; kaynakta 0/`None` olan değerleri taze veriyle değiştirir.
+fn merge_stats(target: &mut Stats, fresh: &Stats) {
+    if target.replies == 0 {
+        target.replies = fresh.replies;
+    }
+    if target.reposts == 0 {
+        target.reposts = fresh.reposts;
+    }
+    if target.likes == 0 {
+        target.likes = fresh.likes;
+    }
+    if target.quotes == 0 {
+        target.quotes = fresh.quotes;
+    }
+    if target.views.is_none() {
+        target.views = fresh.views;
+    }
 }
 
 /// Syndication ile çekilen gönderi Türkçe/İngilizce değilse X'in çevirisini uygular.
@@ -97,6 +148,9 @@ async fn apply_x_translation(
             };
             post.text = translated.text;
             post.translation = Some(translation);
+            // Aynı yanıt tam metrikleri de içerir: syndication'ın eksik bıraktığı
+            // repost/görüntülenme alanları ek istek yapılmadan tamamlanır.
+            merge_stats(&mut post.stats, &translated.stats);
             info!(
                 "X çevirisi uygulandı (kaynak: {}): {}",
                 post.translation
@@ -699,6 +753,48 @@ mod tests {
         let tweet: FxTweet =
             serde_json::from_value(json.clone()).expect("örnek JSON geçerli olmalı");
         fx_to_post(&tweet, "https://x.com/kullanici/status/1").expect("gönderi üretilmeli")
+    }
+
+    #[test]
+    fn missing_syndication_metrics_are_merged_without_overwriting_existing_ones() {
+        // Syndication yalnızca yanıt + beğeni verir; repost/görüntülenme FxTwitter'dan gelir.
+        let mut stats = Stats {
+            replies: 87,
+            reposts: 0,
+            likes: 15_600,
+            quotes: 0,
+            views: None,
+        };
+        merge_stats(
+            &mut stats,
+            &Stats {
+                replies: 90,
+                reposts: 412,
+                likes: 15_700,
+                quotes: 12,
+                views: Some(1_240_000),
+            },
+        );
+
+        assert_eq!(stats.replies, 87, "mevcut değer korunur");
+        assert_eq!(stats.likes, 15_600, "mevcut beğeni korunur");
+        assert_eq!(stats.reposts, 412, "eksik repost tamamlanır");
+        assert_eq!(stats.quotes, 12, "eksik alıntı tamamlanır");
+        assert_eq!(stats.views, Some(1_240_000), "eksik görüntülenme tamamlanır");
+    }
+
+    #[test]
+    fn fxtwitter_payload_supplies_the_missing_metrics() {
+        // Zenginleştirme akışı bu alanlarla repost/görüntülenme/alıntıyı tamamlar.
+        let mut json = translated_tweet("en");
+        json["retweets"] = serde_json::json!(412);
+        json["quotes"] = serde_json::json!(12);
+        json["views"] = serde_json::json!(1_240_000);
+
+        let post = post_from(&json);
+        assert_eq!(post.stats.reposts, 412);
+        assert_eq!(post.stats.quotes, 12);
+        assert_eq!(post.stats.views, Some(1_240_000));
     }
 
     #[test]

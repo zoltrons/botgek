@@ -84,6 +84,32 @@ impl TwitterSource {
     }
 }
 
+/// Kart gösterim stili.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CardStyle {
+    /// Klasik embed: metin/medya embed'in içinde, metrikler alt bilgide. Video kartın
+    /// içinde oynayamaz (ayrı oynatıcı olarak belirir).
+    FxEmbed,
+    /// Video içeren gönderilerde modern kart (video kartın içinde oynar), diğerlerinde
+    /// fxembed tarzı klasik embed.
+    Auto,
+    /// Modern kart (Components V2): video/görseller kartın içinde oynar.
+    #[default]
+    Modern,
+}
+
+impl CardStyle {
+    /// WebUI ve log'larda kullanılan anahtar.
+    pub fn key(&self) -> &'static str {
+        match self {
+            CardStyle::FxEmbed => "fxembed",
+            CardStyle::Auto => "auto",
+            CardStyle::Modern => "modern",
+        }
+    }
+}
+
 /// Platform bazlı motor seçimi.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -195,76 +221,157 @@ pub struct EmojiSettings {
     pub twitter: String,
 }
 
+/// Botgek'in kendi emoji seti (varsayılan) — kimliksiz yazılmış alanlar bu değerlere bağlanır.
+const DEFAULT_VERIFIED_EMOJI: &str = "<:verified:1553709836859084841>";
+const DEFAULT_REPLIES_EMOJI: &str = "<:comment:1553712370302451782>";
+const DEFAULT_REPOSTS_EMOJI: &str = "<:rt:1553712344939495424>";
+const DEFAULT_LIKES_EMOJI: &str = "<:like:1553712395057365102>";
+const DEFAULT_VIEWS_EMOJI: &str = "<:metric:1553712416242798712>";
+const DEFAULT_TRANSLATION_EMOJI: &str = "<:translation:1476614397249061056>";
+const DEFAULT_TWITTER_EMOJI: &str = "<:twitter:1476642012072920355>";
+
+// Alanların kabul ettiği emoji adları: `:twitter:` gibi **kimliksiz** yazılmış değerler
+// botun kendi emojisine bağlanır (kullanıcı ID'yi yazmayı unutsa bile kart bozulmaz).
+const VERIFIED_NAMES: &[&str] = &["verified", "check", "blueverified"];
+const REPLIES_NAMES: &[&str] = &["comment", "comments", "reply", "replies"];
+const REPOSTS_NAMES: &[&str] = &["rt", "retweet", "retweets", "repost", "reposts"];
+const LIKES_NAMES: &[&str] = &["like", "likes", "heart", "favorite"];
+const VIEWS_NAMES: &[&str] = &["metric", "metrics", "view", "views", "analytics"];
+const TRANSLATION_NAMES: &[&str] = &["translation", "translate", "globe"];
+const TWITTER_NAMES: &[&str] = &["twitter", "x", "xlogo", "x_logo"];
+
 impl Default for EmojiSettings {
-    /// Botgek sunucusuna yüklenmiş varsayılan emoji seti.
+    /// Botgek'in kendi emoji seti.
     fn default() -> Self {
         Self {
-            verified: "<:verified:1553709836859084841>".to_string(),
-            replies: "<:comment:1553712370302451782>".to_string(),
-            reposts: "<:rt:1553712344939495424>".to_string(),
-            likes: "<:like:1553712395057365102>".to_string(),
-            views: "<:metric:1553712416242798712>".to_string(),
-            translation: "<:translation:1476614397249061056>".to_string(),
-            twitter: "<:twitter:1476642012072920355>".to_string(),
+            verified: DEFAULT_VERIFIED_EMOJI.to_string(),
+            replies: DEFAULT_REPLIES_EMOJI.to_string(),
+            reposts: DEFAULT_REPOSTS_EMOJI.to_string(),
+            likes: DEFAULT_LIKES_EMOJI.to_string(),
+            views: DEFAULT_VIEWS_EMOJI.to_string(),
+            translation: DEFAULT_TRANSLATION_EMOJI.to_string(),
+            twitter: DEFAULT_TWITTER_EMOJI.to_string(),
         }
     }
 }
 
 impl EmojiSettings {
-    /// Geçersiz girdiler boşaltılır (boş alan Unicode varsayılana düşer).
+    /// Girdileri normalleştirir: kimliksiz emoji adları (`:twitter:`) botun kendi
+    /// emojisine çevrilir, geçersiz girdiler boşaltılır (boş alan Unicode'a düşer).
     pub fn sanitize(&mut self) {
-        for value in [
-            &mut self.verified,
-            &mut self.replies,
-            &mut self.reposts,
-            &mut self.likes,
-            &mut self.views,
-            &mut self.translation,
-            &mut self.twitter,
-        ] {
-            let cleaned = value.trim().to_string();
-            *value = if valid_emoji(&cleaned) { cleaned } else { String::new() };
-        }
+        self.verified = normalize_emoji(&self.verified, DEFAULT_VERIFIED_EMOJI, VERIFIED_NAMES);
+        self.replies = normalize_emoji(&self.replies, DEFAULT_REPLIES_EMOJI, REPLIES_NAMES);
+        self.reposts = normalize_emoji(&self.reposts, DEFAULT_REPOSTS_EMOJI, REPOSTS_NAMES);
+        self.likes = normalize_emoji(&self.likes, DEFAULT_LIKES_EMOJI, LIKES_NAMES);
+        self.views = normalize_emoji(&self.views, DEFAULT_VIEWS_EMOJI, VIEWS_NAMES);
+        self.translation =
+            normalize_emoji(&self.translation, DEFAULT_TRANSLATION_EMOJI, TRANSLATION_NAMES);
+        self.twitter = normalize_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, TWITTER_NAMES);
     }
 
     /// Doğrulama işareti (özel emoji ayarlıysa o, değilse Unicode).
     pub fn verified(&self) -> &str {
-        pick(&self.verified, "☑")
+        resolve_emoji(&self.verified, DEFAULT_VERIFIED_EMOJI, "☑", VERIFIED_NAMES)
     }
 
     pub fn replies(&self) -> &str {
-        pick(&self.replies, "💬")
+        resolve_emoji(&self.replies, DEFAULT_REPLIES_EMOJI, "💬", REPLIES_NAMES)
     }
 
     pub fn reposts(&self) -> &str {
-        pick(&self.reposts, "🔁")
+        resolve_emoji(&self.reposts, DEFAULT_REPOSTS_EMOJI, "🔁", REPOSTS_NAMES)
     }
 
     pub fn likes(&self) -> &str {
-        pick(&self.likes, "❤️")
+        resolve_emoji(&self.likes, DEFAULT_LIKES_EMOJI, "❤️", LIKES_NAMES)
     }
 
     pub fn views(&self) -> &str {
-        pick(&self.views, "👁️")
+        resolve_emoji(&self.views, DEFAULT_VIEWS_EMOJI, "👁️", VIEWS_NAMES)
     }
 
     pub fn translation(&self) -> &str {
-        pick(&self.translation, "🌐")
+        resolve_emoji(&self.translation, DEFAULT_TRANSLATION_EMOJI, "🌐", TRANSLATION_NAMES)
     }
 
-    /// X/Twitter göstergesi; ayarlı değilse `None` (yerine platform adı yazılır).
+    /// X/Twitter göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
     pub fn twitter(&self) -> Option<&str> {
-        (!self.twitter.is_empty()).then_some(self.twitter.as_str())
+        let resolved = resolve_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, "", TWITTER_NAMES);
+        (!resolved.is_empty()).then_some(resolved)
     }
 }
 
-fn pick<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.is_empty() {
-        fallback
+/// Kayıtlı emoji değerini mesajda kullanılabilir hale getirir:
+/// - `<:ad:id>` / `<a:ad:id>` veya kısa Unicode emoji → olduğu gibi,
+/// - `:ad:` biçiminde kimliksiz bir ad → botun varsayılan özel emojisi,
+/// - boş veya tanınmayan girdi → Unicode varsayılan.
+fn resolve_emoji<'a>(
+    value: &'a str,
+    default_custom: &'static str,
+    unicode: &'static str,
+    names: &[&str],
+) -> &'a str {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return unicode;
+    }
+
+    let colonized = trimmed.starts_with(':') && trimmed.ends_with(':');
+    if !colonized && valid_emoji(trimmed) {
+        return trimmed;
+    }
+    if let Some(name) = emoji_name(trimmed) {
+        if names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
+            return default_custom;
+        }
+    }
+    // `:foo:` gibi tanınmayan kısa girdiler metne dökülmesin.
+    if colonized {
+        return unicode;
+    }
+
+    if valid_emoji(trimmed) {
+        trimmed
     } else {
-        value
+        unicode
     }
 }
+
+/// Ayar dosyasına yazılacak hâle getirir: boş alan korunur (Unicode isteği), kimliksiz
+/// emoji adı botun emojisine çevrilir, tanınmayan girdi boşaltılır.
+fn normalize_emoji(value: &str, default_custom: &str, names: &[&str]) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let colonized = trimmed.starts_with(':') && trimmed.ends_with(':');
+    if !colonized && valid_emoji(trimmed) {
+        return trimmed.to_string();
+    }
+    if let Some(name) = emoji_name(trimmed) {
+        if names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
+            return default_custom.to_string();
+        }
+    }
+
+    String::new()
+}
+
+/// `:ad:` biçiminden (veya düz `ad` girdisinden) emoji adını çıkarır.
+fn emoji_name(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    let name = trimmed
+        .strip_prefix(':')
+        .and_then(|rest| rest.strip_suffix(':'))
+        .unwrap_or(trimmed);
+
+    let valid = !name.is_empty()
+        && name.len() <= 32
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    valid.then_some(name)
+}
+
 
 /// `<:ad:id>` / `<a:ad:id>` biçimini veya kısa bir Unicode emojiyi kabul eder.
 /// Markdown'ı bozabilecek karakterler (`[`, `]`, `(`, `)`, `` ` `` ...) reddedilir.
@@ -328,9 +435,11 @@ pub struct EngineSettings {
     /// Mesajı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönder ("taklit").
     /// Bu sayede mesajda `<@kullanıcı>` etiketi ve `[:](...)` gibi link hileleri gerekmez.
     pub impersonate_user: bool,
-    /// Modern bileşen düzeni (Components V2): metin ve medya tek kart içinde gösterilir.
-    /// Video/görseller Media Gallery bileşeniyle kartın içinde oynar, link kartın içinde durur.
-    pub components_v2: bool,
+    /// Kart gösterim stili: fxembed tarzı klasik embed / otomatik / her zaman modern kart.
+    /// Modern kartta video kartın içinde oynar, ancak profil resmi Discord'un V2 kuralı
+    /// gereği sağda durur; **avatarın kullanıcı adının solunda küçük görünmesi için**
+    /// fxembed (klasik embed) stili kullanılır.
+    pub card_style: CardStyle,
     /// Modern kartta kullanılan özel emoji seti (boş alan → Unicode varsayılan).
     pub emojis: EmojiSettings,
 }
@@ -352,7 +461,7 @@ impl Default for EngineSettings {
             auto_translate: true,
             fallback_to_proxy: true,
             impersonate_user: true,
-            components_v2: true,
+            card_style: CardStyle::default(),
             emojis: EmojiSettings::default(),
         }
     }
@@ -532,6 +641,14 @@ impl AppSettings {
 
             match loaded {
                 Ok(mut settings) => {
+                    // Eski/elle düzenlenmiş kayıtlar yükleme anında da normalize edilir:
+                    // kimliksiz emoji adları (`:twitter:`) botun emojisine bağlanır, geçersiz
+                    // alan adları ve aralık dışı değerler güvenli sınıra çekilir.
+                    settings.engine.sanitize();
+                    for guild in settings.guilds.values_mut() {
+                        guild.engine.sanitize();
+                    }
+
                     // Geriye dönük uyumluluk: Eski role_filter doluysa ve yeniler boşsa aktar
                     if let Some(ref legacy) = settings.role_filter {
                         if !legacy.roles.is_empty() && settings.role_filters.twitter.roles.is_empty() {
@@ -813,7 +930,7 @@ mod tests {
         assert_eq!(settings.engine.domains.twitter, "vxtwitter.com");
         // Yeni alanlar JSON'da yoksa varsayılanları alır
         assert!(settings.engine.impersonate_user);
-        assert!(settings.engine.components_v2);
+        assert_eq!(settings.engine.card_style, CardStyle::Modern, "kart stili JSON'da yoksa modern kart");
         assert_eq!(
             settings.engine.emojis.verified(),
             "<:verified:1553709836859084841>",
@@ -849,6 +966,56 @@ mod tests {
     }
 
     #[test]
+    fn emoji_name_without_id_is_bound_to_the_bot_emoji() {
+        // WebUI/JSON'da kimlik yazılmayı unutulmuş değerler botun emojisine bağlanır
+        let mut emojis = EmojiSettings {
+            verified: ":verified:".to_string(),
+            replies: ":comment:".to_string(),
+            reposts: ":rt:".to_string(),
+            likes: ":like:".to_string(),
+            views: ":metric:".to_string(),
+            translation: ":translation:".to_string(),
+            twitter: ":twitter:".to_string(),
+        };
+        emojis.sanitize();
+
+        assert_eq!(emojis.verified, DEFAULT_VERIFIED_EMOJI);
+        assert_eq!(emojis.replies, DEFAULT_REPLIES_EMOJI);
+        assert_eq!(emojis.reposts, DEFAULT_REPOSTS_EMOJI);
+        assert_eq!(emojis.likes, DEFAULT_LIKES_EMOJI);
+        assert_eq!(emojis.views, DEFAULT_VIEWS_EMOJI);
+        assert_eq!(emojis.translation, DEFAULT_TRANSLATION_EMOJI);
+        assert_eq!(emojis.twitter, DEFAULT_TWITTER_EMOJI);
+        assert_eq!(emojis.twitter(), Some(DEFAULT_TWITTER_EMOJI));
+
+        // Kayıt temizlenmeden (sanitize edilmeden) okunsa bile mesajda bozuk emoji çıkmaz
+        let raw = EmojiSettings {
+            twitter: ":twitter:".to_string(),
+            ..EmojiSettings::default()
+        };
+        assert_eq!(raw.twitter(), Some(DEFAULT_TWITTER_EMOJI), "kimliksiz ad bot emojisine düşer");
+
+        let unknown = EmojiSettings {
+            twitter: ":botgek_emoji:".to_string(),
+            ..EmojiSettings::default()
+        };
+        assert_eq!(unknown.twitter(), None, "tanınmayan ad platform adına düşer");
+        assert_eq!(unknown.twitter.trim(), ":botgek_emoji:");
+    }
+
+    #[test]
+    fn card_style_round_trips_through_json() {
+        let mut settings = AppSettings::default();
+        settings.engine.card_style = CardStyle::FxEmbed;
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"card_style\":\"fxembed\""), "serde adı WebUI değeriyle aynı olmalı: {json}");
+
+        let parsed: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.engine.card_style, CardStyle::FxEmbed);
+        assert_eq!(parsed.engine.card_style.key(), "fxembed");
+    }
+
+    #[test]
     fn emoji_sanitize_rejects_invalid_values() {
         let mut emojis = EmojiSettings {
             // ID çok kısa
@@ -878,13 +1045,13 @@ mod tests {
     fn engine_submission_flags_round_trip_through_json() {
         let mut settings = AppSettings::default();
         settings.engine.impersonate_user = false;
-        settings.engine.components_v2 = false;
+        settings.engine.card_style = CardStyle::Modern;
 
         let json = serde_json::to_string(&settings).unwrap();
         let parsed: AppSettings = serde_json::from_str(&json).unwrap();
 
         assert!(!parsed.engine.impersonate_user);
-        assert!(!parsed.engine.components_v2);
+        assert_eq!(parsed.engine.card_style, CardStyle::Modern);
         assert!(parsed.engine.attach_videos);
     }
 

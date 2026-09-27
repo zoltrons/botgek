@@ -1381,9 +1381,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <p class="panel-sub">
                 Her platform için <strong>Proxy</strong> (harici önizleme servisi) veya <strong>Native Embed</strong> (bot bağlantıyı kendi çözer, Discord embed'ini kendisi üretir) motorunu seçin.
                 Alan adı boş bırakılırsa .env değeri kullanılır. Native embed başarısız olursa proxy linkine düşülür.
-                <strong>Modern kart</strong> açıkken gönderi, Discord'un yeni Components V2 düzeniyle tek kart olarak gönderilir:
-                hesabın profil resmi kartın sağ üstünde, video/görseller kartın içinde; alt satırlarda metrikler ve
-                <span class="mono">[Link]</span> kartın içinde durur.
+                <strong>Kart stili</strong> gönderimin görünümünü belirler:
+                <span class="mono">modern</span> tek parça Components V2 kartıdır (video/görseller kartın içinde oynar),
+                <span class="mono">otomatik</span> video içeren gönderilerde bu kartı, diğerlerinde klasik embed'i kullanır,
+                <span class="mono">fxembed</span> ise her zaman klasik embed gönderir.
+                Kartta <strong>profil resmi gösterilmez</strong>; yalnızca ad ve (varsa) doğrulama işareti yer alır.
                 <strong>Taklit</strong> açıkken mesaj, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönderilir;
                 böylece mesajda link/mention hilelerine gerek kalmaz.
             </p>
@@ -1460,15 +1462,16 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             </div>
             <div class="ai-label" style="margin-top: 16px;"><span>Gönderim Biçimi</span></div>
             <div class="option-grid">
-                <div class="option-tile" onclick="toggleEngineOption('engine-components-v2')">
+                <div class="option-tile">
                     <div>
-                        <div class="name">Modern kart (Components V2)</div>
-                        <div class="hint">Video ve galeri kartın içinde; link kart içinde durur</div>
+                        <div class="name">Kart stili</div>
+                        <div class="hint">modern: tek kart (video kartta oynar) • otomatik: video varsa modern • fxembed: klasik embed</div>
                     </div>
-                    <label class="toggle-switch" onclick="event.stopPropagation()">
-                        <input type="checkbox" id="engine-components-v2" onchange="onConfigModified(); updateEngineSummary()">
-                        <span class="toggle-track"></span>
-                    </label>
+                    <select class="text-input" id="engine-card-style" onchange="onConfigModified(); updateEngineSummary()" style="cursor: pointer; max-width: 200px;">
+                        <option value="modern">Modern kart (V2)</option>
+                        <option value="auto">Otomatik (video → modern)</option>
+                        <option value="fxembed">fxembed (klasik embed)</option>
+                    </select>
                 </div>
 
                 <div class="option-tile" onclick="toggleEngineOption('engine-impersonate')">
@@ -1595,7 +1598,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             auto_translate: true,
             fallback_to_proxy: true,
             impersonate_user: true,
-            components_v2: true,
+            card_style: 'modern',
             emojis: {
                 verified: '<:verified:1553709836859084841>',
                 replies: '<:comment:1553712370302451782>',
@@ -1664,12 +1667,15 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             });
             ['twitter_source', 'attach_images', 'attach_videos', 'max_images', 'max_video_mb',
              'show_metrics', 'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
-             'impersonate_user', 'components_v2']
+             'impersonate_user', 'card_style']
                 .forEach(field => {
                     if (engine[field] === undefined || engine[field] === null) {
                         engine[field] = ENGINE_DEFAULTS[field];
                     }
                 });
+            // Eski kayıtlardaki `components_v2` alanı kart stiline dönüştürüldü.
+            if (engine.components_v2 === false) engine.card_style = 'fxembed';
+            delete engine.components_v2;
             return engine;
         }
 
@@ -1746,7 +1752,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             engine.fallback_to_proxy = isChecked('engine-fallback');
             engine.auto_translate = isChecked('engine-auto-translate');
             engine.impersonate_user = isChecked('engine-impersonate');
-            engine.components_v2 = isChecked('engine-components-v2');
+
+            const cardStyleEl = document.getElementById('engine-card-style');
+            if (cardStyleEl) engine.card_style = cardStyleEl.value;
 
             ENGINE_EMOJI_FIELDS.forEach(field => {
                 const el = document.getElementById('engine-emoji-' + field.key);
@@ -1909,6 +1917,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             const sourceEl = document.getElementById('engine-twitter-source');
             if (sourceEl) sourceEl.value = engine.twitter_source;
 
+            const cardStyleEl = document.getElementById('engine-card-style');
+
             const setChecked = (id, value) => {
                 const el = document.getElementById(id);
                 if (el) el.checked = !!value;
@@ -1918,7 +1928,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             setChecked('engine-fallback', engine.fallback_to_proxy);
             setChecked('engine-auto-translate', engine.auto_translate);
             setChecked('engine-impersonate', engine.impersonate_user);
-            setChecked('engine-components-v2', engine.components_v2);
+
+            if (cardStyleEl) cardStyleEl.value = engine.card_style || 'modern';
             setChecked('engine-show-metrics', engine.show_metrics);
             setChecked('engine-show-timestamp', engine.show_timestamp);
             setChecked('engine-show-note', engine.show_community_note);
@@ -1986,7 +1997,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             const summary = document.getElementById('engine-summary');
             if (summary) {
                 const extras = [];
-                if (engine.components_v2) extras.push('V2 KART');
+                if (engine.card_style === 'modern') extras.push('V2 KART');
+                else if (engine.card_style === 'auto') extras.push('V2 (VİDEO)');
+                else extras.push('FXEMBED');
                 if (engine.impersonate_user) extras.push('TAKLİT');
                 summary.textContent = builtinCount + '/' + ENGINE_PLATFORMS.length + ' NATIVE EMBED'
                     + (extras.length ? ' • ' + extras.join(' • ') : '');

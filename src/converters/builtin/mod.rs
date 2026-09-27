@@ -25,11 +25,11 @@ use serenity::all::{
     ChannelId, Context, CreateMessage, Message, MessageFlags, MessageId, ReactionType, UserId, WebhookId,
 };
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::parser::{ParsedPost, Platform};
 use crate::config::Config;
-use crate::settings::{EmojiSettings, EngineSettings};
+use crate::settings::{CardStyle, EmojiSettings, EngineSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
 use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 
@@ -712,6 +712,19 @@ async fn send_via_webhook(
 // GÖNDERİM
 // -------------------------------------------------------------------------------------
 
+/// Kart stili modern (Components V2) kartı gerektiriyor mu?
+///
+/// `Auto` stilinde yalnızca **video içeren** gönderilerde modern kart kullanılır (video
+/// kartın içinde oynar); diğer gönderiler fxembed tarzı klasik embed ile gönderilir ve
+/// profil resmi kullanıcı adının solunda küçük durur.
+fn use_modern_card(style: CardStyle, post: &BuiltinPost) -> bool {
+    match style {
+        CardStyle::Modern => true,
+        CardStyle::FxEmbed => false,
+        CardStyle::Auto => post.media.iter().any(|media| media.is_video()),
+    }
+}
+
 /// Native embed akışı. Veri çekilemez veya mesaj gönderilemezse `false` döner; bu durumda
 /// çağıran taraf (ayar açıksa) proxy motoruna düşer.
 pub async fn handle(
@@ -735,8 +748,16 @@ pub async fn handle(
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
     let identity = engine.impersonate_user.then(|| Impersonation::from_message(msg));
 
-    // 1) Modern bileşen düzeni: metin + medya tek kart içinde (video kartın içinde oynar).
-    if engine.components_v2 && !V2_UNAVAILABLE.load(Ordering::Relaxed) {
+    // 1) Modern bileşen düzeni: yalnızca seçilen kart stili izin veriyorsa.
+    let modern_card = use_modern_card(engine.card_style, &post);
+    debug!(
+        "Kart stili: {} (modern kart: {}) — {}",
+        engine.card_style.key(),
+        modern_card,
+        parsed.original_url
+    );
+
+    if modern_card && !V2_UNAVAILABLE.load(Ordering::Relaxed) {
         let attempt = send_components_v2(
             ctx,
             msg,
@@ -1122,6 +1143,33 @@ mod message_tests {
         remember_author(message_id, UserId::new(42)).await;
         assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
         assert!(is_native_message(message_id).await);
+    }
+
+    #[test]
+    fn card_style_decides_whether_the_modern_card_is_used() {
+        let mut video_post = post();
+        video_post.media = vec![Media {
+            kind: MediaKind::Video,
+            url: "https://cdn/v1.mp4".to_string(),
+            poster: None,
+            width: None,
+            height: None,
+            duration: None,
+        }];
+
+        assert!(use_modern_card(CardStyle::Modern, &post()));
+        assert!(
+            !use_modern_card(CardStyle::FxEmbed, &video_post),
+            "fxembed stilinde hep klasik embed kullanılır"
+        );
+        assert!(
+            use_modern_card(CardStyle::Auto, &video_post),
+            "otomatikte video kartın içinde oynar"
+        );
+        assert!(
+            !use_modern_card(CardStyle::Auto, &post()),
+            "otomatikte metin/görsel gönderiler fxembed düzeninde gönderilir"
+        );
     }
 }
 

@@ -6,8 +6,7 @@
 //! içinde gösterir. Kart, X'in kendi embed'ine benzeyecek şekilde kurulur:
 //!
 //! ```text
-//! [hesabın profil resmi — sağda küçük resim]
-//! **Ad <:verified:...> ([@kullanici](https://x.com/kullanici))**   ← Section + Thumbnail
+//! **Ad <:verified:...> ([@kullanici](https://x.com/kullanici))**   ← profil resmi yok
 //! gönderi metni
 //! -# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K
 //! -# <:twitter:...> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)
@@ -34,9 +33,7 @@ pub const MEDIA_GALLERY_LIMIT: usize = 10;
 const MAX_CONTAINER_CHILDREN: usize = 12;
 
 // Bileşen türleri
-const TYPE_SECTION: u64 = 9;
 const TYPE_TEXT_DISPLAY: u64 = 10;
-const TYPE_THUMBNAIL: u64 = 11;
 const TYPE_MEDIA_GALLERY: u64 = 12;
 const TYPE_CONTAINER: u64 = 17;
 
@@ -127,21 +124,10 @@ fn text(content: impl Into<String>) -> Value {
 
 /// Yazar satırı: `**Ad <:verified:...> ([@kullanici](profil))**`.
 ///
-/// Hesabın profil resmi varsa satır, sağda küçük resim (`Thumbnail`) taşıyan bir
-/// `Section` içine alınır; adres yoksa sade metin bileşeni döner.
+/// Profil resmi kartta gösterilmez: Discord Components V2 küçük resmi yalnızca bölümün
+/// sağına koyabildiği için modelin solunda küçük avatar mümkün değildir.
 fn author_component(post: &BuiltinPost, emojis: &EmojiSettings) -> Value {
-    let line = text(author_line(post, emojis));
-
-    match post
-        .author
-        .avatar
-        .as_deref()
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-    {
-        Some(avatar) => avatar_section(line, avatar, post),
-        None => line,
-    }
+    text(author_line(post, emojis))
 }
 
 /// `**Ad <:verified:...> ([@kullanici](profil))**` biçimindeki yazar satırı.
@@ -167,25 +153,6 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
     };
 
     format!("**{body}**")
-}
-
-/// Yazar satırını, sağda hesabın profil resmini gösteren bir `Section` içine alır.
-fn avatar_section(line: Value, avatar: &str, post: &BuiltinPost) -> Value {
-    let description = truncate_chars(
-        &format!("{} profil resmi", post.author.label()),
-        1024,
-    );
-
-    json!({
-        "type": TYPE_SECTION,
-        "components": [line],
-        "accessory": {
-            "type": TYPE_THUMBNAIL,
-            "media": { "url": avatar },
-            "description": description,
-            "spoiler": post.sensitive,
-        }
-    })
 }
 
 /// Alıntılanan gönderi: küçük başlık + blok alıntı.
