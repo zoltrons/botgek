@@ -6,17 +6,26 @@
 //! içinde gösterir. Kart, X'in kendi embed'ine benzeyecek şekilde kurulur:
 //!
 //! ```text
-//! **Ad <:verified:...> ([@kullanici](https://x.com/kullanici))**   ← profil resmi yok
-//! gönderi metni
-//! -# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K
-//! -# <:twitter:...> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)
+//! kullanıcının yazdığı metin                                     ← kartın DIŞINDA (üstünde)
+//! ┌────────────────────────────────────────────────────────────┐
+//! │ **Ad <:verified:...> ([@kullanici](https://x.com/kullanici))**   ← profil resmi yok
+//! │ gönderi metni
+//! │ -# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K
+//! │ -# <:twitter:...> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)
+//! └────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! Kullanıcının linkle birlikte yazdığı metin kartın **içine konmaz**: bileşenlerin en
+//! üstünde düz metin (`Text Display`) olarak gönderilir, böylece taklit (webhook) açıkken
+//! mesaj kullanıcının kendi adıyla gittiği için tam olarak "kullanıcı yazmış gibi" görünür.
+//! Components V2 bayrağı `content` alanını yasakladığı için mesaj metninin yerini bu
+//! bileşen alır.
 //!
 //! Sol kenarda renkli çubuk (container `accent_color`) kullanılmaz.
 
 use serde_json::{Value, json};
 
-use super::render::{RenderOptions, ResolvedMedia, escape_markdown, format_count, video_poster};
+use super::render::{RenderOptions, ResolvedMedia, escape_markdown, format_count};
 use super::{BuiltinPost, Impersonation};
 use crate::converters::parser::Platform;
 use crate::settings::EmojiSettings;
@@ -53,12 +62,23 @@ pub struct V2Card<'a> {
 }
 
 /// Discord `POST /channels/{id}/messages` (veya webhook) gövdesini üretir.
+///
+/// Yapı: `components[0]` = (varsa) kullanıcının yazdığı metin, `components[1]` = kart
+/// (`Container`). Kullanıcı metni kartın **içinde** değil **üstünde**, düz mesaj metni
+/// olarak durur; taklit (webhook) açıkken mesaj kullanıcının adıyla gittiği için tam
+/// olarak kullanıcı yazmış gibi görünür.
 pub fn build_payload(card: &V2Card<'_>) -> Value {
+    // Kullanıcı notu kartın dışına çıkar: alıntı bloğuna (`>`) çevrilmez, olduğu gibi yazılır.
+    let mut top: Vec<Value> = card
+        .user_comment
+        .map(str::trim)
+        .filter(|comment| !comment.is_empty())
+        .map(text)
+        .into_iter()
+        .collect();
+
     let mut children: Vec<Value> = vec![author_component(card.post, card.emojis)];
 
-    if let Some(comment) = card.user_comment.map(str::trim).filter(|c| !c.is_empty()) {
-        children.push(text(quote_block(comment)));
-    }
     if !card.post.text.trim().is_empty() {
         children.push(text(spoiler_wrap(card.post.text.trim(), card.post.sensitive)));
     }
@@ -90,12 +110,15 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
 
     children.truncate(MAX_CONTAINER_CHILDREN);
 
+    // Kart her zaman son bileşendir: kullanıcı metni (varsa) onun üstünde durur.
+    top.push(json!({
+        "type": TYPE_CONTAINER,
+        "components": children,
+    }));
+
     let mut payload = json!({
         "flags": COMPONENTS_V2_FLAG,
-        "components": [{
-            "type": TYPE_CONTAINER,
-            "components": children,
-        }],
+        "components": top,
         "attachments": attachments_json(card.resolved),
     });
 
@@ -199,7 +222,10 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value>
     Some(text(lines.join("\n")))
 }
 
-/// `Media Gallery`: video (veya kapağı) + görseller; hepsi kartın içinde.
+/// `Media Gallery`: video + görseller; hepsi kartın içinde.
+///
+/// Video **tek başına** gösterilir: ayrıca kapak görseli eklenmez. Kapak + video birlikte
+/// eklendiğinde galeri iki öğeyi **yan yana** (thumbnail + video) çiziyordu.
 fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
     let post = card.post;
     let mut items: Vec<Value> = Vec::new();
@@ -207,14 +233,10 @@ fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
     match (&card.resolved.attached_video, &card.resolved.video_link) {
         // Video dosya olarak eklendiyse doğrudan kart içinde oynar.
         (Some(reference), _) => items.push(media_item(reference, post.sensitive)),
-        // İndirilemediyse kapak görseli + uzak video bağlantısı gösterilir
-        // (kapak, video alıntıdan geldiyse alıntının kapağıdır).
-        (None, Some(link)) => {
-            if let Some(poster) = video_poster(post) {
-                items.push(media_item(&poster, post.sensitive));
-            }
-            items.push(media_item(link, post.sensitive));
-        }
+        // İndirilemediyse uzak video bağlantısı kartın içinde oynar (Discord videoyu
+        // dış bağlantıdan da oynatır); kapak görseli eklenmez, aksi halde galeri
+        // kapak + video olarak iki öğe gösterirdi.
+        (None, Some(link)) => items.push(media_item(link, post.sensitive)),
         (None, None) => {}
     }
 
@@ -330,11 +352,6 @@ fn spoiler_wrap(text: &str, spoiler: bool) -> String {
     }
 }
 
-/// Çok satırlı metni Discord blok alıntısına çevirir.
-fn quote_block(text: &str) -> String {
-    text.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
-}
-
 /// Yüklenen dosyalar `attachment://<dosya adı>` ile referans verildiği için
 /// payload'da dosya listesi (id + ad) bulunmak zorundadır.
 fn attachments_json(resolved: &ResolvedMedia) -> Value {
@@ -422,8 +439,26 @@ mod tests {
         }
     }
 
+    /// Kart, bileşen listesindeki `Container` bileşenidir (kullanıcı notu varsa üstünde
+    /// düz metin bileşeni bulunur, bu yüzden sabit indeks kullanılmaz).
     fn container(payload: &Value) -> &Value {
-        &payload["components"][0]
+        payload["components"]
+            .as_array()
+            .expect("bileşen listesi")
+            .iter()
+            .find(|component| component["type"] == TYPE_CONTAINER)
+            .expect("kart (container) bileşeni")
+    }
+
+    /// Kartın **dışındaki** (container dışı) üst düzey bileşenler.
+    fn top_level(payload: &Value) -> Vec<String> {
+        payload["components"]
+            .as_array()
+            .expect("bileşen listesi")
+            .iter()
+            .filter(|component| component["type"] == TYPE_TEXT_DISPLAY)
+            .map(|component| component["content"].as_str().unwrap().to_string())
+            .collect()
     }
 
     fn components(payload: &Value) -> &Vec<Value> {
@@ -503,18 +538,54 @@ mod tests {
 
 
     #[test]
-    fn text_comment_metrics_and_meta_lines_are_inside_the_card() {
+    fn user_comment_is_sent_above_the_card_like_a_user_message() {
         let post = sample_post();
         let options = options();
         let emojis = emojis();
         let resolved = ResolvedMedia::default();
 
         let mut card = card(&post, &options, &resolved, &emojis);
-        card.user_comment = Some("şuna bak\nmükemmel");
+        card.user_comment = Some("  şuna bak\nmükemmel  ");
         let payload = build_payload(&card);
 
+        // Kullanıcı metni kartın **dışında**, en üstte ve alıntı bloğuna (`>`) çevrilmeden durur.
+        assert_eq!(top_level(&payload), vec!["şuna bak\nmükemmel".to_string()]);
+        assert_eq!(
+            payload["components"][0]["type"], TYPE_TEXT_DISPLAY,
+            "kullanıcı metni kartın üstünde olmalı"
+        );
+        assert_eq!(
+            payload["components"][1]["type"], TYPE_CONTAINER,
+            "kart kullanıcı metninin altında olmalı"
+        );
+        assert!(
+            !texts(&payload).iter().any(|text| text.contains("şuna bak")),
+            "kullanıcı metni kartın içine konmaz: {:?}",
+            texts(&payload)
+        );
+    }
+
+    #[test]
+    fn card_stays_alone_when_the_user_wrote_nothing() {
+        let post = sample_post();
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        assert!(top_level(&payload).is_empty(), "yorum yoksa üstte metin bileşeni olmaz");
+        assert_eq!(payload["components"].as_array().unwrap().len(), 1, "yalnızca kart");
+    }
+
+    #[test]
+    fn text_metrics_and_meta_lines_are_inside_the_card() {
+        let post = sample_post();
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+
         let texts = texts(&payload);
-        assert!(texts.iter().any(|t| t == "> şuna bak\n> mükemmel"), "yorum: {texts:?}");
         assert!(texts.iter().any(|t| t == "merhaba dünya"), "gönderi metni: {texts:?}");
 
         assert!(
@@ -654,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_video_falls_back_to_poster_and_link() {
+    fn remote_video_is_shown_once_inside_the_gallery() {
         let mut post = sample_post();
         post.media = vec![video("https://cdn/v1.mp4", "https://cdn/poster.jpg")];
 
@@ -666,7 +737,11 @@ mod tests {
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &resolved, &emojis));
 
-        assert_eq!(gallery_urls(&payload), vec!["https://cdn/poster.jpg", "https://cdn/v1.mp4"]);
+        assert_eq!(
+            gallery_urls(&payload),
+            vec!["https://cdn/v1.mp4"],
+            "galeri kapak + video olarak iki öğe göstermemeli (yan yana çıkıyordu)"
+        );
         let meta = texts(&payload).pop().unwrap();
         assert!(meta.contains("[🎬 Videoyu aç](https://cdn/v1.mp4)"), "son satır: {meta}");
     }
@@ -755,7 +830,7 @@ mod tests {
         quote.media = vec![video("https://cdn/q.mp4", "https://cdn/q.jpg")];
         post.quote = Some(Box::new(quote));
 
-        // İndirilemeyen video için kapak görseli + oynatma bağlantısı kartta gösterilir.
+        // İndirilemeyen (alıntıdan gelen) video kartın içinde tek öğe olarak gösterilir.
         let resolved = ResolvedMedia {
             video_link: Some("https://cdn/q.mp4".to_string()),
             quote_media: true,
@@ -767,9 +842,11 @@ mod tests {
 
         assert_eq!(
             gallery_urls(&payload),
-            vec!["https://cdn/q.jpg", "https://cdn/q.mp4"],
-            "alıntının videosu (kapağıyla) kartın içinde gösterilmeli"
+            vec!["https://cdn/q.mp4"],
+            "alıntının videosu kartın içinde (kapağıyla birlikte değil, tek başına) gösterilmeli"
         );
+        let meta = texts(&payload).pop().unwrap();
+        assert!(meta.contains("[🎬 Videoyu aç](https://cdn/q.mp4)"), "son satır: {meta}");
     }
 
     #[test]

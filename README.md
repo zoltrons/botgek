@@ -22,11 +22,12 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - 🧱 **Kart stilleri:** WebUI'dan seçilir — `modern` (tek parça Components V2 kartı; varsayılan), `otomatik` (video içeren gönderilerde modern kart, diğerlerinde klasik embed) veya `fxembed` (her zaman klasik embed).
   - 🚫 **Profil resmi yok:** Kart, X'in aksine **avatar göstermez** (Discord Components V2 küçük resmi yalnızca sağa koyabildiği için modelin solunda küçük avatar mümkün değil); yalnızca ad, doğrulama işareti ve (varsa) profil linki yer alır.
   - 🧱 **Modern kart (Components V2):** Gönderi, Discord'un yeni bileşen düzeniyle (`Container` + `Text Display` + `Media Gallery`) **tek kart** olarak, X'in kendi embed'ine benzer şekilde gönderilir:
+    - Kullanıcının linkle birlikte yazdığı metin kartın **dışında**, kartın üstünde düz mesaj metni olarak gönderilir (Components V2 bayrağı `content` alanını yasakladığı için mesaj metninin yerini üst düzey `Text Display` alır; taklit açıkken mesaj kullanıcının kendi adıyla gittiğinden tam olarak kullanıcı yazmış gibi görünür, `>` alıntı bloğuna çevrilmez).
     - `**Ad <:verified:...> ([@kullanici](profil))**`
-    - gönderi metni (+ varsa alıntı/kullanıcı notu)
+    - gönderi metni (+ varsa alıntı)
     - `-# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K`
     - `-# <:twitter:...> • <t:...:R> • [Link](gönderi)`
-    - Video ve görseller **kartın içinde** oynar/görünür (klasik embed'lerde Discord bot mesajlarında `video` alanını göstermez); sol kenarda renkli çubuk kullanılmaz.
+    - Video ve görseller **kartın içinde** oynar/görünür (klasik embed'lerde Discord bot mesajlarında `video` alanını göstermez); sol kenarda renkli çubuk kullanılmaz. Video indirilemediyse galeride **yalnızca video** gösterilir — kapak görseli ayrıca eklenmez (kapak + video yan yana iki öğe olarak çiziliyordu), oynatma bağlantısı kartın son satırında kalır.
     - Kullanılan emojiler WebUI'dan (`<:ad:id>` biçiminde) değiştirilebilir; **kimlik yazılmayı unutulursa** (`:twitter:` gibi) alan botun kendi emojisine bağlanır, boş bırakılan alan Unicode emojiye düşer — böylece kart hiçbir durumda bozuk emoji göstermez. Discord bileşenleri reddederse otomatik olarak klasik embed'e düşülür.
   - 💬 **Yanıt desteği:** Kullanıcı linki bir mesaja **yanıt olarak** attıysa bot da **aynı mesaja yanıt verir** (proxy motoruyla aynı davranış). Discord webhook mesajları yanıt olamadığı için taklit açıkken bile yanıtlarda mesaj **bot adına** gönderilir (WebUI: *“Yanıtlarda yanıtı koru”*; kapatılırsa taklit korunur, yanıt bağlantısı düşer).
   - ⚡ **Gecikme hissi yok:** `DELETE_ORIGINAL` açıkken kullanıcının mesajı **dönüşüm başında** (proxy yedeği açıksa veri çekilmeden önce) silinir; kullanıcı mesajı beklemeden kaybolur, kart hazır olunca gelir. Proxy motorunda da silme gönderimden hemen önce yapılır.

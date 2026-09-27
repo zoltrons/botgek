@@ -1385,6 +1385,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <span class="mono">modern</span> tek parça Components V2 kartıdır (video/görseller kartın içinde oynar),
                 <span class="mono">otomatik</span> video içeren gönderilerde bu kartı, diğerlerinde klasik embed'i kullanır,
                 <span class="mono">fxembed</span> ise her zaman klasik embed gönderir.
+                Kullanıcının linkle birlikte yazdığı metin modern kartta <strong>kartın dışında, kartın üstünde</strong> kullanıcı mesajı gibi durur (kart içine konmaz).
+                Video indirilemediyse kartta yalnızca video gösterilir; kapak görseli ayrı bir öğe olarak eklenmez.
                 Kartta <strong>profil resmi gösterilmez</strong>; yalnızca ad ve (varsa) doğrulama işareti yer alır.
                 <strong>Taklit</strong> açıkken mesaj, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönderilir;
                 böylece mesajda link/mention hilelerine gerek kalmaz.
