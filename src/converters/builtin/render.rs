@@ -367,9 +367,13 @@ fn build_main_embed(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
     )))
 }
 
+/// Klasik embed alt bilgisindeki marka imzası. Kart tanıma (🗑️ silme izni ve
+/// "kartlara verilen yanıt AI'yı tetiklemesin" kuralı) bu metinle yapılır.
+pub const CARD_SIGNATURE: &str = "Botgek";
+
 /// Alt bilgi: platform + ek bilgi + çeviri notu + etkileşim metrikleri.
 fn footer_text(post: &BuiltinPost, options: &RenderOptions) -> String {
-    let mut parts = vec![format!("{} • Botgek", post.platform.display_name())];
+    let mut parts = vec![format!("{} • {}", post.platform.display_name(), CARD_SIGNATURE)];
     if let Some(extra) = &post.extra_label {
         if !extra.trim().is_empty() {
             parts.push(extra.trim().to_string());

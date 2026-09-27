@@ -6,3 +6,9 @@ README.md
 *.md
 docker-compose.yml
 Dockerfile
+
+# Yerel kayıt veritabanı ve veri dizini imaja girmemeli
+botgek.db
+botgek.db-wal
+botgek.db-shm
+data/

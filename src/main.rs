@@ -3,6 +3,7 @@ mod config;
 mod converters;
 mod handler;
 mod settings;
+mod store;
 mod utils;
 mod web;
 
@@ -42,6 +43,10 @@ async fn main() {
 
     // Dinamik Ayarları Yükle (settings.json)
     let settings = Arc::new(RwLock::new(settings::AppSettings::load()));
+
+    // Kalıcı kayıt deposu (SQLite): kart kayıtları, 🗑️ silme izni ve AI koruması.
+    // Bot yeniden başladığında/güncellendiğinde hiçbir kayıt kaybolmaz.
+    store::init();
 
     // HTTP/2 + bağlantı havuzu: paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması
     // tekrarlanmaz → dönüşüm gecikmesi düşer.

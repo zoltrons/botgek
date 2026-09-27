@@ -48,6 +48,15 @@ impl EventHandler for Handler {
         }
 
         let current_user_id = ctx.cache.current_user().id;
+
+        // Kendi dönüştürme kartlarımız (bot adına veya taklit webhook'u ile gönderilenler)
+        // gelen mesaj olarak işlenmez: modern kartın içeriği boştur ama kartın metni
+        // (kullanıcının yazdığı not) bota etiket içerebilir; bu etiket AI sohbetini
+        // tetiklememeli. Kartlara verilen yanıtlar ayrı mesajlardır.
+        if crate::converters::builtin::is_card_message(&msg, current_user_id) {
+            return;
+        }
+
         let current_settings = self.settings.read().await.get_guild_settings(msg.guild_id);
 
         // 1. Sosyal Medya Link Dönüştürme Kontrolü
@@ -55,14 +64,18 @@ impl EventHandler for Handler {
 
         // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü
         let referenced_info = if let Some(ref ref_msg) = msg.referenced_message {
-            Some((ref_msg.author.id, ref_msg.content.clone(), is_converted_message(ref_msg).await))
+            Some((
+                ref_msg.author.id,
+                ref_msg.content.clone(),
+                is_converted_message(ref_msg, current_user_id),
+            ))
         } else if let Some(ref msg_ref) = msg.message_reference {
             if let Some(msg_id) = msg_ref.message_id {
                 match msg.channel_id.message(&ctx.http, msg_id).await {
                     Ok(referenced) => Some((
                         referenced.author.id,
                         referenced.content.clone(),
-                        is_converted_message(&referenced).await,
+                        is_converted_message(&referenced, current_user_id),
                     )),
                     Err(_) => None,
                 }
@@ -207,9 +220,10 @@ impl EventHandler for Handler {
 
         // 1. Silme İşlemi (🗑️)
         if reaction.emoji == ReactionType::Unicode("🗑️".to_string()) {
-            // Taklit (webhook) mesajlarında yazar kaydı tutulur; proxy mesajlarında
-            // mesaj gövdesindeki `<@id>` etiketi kullanılır.
-            let recorded_author = crate::converters::builtin::original_author(reaction.message_id).await;
+            // Kartı paylaşan kullanıcı kalıcı kayıttan okunur (taklit webhook mesajlarında
+            // mesajın yazarı bot/kullanıcı olmadığı için); proxy mesajlarında ise mesaj
+            // gövdesindeki `<@id>` etiketi kullanılır.
+            let recorded_author = crate::converters::builtin::original_author(reaction.message_id);
             let original_author_id = match recorded_author {
                 Some(author) => Some(author),
                 None => {
@@ -255,6 +269,9 @@ impl EventHandler for Handler {
                 );
                 if let Err(e) = reaction.channel_id.delete_message(&ctx.http, reaction.message_id).await {
                     error!("Mesaj silinirken hata oluştu: {:?}", e);
+                } else {
+                    // Kart artık yok: kaydı da bırakma (veritabanı temiz kalır).
+                    crate::converters::builtin::forget_author(reaction.message_id);
                 }
             } else {
                 warn!("Yetkisiz silme reaksiyonu! Tıklayan: {}", user_id);
@@ -303,7 +320,7 @@ impl EventHandler for Handler {
         if let Some(lang_code) = translation::emoji_to_lang_code(&reaction.emoji) {
             // Native embed mesajları çeviri durumunu kendi kartında taşır ve proxy linki
             // içermez; bayrak reaksiyonu yalnızca proxy mesajlarını günceller.
-            if crate::converters::builtin::is_native_message(reaction.message_id).await {
+            if crate::converters::builtin::is_native_message(reaction.message_id) {
                 return;
             }
 
@@ -397,10 +414,14 @@ fn extract_author_id(content: &str) -> Option<UserId> {
     None
 }
 
-/// Mesaj Botgek'in link dönüştürme mesajı mı? Proxy mesajları metninden, taklit
-/// (webhook) mesajları ise kayıtlı mesaj kimliğinden tanınır.
-async fn is_converted_message(msg: &Message) -> bool {
-    is_link_conversion_message(&msg.content) || crate::converters::builtin::is_native_message(msg.id).await
+/// Bu mesaj Botgek'in dönüştürme (proxy veya native kart) mesajı mı?
+///
+/// Kartlara verilen yanıtlarda AI sohbeti tetiklenmez. Proxy mesajları gövdedeki
+/// `<@id>` etiketiyle, native kartlar ise [`crate::converters::builtin::is_card_message`]
+/// ile (embed alt bilgisi imzası, içeriksiz modern kart veya kalıcı kayıt) tanınır.
+fn is_converted_message(msg: &Message, bot_id: UserId) -> bool {
+    is_link_conversion_message(&msg.content)
+        || crate::converters::builtin::is_card_message(msg, bot_id)
 }
 
 /// Link dönüştürme mesajlarını tespit eder.
@@ -589,6 +610,53 @@ mod tests {
             false,
             bot_id
         ));
+    }
+
+    /// Kart imzası → AI kararı entegrasyonu: modern kartta mesaj içeriği boştur,
+    /// bu yüzden yalnızca metin kontrolü yeterli değildir.
+    #[test]
+    fn replies_to_native_cards_do_not_trigger_the_ai() {
+        let bot_id = UserId::new(100);
+
+        // Klasik kart: içerik + `Twitter • Botgek` imzalı embed (taklit webhook'u göndermiş gibi)
+        let classic_embed = embed_with_footer("Twitter • Botgek");
+        let classic = crate::converters::builtin::has_card_signature(
+            bot_id,
+            true,
+            "[Twitter](https://x.com/u/123)",
+            &[classic_embed],
+            bot_id,
+        );
+        assert!(classic, "klasik kart imzası tanınmalı");
+        assert!(
+            !should_trigger_ai_chat(true, Some(bot_id), Some("[Twitter](https://x.com/u/123)"), classic, bot_id),
+            "klasik karta verilen yanıt AI'yı tetiklememeli"
+        );
+
+        // Modern kart (Components V2): içerik ve embed yok → yapısal imza ile tanınır
+        let modern = crate::converters::builtin::has_card_signature(bot_id, false, "", &[], bot_id);
+        assert!(modern, "içeriksiz modern kart tanınmalı");
+        assert!(
+            !should_trigger_ai_chat(true, Some(bot_id), Some(""), modern, bot_id),
+            "modern karta verilen yanıt AI'yı tetiklememeli"
+        );
+
+        // Botun AI yanıtı (içerikli) kart değildir: yanıtlanınca AI tetiklenmeli
+        let ai_reply = crate::converters::builtin::has_card_signature(bot_id, false, "Evet, haklısın.", &[], bot_id);
+        assert!(!ai_reply);
+        assert!(
+            should_trigger_ai_chat(true, Some(bot_id), Some("Evet, haklısın."), ai_reply, bot_id),
+            "AI yanıtına verilen yanıt AI'yı tetiklemeli"
+        );
+    }
+
+    /// Embed'i JSON'dan üretir (`#[non_exhaustive]` yapı testlerde kurulamaz).
+    fn embed_with_footer(footer: &str) -> serenity::all::Embed {
+        serde_json::from_value(serde_json::json!({
+            "type": "rich",
+            "footer": { "text": footer }
+        }))
+        .expect("embed çözümlenmeli")
     }
 }
 

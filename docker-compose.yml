@@ -14,11 +14,21 @@ services:
       - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     env_file:
       - .env
+    environment:
+      # Kalıcı kayıt veritabanı (kart kayıtları: 🗑️ silme izni + AI koruması)
+      - BOTGEK_DB_PATH=/app/data/botgek.db
     volumes:
       # WebUI üzerinden yapılan ayarların (modüller, roller) kalıcı olması için:
       - ./settings.json:/app/settings.json
+      # Kalıcı kayıt veritabanı (container silinse/yeniden oluşturulsa da kayıtlar kalır):
+      - botgek-data:/app/data
     # Raspberry Pi için kaynak sınırları (isteğe bağlı güvenlik önlemi)
     deploy:
       resources:
         limits:
           memory: 256M
+
+volumes:
+  # Kalıcı kayıt veritabanı (SQLite). Silmek isterseniz: docker volume rm botgek_botgek-data
+  botgek-data:
+

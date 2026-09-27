@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use serenity::all::{
-    ChannelId, Context, CreateMessage, Message, MessageFlags, MessageId, ReactionType, UserId, WebhookId,
+    ChannelId, Context, CreateMessage, Embed, Message, MessageFlags, MessageId, ReactionType, UserId, WebhookId,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -531,9 +531,6 @@ mod tests {
 
 /// Taklit için kullanılan webhook adı (kanalda tek bir tane tutulup yeniden kullanılır).
 const WEBHOOK_NAME: &str = "Botgek Native Embed";
-/// Taklit edilen mesajların orijinal yazarı bu sayıya kadar hatırlanır
-/// (🗑️ silme izni ve AI koruması aynı oturum boyunca çalışır).
-const MAX_REMEMBERED_AUTHORS: usize = 4096;
 
 /// Kanaldaki taklit webhook'u (kimlik + token).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -545,9 +542,6 @@ struct NamedWebhook {
 /// Kanal → webhook önbelleği. `None`: kanalda webhook kullanılamıyor (yetki yok veya DM);
 /// her mesajda yeniden denenmez.
 static CHANNEL_WEBHOOKS: Lazy<Mutex<HashMap<ChannelId, Option<NamedWebhook>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-/// Taklit edilen mesaj → orijinal yazar eşlemesi (🗑️ izni ve AI koruması için).
-static MESSAGE_AUTHORS: Lazy<Mutex<HashMap<MessageId, UserId>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 /// Components V2 gönderimi Discord tarafından reddedilirse (ör. eski API) bir daha denenmez.
 static V2_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -600,23 +594,87 @@ pub fn sanitize_webhook_name(name: &str) -> String {
     }
 }
 
-/// Taklit edilen mesajın orijinal yazarını kaydeder.
-pub async fn remember_author(message_id: MessageId, author: UserId) {
-    let mut authors = MESSAGE_AUTHORS.lock().await;
-    if authors.len() >= MAX_REMEMBERED_AUTHORS {
-        authors.clear();
-    }
-    authors.insert(message_id, author);
+/// Taklit edilen mesajın orijinal yazarını **kalıcı** olarak kaydeder (SQLite).
+///
+/// Bu kayıt 🗑️ silme izni, "kartlara verilen yanıt AI'yı tetiklemesin" kuralı ve bayrak
+/// emojisiyle çeviri ayrımı için kullanılır. Bot yeniden başlasa, çökse veya güncellense
+/// de kayıt kaybolmaz (eskiden bellekteki bir `HashMap` içindeydi ve yeniden başlatmada
+/// siliniyordu).
+pub fn remember_author(message_id: MessageId, channel_id: ChannelId, author: UserId) {
+    crate::store::remember_card(message_id, channel_id, author);
+}
+
+/// Kart kaydını siler (kart Discord'dan silindiğinde).
+pub fn forget_author(message_id: MessageId) {
+    crate::store::forget_card(message_id);
 }
 
 /// Taklit edilen mesajın orijinal yazarı (🗑️ silme izni bu bilgiyle verilir).
-pub async fn original_author(message_id: MessageId) -> Option<UserId> {
-    MESSAGE_AUTHORS.lock().await.get(&message_id).copied()
+pub fn original_author(message_id: MessageId) -> Option<UserId> {
+    crate::store::card_author(message_id)
 }
 
-/// Bu mesaj Botgek'in taklit (webhook) mesajı mı? (native embed → AI tetiklenmez)
-pub async fn is_native_message(message_id: MessageId) -> bool {
-    MESSAGE_AUTHORS.lock().await.contains_key(&message_id)
+/// Bu mesaj Botgek'in dönüştürdüğü bir kart mı? (native embed → AI tetiklenmez)
+pub fn is_native_message(message_id: MessageId) -> bool {
+    crate::store::is_card(message_id)
+}
+
+/// Klasik embed kartı mı? Kartın alt bilgisi `Platform • Botgek` imzasını taşır.
+fn embed_has_card_signature(embed: &Embed) -> bool {
+    embed
+        .footer
+        .as_ref()
+        .map(|footer| footer.text.contains(render::CARD_SIGNATURE))
+        .unwrap_or(false)
+}
+
+/// Kayıttan bağımsız **yapısal kart imzası** (test edilebilir çekirdek).
+///
+/// ```text
+/// 1) Klasik embed kartı : alt bilgide `Platform • Botgek` imzası
+/// 2) Modern kart (V2)   : içerik ve embed yok (bileşenler serenity 0.12'de çözümlenmez)
+/// ```
+///
+/// Modern kart Components V2 bayrağıyla gönderildiği için `content` alanı boştur ve
+/// bileşenler bu crate'te tip olarak yoktur; bu yüzden kart, **gönderen kimliği**
+/// (bot ya da bir webhook) ile birlikte "içeriksiz + embedsiz mesaj" olarak tanınır.
+pub fn has_card_signature(
+    author_id: UserId,
+    from_webhook: bool,
+    content: &str,
+    embeds: &[Embed],
+    bot_id: UserId,
+) -> bool {
+    if embeds.iter().any(embed_has_card_signature) {
+        return true;
+    }
+
+    let from_bot_or_webhook = author_id == bot_id || from_webhook;
+    from_bot_or_webhook && content.trim().is_empty() && embeds.is_empty()
+}
+
+/// Bu mesaj Botgek'in dönüştürme kartı mı?
+///
+/// Kartlara verilen yanıtlar AI sohbetini **tetiklememelidir**. Tanıma iki katmanlıdır;
+/// ilki bellekteki kayıttan bağımsızdır, çünkü kart kimliği kaydı bot yeniden
+/// başladığında boşalır ve o durumda eski kartlara gelen yanıtlar AI'yı tetikliyordu:
+///
+/// 1. Yapısal imza ([`has_card_signature`]) — klasik embed alt bilgisi veya içeriksiz
+///    modern kart.
+/// 2. Bu oturumda gönderilen kartların kimlik kaydı (taklit webhook'unda yazar bot
+///    olmadığı için kesin sonucu bu kayıt verir). Kayıt kalıcıdır (SQLite).
+pub fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
+    if is_native_message(msg.id) {
+        return true;
+    }
+
+    has_card_signature(
+        msg.author.id,
+        msg.webhook_id.is_some(),
+        &msg.content,
+        &msg.embeds,
+        bot_id,
+    )
 }
 
 // -------------------------------------------------------------------------------------
@@ -1061,7 +1119,7 @@ fn classic_payload(
 /// Yazar kaydı sayesinde taklit edilen (veya Components V2 ile gönderilen) mesajlarda
 /// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
 async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
-    remember_author(message_id, msg.author.id).await;
+    remember_author(message_id, msg.channel_id, msg.author.id);
 
     if let Err(e) = msg
         .channel_id
@@ -1201,6 +1259,139 @@ mod message_tests {
         assert!(content.contains("[🎬 Videoyu aç](https://cdn/v1.mp4)"), "içerik: {content}");
     }
 
+    /// Embed'i JSON'dan üretir: `serenity::all::Embed` `#[non_exhaustive]` olduğu için
+    /// testlerde doğrudan kurulamaz (Discord'dan gelen gövdeyi taklit eder).
+    fn embed_with_footer(footer: &str) -> Embed {
+        serde_json::from_value(serde_json::json!({
+            "type": "rich",
+            "footer": { "text": footer }
+        }))
+        .expect("embed çözümlenmeli")
+    }
+
+    #[test]
+    fn card_signature_recognises_classic_and_modern_cards() {
+        let bot_id = UserId::new(1);
+        let user_id = UserId::new(2);
+
+        // 1) Klasik embed kartı: alt bilgideki `Platform • Botgek` imzası
+        //    (bot adına ya da taklit webhook'u ile gönderilmiş olabilir).
+        assert!(has_card_signature(
+            bot_id,
+            false,
+            "[Twitter](https://x.com/u/1)",
+            &[embed_with_footer("Twitter • Botgek")],
+            bot_id
+        ));
+        assert!(has_card_signature(
+            user_id,
+            true,
+            "[Twitter](https://x.com/u/1)",
+            &[embed_with_footer("TikTok  •  Botgek  •  ❤️ 12")],
+            bot_id
+        ));
+
+        // 2) Modern kart (Components V2): içerik ve embed yok → gönderen kimliğiyle tanınır.
+        assert!(
+            has_card_signature(bot_id, false, "", &[], bot_id),
+            "botun gönderdiği içeriksiz modern kart tanınmalı"
+        );
+        assert!(
+            has_card_signature(user_id, true, "", &[], bot_id),
+            "taklit webhook'unun gönderdiği modern kart tanınmalı"
+        );
+
+        // Kart olmayanlar: bunlara verilen yanıtlar AI'yı tetikleyebilmeli.
+        assert!(
+            !has_card_signature(bot_id, false, "Sen ne dedin öyle?", &[], bot_id),
+            "botun AI yanıtı kart değildir"
+        );
+        assert!(!has_card_signature(user_id, false, "merhaba", &[], bot_id));
+        assert!(
+            !has_card_signature(user_id, true, "duyuru", &[], bot_id),
+            "başka bir botun içerikli webhook mesajı kart değildir"
+        );
+        assert!(
+            !has_card_signature(user_id, true, "", &[embed_with_footer("Başka bot")], bot_id),
+            "imzasız embed kart sayılmaz"
+        );
+    }
+
+    #[test]
+    fn card_messages_are_recognised_without_any_registry_entry() {
+        let bot_id = UserId::new(1);
+        let user_id = UserId::new(2);
+        let webhook_id = WebhookId::new(77);
+
+        // Modern kart (içerik/embed yok): kart kaydı hiç olmasa bile yapısal imza ile
+        // tanınmalı (AI tetiklenmemesi bu sayede garanti).
+        let card_id = MessageId::new(9_001);
+        let card = message_fixture(card_id, bot_id, "", vec![], None);
+        assert!(!is_native_message(card_id), "bu kimlik için kayıt yok");
+        assert!(is_card_message(&card, bot_id), "içeriksiz modern kart tanınmalı");
+
+        // Taklit webhook'unun modern kartı: yazar bot değil, webhook kimliği kart sayılır.
+        let impersonated = message_fixture(MessageId::new(9_002), user_id, "", vec![], Some(webhook_id));
+        assert!(is_card_message(&impersonated, bot_id));
+
+        // Klasik embed kartı: alt bilgideki imza ile tanınır (kayıt olmadan).
+        let classic = message_fixture(
+            MessageId::new(9_003),
+            user_id,
+            "[Twitter](https://x.com/u/1)",
+            vec![embed_with_footer("Twitter • Botgek")],
+            Some(webhook_id),
+        );
+        assert!(is_card_message(&classic, bot_id));
+
+        // Kalıcı kayıt da tanımayı sağlar (kart kaydı kalıcıdır, yeniden başlatmada kaybolmaz).
+        let recorded_id = MessageId::new(9_004);
+        let recorded = message_fixture(recorded_id, user_id, "eski biçim", vec![], Some(webhook_id));
+        assert!(!is_card_message(&recorded, bot_id));
+        remember_author(recorded_id, ChannelId::new(5), user_id);
+        assert!(is_card_message(&recorded, bot_id));
+
+        // Botun AI yanıtı ve kullanıcı mesajı kart değildir (AI tetiklenebilmeli).
+        let ai_reply = message_fixture(MessageId::new(9_005), bot_id, "Evet, haklısın.", vec![], None);
+        assert!(!is_card_message(&ai_reply, bot_id));
+        let user_message = message_fixture(MessageId::new(9_006), user_id, "merhaba", vec![], None);
+        assert!(!is_card_message(&user_message, bot_id));
+    }
+
+    /// Discord gateway gövdesini taklit eden test mesajı.
+    fn message_fixture(
+        id: MessageId,
+        author_id: UserId,
+        content: &str,
+        embeds: Vec<Embed>,
+        webhook_id: Option<WebhookId>,
+    ) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "id": id.get().to_string(),
+            "channel_id": "5",
+            "author": {
+                "id": author_id.get().to_string(),
+                "username": "Botgek",
+                "discriminator": "0001",
+                "avatar": null,
+                "bot": true
+            },
+            "webhook_id": webhook_id.map(|id| id.get().to_string()),
+            "content": content,
+            "timestamp": "2026-09-27T12:00:00.000000+00:00",
+            "edited_timestamp": null,
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": embeds,
+            "pinned": false,
+            "type": 0
+        }))
+        .expect("mesaj çözümlenmeli")
+    }
+
     #[test]
     fn webhook_names_are_sanitized_for_discord_rules() {
         assert_eq!(sanitize_webhook_name("  Eray  "), "Eray");
@@ -1241,13 +1432,18 @@ mod message_tests {
         assert_eq!(payload["attachments"], serde_json::json!([]));
     }
 
-    #[tokio::test]
-    async fn remembered_authors_can_be_queried() {
+    #[test]
+    fn remembered_authors_can_be_queried() {
         let message_id = MessageId::new(777);
-        assert_eq!(original_author(message_id).await, None);
-        remember_author(message_id, UserId::new(42)).await;
-        assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
-        assert!(is_native_message(message_id).await);
+        assert_eq!(original_author(message_id), None);
+        remember_author(message_id, ChannelId::new(5), UserId::new(42));
+        assert_eq!(original_author(message_id), Some(UserId::new(42)));
+        assert!(is_native_message(message_id));
+
+        // Kayıt silinince kart tanıma da düşer (🗑️ ile kart silindiğinde kullanılır).
+        forget_author(message_id);
+        assert_eq!(original_author(message_id), None);
+        assert!(!is_native_message(message_id));
     }
 
     #[test]

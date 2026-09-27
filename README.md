@@ -56,6 +56,12 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - Mesaja eklenen `🗑️` emojisine orijinal mesaj sahibi veya sunucu yöneticisi/moderatörü bastığında mesaj anında silinir.
 - 💬 **Sarcastic OpenRouter AI Asistanı:**
   - Bot etiketlendiğinde (`@botgekv2`) veya bota yanıt (Reply) verildiğinde akıllı, hazırcevap, hafif alaycı ve kısa (1-2 cümle) Türkçe cevaplar üretir.
+  - 🛡️ **Dönüştürme kartları AI'yı tetiklemez:** Kartlara verilen yanıtlarda (etiketli yanıtlarda bile) AI çalışmaz; botun **kendi kartları** ayrıca gelen mesaj olarak hiç işlenmez. Kart tanıma mesaj metnine ek olarak **yapısal imzayla** yapılır: klasik embed'lerin alt bilgisindeki `Platform • Botgek` imzası ve modern (Components V2) kartların **içeriksiz/embedsiz** yapısı. Böylece bot yeniden başladığında (bellekteki mesaj kimliği kaydı boşaldığında) eski kartlara gelen yanıtlar da AI'yı tetiklemez.
+- 💾 **Kalıcı Kayıtlar (SQLite):** Bot dönüştürdüğü her kart için *hangi mesajı hangi kullanıcının paylaştığını* **`botgek.db`** dosyasına yazar (WAL modu, tek tablo, birincil anahtar sorguları):
+  - 🗑️ **Silme izni:** kartı paylaşan kullanıcı bu kayıtla bulunur; taklit webhook mesajlarında mesajın yazarı bot olmadığı için kayıt tek yoldur. Yeniden başlatma/güncelleme sonrası da çalışır.
+  - 🛡️ **AI koruması** ve 🇹🇷 **çeviri reaksiyonu** ayrımı aynı kaydı kullanır (proxy mesajlarında gövdedeki `<@id>` etiketi yeterlidir).
+  - Kayıt dosyası **hiçbir kaydı unutmaz**: bot kapansa, çökse veya güncellense bile veriler diskte kalır (eski davranış: bellekteki `HashMap` yeniden başlatmada siliniyordu). Yalnızca 200.000 kaydı aşan en eski satırlar budanır, kart silinince (🗑️) kaydı da silinir.
+  - Yol: `BOTGEK_DB_PATH` → yoksa çalışma dizinindeki `botgek.db` (systemd: `/var/lib/botgek/botgek.db`, Docker: `/app/data/botgek.db` — `botgek-data` kalıcı volume'u). Dosya açılamazsa bot durmaz, bellek içi veritabanına düşüp uyarı log'lar.
 - 🎛️ **Cyber-Ops Minimal WebUI (`http://localhost:3000`):**
   - Tüm modülleri tek tıkla açıp kapatma.
   - **Link Dönüştürme Motoru paneli:** Platform bazlı `Proxy` / `Native Embed` seçimi, yedek proxy alan adları (`.env` değerini geçersiz kılar), X veri kaynağı, **kart stili** (`fxembed` / `otomatik` / `modern`), **otomatik Türkçe çeviri**, **kullanıcıyı taklit etme**, modern kart **emoji seti**, medya yükleme ve embed içeriği seçenekleri (metrik, tarih, topluluk notu, alıntı, maks. görsel sayısı, maks. video boyutu).
@@ -92,6 +98,12 @@ sudo dpkg -i botgek_arm64.deb
 # Yapılandırma dosyanızı oluşturun ve düzenleyin
 sudo cp /etc/botgek/botgek.env.example /etc/botgek/botgek.env
 sudo nano /etc/botgek/botgek.env
+
+# Bot kullanıcısı ve çalışma dizini (servis burada çalışır; kalıcı kayıt veritabanı
+# botgek.db bu dizinde tutulur, böylece 🗑️ silme izni ve AI koruması kayıtları kalıcı olur)
+sudo id -u botgek >/dev/null 2>&1 || sudo useradd -r -s /bin/false -d /var/lib/botgek botgek
+sudo mkdir -p /var/lib/botgek
+sudo chown botgek:botgek /var/lib/botgek
 
 # Systemd servisini başlatın
 sudo systemctl enable --now botgek

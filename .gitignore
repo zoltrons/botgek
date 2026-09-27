@@ -10,6 +10,13 @@ target/
 # Loglar ve geçici dosyalar
 *.log
 
+# Kalıcı kayıt veritabanı (SQLite) - her kurulumda kendi verisi oluşur
+botgek.db
+botgek.db-wal
+botgek.db-shm
+*.db-shm
+*.db-wal
+
 # Editör ve işletim sistemi
 .DS_Store
 Thumbs.db

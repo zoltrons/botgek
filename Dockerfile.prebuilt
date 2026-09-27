@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN groupadd -g 1000 botgek && \
     useradd -u 1000 -g botgek -m -s /bin/sh botgek && \
-    mkdir -p /app && chown -R botgek:botgek /app
+    mkdir -p /app /app/data && chown -R botgek:botgek /app
 
 USER botgek
 WORKDIR /app
