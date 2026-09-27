@@ -4,12 +4,15 @@
 # =========================================================
 FROM debian:bookworm-slim
 
+# ffmpeg varsayılan olarak kurulmaz (~75-95 MB bağımlılık); GIF'ler FxEmbed'in hazır
+# GIF servisinden alınır. Yerel yedek dönüştürme için: --build-arg WITH_FFMPEG=1
+ARG WITH_FFMPEG=0
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
-    ffmpeg \
+    $( [ "$WITH_FFMPEG" = "1" ] && echo ffmpeg ) \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 1000 botgek && \

@@ -249,13 +249,20 @@ pub async fn resolve_media(
 /// 3. hiçbiri olmazsa mp4 (Discord oynatıcı gösterir — eski davranış).
 async fn download_gif(client: &reqwest::Client, url: &str) -> Option<media::MediaFile> {
     if let Some(gif_url) = media::fx_gif_url(url) {
-        if let Some(file) = media::download(client, &gif_url, media::MAX_GIF_BYTES).await {
+        // Servis bazen tek seferde yanıt vermeyebilir: bir kez daha denenir.
+        // İndirme sınırı Discord limitidir (uzun GIF'ler 8 MB'ı aşabilir).
+        for _ in 0..2 {
+            let Some(file) = media::download(client, &gif_url, media::DISCORD_FILE_LIMIT).await
+            else {
+                continue;
+            };
             if media::is_gif(&file) {
                 return Some(file);
             }
         }
     }
 
+    // Yedek: mp4'ü yerel ffmpeg ile gerçek GIF'e çevir (ffmpeg kurulu değilse atlanır).
     let file = media::download(client, url, MAX_IMAGE_BYTES).await?;
     match media::to_gif(&file.bytes).await {
         Some(bytes) => Some(media::MediaFile {

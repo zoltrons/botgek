@@ -34,7 +34,7 @@ extended-description = """\
 Modern Discord link converter bot for Twitter/X, TikTok, Instagram, Reddit, Bluesky \
 with WebUI control panel, role filtering, and sarcastic OpenRouter AI chat."""
 depends = "libc6, ca-certificates"
-recommends = "ffmpeg"
+suggests = "ffmpeg"
 section = "net"
 priority = "optional"
 assets = [
