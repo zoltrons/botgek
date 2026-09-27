@@ -10,6 +10,10 @@
 //! ┌────────────────────────────────────────────────────────────┐
 //! │ **Ad <:verified:...> ([@kullanici](https://x.com/kullanici))**   ← profil resmi yok
 //! │ gönderi metni
+//! │ ────────────────────── (varsa) ince ayraç çizgisi ─────────
+//! │ > <:qutoe:...> [Quote](link) from **Ad** ([**@kullanici**](profil))
+//! │ >
+//! │ > alıntılanan metin            ← başlıkla aynı hizada (blok alıntı)
 //! │ -# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K
 //! │ -# <:twitter:...> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)
 //! └────────────────────────────────────────────────────────────┘
@@ -47,14 +51,16 @@ const TYPE_MEDIA_GALLERY: u64 = 12;
 const TYPE_SEPARATOR: u64 = 14;
 const TYPE_CONTAINER: u64 = 17;
 
-/// Alıntı bloğunun girintisi.
+/// Alıntı başlığı ile alıntılanan metni ayıran **boş alıntı satırı**.
 ///
-/// Discord, satır başındaki normal boşlukları (`U+0020`) markdown işlerken daralttığı için
-/// girinti **daraltılmayan em boşluğu** (`U+2003`) ile verilir; böylece alıntı, kartın
-/// gövde metnine göre biraz sağda durur (Reddit/Twitter alıntı hiyerarşisi). Ayraç
-/// karakterler satırın **başında** değil blok işaretinden (`-# ` / `> `) sonra gelir;
-/// aksi halde markdown alt metin/alıntı kuralları eşleşmez.
-const QUOTE_INDENT: &str = "\u{2003}\u{2003}";
+/// Alıntı bloğunun girintisi ek boşluk karakterleriyle değil, blok alıntının (`> `)
+/// kendisiyle verilir: Discord `> ` satırlarına sol şerit + iç boşluk çizer. Başlık da aynı
+/// blok alıntının içinde olduğu için başlık ve alıntılanan metin **aynı hizada** başlar
+/// (ek boşluk karakteri kullanıldığında alt metin (13 px) ile gövde metni (16 px) farklı
+/// ölçeklendiği için girintiler hizasız kalıyordu). Boş bir alıntı satırı (`>`) alıntılanan
+/// metni başlıktan ayırır; ardışık `> ` satırları tek bir alıntı sayıldığı için şerit
+/// kesintisiz kalır (X/fxembed düzeni).
+const QUOTE_BLANK_LINE: &str = ">";
 
 /// Kartı oluşturmak için gereken tüm girdiler.
 pub struct V2Card<'a> {
@@ -106,8 +112,8 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     if card.options.show_quote {
         if let Some(quote) = card.post.quote.as_deref() {
             if let Some(component) = quote_component(quote, card.emojis) {
-                // Hiyerarşi: alıntı bloğundan önce görünmez küçük bir dikey boşluk bırakılır,
-                // böylece alıntı kartın gövdesinden ayrı bir bölüm olarak okunur.
+                // Hiyerarşi: alıntı bloğundan önce ince bir ayraç çizgisi ve büyük bir dikey
+                // boşluk bırakılır, böylece alıntı kartın gövdesinden ayrı okunur.
                 children.push(separator());
                 children.push(component);
             }
@@ -191,7 +197,9 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
     format!("**{body}**")
 }
 
-/// Alıntılanan gönderi: `[Quote](link) from **Ad** ([**@kullanici**](profil))` başlığı + blok alıntı.
+/// Alıntılanan gönderi: tek satırlık başlık
+/// `[Quote](link) from **Ad** ([**@kullanici**](profil))` ve alıntılanan metin, **aynı blok
+/// alıntının** içinde; başlıktan sonra boş bir alıntı satırı bulunur (X/fxembed düzeni).
 fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value> {
     let body = quote.text.trim();
     let has_image = quote.media.iter().any(|media| media.is_image());
@@ -225,20 +233,26 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value>
         format!("[Quote]({url})")
     };
 
-    let mut lines = vec![format!("-# {QUOTE_INDENT}{} {quote_link} {from}", emojis.quote())];
+    // Başlık da alıntı bloğunun **içinde** durur: böylece başlık ile alıntılanan metin aynı
+    // hizada başlar ve alıntının tamamı tek bir sol şeritle gruplanır (X/fxembed düzeni).
+    // Ek girinti/boşluk karakteri kullanılmaz; `-# ` alt metin işareti de kullanılmaz, çünkü
+    // Discord blok alıntı içindeki satırları yalnızca satır içi kurallarla işler (`-# `
+    // işareti alıntı içinde düz metin olarak görünürdü).
+    let mut lines = vec![format!("> {} {quote_link} {from}", emojis.quote())];
     if !body.is_empty() {
+        lines.push(QUOTE_BLANK_LINE.to_string());
         for line in body.lines().take(8) {
-            lines.push(format!("> {QUOTE_INDENT}{line}"));
+            lines.push(format!("> {line}"));
         }
     }
 
     Some(text(lines.join("\n")))
 }
 
-/// Görünür çizgi olmadan dikey boşluk: alıntı bloğu kartın gövdesinden ayrılsın diye
-/// (`spacing: 1` = küçük, `divider: false` = çizgi yok).
+/// İnce ayraç çizgisi + büyük dikey boşluk: alıntı bloğu kartın gövdesinden ayrı bir bölüm
+/// olarak okunur (`divider: true` çizgiyi çizer, `spacing: 2` = büyük boşluk).
 fn separator() -> Value {
-    json!({ "type": TYPE_SEPARATOR, "divider": false, "spacing": 1 })
+    json!({ "type": TYPE_SEPARATOR, "divider": true, "spacing": 2 })
 }
 
 /// `Media Gallery`: video + görseller; hepsi kartın içinde.
@@ -797,14 +811,14 @@ mod tests {
             .into_iter()
             .find(|text| text.contains("<:qutoe:"))
             .expect("alıntı bileşeni");
-        assert!(quote_text.contains("> \u{2003}\u{2003}alıntı"), "alıntı girintili olmalı: {quote_text}");
+        assert!(quote_text.contains("> alıntı"), "alıntı blok alıntı olmalı: {quote_text}");
         assert!(
             quote_text.contains("[Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"),
             "alıntı başlığı fxembed düzeninde olmalı: {quote_text}"
         );
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "-# \u{2003}\u{2003}<:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"
+            "> <:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"
         );
     }
 
@@ -831,19 +845,20 @@ mod tests {
 
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "-# \u{2003}\u{2003}<:qutoe:1553728214998847569> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
+            "> <:qutoe:1553728214998847569> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
              from **Daykerpriest🐉** ([**@Daykerpriest**](https://x.com/daykerpriest))"
         );
         assert!(
-            quote_text.contains("> \u{2003}\u{2003}alıntılanan metin"),
-            "blok alıntı girintili olmalı: {quote_text}"
+            quote_text.contains("> alıntılanan metin"),
+            "alıntılanan metin blok alıntı içinde olmalı: {quote_text}"
         );
     }
 
-    /// Alıntı, kartın gövdesinden hem dikey boşlukla ayrılır (görünmez `Separator`)
-    /// hem de sağa girintilenir (Reddit/Twitter alıntı hiyerarşisi).
+    /// Alıntı, kartın gövdesinden ince bir ayraç çizgisiyle ayrılır ve **tamamı** blok alıntı
+    /// içinde durur: başlık ile alıntılanan metin aynı hizada başlar (X/fxembed düzeni),
+    /// arada boş bir alıntı satırı bulunur, ek girinti/boşluk karakteri kullanılmaz.
     #[test]
-    fn quote_block_is_separated_and_indented_from_the_card_body() {
+    fn quote_block_is_quoted_and_separated_from_the_card_body() {
         let mut post = sample_post();
         let mut quote = BuiltinPost::new(
             Platform::Twitter,
@@ -868,23 +883,35 @@ mod tests {
 
         let before = &children[quote_index - 1];
         assert_eq!(before["type"], TYPE_SEPARATOR, "alıntıdan önce ayraç olmalı");
-        assert_eq!(before["divider"], false, "ayraç çizgi çizmemeli");
-        assert_eq!(before["spacing"], 1, "ayraç küçük boşluk bırakmalı");
+        assert_eq!(before["divider"], true, "ayraç ince çizgi çizmeli");
+        assert_eq!(before["spacing"], 2, "ayraç büyük boşluk bırakmalı");
 
         let quote_text = children[quote_index]["content"].as_str().unwrap();
         let lines: Vec<&str> = quote_text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            4,
+            "başlık + boş alıntı satırı + iki alıntı satırı bekleniyordu: {quote_text}"
+        );
         assert!(
-            lines[0].starts_with("-# \u{2003}"),
-            "başlık alt metin olarak kalmalı ama girintilenmeli: {}",
+            lines[0].starts_with("> ") && lines[0].contains("[Quote]"),
+            "başlık blok alıntının ilk satırı olmalı: {}",
             lines[0]
         );
-        for line in &lines[1..] {
+        assert_eq!(lines[1], QUOTE_BLANK_LINE, "başlıktan sonra boş alıntı satırı olmalı");
+        assert_eq!(lines[2], "> satır bir");
+        assert_eq!(lines[3], "> satır iki");
+
+        // Başlık ve alıntılanan metin aynı hizada: her satır blok alıntı olmalı ve girinti
+        // için fazladan boşluk karakteri (em boşluğu / kırılmaz boşluk) kullanılmamalı.
+        for line in &lines {
+            assert!(line.starts_with('>'), "her satır blok alıntı olmalı: {line}");
             assert!(
-                line.starts_with("> \u{2003}\u{2003}"),
-                "alıntı satırı blok alıntı + girinti ile başlamalı: {line}"
+                !line.contains('\u{2003}') && !line.contains('\u{00A0}'),
+                "girinti için boşluk karakteri kullanılmamalı: {line}"
             );
+            assert!(!line.starts_with("-# "), "başlık alt metin olarak yazılmamalı: {line}");
         }
-        assert_eq!(lines.len(), 3, "başlık + iki alıntı satırı");
 
         // Alıntı yoksa gereksiz ayraç eklenmez.
         let plain = build_payload(&card(
@@ -900,6 +927,39 @@ mod tests {
                 .count(),
             0,
             "alıntı yokken ayraç eklenmez"
+        );
+    }
+
+    /// Kullanıcının gönderdiği ekran görüntüsündeki (X alıntı düzeni) çıktının **birebir**
+    /// aynısı: başlık bloğun ilk satırı, arada boş alıntı satırı, alıntı metni satır satır.
+    #[test]
+    fn quote_block_matches_the_reference_x_layout() {
+        let mut post = sample_post();
+        post.text = "Neresi burası ya arkada cs açık tüm parayı basardık mekana".to_string();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/gerginimhelll/status/2104000000000000000",
+            Author::new("durusal", "gerginimhelll"),
+        );
+        quote.text = "Durusal neşesi gerçek değil\nO sırada durusal neşesi".to_string();
+        quote.author.profile_url = Some("https://x.com/gerginimhelll".to_string());
+        post.quote = Some(Box::new(quote));
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let quote_text = texts(&payload)
+            .into_iter()
+            .find(|text| text.contains("<:qutoe:"))
+            .expect("alıntı bileşeni");
+
+        assert_eq!(
+            quote_text,
+            "> <:qutoe:1553728214998847569> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
+             from **durusal** ([**@gerginimhelll**](https://x.com/gerginimhelll))\n\
+             >\n\
+             > Durusal neşesi gerçek değil\n\
+             > O sırada durusal neşesi"
         );
     }
 
