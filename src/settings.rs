@@ -446,6 +446,9 @@ pub struct EngineSettings {
     /// Mesajı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönder ("taklit").
     /// Bu sayede mesajda `<@kullanıcı>` etiketi ve `[:](...)` gibi link hileleri gerekmez.
     pub impersonate_user: bool,
+    /// Kullanıcı linki **yanıt olarak** attığında taklit yerine bot mesajı gönderilir.
+    /// Discord webhook mesajları yanıt olamadığı için bu ayar yanıt bağlantısını korur.
+    pub impersonate_skip_replies: bool,
     /// Kart gösterim stili: fxembed tarzı klasik embed / otomatik / her zaman modern kart.
     /// Modern kartta video kartın içinde oynar, ancak profil resmi Discord'un V2 kuralı
     /// gereği sağda durur; **avatarın kullanıcı adının solunda küçük görünmesi için**
@@ -472,6 +475,7 @@ impl Default for EngineSettings {
             auto_translate: true,
             fallback_to_proxy: true,
             impersonate_user: true,
+            impersonate_skip_replies: true,
             card_style: CardStyle::default(),
             emojis: EmojiSettings::default(),
         }
@@ -941,6 +945,10 @@ mod tests {
         assert_eq!(settings.engine.domains.twitter, "vxtwitter.com");
         // Yeni alanlar JSON'da yoksa varsayılanları alır
         assert!(settings.engine.impersonate_user);
+        assert!(
+            settings.engine.impersonate_skip_replies,
+            "yanıt olarak atılan linklerde yanıt bağlantısı varsayılan olarak korunur"
+        );
         assert_eq!(settings.engine.card_style, CardStyle::Modern, "kart stili JSON'da yoksa modern kart");
         assert_eq!(
             settings.engine.emojis.verified(),

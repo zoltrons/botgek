@@ -154,7 +154,14 @@ pub async fn handle_message(
         builder = builder.reference_message(message_ref.clone());
     }
 
-    // 7. Mesajı Gönder
+    // 7. Mesajı Gönder (orijinal mesaj **gönderimden hemen önce** silinir: kullanıcı mesajı
+    // beklemeden kaybolur, dönüşüm gecikmeli hissettirmez).
+    if config.delete_original {
+        if let Err(e) = msg.delete(&ctx.http).await {
+            warn!("Orijinal mesaj silinemedi (zaten silinmiş olabilir): {:?}", e);
+        }
+    }
+
     let sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
         Ok(m) => m,
         Err(e) => {
@@ -173,13 +180,6 @@ pub async fn handle_message(
         .await
     {
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
-    }
-
-    // 9. Eski Mesajı Sil
-    if config.delete_original {
-        if let Err(e) = msg.delete(&ctx.http).await {
-            error!("Orijinal mesaj silinirken hata oluştu: {:?}", e);
-        }
     }
 }
 

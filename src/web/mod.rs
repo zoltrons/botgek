@@ -1484,6 +1484,17 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         <span class="toggle-track"></span>
                     </label>
                 </div>
+
+                <div class="option-tile" onclick="toggleEngineOption('engine-impersonate-skip-replies')">
+                    <div>
+                        <div class="name">Yanıtlarda yanıtı koru</div>
+                        <div class="hint">Webhook mesajları Discord'da yanıt olamaz: yanıt olarak atılan linkler bot adına gönderilir (yanıt bağlantısı korunur)</div>
+                    </div>
+                    <label class="toggle-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="engine-impersonate-skip-replies" onchange="onConfigModified(); updateEngineSummary()">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
             </div>
             <div class="ai-label" style="margin-top: 16px;"><span>Medya Yükleme</span></div>
             <div class="option-grid">
@@ -1598,6 +1609,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             auto_translate: true,
             fallback_to_proxy: true,
             impersonate_user: true,
+            impersonate_skip_replies: true,
             card_style: 'modern',
             emojis: {
                 verified: '<:verified:1553709836859084841>',
@@ -1669,7 +1681,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             });
             ['twitter_source', 'attach_images', 'attach_videos', 'max_images', 'max_video_mb',
              'show_metrics', 'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
-             'impersonate_user', 'card_style']
+             'impersonate_user', 'impersonate_skip_replies', 'card_style']
                 .forEach(field => {
                     if (engine[field] === undefined || engine[field] === null) {
                         engine[field] = ENGINE_DEFAULTS[field];
@@ -1754,6 +1766,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             engine.fallback_to_proxy = isChecked('engine-fallback');
             engine.auto_translate = isChecked('engine-auto-translate');
             engine.impersonate_user = isChecked('engine-impersonate');
+            engine.impersonate_skip_replies = isChecked('engine-impersonate-skip-replies');
 
             const cardStyleEl = document.getElementById('engine-card-style');
             if (cardStyleEl) engine.card_style = cardStyleEl.value;
@@ -1930,6 +1943,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             setChecked('engine-fallback', engine.fallback_to_proxy);
             setChecked('engine-auto-translate', engine.auto_translate);
             setChecked('engine-impersonate', engine.impersonate_user);
+            setChecked('engine-impersonate-skip-replies', engine.impersonate_skip_replies);
 
             if (cardStyleEl) cardStyleEl.value = engine.card_style || 'modern';
             setChecked('engine-show-metrics', engine.show_metrics);

@@ -744,6 +744,41 @@ fn use_modern_card(style: CardStyle, post: &BuiltinPost) -> bool {
     }
 }
 
+/// Taklit (webhook) kullanılmalı mı?
+///
+/// Discord webhook mesajları **yanıt olamaz**; kullanıcı linki yanıt olarak attıysa ve
+/// `impersonate_skip_replies` açıksa mesaj bot adına gönderilir ki yanıt bağlantısı korunsun.
+fn should_impersonate(engine: &EngineSettings, is_reply: bool) -> bool {
+    engine.impersonate_user && !(is_reply && engine.impersonate_skip_replies)
+}
+
+/// Yanıt bağlantısı: bot, kullanıcının yanıt verdiği **aynı mesaja** yanıt verir (proxy
+/// motoruyla aynı davranış). `fail_if_not_exists: false` sayesinde referans mesaj
+/// silinmişse de mesaj gönderilir.
+fn reply_reference(msg: &Message) -> Option<serde_json::Value> {
+    let reference = msg.message_reference.as_ref()?;
+    let message_id = reference.message_id?;
+
+    let mut value = serde_json::json!({
+        "message_id": message_id.to_string(),
+        "channel_id": reference.channel_id.to_string(),
+        "fail_if_not_exists": false,
+    });
+    if let Some(guild_id) = reference.guild_id {
+        value["guild_id"] = serde_json::json!(guild_id.to_string());
+    }
+
+    Some(value)
+}
+
+/// Kullanıcının orijinal mesajını siler; zaten silinmişse sessizce geçer (🗑️ reaksiyonu
+/// yeni mesaja eklenir, bu yüzden mükerrer silme denemesi hata üretmez).
+async fn delete_user_message(ctx: &Context, msg: &Message) {
+    if let Err(err) = msg.delete(&ctx.http).await {
+        debug!("Orijinal mesaj silinemedi (zaten silinmiş olabilir): {err:?}");
+    }
+}
+
 /// Native embed akışı. Veri çekilemez veya mesaj gönderilemezse `false` döner; bu durumda
 /// çağıran taraf (ayar açıksa) proxy motoruna düşer.
 pub async fn handle(
@@ -757,6 +792,14 @@ pub async fn handle(
     // Süre ölçümü: dönüşüm gecikmesi veri / medya / gönderim olarak log'lanır.
     let started = std::time::Instant::now();
 
+    // Orijinal mesaj **hemen** silinir: kullanıcının mesajı beklemeden kaybolur ve dönüşüm
+    // gecikmeli hissettirmez. Proxy yedeği kapalıyken veri çekilemezse mesaj kaybolmasın
+    // diye silme, veri geldikten sonra yapılır.
+    let delete_early = config.delete_original && engine.fallback_to_proxy;
+    if delete_early {
+        delete_user_message(ctx, msg).await;
+    }
+
     let post = match fetch(client, parsed, engine).await {
         Ok(post) => post,
         Err(err) => {
@@ -766,11 +809,16 @@ pub async fn handle(
     };
     let fetched = started.elapsed();
 
+    if config.delete_original && !delete_early {
+        delete_user_message(ctx, msg).await;
+    }
+
     let options = render::RenderOptions::from_engine(engine);
     let plan = render::plan_media(&post, &options);
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
     let media_done = started.elapsed();
-    let identity = engine.impersonate_user.then(|| Impersonation::from_message(msg));
+    let identity = should_impersonate(engine, msg.message_reference.is_some())
+        .then(|| Impersonation::from_message(msg));
 
     debug!(
         "Hazırlık: veri {} ms, medya {} ms ({})",
@@ -877,19 +925,16 @@ async fn send_components_v2(
         allowed_mentions,
     });
 
-    // Bot mesajında orijinal mesaja yanıt bağlantısı korunur (webhook mesajları yanıtlayamaz).
-    match msg.message_reference.as_ref().and_then(|reference| serde_json::to_value(reference).ok()) {
+    // Yanıt bağlantısı: kullanıcı bir mesaja yanıt verdiyse bot da aynı mesaja yanıt verir.
+    match reply_reference(msg) {
         Some(reference) => payload["message_reference"] = reference,
         None => {}
     }
 
     if identity.is_some() {
-        let mut webhook_payload = payload.clone();
-        if let Some(object) = webhook_payload.as_object_mut() {
-            object.remove("message_reference");
-        }
-
-        match send_via_webhook(ctx, client, config, msg.channel_id, &webhook_payload, &resolved.attachments).await {
+        // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
+        // bu yüzden webhook denenir; başarısız olursa bot mesajı olarak (yanıtla) gönderilir.
+        match send_via_webhook(ctx, client, config, msg.channel_id, &payload, &resolved.attachments).await {
             Ok(message_id) => return Ok((message_id, true)),
             Err(err) => warn!("Components V2 taklit gönderimi başarısız ({}): {}", msg.id, err),
         }
@@ -917,7 +962,16 @@ async fn send_classic(
 ) -> Result<(MessageId, bool), String> {
     if let Some(identity) = identity {
         let allowed_mentions = serde_json::to_value(build_selective_allowed_mentions(msg)).unwrap_or_default();
-        let payload = classic_payload(msg.author.id, parsed, post, resolved, embeds, identity, allowed_mentions)?;
+        let payload = classic_payload(
+            msg.author.id,
+            parsed,
+            post,
+            resolved,
+            embeds,
+            identity,
+            allowed_mentions,
+            reply_reference(msg),
+        )?;
         match send_via_webhook(ctx, client, config, msg.channel_id, &payload, &resolved.attachments).await {
             Ok(message_id) => return Ok((message_id, true)),
             Err(err) => warn!("Taklit mesaj gönderilemedi ({}): {} — bot adına gönderiliyor", msg.id, err),
@@ -935,8 +989,14 @@ async fn send_classic(
     if !resolved.attachments.is_empty() {
         builder = builder.add_files(resolved.attachments.clone());
     }
-    if let Some(reference) = &msg.message_reference {
-        builder = builder.reference_message(reference.clone());
+    if let Some(existing) = msg.message_reference.as_ref() {
+        // Referans mesaj silinmişse gönderim başarısız olmasın (`fail_if_not_exists: false`).
+        let mut reference =
+            serenity::all::MessageReference::new(existing.kind, existing.channel_id);
+        reference.message_id = existing.message_id;
+        reference.guild_id = existing.guild_id;
+        reference.fail_if_not_exists = Some(false);
+        builder = builder.reference_message(reference);
     }
 
     let sent = msg
@@ -958,6 +1018,7 @@ fn classic_payload(
     embeds: &[serenity::all::CreateEmbed],
     identity: &Impersonation,
     allowed_mentions: serde_json::Value,
+    reference: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let embeds: Vec<serde_json::Value> = embeds
         .iter()
@@ -980,6 +1041,12 @@ fn classic_payload(
         "username": identity.username,
         "allowed_mentions": allowed_mentions,
     });
+
+    // Webhook mesajları yanıt olamaz: alan gönderilir (yok sayılırsa zarar vermez) ve webhook
+    // başarısız olursa `send_classic` bot mesajına düşerek yanıtı korur.
+    if let Some(reference) = reference {
+        payload["message_reference"] = reference;
+    }
 
     if let Some(avatar) = &identity.avatar_url {
         payload["avatar_url"] = serde_json::json!(avatar);
@@ -1004,10 +1071,10 @@ async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: Messa
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
     }
 
+    // Orijinal mesaj normalde dönüşüm başında silinir; burada yalnızca geç kalan durumlar
+    // için (proy yedeği kapalı) tekrar denenir — zaten silinmişse sessizce geçilir.
     if config.delete_original {
-        if let Err(e) = msg.delete(&ctx.http).await {
-            error!("Orijinal mesaj silinirken hata oluştu: {:?}", e);
-        }
+        delete_user_message(ctx, msg).await;
     }
 }
 
@@ -1159,6 +1226,10 @@ mod message_tests {
             &embeds,
             &identity,
             serde_json::json!({"parse": []}),
+            Some(serde_json::json!({
+                "message_id": "42",
+                "fail_if_not_exists": false,
+            })),
         )
         .unwrap();
 
@@ -1177,6 +1248,26 @@ mod message_tests {
         remember_author(message_id, UserId::new(42)).await;
         assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
         assert!(is_native_message(message_id).await);
+    }
+
+    #[test]
+    fn replies_keep_the_reply_context_instead_of_impersonating() {
+        let mut engine = EngineSettings::default();
+
+        assert!(should_impersonate(&engine, false), "yanıt değilse taklit kullanılır");
+        assert!(
+            !should_impersonate(&engine, true),
+            "yanıt olarak atılan link bot adına gönderilir (webhook yanıt veremez)"
+        );
+
+        // Ayar kapatılırsa yanıtlarda da taklit kullanılır (yanıt bağlantısı kaybolur).
+        engine.impersonate_skip_replies = false;
+        assert!(should_impersonate(&engine, true));
+
+        // Taklit tamamen kapalıysa her durumda bot mesajı gider.
+        engine.impersonate_user = false;
+        assert!(!should_impersonate(&engine, false));
+        assert!(!should_impersonate(&engine, true));
     }
 
     #[test]

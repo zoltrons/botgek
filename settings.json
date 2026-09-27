@@ -70,6 +70,7 @@
     "auto_translate": true,
     "fallback_to_proxy": true,
     "impersonate_user": true,
+    "impersonate_skip_replies": true,
     "card_style": "modern",
     "emojis": {
       "verified": "<:verified:1553709836859084841>",
