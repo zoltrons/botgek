@@ -86,15 +86,7 @@ pub async fn start_web_server(
         info: WebInfo::from_config(config),
     };
 
-    let app = Router::new()
-        .route("/", get(index_handler))
-        .route("/api/settings", get(get_settings).post(save_settings))
-        .route("/api/info", get(get_info))
-        .route("/api/discord/roles", get(get_discord_roles))
-        .route("/api/health", get(health_check))
-        .layer(from_fn(add_security_headers))
-        .layer(DefaultBodyLimit::max(64 * 1024))
-        .with_state(state);
+    let app = build_router(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("WebUI başlatılıyor: http://localhost:{}", port);
@@ -109,6 +101,19 @@ pub async fn start_web_server(
             error!("WebUI {} portuna bağlanamadı: {:?}", port, e);
         }
     }
+}
+
+/// Panelin rotalarını kurar (sunucu ve testler aynı yapıyı kullanır).
+fn build_router(state: WebState) -> Router {
+    Router::new()
+        .route("/", get(index_handler))
+        .route("/api/settings", get(get_settings).post(save_settings))
+        .route("/api/info", get(get_info))
+        .route("/api/discord/roles", get(get_discord_roles))
+        .route("/api/health", get(health_check))
+        .layer(from_fn(add_security_headers))
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .with_state(state)
 }
 
 async fn add_security_headers(req: Request, next: Next) -> Response {
@@ -2565,6 +2570,73 @@ mod tests {
         assert_eq!(info.env_domains.get("twitter").map(String::as_str), Some("fixupx.com"));
         assert_eq!(info.env_domains.get("bluesky").map(String::as_str), Some("fxbsky.app"));
         assert_eq!(info.env_domains.len(), 5, "beş platform alan adı taşınmalı");
+    }
+
+    /// Panel ve API uçları gerçek HTTP isteğiyle doğrulanır (router + yanıt şekilleri).
+    #[tokio::test]
+    async fn web_api_serves_the_panel_and_info_payload() {
+        let state = WebState {
+            settings: Arc::new(RwLock::new(AppSettings::default())),
+            http: Arc::new(serenity::all::Http::new("test-token")),
+            cache: Arc::new(serenity::all::Cache::new()),
+            info: WebInfo::from_config(&config()),
+        };
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("test dinleyicisi");
+        let addr = listener.local_addr().expect("adres");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, build_router(state)).await;
+        });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+
+        // 1) Panel servis edilir ve dinamik sürüm alanını + /api/info çağrısını içerir.
+        let page = client
+            .get(format!("{base}/"))
+            .send()
+            .await
+            .expect("panel isteği")
+            .text()
+            .await
+            .expect("panel gövdesi");
+        assert!(page.contains("id=\"app-version\""), "sürüm alanı panelde olmalı");
+        assert!(page.contains("id=\"system-status\""), "durum alanı panelde olmalı");
+        assert!(page.contains("fetchInfo()"), "panel /api/info'yu çağırmalı");
+        assert!(
+            !page.contains("server-inheritance-notice"),
+            "kaldırılan ölü öğe panelde olmamalı"
+        );
+
+        // 2) /api/info gerçek sürüm/port/.env alan adlarını döner.
+        let info: serde_json::Value = client
+            .get(format!("{base}/api/info"))
+            .send()
+            .await
+            .expect("info isteği")
+            .json()
+            .await
+            .expect("info gövdesi");
+        assert_eq!(info["port"], 8123);
+        assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(info["env_domains"]["twitter"], "fixupx.com");
+
+        // 3) /api/settings eski `role_filter` alanını döndürmez (tek gerçek: role_filters).
+        let settings: serde_json::Value = client
+            .get(format!("{base}/api/settings"))
+            .send()
+            .await
+            .expect("ayar isteği")
+            .json()
+            .await
+            .expect("ayar gövdesi");
+        assert!(settings.get("role_filter").is_none(), "eski çift alan API'de görünmemeli");
+        assert_eq!(settings["engine"]["card_style"], "modern");
+        assert_eq!(settings["modules"]["ai_chat"], true);
+
+        server.abort();
     }
 }
 
