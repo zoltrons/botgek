@@ -7,6 +7,7 @@ use tracing::{error, info};
 use crate::config::Config;
 use crate::settings::{FilterMode, GuildSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
+use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 
 /// Kullanıcının mesajındaki desteklenen sosyal medya linkini tespit eder ve dönüştürür.
 /// Format: <@User>[:](fixedLink) [**Platform**](<origLink>)\n> Alıntı
@@ -71,22 +72,31 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         format!("[:]({})", parsed.fixed_url)
     };
 
-
-    // 2. Alıntı Formatı (Varsa)
-    let comment_part = match &parsed.user_comment {
-        Some(comment) => format!("\n> {}", comment),
-        None => String::new(),
-    };
-
-    // 3. Mesaj İçeriği
-    let content = format!(
-        "<@{}>{} [**{}**](<{}>){}",
+    // 4. Mesajın link kısmı (her koşulda korunur)
+    let base_content = format!(
+        "<@{}>{} [**{}**](<{}>)",
         msg.author.id,
         embed_part,
         parsed.platform.display_name(),
-        parsed.original_url,
-        comment_part
+        parsed.original_url
     );
+
+    // 5. Alıntı Formatı (Varsa) - her satır ayrı ayrı blok alıntı olarak işaretlenir
+    let quoted_comment = parsed.user_comment.as_ref().map(|comment| {
+        let quoted: Vec<String> = comment.lines().map(|line| format!("> {line}")).collect();
+        format!("\n{}", quoted.join("\n"))
+    });
+
+    let mut content = match &quoted_comment {
+        Some(comment) => format!("{base_content}{comment}"),
+        None => base_content.clone(),
+    };
+
+    // Discord 2000 karakteri aşan içeriği reddeder: önce alıntıyı düşür, sonra kırp
+    if content.chars().count() > DISCORD_CONTENT_LIMIT {
+        content = base_content;
+    }
+    let content = truncate_chars(&content, DISCORD_CONTENT_LIMIT);
 
     let allowed_mentions = build_selective_allowed_mentions(msg);
 
@@ -99,7 +109,7 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         builder = builder.reference_message(message_ref.clone());
     }
 
-    // 4. Mesajı Gönder
+    // 6. Mesajı Gönder
     let sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
         Ok(m) => m,
         Err(e) => {
@@ -112,7 +122,7 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         parsed.platform, parsed.original_url
     );
 
-    // 5. Kompakt 🗑️ reaksiyonu ekle
+    // 7. Kompakt 🗑️ reaksiyonu ekle
     if let Err(e) = sent_msg
         .react(&ctx.http, ReactionType::Unicode("🗑️".to_string()))
         .await
@@ -120,7 +130,7 @@ pub async fn handle_message(ctx: &Context, msg: &Message, config: &Config, setti
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
     }
 
-    // 6. Eski Mesajı Sil
+    // 8. Eski Mesajı Sil
     if config.delete_original {
         if let Err(e) = msg.delete(&ctx.http).await {
             error!("Orijinal mesaj silinirken hata oluştu: {:?}", e);

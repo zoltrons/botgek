@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::converters;
 use crate::converters::translation;
 use crate::settings::AppSettings;
+use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 
 pub struct Handler {
     pub config: Config,
@@ -150,7 +151,7 @@ impl EventHandler for Handler {
                                 .replied_user(true);
 
                             let builder = CreateMessage::new()
-                                .content(safe_reply)
+                                .content(truncate_chars(&safe_reply, DISCORD_CONTENT_LIMIT))
                                 .reference_message(&msg)
                                 .allowed_mentions(allowed_mentions);
 
@@ -159,11 +160,13 @@ impl EventHandler for Handler {
                             }
                         }
                         Err(e) => {
+                            // Ayrıntı yalnızca log'a yazılır: sunucu yapılandırmasına
+                            // (.env, API anahtarı) dair bilgi Discord kullanıcılarına sızdırılmaz
                             error!("AI yanıtı üretilirken hata oluştu: {:?}", e);
                             let notice = if e.contains("429") || e.contains("504") || e.contains("rate-limited") {
-                                "Model sağlayıcısı (Google AI Studio) şu an yoğunluk veya hız sınırı nedeniyle geçici olarak yanıt veremedi. Lütfen birkaç saniye sonra tekrar dene."
+                                "Model sağlayıcısı şu an yoğunluk veya hız sınırı nedeniyle yanıt veremedi. Birkaç saniye sonra tekrar dene."
                             } else if e.contains("401") || e.contains("API key") {
-                                "OpenRouter API anahtarı geçersiz veya süresi dolmuş. Lütfen .env dosyasındaki OPENROUTER_API_KEY anahtarını yenileyin."
+                                "AI servisi yapılandırmasında bir sorun var, bot sahibi bilgilendirildi."
                             } else {
                                 "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
                             };

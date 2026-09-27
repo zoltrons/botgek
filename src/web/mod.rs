@@ -79,6 +79,19 @@ async fn add_security_headers(req: Request, next: Next) -> Response {
     headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
     headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
     headers.insert("Referrer-Policy", HeaderValue::from_static("strict-origin-when-cross-origin"));
+    headers.insert("Permissions-Policy", HeaderValue::from_static("camera=(), microphone=(), geolocation=()"));
+    // Yönetim paneli (rol ID'leri, sistem istemi) önbelleğe alınmamalı
+    headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
+    // Panel tek dosyalık gömülü HTML: script/style 'unsafe-inline' gerekir,
+    // ancak default-src/connect-src 'self' ile dışarı veri sızıntısı ve harici script engellenir.
+    headers.insert(
+        "Content-Security-Policy",
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; \
+             font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; \
+             base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        ),
+    );
     response
 }
 

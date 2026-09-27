@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use config::Config;
 use handler::Handler;
 use serenity::all::{Client, GatewayIntents};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -89,17 +89,27 @@ async fn main() {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM dinleyicisi başlatılamadı");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {},
-                _ = sigterm.recv() => {},
+            // panic=abort profiline karşı: SIGTERM kaydı başarısız olsa da süreç
+            // abort edilmemeli, en azından Ctrl+C ile temiz kapanabilmeli
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = sigterm.recv() => {}
+                    }
+                }
+                Err(err) => {
+                    warn!("SIGTERM dinleyicisi kaydedilemedi: {err:?}; yalnızca Ctrl+C dinleniyor");
+                    let _ = tokio::signal::ctrl_c().await;
+                }
             }
         }
         #[cfg(not(unix))]
         {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Sinyal dinleyicisi başlatılamadı");
+            if let Err(err) = tokio::signal::ctrl_c().await {
+                error!("Sinyal dinleyicisi başlatılamadı: {err:?}");
+                return;
+            }
         }
         info!("Kapatma sinyali alındı. Shard yöneticisi durduruluyor...");
         shard_manager.shutdown_all().await;

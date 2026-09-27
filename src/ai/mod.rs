@@ -1,7 +1,20 @@
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
+use crate::utils::truncate_chars;
+
 pub const DEFAULT_MODEL: &str = "google/gemma-4-31b-it:free";
+
+/// Gövdeyi log/ hata metni için sınırlı tutar: ham yanıt logları şişirebilir ve
+/// istem içeriğini geri yansıtabilir.
+fn preview(body: &str) -> String {
+    const MAX_CHARS: usize = 400;
+    if body.chars().count() <= MAX_CHARS {
+        body.to_string()
+    } else {
+        format!("{} ({} karaktere kırpıldı)", truncate_chars(body, MAX_CHARS), body.chars().count())
+    }
+}
 
 #[derive(Serialize)]
 struct ChatMessage<'a> {
@@ -123,7 +136,7 @@ fn choice_text(choice: &ChatChoice) -> Option<String> {
 
 fn extract_reply(body_text: &str) -> Result<String, String> {
     let parsed: ChatCompletionResponse = serde_json::from_str(body_text)
-        .map_err(|e| format!("OpenRouter JSON ayrıştırma hatası: {:?} (Gövde: {})", e, body_text))?;
+        .map_err(|e| format!("OpenRouter JSON ayrıştırma hatası: {:?} (Gövde: {})", e, preview(body_text)))?;
 
     if let Some(err) = parsed.error {
         return Err(format!("OpenRouter hata mesajı: {}", err.message));
@@ -210,9 +223,9 @@ pub async fn query_openrouter(
             }
         }
     } else {
-        error!("OpenRouter API hata döndürdü (HTTP {}): {}", status, body_text);
+        error!("OpenRouter API hata döndürdü (HTTP {}): {}", status, preview(&body_text));
         if effective_model == AUTO_FALLBACK_MODEL {
-            return Err(format!("OpenRouter API hatası ({}): {}", status, body_text));
+            return Err(format!("OpenRouter API hatası ({}): {}", status, preview(&body_text)));
         }
         tracing::warn!("Model '{}' başarısız oldu (HTTP {}), '{}' ile yeniden deneniyor...", effective_model, status, AUTO_FALLBACK_MODEL);
     }
@@ -252,7 +265,7 @@ pub async fn query_openrouter(
         .map_err(|e| format!("Yedek yanıt gövdesi okunamadı: {:?}", e))?;
 
     if !fb_status.is_success() {
-        return Err(format!("OpenRouter API hatası ({}): {}", fb_status, fb_body));
+        return Err(format!("OpenRouter API hatası ({}): {}", fb_status, preview(&fb_body)));
     }
 
     extract_reply(&fb_body)

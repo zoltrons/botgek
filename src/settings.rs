@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use tracing::{error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct PlatformModules {
     pub twitter: bool,
     pub tiktok: bool,
@@ -39,6 +40,7 @@ pub enum FilterMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
 pub struct RoleFilterSettings {
     pub mode: FilterMode,
     /// Discord Rol ID'leri (örn: ["123456789012345678"])
@@ -46,6 +48,7 @@ pub struct RoleFilterSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct AiSettings {
     pub model: String,
     pub system_prompt: String,
@@ -108,12 +111,14 @@ impl GuildSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
+    #[serde(default)]
     pub modules: PlatformModules,
     #[serde(default)]
     pub role_filters: ModuleRoleFilters,
     /// Geriye dönük uyumluluk için eski genel role_filter (varsa)
     #[serde(default)]
     pub role_filter: Option<RoleFilterSettings>,
+    #[serde(default)]
     pub ai: AiSettings,
     /// Sunucuya özel ayarlar (Guild ID -> GuildSettings)
     #[serde(default)]
@@ -159,31 +164,40 @@ fn resolve_settings_path() -> PathBuf {
 impl AppSettings {
     pub fn load() -> Self {
         let path = resolve_settings_path();
-        if path.exists() && path.is_file() {
-            match fs::read_to_string(&path) {
-                Ok(content) => match serde_json::from_str::<AppSettings>(&content) {
-                    Ok(mut settings) => {
-                        // Geriye dönük uyumluluk: Eski role_filter doluysa ve yeniler boşsa aktar
-                        if let Some(ref legacy) = settings.role_filter {
-                            if !legacy.roles.is_empty() && settings.role_filters.twitter.roles.is_empty() {
-                                settings.role_filters.twitter = legacy.clone();
-                                settings.role_filters.tiktok = legacy.clone();
-                                settings.role_filters.instagram = legacy.clone();
-                                settings.role_filters.reddit = legacy.clone();
-                                settings.role_filters.bluesky = legacy.clone();
-                                settings.role_filters.translation = legacy.clone();
-                                settings.role_filters.ai_chat = legacy.clone();
-                            }
+        if path.is_file() {
+            let loaded = fs::read_to_string(&path)
+                .map_err(|e| format!("okunamadı: {e:?}"))
+                .and_then(|content| {
+                    serde_json::from_str::<AppSettings>(&content)
+                        .map_err(|e| format!("ayrıştırılamadı: {e}"))
+                });
+
+            match loaded {
+                Ok(mut settings) => {
+                    // Geriye dönük uyumluluk: Eski role_filter doluysa ve yeniler boşsa aktar
+                    if let Some(ref legacy) = settings.role_filter {
+                        if !legacy.roles.is_empty() && settings.role_filters.twitter.roles.is_empty() {
+                            settings.role_filters.twitter = legacy.clone();
+                            settings.role_filters.tiktok = legacy.clone();
+                            settings.role_filters.instagram = legacy.clone();
+                            settings.role_filters.reddit = legacy.clone();
+                            settings.role_filters.bluesky = legacy.clone();
+                            settings.role_filters.translation = legacy.clone();
+                            settings.role_filters.ai_chat = legacy.clone();
                         }
-                        info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", path.display());
-                        return settings;
                     }
-                    Err(e) => {
-                        error!("Ayarlar dosyası ayrıştırılamadı, varsayılanlar kullanılacak: {:?}", e);
-                    }
-                },
-                Err(e) => {
-                    error!("Ayarlar dosyası okunamadı: {:?}", e);
+                    info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", path.display());
+                    return settings;
+                }
+                Err(reason) => {
+                    // Dosyanın üzerine yazmak kullanıcı ayarlarını kalıcı olarak yok eder;
+                    // bozuk dosya olduğu gibi bırakılır ve varsayılanlarla devam edilir.
+                    error!(
+                        "Ayarlar dosyası ('{}') {} — mevcut dosya korunuyor, varsayılan ayarlarla başlanıyor.",
+                        path.display(),
+                        reason
+                    );
+                    return AppSettings::default();
                 }
             }
         }
@@ -253,6 +267,27 @@ mod tests {
         assert_eq!(deserialized.role_filters.twitter.mode, FilterMode::Disabled);
         assert_eq!(deserialized.role_filters.tiktok.mode, FilterMode::Disabled);
         assert_eq!(deserialized.ai.model, crate::ai::DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn partial_settings_file_defaults_missing_fields_instead_of_failing() {
+        // Parse hatası, dosyanın varsayılanlarla üzerine yazılmasına (ayar kaybına) yol açmamalı
+        let json = r#"{ "modules": { "twitter": false }, "ai": { "model": "test/model" } }"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+
+        assert!(!settings.modules.twitter);
+        assert!(settings.modules.reddit, "eksik alan struct varsayılanıyla doldurulmalı");
+        assert_eq!(settings.ai.model, "test/model");
+        assert!(!settings.ai.system_prompt.trim().is_empty());
+        assert_eq!(settings.role_filters.twitter.mode, FilterMode::Disabled);
+        assert!(settings.role_filters.twitter.roles.is_empty());
+    }
+
+    #[test]
+    fn empty_settings_object_is_loadable() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.modules.ai_chat);
+        assert!(settings.guilds.is_empty());
     }
 
     #[test]

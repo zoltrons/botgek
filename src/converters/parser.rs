@@ -133,6 +133,39 @@ static BLUESKY_REGEX: Lazy<Regex> = Lazy::new(|| {
         .expect("Geçersiz Bluesky regex deseni")
 });
 
+/// Characters that would prematurely close or corrupt the Markdown link the
+/// converter wraps these URLs in (`[:](url)` / `[**Platform**](<url>)`).
+/// Left unescaped they let a crafted post URL inject arbitrary link text and a
+/// second, attacker-chosen link target into a bot-authored message.
+const MARKDOWN_UNSAFE: &[u8] = b"()[]<>\"{}|\\^`";
+
+/// Percent-encodes URL characters that are unsafe inside Markdown link syntax.
+/// `%` is deliberately passed through so already-encoded links stay intact.
+fn encode_markdown_unsafe(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_control() {
+            continue;
+        }
+        let byte = ch as u32;
+        if byte < 128 && MARKDOWN_UNSAFE.contains(&(byte as u8)) {
+            out.push_str(&format!("%{byte:02X}"));
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Escapes both URLs of a parsed post so they can be embedded in Markdown safely.
+fn sanitize_urls(post: ParsedPost) -> ParsedPost {
+    ParsedPost {
+        original_url: encode_markdown_unsafe(&post.original_url),
+        fixed_url: encode_markdown_unsafe(&post.fixed_url),
+        ..post
+    }
+}
+
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
 pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
     // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
@@ -145,27 +178,27 @@ pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
 
     // 1. Twitter / X
     if let Some(post) = parse_twitter(raw_content, &config.twitter_domain) {
-        return Some(post);
+        return Some(sanitize_urls(post));
     }
 
     // 2. TikTok (okdargy/fxTikTok)
     if let Some(post) = parse_tiktok(raw_content, &config.tiktok_domain) {
-        return Some(post);
+        return Some(sanitize_urls(post));
     }
 
     // 3. Instagram
     if let Some(post) = parse_instagram(raw_content, &config.instagram_domain) {
-        return Some(post);
+        return Some(sanitize_urls(post));
     }
 
     // 4. Reddit
     if let Some(post) = parse_reddit(raw_content, &config.reddit_domain) {
-        return Some(post);
+        return Some(sanitize_urls(post));
     }
 
     // 5. Bluesky
     if let Some(post) = parse_bluesky(raw_content, &config.bluesky_domain) {
-        return Some(post);
+        return Some(sanitize_urls(post));
     }
 
     None
@@ -563,6 +596,33 @@ mod tests {
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/news/comments/789xyz");
         assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/news/comments/789xyz");
         assert!(parsed.is_spoiler);
+    }
+
+    #[test]
+    fn crafted_url_cannot_break_out_of_markdown_link() {
+        let cfg = dummy_config();
+        // Kapalı parantezle [:](...) bitişini kırıp ikinci bir link hedefi enjekte etme girişimi
+        let content = "https://www.reddit.com/r/x)y[sahte]/comments/abc";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        for url in [&parsed.original_url, &parsed.fixed_url] {
+            assert!(!url.contains(')'), "Kaçırılmamış parantez: {url}");
+            assert!(!url.contains('('), "Kaçırılmamış parantez: {url}");
+            assert!(!url.contains('['), "Kaçırılmamış köşeli parantez: {url}");
+            assert!(!url.contains(']'), "Kaçırılmamış köşeli parantez: {url}");
+        }
+        assert_eq!(
+            parsed.fixed_url,
+            "https://vxreddit.com/r/x%29y%5Bsahte%5D/comments/abc"
+        );
+    }
+
+    #[test]
+    fn already_encoded_urls_are_left_intact() {
+        let cfg = dummy_config();
+        let content = "https://x.com/a%20b/status/123";
+        let parsed = parse_message(content, &cfg).unwrap();
+        assert_eq!(parsed.fixed_url, "https://fixupx.com/a%20b/status/123");
     }
 
     #[test]
