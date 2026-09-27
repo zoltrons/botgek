@@ -24,7 +24,7 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - 🧱 **Modern kart (Components V2):** Gönderi, Discord'un yeni bileşen düzeniyle (`Container` + `Text Display` + `Media Gallery`) **tek kart** olarak, X'in kendi embed'ine benzer şekilde gönderilir:
     - Kullanıcının linkle birlikte yazdığı metin kartın **dışında**, kartın üstünde düz mesaj metni olarak gönderilir (Components V2 bayrağı `content` alanını yasakladığı için mesaj metninin yerini üst düzey `Text Display` alır; taklit açıkken mesaj kullanıcının kendi adıyla gittiğinden tam olarak kullanıcı yazmış gibi görünür, `>` alıntı bloğuna çevrilmez).
     - `**Ad <:verified:...> ([@kullanici](profil))**`
-    - gönderi metni (+ varsa alıntı)
+    - gönderi metni (+ varsa alıntı: alıntı bloğu **görünmez bir ayraçla** gövdeden ayrılır ve **~2 karakter sağa girintilenir** — Reddit/Twitter alıntı hiyerarşisi; girinti, Discord'un daralttığı normal boşluk yerine daraltılmayan em boşluğu ile verilir)
     - `-# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K`
     - `-# <:twitter:...> • <t:...:R> • [Link](gönderi)`
     - Video ve görseller **kartın içinde** oynar/görünür (klasik embed'lerde Discord bot mesajlarında `video` alanını göstermez); sol kenarda renkli çubuk kullanılmaz. Video indirilemediyse galeride **yalnızca video** gösterilir — kapak görseli ayrıca eklenmez (kapak + video yan yana iki öğe olarak çiziliyordu), oynatma bağlantısı kartın son satırında kalır.

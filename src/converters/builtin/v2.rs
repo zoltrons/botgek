@@ -44,7 +44,17 @@ const MAX_CONTAINER_CHILDREN: usize = 12;
 // Bileşen türleri
 const TYPE_TEXT_DISPLAY: u64 = 10;
 const TYPE_MEDIA_GALLERY: u64 = 12;
+const TYPE_SEPARATOR: u64 = 14;
 const TYPE_CONTAINER: u64 = 17;
+
+/// Alıntı bloğunun girintisi.
+///
+/// Discord, satır başındaki normal boşlukları (`U+0020`) markdown işlerken daralttığı için
+/// girinti **daraltılmayan em boşluğu** (`U+2003`) ile verilir; böylece alıntı, kartın
+/// gövde metnine göre biraz sağda durur (Reddit/Twitter alıntı hiyerarşisi). Ayraç
+/// karakterler satırın **başında** değil blok işaretinden (`-# ` / `> `) sonra gelir;
+/// aksi halde markdown alt metin/alıntı kuralları eşleşmez.
+const QUOTE_INDENT: &str = "\u{2003}\u{2003}";
 
 /// Kartı oluşturmak için gereken tüm girdiler.
 pub struct V2Card<'a> {
@@ -96,6 +106,9 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     if card.options.show_quote {
         if let Some(quote) = card.post.quote.as_deref() {
             if let Some(component) = quote_component(quote, card.emojis) {
+                // Hiyerarşi: alıntı bloğundan önce görünmez küçük bir dikey boşluk bırakılır,
+                // böylece alıntı kartın gövdesinden ayrı bir bölüm olarak okunur.
+                children.push(separator());
                 children.push(component);
             }
         }
@@ -212,14 +225,20 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value>
         format!("[Quote]({url})")
     };
 
-    let mut lines = vec![format!("-# {} {quote_link} {from}", emojis.quote())];
+    let mut lines = vec![format!("-# {QUOTE_INDENT}{} {quote_link} {from}", emojis.quote())];
     if !body.is_empty() {
         for line in body.lines().take(8) {
-            lines.push(format!("> {line}"));
+            lines.push(format!("> {QUOTE_INDENT}{line}"));
         }
     }
 
     Some(text(lines.join("\n")))
+}
+
+/// Görünür çizgi olmadan dikey boşluk: alıntı bloğu kartın gövdesinden ayrılsın diye
+/// (`spacing: 1` = küçük, `divider: false` = çizgi yok).
+fn separator() -> Value {
+    json!({ "type": TYPE_SEPARATOR, "divider": false, "spacing": 1 })
 }
 
 /// `Media Gallery`: video + görseller; hepsi kartın içinde.
@@ -778,14 +797,14 @@ mod tests {
             .into_iter()
             .find(|text| text.contains("<:qutoe:"))
             .expect("alıntı bileşeni");
-        assert!(quote_text.contains("> alıntı"), "alıntı: {quote_text}");
+        assert!(quote_text.contains("> \u{2003}\u{2003}alıntı"), "alıntı girintili olmalı: {quote_text}");
         assert!(
             quote_text.contains("[Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"),
             "alıntı başlığı fxembed düzeninde olmalı: {quote_text}"
         );
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "-# <:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"
+            "-# \u{2003}\u{2003}<:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"
         );
     }
 
@@ -812,10 +831,76 @@ mod tests {
 
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "-# <:qutoe:1553728214998847569> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
+            "-# \u{2003}\u{2003}<:qutoe:1553728214998847569> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
              from **Daykerpriest🐉** ([**@Daykerpriest**](https://x.com/daykerpriest))"
         );
-        assert!(quote_text.contains("> alıntılanan metin"), "blok alıntı: {quote_text}");
+        assert!(
+            quote_text.contains("> \u{2003}\u{2003}alıntılanan metin"),
+            "blok alıntı girintili olmalı: {quote_text}"
+        );
+    }
+
+    /// Alıntı, kartın gövdesinden hem dikey boşlukla ayrılır (görünmez `Separator`)
+    /// hem de sağa girintilenir (Reddit/Twitter alıntı hiyerarşisi).
+    #[test]
+    fn quote_block_is_separated_and_indented_from_the_card_body() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.text = "satır bir\nsatır iki".to_string();
+        post.quote = Some(Box::new(quote));
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        let children = components(&payload);
+        let quote_index = children
+            .iter()
+            .position(|component| {
+                component["type"] == TYPE_TEXT_DISPLAY
+                    && component["content"].as_str().unwrap_or_default().contains("<:qutoe:")
+            })
+            .expect("alıntı bileşeni");
+
+        let before = &children[quote_index - 1];
+        assert_eq!(before["type"], TYPE_SEPARATOR, "alıntıdan önce ayraç olmalı");
+        assert_eq!(before["divider"], false, "ayraç çizgi çizmemeli");
+        assert_eq!(before["spacing"], 1, "ayraç küçük boşluk bırakmalı");
+
+        let quote_text = children[quote_index]["content"].as_str().unwrap();
+        let lines: Vec<&str> = quote_text.lines().collect();
+        assert!(
+            lines[0].starts_with("-# \u{2003}"),
+            "başlık alt metin olarak kalmalı ama girintilenmeli: {}",
+            lines[0]
+        );
+        for line in &lines[1..] {
+            assert!(
+                line.starts_with("> \u{2003}\u{2003}"),
+                "alıntı satırı blok alıntı + girinti ile başlamalı: {line}"
+            );
+        }
+        assert_eq!(lines.len(), 3, "başlık + iki alıntı satırı");
+
+        // Alıntı yoksa gereksiz ayraç eklenmez.
+        let plain = build_payload(&card(
+            &sample_post(),
+            &options,
+            &ResolvedMedia::default(),
+            &emojis,
+        ));
+        assert_eq!(
+            components(&plain)
+                .iter()
+                .filter(|component| component["type"] == TYPE_SEPARATOR)
+                .count(),
+            0,
+            "alıntı yokken ayraç eklenmez"
+        );
     }
 
     #[test]
