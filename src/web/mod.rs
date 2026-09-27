@@ -329,6 +329,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             --radius-lg: 16px;
             --radius-md: 12px;
             --radius-sm: 8px;
+            /* Katman sırası (kök bağlamda): açılır menü > komut çubuğu > içerik */
+            --z-dropdown: 200;
+            --z-command-bar: 100;
+            --z-toast: 999;
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -441,7 +445,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             border-radius: var(--radius-lg);
             padding: 24px;
             margin-bottom: 24px;
-            backdrop-filter: blur(16px);
+            /* NOT: `backdrop-filter` BURADA KULLANILMAZ. Panelin arka planı opak olduğu için
+               blur görünmez bir etki yaratıyordu ama her panelde yeni bir "stacking context"
+               oluşturup açılır menülerin (rol seçici) sonraki panellerin ARKASINDA kalmasına
+               yol açıyordu. Katman sırası kök bağlamda `--z-*` değişkenleriyle yönetilir. */
             transition: border-color 0.25s, box-shadow 0.25s;
         }
 
@@ -619,10 +626,13 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         }
 
         /* Module Selector Tabs in Role Studio */
+        /* Sekmeler yatay kaydırma yerine GRID ile sarılır: dar ekranda son sekmeler
+           (Çeviri/AI Chat) görünmez şekilde kesiliyordu. */
         .module-selector {
-            display: flex;
+            display: grid;
+            /* 170px: "Instagram + KAPALI" gibi en uzun sekme içeriği tek satıra sığar */
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
             gap: 8px;
-            overflow-x: auto;
             padding-bottom: 12px;
             margin-bottom: 16px;
             border-bottom: 1px solid var(--border);
@@ -632,14 +642,17 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             background: var(--surface-elevated);
             border: 1px solid var(--border);
             color: var(--text-secondary);
-            padding: 8px 14px;
+            padding: 8px 12px;
             border-radius: var(--radius-sm);
             cursor: pointer;
             font-size: 13px;
             font-weight: 600;
             display: flex;
             align-items: center;
+            justify-content: space-between;
             gap: 8px;
+            width: 100%;
+            min-width: 0;
             white-space: nowrap;
             transition: all 0.2s;
         }
@@ -656,12 +669,23 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             box-shadow: 0 0 12px rgba(99, 102, 241, 0.25);
         }
 
+        .mod-tab-btn > span:first-child {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         .mod-tab-status {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 10px;
-            padding: 2px 6px;
+            font-size: 9px;
+            padding: 2px 5px;
             border-radius: 4px;
             background: rgba(255, 255, 255, 0.06);
+            flex: 0 0 auto;
+            max-width: 55%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         /* Tag Chip Manager */
@@ -718,7 +742,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: var(--radius-md);
             box-shadow: 0 14px 36px rgba(0, 0, 0, 0.7);
-            z-index: 100;
+            /* Komut çubuğundan (fixed) da yüksek olmalı, aksi halde liste altında kalır */
+            z-index: var(--z-dropdown);
             display: none;
             flex-direction: column;
             overflow: hidden;
@@ -1091,7 +1116,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             align-items: center;
             justify-content: space-between;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
-            z-index: 100;
+            z-index: var(--z-command-bar);
         }
 
         .shortcut-hint {
@@ -1159,7 +1184,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             transform: translateY(-12px);
             pointer-events: none;
             transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-            z-index: 999;
+            z-index: var(--z-toast);
         }
 
         .toast-notification.visible {
@@ -1350,31 +1375,31 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <div class="module-selector">
                 <button class="mod-tab-btn active" id="modtab-twitter" onclick="selectRoleModule('twitter')">
                     <span>🐦 Twitter</span>
-                    <span class="mod-tab-status" id="badge-twitter">KAPALI</span>
+                    <span class="mod-tab-status" id="badge-twitter">FİLTRE YOK</span>
                 </button>
                 <button class="mod-tab-btn" id="modtab-tiktok" onclick="selectRoleModule('tiktok')">
                     <span>🎵 TikTok</span>
-                    <span class="mod-tab-status" id="badge-tiktok">KAPALI</span>
+                    <span class="mod-tab-status" id="badge-tiktok">FİLTRE YOK</span>
                 </button>
                 <button class="mod-tab-btn" id="modtab-instagram" onclick="selectRoleModule('instagram')">
                     <span>📷 Instagram</span>
-                    <span class="mod-tab-status" id="badge-instagram">KAPALI</span>
+                    <span class="mod-tab-status" id="badge-instagram">FİLTRE YOK</span>
                 </button>
                 <button class="mod-tab-btn" id="modtab-reddit" onclick="selectRoleModule('reddit')">
                     <span>🤖 Reddit</span>
-                    <span class="mod-tab-status" id="badge-reddit">KAPALI</span>
+                    <span class="mod-tab-status" id="badge-reddit">FİLTRE YOK</span>
                 </button>
                 <button class="mod-tab-btn" id="modtab-bluesky" onclick="selectRoleModule('bluesky')">
                     <span>🦋 Bluesky</span>
-                    <span class="mod-tab-status" id="badge-bluesky">KAPALI</span>
+                    <span class="mod-tab-status" id="badge-bluesky">FİLTRE YOK</span>
                 </button>
                 <button class="mod-tab-btn" id="modtab-translation" onclick="selectRoleModule('translation')">
                     <span>🇹🇷 Çeviri</span>
-                    <span class="mod-tab-status" id="badge-translation">KAPALI</span>
+                    <span class="mod-tab-status" id="badge-translation">FİLTRE YOK</span>
                 </button>
                 <button class="mod-tab-btn" id="modtab-ai_chat" onclick="selectRoleModule('ai_chat')">
                     <span>💬 AI Chat</span>
-                    <span class="mod-tab-status" id="badge-ai_chat">KAPALI</span>
+                    <span class="mod-tab-status" id="badge-ai_chat">FİLTRE YOK</span>
                 </button>
             </div>
 
@@ -2255,7 +2280,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 const badge = document.getElementById('badge-' + m);
                 if (!badge) return;
                 const f = filters[m];
-                badge.textContent = (!f || f.mode === 'disabled') ? "KAPALI" : (f.mode === 'blacklist' ? `⛔ ${f.roles.length}` : `✅ ${f.roles.length}`);
+                badge.textContent = (!f || f.mode === 'disabled')
+                    ? "FİLTRE YOK"
+                    : (f.mode === 'blacklist' ? `⛔ ${f.roles.length}` : `✅ ${f.roles.length}`);
             });
         }
 
@@ -2401,11 +2428,18 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             });
         }
 
+        function closeRolePicker() {
+            const dropdown = document.getElementById('role-picker-dropdown');
+            if (dropdown) dropdown.classList.remove('open');
+        }
+
         function toggleRolePicker(e) {
             if (e) e.stopPropagation();
             const dropdown = document.getElementById('role-picker-dropdown');
-            dropdown.classList.toggle('open');
-            if (dropdown.classList.contains('open')) {
+            if (!dropdown) return;
+            const willOpen = !dropdown.classList.contains('open');
+            dropdown.classList.toggle('open', willOpen);
+            if (willOpen) {
                 const search = document.getElementById('role-search-input');
                 search.value = '';
                 renderRolePickerList('');
@@ -2417,7 +2451,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             const dropdown = document.getElementById('role-picker-dropdown');
             if (dropdown && dropdown.classList.contains('open')) {
                 if (!dropdown.contains(e.target) && !e.target.closest('#btn-toggle-picker')) {
-                    dropdown.classList.remove('open');
+                    closeRolePicker();
                 }
             }
         });
@@ -2517,6 +2551,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         }
 
         window.addEventListener('keydown', (e) => {
+            // Açılır menü (rol seçici) Escape ile kapanır.
+            if (e.key === 'Escape') {
+                closeRolePicker();
+                return;
+            }
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
                 e.preventDefault();
                 saveSettingsToServer();
@@ -2608,6 +2647,18 @@ mod tests {
         assert!(
             !page.contains("server-inheritance-notice"),
             "kaldırılan ölü öğe panelde olmamalı"
+        );
+        // Katman hataları (menünün panelin arkasında kalması) tekrar etmesin:
+        // panellerde stacking context yaratan backdrop-filter bulunmamalı ve açılır menü
+        // katmanı komut çubuğundan yüksek olmalı.
+        assert!(
+            !page.contains("backdrop-filter: blur(16px)"),
+            "panel'de backdrop-filter, açılır menüyü sonraki panelin arkasında bırakıyordu"
+        );
+        assert!(page.contains("--z-dropdown: 200"), "açılır menü katmanı tanımlı olmalı");
+        assert!(
+            page.contains("z-index: var(--z-dropdown)"),
+            "açılır menü komut çubuğunun üzerinde olmalı"
         );
 
         // 2) /api/info gerçek sürüm/port/.env alan adlarını döner.
