@@ -593,8 +593,10 @@ pub struct AppSettings {
     pub modules: PlatformModules,
     #[serde(default)]
     pub role_filters: ModuleRoleFilters,
-    /// Geriye dönük uyumluluk için eski genel role_filter (varsa)
-    #[serde(default)]
+    /// **Yalnızca eski ayar dosyaları için okunur.** Modül bazlı filtreler boşsa yükleme
+    /// anında bir kez modüllere kopyalanır (`migrate_legacy_role_filter`) ve artık
+    /// `settings.json`'a **yazılmaz**: aynı bilgiyi iki alanda tutmak karışıklık yaratıyordu.
+    #[serde(default, skip_serializing)]
     pub role_filter: Option<RoleFilterSettings>,
     #[serde(default)]
     pub ai: AiSettings,
@@ -631,6 +633,25 @@ impl AppSettings {
         }
         self.default_guild_settings()
     }
+
+    /// Eski tek `role_filter` alanını modül bazlı filtrelere taşır (bir kez, yükleme anında).
+    /// Modül filtreleri zaten doluysa dokunulmaz.
+    pub fn migrate_legacy_role_filter(&mut self) {
+        let Some(legacy) = self.role_filter.clone() else {
+            return;
+        };
+        if legacy.roles.is_empty() || !self.role_filters.twitter.roles.is_empty() {
+            return;
+        }
+
+        self.role_filters.twitter = legacy.clone();
+        self.role_filters.tiktok = legacy.clone();
+        self.role_filters.instagram = legacy.clone();
+        self.role_filters.reddit = legacy.clone();
+        self.role_filters.bluesky = legacy.clone();
+        self.role_filters.translation = legacy.clone();
+        self.role_filters.ai_chat = legacy;
+    }
 }
 
 fn resolve_settings_path() -> PathBuf {
@@ -664,18 +685,9 @@ impl AppSettings {
                         guild.engine.sanitize();
                     }
 
-                    // Geriye dönük uyumluluk: Eski role_filter doluysa ve yeniler boşsa aktar
-                    if let Some(ref legacy) = settings.role_filter {
-                        if !legacy.roles.is_empty() && settings.role_filters.twitter.roles.is_empty() {
-                            settings.role_filters.twitter = legacy.clone();
-                            settings.role_filters.tiktok = legacy.clone();
-                            settings.role_filters.instagram = legacy.clone();
-                            settings.role_filters.reddit = legacy.clone();
-                            settings.role_filters.bluesky = legacy.clone();
-                            settings.role_filters.translation = legacy.clone();
-                            settings.role_filters.ai_chat = legacy.clone();
-                        }
-                    }
+                    // Eski tek `role_filter` alanı modül filtresine taşınır (bir kez).
+                    settings.migrate_legacy_role_filter();
+
                     info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", path.display());
                     return settings;
                 }
@@ -778,6 +790,38 @@ mod tests {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
         assert!(settings.modules.ai_chat);
         assert!(settings.guilds.is_empty());
+    }
+
+    #[test]
+    fn legacy_role_filter_is_migrated_once_and_no_longer_written() {
+        // Eski ayar dosyası: tek `role_filter` alanı (modül filtreleri boş).
+        let legacy_json = r#"{ "role_filter": { "mode": "allowlist", "roles": ["42", "43"] } }"#;
+        let mut settings: AppSettings = serde_json::from_str(legacy_json).unwrap();
+
+        settings.migrate_legacy_role_filter();
+
+        for filter in [
+            &settings.role_filters.twitter,
+            &settings.role_filters.tiktok,
+            &settings.role_filters.instagram,
+            &settings.role_filters.reddit,
+            &settings.role_filters.bluesky,
+            &settings.role_filters.translation,
+            &settings.role_filters.ai_chat,
+        ] {
+            assert_eq!(filter.mode, FilterMode::Allowlist);
+            assert_eq!(filter.roles, vec!["42".to_string(), "43".to_string()]);
+        }
+
+        // Migrasyondan sonra eski alan dosyaya yazılmaz: ayarlar tek gerçeği taşır.
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(!saved.contains("\"role_filter\""), "eski çift alan kaydedilmemeli: {saved}");
+
+        // Modül filtreleri doluysa migrasyon üzerine yazmaz.
+        let mut customized = settings.clone();
+        customized.role_filters.twitter.roles = vec!["7".to_string()];
+        customized.migrate_legacy_role_filter();
+        assert_eq!(customized.role_filters.twitter.roles, vec!["7".to_string()]);
     }
 
     #[test]

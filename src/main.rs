@@ -86,11 +86,11 @@ async fn main() {
 
     // Minimal WebUI Sunucusunu Başlat (Arka planda - Discord Http ve Cache ile)
     let web_settings = settings.clone();
-    let web_port = config.web_port;
+    let web_config = config.clone();
     let web_http = client.http.clone();
     let web_cache = client.cache.clone();
     tokio::spawn(async move {
-        web::start_web_server(web_settings, web_port, web_http, web_cache).await;
+        web::start_web_server(web_settings, &web_config, web_http, web_cache).await;
     });
 
 

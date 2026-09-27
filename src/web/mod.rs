@@ -11,15 +11,50 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
+use crate::config::Config;
 use crate::settings::AppSettings;
 
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
+
+/// WebUI'ın kendini tanıtması için gereken bilgiler: sürüm, port ve `.env` kaynaklı
+/// yedek alan adları (WebUI'daki alan boş bırakıldığında geçerli olan değerler).
+///
+/// Panel bu bilgileri `/api/info`'dan alır: başlıkta sabit "PORT: 3000" yazmak yerine
+/// gerçek port/sürüm gösterilir, alan adı kutularının ipucu da gerçek `.env` değerini yazar.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WebInfo {
+    pub version: String,
+    pub port: u16,
+    pub env_domains: std::collections::BTreeMap<String, String>,
+}
+
+impl WebInfo {
+    pub fn from_config(config: &Config) -> Self {
+        let mut env_domains = std::collections::BTreeMap::new();
+        for (key, value) in [
+            ("twitter", &config.twitter_domain),
+            ("tiktok", &config.tiktok_domain),
+            ("instagram", &config.instagram_domain),
+            ("reddit", &config.reddit_domain),
+            ("bluesky", &config.bluesky_domain),
+        ] {
+            env_domains.insert(key.to_string(), value.clone());
+        }
+
+        Self {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            port: config.web_port,
+            env_domains,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct WebState {
     pub settings: SharedSettings,
     pub http: Arc<serenity::all::Http>,
     pub cache: Arc<serenity::all::Cache>,
+    pub info: WebInfo,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -39,19 +74,22 @@ pub struct DiscordGuildRolesDto {
 
 pub async fn start_web_server(
     settings: SharedSettings,
-    port: u16,
+    config: &Config,
     http: Arc<serenity::all::Http>,
     cache: Arc<serenity::all::Cache>,
 ) {
+    let port = config.web_port;
     let state = WebState {
         settings,
         http,
         cache,
+        info: WebInfo::from_config(config),
     };
 
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/api/settings", get(get_settings).post(save_settings))
+        .route("/api/info", get(get_info))
         .route("/api/discord/roles", get(get_discord_roles))
         .route("/api/health", get(health_check))
         .layer(from_fn(add_security_headers))
@@ -102,6 +140,11 @@ async fn health_check() -> impl IntoResponse {
 async fn get_settings(State(state): State<WebState>) -> impl IntoResponse {
     let s = state.settings.read().await;
     Json((*s).clone())
+}
+
+/// Panelin başlık bilgileri: sürüm, gerçek WebUI portu ve `.env` kaynaklı alan adları.
+async fn get_info(State(state): State<WebState>) -> impl IntoResponse {
+    Json(state.info.clone())
 }
 
 async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
@@ -703,20 +746,6 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             padding: 6px 0;
         }
 
-        .role-dropdown-item {
-            padding: 8px 14px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            cursor: pointer;
-            transition: background 0.15s;
-            font-size: 13px;
-        }
-
-        .role-dropdown-item:hover {
-            background: rgba(255, 255, 255, 0.06);
-        }
-
         .role-item-left {
             display: flex;
             align-items: center;
@@ -907,6 +936,48 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             margin-bottom: 10px;
         }
 
+        /* Native Embed seçili platformda alan adı kutusu kullanılmaz (Proxy'ye özel) */
+        .engine-row input:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        /* Sunucu seçici satırı ve "miras alıyor" uyarısı */
+        .server-actions-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+
+        .inherit-hint {
+            margin-top: 12px;
+            font-size: 11px;
+            letter-spacing: 0.3px;
+            color: var(--cyan);
+        }
+
+        /* Kaydedilmemiş değişiklik uyarısı (komut çubuğu) */
+        .dirty-badge {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            color: var(--amber);
+            font-weight: 700;
+        }
+
+        .dirty-badge.visible {
+            display: inline-flex;
+        }
+
+        /* Rol seçicide rolün ait olduğu sunucu (Genel görünümünde ayırt eder) */
+        .role-guild-badge {
+            font-size: 10px;
+            color: var(--cyan);
+            opacity: 0.85;
+        }
+
         .engine-platform {
             display: flex;
             align-items: center;
@@ -1091,6 +1162,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             transform: translateY(0);
         }
 
+        .toast-notification.error {
+            border-color: var(--rose);
+        }
+
         @media (max-width: 640px) {
             .modules-grid { grid-template-columns: 1fr; }
             .segmented-tabs { grid-template-columns: 1fr; }
@@ -1107,13 +1182,13 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <div class="brand">
                 <div class="brand-icon">⚡</div>
                 <div class="brand-titles">
-                    <h1>BOTGEK <span class="tag mono">v0.1.0</span></h1>
+                    <h1>BOTGEK <span class="tag mono" id="app-version">v-</span></h1>
                     <p>Discord Social Embed Converter & Smart AI Companion</p>
                 </div>
             </div>
             <div class="status-pill">
                 <div class="pulse-dot"></div>
-                <span class="mono">SYSTEM LIVE // PORT: 3000</span>
+                <span class="mono" id="system-status">SİSTEM CANLI</span>
             </div>
         </header>
 
@@ -1127,7 +1202,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             </div>
             <p class="panel-sub">Ayarları tüm sunucular için genel varsayılan olarak belirleyebilir veya sunucu seçerek o sunucuya özel modüller, rol kuralları ve AI prompt'u tanımlayabilirsiniz.</p>
 
-            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 16px;">
+            <div class="server-actions-row">
                 <div style="flex: 1; min-width: 260px;">
                     <select id="server-select" class="text-input" style="font-size: 14px; font-weight: 600; cursor: pointer;" onchange="onServerChange()">
                         <option value="global">🌐 Genel / Varsayılan Ayarlar (Tüm Sunucular)</option>
@@ -1140,8 +1215,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 </div>
             </div>
 
-            <div id="server-inheritance-notice" style="display: none; margin-top: 14px; padding: 10px 14px; border-radius: var(--radius-sm); background: rgba(6, 182, 212, 0.08); border: 1px solid rgba(6, 182, 212, 0.2); font-size: 12px; color: var(--cyan);">
-                ℹ️ Bu sunucu şu anda <strong>Genel Varsayılan</strong> ayarları miras alıyor. Ayarları değiştirdiğinizde veya "Özel Ayarla" butonuna tıkladığınızda bu sunucuya özgü kaydedilecektir.
+            <div id="server-inheritance-hint" class="inherit-hint mono" style="display: none;">
+                MİRAS ALIYOR: bu sunucuda Genel Varsayılan ayarlar geçerli
             </div>
         </section>
 
@@ -1298,6 +1373,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 </button>
             </div>
 
+            <div id="module-disabled-hint" class="inherit-hint mono" style="display: none;">
+                BU MODÜL KAPALI: rol filtresi uygulanmaz (modülü "Platform ve Dönüştürme Modülleri" panelinden açın)
+            </div>
+
             <div class="segmented-tabs">
                 <button class="tab-btn active" id="tab-disabled" onclick="setFilterMode('disabled')">
                     <span>🚫 Devre Dışı</span>
@@ -1344,7 +1423,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <div class="panel-heading">
                     <span>🤖 OpenRouter AI & Sarcastic Persona</span>
                 </div>
-                <span class="mono" style="font-size: 11px; color: var(--cyan);">@botgekv2 REPLIES</span>
+                <span class="mono" style="font-size: 11px; color: var(--cyan);">ETİKET VEYA YANIT İLE ÇALIŞIR</span>
             </div>
             <p class="panel-sub">Bot etiketlendiğinde veya ona cevap verildiğinde çalışacak model ve hazırcevap karakter komutları.</p>
 
@@ -1381,6 +1460,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <p class="panel-sub">
                 Her platform için <strong>Proxy</strong> (harici önizleme servisi) veya <strong>Native Embed</strong> (bot bağlantıyı kendi çözer, Discord embed'ini kendisi üretir) motorunu seçin.
                 Alan adı boş bırakılırsa .env değeri kullanılır. Native embed başarısız olursa proxy linkine düşülür.
+                <strong>Embed içeriği, medya yükleme, gönderim biçimi ve emoji ayarları yalnızca Native Embed motorunda geçerlidir</strong>;
+                proxy modunda link harici servise yönlendirilir ve görünümü o servis belirler.
                 <strong>Kart stili</strong> gönderimin görünümünü belirler:
                 <span class="mono">modern</span> tek parça Components V2 kartıdır (video/görseller kartın içinde oynar),
                 <span class="mono">otomatik</span> video içeren gönderilerde bu kartı, diğerlerinde klasik embed'i kullanır,
@@ -1454,7 +1535,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <div class="option-tile" onclick="toggleEngineOption('engine-show-quote')">
                     <div>
                         <div class="name">Alıntılanan gönderi</div>
-                        <div class="hint">İkinci embed olarak göster</div>
+                        <div class="hint">Alıntıyı kartta göster (klasik embed'de ikinci embed)</div>
                     </div>
                     <label class="toggle-switch" onclick="event.stopPropagation()">
                         <input type="checkbox" id="engine-show-quote" onchange="onConfigModified(); updateEngineSummary()">
@@ -1565,11 +1646,12 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         <!-- Floating Command Bar -->
         <div class="command-bar">
             <div class="shortcut-hint">
+                <span id="dirty-indicator" class="dirty-badge">● Kaydedilmemiş değişiklik</span>
                 <span>Kaydetmek için</span>
                 <span class="kbd">Ctrl</span> + <span class="kbd">S</span>
                 <span>veya butona tıklayın</span>
             </div>
-            <button class="btn-deploy" onclick="saveSettingsToServer()">
+            <button class="btn-deploy" id="btn-save" onclick="saveSettingsToServer()">
                 <span>⚡ Ayarları Güncelle</span>
             </button>
         </div>
@@ -1586,6 +1668,14 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         let activeServer = 'global'; 
         let rawGuildsList = []; 
         let discordRoles = []; 
+        let rolesLoaded = false;
+        let dirty = false;
+        // Rust tarafındaki PlatformModules / AiSettings varsayılanlarıyla aynı.
+        const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai_chat'];
+        const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, translation: true, ai_chat: true };
+        const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
+        // /api/info: sürüm, gerçek port ve .env kaynaklı yedek alan adları.
+        let BOTGEK_INFO = { version: '', port: null, env_domains: {} };
 
         // Link dönüştürme motoru sabitleri (Rust tarafındaki EngineSettings varsayılanlarıyla aynı)
         const ENGINE_PLATFORMS = [
@@ -1638,35 +1728,36 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         ];
 
         let appSettings = {
-            modules: {
-                twitter: true,
-                tiktok: true,
-                instagram: true,
-                reddit: true,
-                bluesky: true,
-                translation: true,
-                ai_chat: true,
-            },
-            role_filters: {
-                twitter: { mode: "disabled", roles: [] },
-                tiktok: { mode: "disabled", roles: [] },
-                instagram: { mode: "disabled", roles: [] },
-                reddit: { mode: "disabled", roles: [] },
-                bluesky: { mode: "disabled", roles: [] },
-                translation: { mode: "disabled", roles: [] },
-                ai_chat: { mode: "disabled", roles: [] },
-            },
-            ai: {
-                model: "google/gemma-4-31b-it:free",
-                system_prompt: ""
-            },
+            modules: Object.assign({}, MODULE_DEFAULTS),
+            role_filters: {},
+            ai: Object.assign({}, AI_DEFAULTS),
             engine: JSON.parse(JSON.stringify(ENGINE_DEFAULTS)),
             guilds: {}
         };
+        MODULE_KEYS.forEach(m => { appSettings.role_filters[m] = { mode: "disabled", roles: [] }; });
+
+        // Eksik alanları (eski kayıtlar, elle düzenlenmiş settings.json, yalnızca birkaç
+        // alan içeren sunucu ayarları) varsayılanlarla doldurur. Bu olmadan panel
+        // `cfg.modules.twitter` gibi bir erişimde hata verip yarıda kalıyordu.
+        function ensureConfigShape(cfg) {
+            cfg.modules = Object.assign({}, MODULE_DEFAULTS, cfg.modules || {});
+            cfg.role_filters = cfg.role_filters || {};
+            MODULE_KEYS.forEach(m => {
+                const filter = cfg.role_filters[m];
+                cfg.role_filters[m] = {
+                    mode: filter && filter.mode ? filter.mode : 'disabled',
+                    roles: filter && Array.isArray(filter.roles) ? filter.roles : []
+                };
+            });
+            cfg.ai = Object.assign({}, AI_DEFAULTS, cfg.ai || {});
+            getEngineConfig(cfg);
+            return cfg;
+        }
 
         function getActiveConfig() {
-            if (activeServer === 'global') return appSettings;
-            return appSettings.guilds[activeServer] || appSettings;
+            if (activeServer === 'global') return ensureConfigShape(appSettings);
+            const guild = appSettings.guilds ? appSettings.guilds[activeServer] : null;
+            return ensureConfigShape(guild || appSettings);
         }
 
         // Eksik motor alanları (eski kayıtlar) varsayılanlarla doldurulur.
@@ -1701,23 +1792,45 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
         function ensureActiveConfigCustomized() {
             if (activeServer === 'global') return;
+            ensureConfigShape(appSettings);
             if (!appSettings.guilds) appSettings.guilds = {};
             if (!appSettings.guilds[activeServer]) {
                 appSettings.guilds[activeServer] = {
                     modules: JSON.parse(JSON.stringify(appSettings.modules)),
                     role_filters: JSON.parse(JSON.stringify(appSettings.role_filters)),
                     ai: JSON.parse(JSON.stringify(appSettings.ai)),
-                    engine: JSON.parse(JSON.stringify(getEngineConfig(appSettings)))
+                    engine: JSON.parse(JSON.stringify(appSettings.engine))
                 };
+            } else {
+                ensureConfigShape(appSettings.guilds[activeServer]);
             }
         }
 
         function onConfigModified() {
+            markDirty();
             if (activeServer !== 'global' && !isServerCustomized(activeServer)) {
                 ensureActiveConfigCustomized();
                 updateServerSelectDropdown();
                 updateServerHeaderUI();
             }
+        }
+
+        // Kaydedilmemiş değişiklik göstergesi: sekme kapanırken/yenilenirken
+        // yapılan düzenlemelerin sessizce kaybolmasını engeller.
+        function markDirty() {
+            if (dirty) return;
+            dirty = true;
+            updateDirtyIndicator();
+        }
+
+        function clearDirty() {
+            dirty = false;
+            updateDirtyIndicator();
+        }
+
+        function updateDirtyIndicator() {
+            const el = document.getElementById('dirty-indicator');
+            if (el) el.classList.toggle('visible', dirty);
         }
 
         function commitDomToActiveConfig() {
@@ -1816,17 +1929,21 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             const badge = document.getElementById('server-custom-badge');
             const btnToggle = document.getElementById('btn-toggle-custom');
             const controls = document.getElementById('server-custom-controls');
+            const hint = document.getElementById('server-inheritance-hint');
             if (activeServer === 'global') {
                 if(badge) badge.textContent = "GENEL VARSAYILAN";
                 if(controls) controls.style.display = "none";
+                if(hint) hint.style.display = "none";
             } else {
                 if(controls) controls.style.display = "flex";
                 if (isServerCustomized(activeServer)) {
                     if(badge) badge.textContent = "ÖZEL AYAR AKTİF";
                     if(btnToggle) btnToggle.textContent = "🔄 Varsayılana Sıfırla";
+                    if(hint) hint.style.display = "none";
                 } else {
                     if(badge) badge.textContent = "MİRAS ALIYOR (GENEL)";
                     if(btnToggle) btnToggle.textContent = "✨ Bu Sunucuya Özel Ayarla";
+                    if(hint) hint.style.display = "block";
                 }
             }
         }
@@ -1856,6 +1973,20 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             renderRoleChips();
         }
 
+        // Sürüm, gerçek WebUI portu ve .env kaynaklı alan adları (başlık + ipuçları için).
+        async function fetchInfo() {
+            try {
+                const res = await fetch('/api/info');
+                if (res.ok) BOTGEK_INFO = await res.json();
+            } catch (err) { console.warn(err); }
+
+            const versionEl = document.getElementById('app-version');
+            if (versionEl && BOTGEK_INFO.version) versionEl.textContent = 'v' + BOTGEK_INFO.version;
+
+            const statusEl = document.getElementById('system-status');
+            if (statusEl && BOTGEK_INFO.port) statusEl.textContent = 'SİSTEM CANLI // PORT: ' + BOTGEK_INFO.port;
+        }
+
         async function fetchSettings() {
             try {
                 const res = await fetch('/api/settings');
@@ -1865,6 +1996,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 appSettings.role_filters = data.role_filters || appSettings.role_filters;
                 appSettings.engine = data.engine || appSettings.engine;
                 appSettings.guilds = data.guilds || {};
+                ensureConfigShape(appSettings);
+                clearDirty();
                 updateServerSelectDropdown();
                 renderUI();
             } catch (err) { console.error(err); }
@@ -1875,6 +2008,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 const res = await fetch('/api/discord/roles');
                 if (res.ok) {
                     rawGuildsList = await res.json();
+                    rolesLoaded = true;
                     updateServerSelectDropdown();
                     filterDiscordRolesForActiveServer();
                 }
@@ -1895,7 +2029,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             renderEngineUI(cfg);
             updateTileMeta();
             updateCharCount();
-            selectRoleModule(currentModule, false);
+            selectRoleModule(currentModule);
         }
 
         // Platform motor satırlarını (mod + yedek alan adı) yeniden çizer.
@@ -1904,7 +2038,14 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             if (!container) return;
             const engine = getEngineConfig(cfg);
 
-            container.innerHTML = ENGINE_PLATFORMS.map(p => `
+            // Alan adı ipucu: `.env` değeri gerçekten geçerli olduğu için gösterilir
+            // (WebUI alanı boşsa bu değer kullanılır).
+            container.innerHTML = ENGINE_PLATFORMS.map(p => {
+                const envDomain = (BOTGEK_INFO.env_domains || {})[p.key] || '';
+                const placeholder = envDomain
+                    ? `boş = ${envDomain} (.env)`
+                    : 'proxy alan adı (boş = .env)';
+                return `
                 <div class="engine-row">
                     <div class="engine-platform">
                         <span class="module-icon" style="width: 32px; height: 32px; font-size: 15px;">${p.icon}</span>
@@ -1917,9 +2058,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                         <option value="proxy">Proxy</option>
                         <option value="builtin">Native Embed</option>
                     </select>
-                    <input type="text" class="text-input mono" id="engine-domain-${p.key}" placeholder="yedek alan adı (boş = .env)" oninput="onConfigModified()">
+                    <input type="text" class="text-input mono" id="engine-domain-${p.key}" placeholder="${placeholder}" oninput="onConfigModified()">
                 </div>
-            `).join('');
+            `;
+            }).join('');
 
             ENGINE_PLATFORMS.forEach(p => {
                 const modeEl = document.getElementById('engine-mode-' + p.key);
@@ -1981,6 +2123,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             });
         }
 
+        // Platform satırının durum etiketi + alan adı kutusunun aktifliği:
+        // Native Embed seçiliyken alan adı kullanılmaz (yalnızca Proxy için geçerlidir).
         function updateEngineNote(platformKey) {
             const modeEl = document.getElementById('engine-mode-' + platformKey);
             const noteEl = document.getElementById('engine-note-' + platformKey);
@@ -1989,6 +2133,12 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             noteEl.textContent = builtin ? 'NATIVE EMBED' : 'PROXY';
             noteEl.classList.toggle('on', builtin);
             noteEl.classList.toggle('off', !builtin);
+
+            const domainEl = document.getElementById('engine-domain-' + platformKey);
+            if (domainEl) {
+                domainEl.disabled = builtin;
+                domainEl.title = builtin ? 'Native Embed seçili: alan adı yalnızca Proxy modunda kullanılır' : '';
+            }
         }
 
         function toggleEngineOption(id) {
@@ -2038,6 +2188,12 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             });
             const countEl = document.getElementById('active-modules-count');
             if (countEl) countEl.textContent = `${activeCount}/7 AKTİF`;
+
+            // Stüdyoda açık olan modülün durumu değiştiyse "filtre uygulanmaz" uyarısını tazele.
+            const disabledHint = document.getElementById('module-disabled-hint');
+            if (disabledHint) {
+                disabledHint.style.display = getActiveConfig().modules[currentModule] ? 'none' : 'block';
+            }
         }
 
         function toggleSwitch(id) {
@@ -2047,10 +2203,15 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
         function selectRoleModule(modKey) {
             currentModule = modKey;
-            ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai_chat'].forEach(m => {
+            MODULE_KEYS.forEach(m => {
                 const btn = document.getElementById('modtab-' + m);
                 if (btn) btn.classList.toggle('active', m === modKey);
             });
+            // Kapalı modülde rol filtresi hiç uygulanmaz: kullanıcıya açıkça söylenir.
+            const disabledHint = document.getElementById('module-disabled-hint');
+            if (disabledHint) {
+                disabledHint.style.display = getActiveConfig().modules[modKey] ? 'none' : 'block';
+            }
             const filter = getCurFilter();
             setFilterModeUI(filter.mode);
             renderRoleChips();
@@ -2168,7 +2329,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             list.innerHTML = '';
 
             if (discordRoles.length === 0) {
-                list.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px;">Bu sunucu için rol bulunamadı.</div>';
+                list.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px;">'
+                    + (rolesLoaded ? 'Bu sunucu için rol bulunamadı.' : 'Sunucu rolleri yükleniyor…') + '</div>';
                 return;
             }
 
@@ -2209,6 +2371,15 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
                 nameWrap.appendChild(nameText);
                 nameWrap.appendChild(idBadge);
+
+                // Genel görünümünde tüm sunucuların rolleri listelenir: aynı adlı rolleri
+                // ayırt edebilmek için rolün hangi sunucuya ait olduğu yazılır.
+                if (activeServer === 'global' && role.guild_name) {
+                    const guildBadge = document.createElement('span');
+                    guildBadge.className = 'role-guild-badge';
+                    guildBadge.textContent = '🏠 ' + role.guild_name;
+                    nameWrap.appendChild(guildBadge);
+                }
 
                 left.appendChild(dot);
                 left.appendChild(nameWrap);
@@ -2292,6 +2463,13 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         async function saveSettingsToServer() {
             commitDomToActiveConfig();
 
+            const button = document.getElementById('btn-save');
+            const originalLabel = button ? button.innerHTML : '';
+            if (button) {
+                button.disabled = true;
+                button.innerHTML = '<span>⏳ Kaydediliyor…</span>';
+            }
+
             try {
                 const res = await fetch('/api/settings', {
                     method: 'POST',
@@ -2299,24 +2477,38 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                     body: JSON.stringify(appSettings)
                 });
                 if (res.ok) {
+                    clearDirty();
                     showToast("Tüm ayarlar başarıyla güncellendi!");
                     updateServerSelectDropdown();
                     updateServerHeaderUI();
                 } else {
-                    alert("Ayarlar kaydedilirken hata meydana geldi.");
+                    // Sunucu doğrulama hatası gönderdiyse mesajı kullanıcıya göster
+                    // (ör. yazma izni yok: "Permission denied" ipucu).
+                    let detail = '';
+                    try {
+                        const body = await res.json();
+                        if (body && body.error) detail = ' — ' + body.error;
+                    } catch (ignored) { /* gövde JSON değilse yok say */ }
+                    showToast('Kaydedilemedi (HTTP ' + res.status + ')' + detail, true);
                 }
             } catch (err) {
-                alert("Sunucuya bağlanılamadı: " + err);
+                showToast("Sunucuya bağlanılamadı: " + err, true);
+            } finally {
+                if (button) {
+                    button.disabled = false;
+                    button.innerHTML = originalLabel;
+                }
             }
         }
 
-        function showToast(msg) {
+        function showToast(msg, isError = false) {
             const toast = document.getElementById('toast-box');
             document.getElementById('toast-msg').textContent = msg;
+            toast.classList.toggle('error', !!isError);
             toast.classList.add('visible');
             setTimeout(() => {
                 toast.classList.remove('visible');
-            }, 3200);
+            }, isError ? 5200 : 3200);
         }
 
         window.addEventListener('keydown', (e) => {
@@ -2326,12 +2518,53 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             }
         });
 
-        window.onload = () => {
-            fetchSettings();
+        // Kaydedilmemiş değişiklik varken sekmeden çıkışta uyar (panel kapanınca
+        // düzenlemeler sessizce kaybolmasın).
+        window.addEventListener('beforeunload', (e) => {
+            if (!dirty) return;
+            e.preventDefault();
+            e.returnValue = '';
+        });
+
+        window.onload = async () => {
+            // Sürüm/port/.env bilgisi önce alınır: motor satırlarının ipuçları bunu kullanır.
+            await fetchInfo();
+            await fetchSettings();
             fetchDiscordRoles();
         };
     </script>
 </body>
 </html>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> Config {
+        Config {
+            discord_token: "test-token".to_string(),
+            twitter_domain: "fixupx.com".to_string(),
+            tiktok_domain: "tnktok.com".to_string(),
+            instagram_domain: "ddinstagram.com".to_string(),
+            reddit_domain: "vxreddit.com".to_string(),
+            bluesky_domain: "fxbsky.app".to_string(),
+            delete_original: true,
+            openrouter_api_key: None,
+            web_port: 8123,
+        }
+    }
+
+    /// Panelin başlık bilgileri gerçek yapılandırmadan üretilir: sabit "PORT: 3000" yok.
+    #[test]
+    fn info_payload_carries_version_port_and_env_domains() {
+        let info = WebInfo::from_config(&config());
+
+        assert_eq!(info.port, 8123);
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(info.env_domains.get("twitter").map(String::as_str), Some("fixupx.com"));
+        assert_eq!(info.env_domains.get("bluesky").map(String::as_str), Some("fxbsky.app"));
+        assert_eq!(info.env_domains.len(), 5, "beş platform alan adı taşınmalı");
+    }
+}
 

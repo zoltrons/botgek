@@ -63,11 +63,12 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - Kayıt dosyası **hiçbir kaydı unutmaz**: bot kapansa, çökse veya güncellense bile veriler diskte kalır (eski davranış: bellekteki `HashMap` yeniden başlatmada siliniyordu). Yalnızca 200.000 kaydı aşan en eski satırlar budanır, kart silinince (🗑️) kaydı da silinir.
   - Yol: `BOTGEK_DB_PATH` → yoksa çalışma dizinindeki `botgek.db` (systemd: `/var/lib/botgek/botgek.db`, Docker: `/app/data/botgek.db` — `botgek-data` kalıcı volume'u). Dosya açılamazsa bot durmaz, bellek içi veritabanına düşüp uyarı log'lar.
 - 🎛️ **Cyber-Ops Minimal WebUI (`http://localhost:3000`):**
-  - Tüm modülleri tek tıkla açıp kapatma.
-  - **Link Dönüştürme Motoru paneli:** Platform bazlı `Proxy` / `Native Embed` seçimi, yedek proxy alan adları (`.env` değerini geçersiz kılar), X veri kaynağı, **kart stili** (`fxembed` / `otomatik` / `modern`), **otomatik Türkçe çeviri**, **kullanıcıyı taklit etme**, modern kart **emoji seti**, medya yükleme ve embed içeriği seçenekleri (metrik, tarih, topluluk notu, alıntı, maks. görsel sayısı, maks. video boyutu).
-  - **Rol Tabanlı Filtreleme:** İstemeyen roller için `Blacklist` veya sadece belirli roller için `Allowlist`.
-  - Sistem promptu ve AI modelini web arayüzünden anlık güncelleme.
-  - Yapılan tüm değişiklikler `settings.json` ile anında kalıcı olarak kaydedilir.
+  - Tüm modülleri (5 platform + bayrak çevirisi + AI sohbet) tek tıkla açıp kapatma; başlıkta gerçek sürüm ve **gerçek WebUI portu** gösterilir (`/api/info`).
+  - **Sunucu seçici:** Ayarlar önce **Genel Varsayılan** olarak düzenlenir; bir sunucu seçildiğinde o sunucuya özel modül/rol/AI/motor ayarı tanımlanır (sunucu ayarı genel ayarı miras alır, "Varsayılana Sıfırla" ile silinir). Kaydedilmemiş değişiklik varken komut çubuğunda uyarı çıkar.
+  - **Link Dönüştürme Motoru paneli:** Platform bazlı `Proxy` / `Native Embed` seçimi (**Native Embed seçiliyken yedek alan adı kutusu otomatik devre dışı kalır**), yedek proxy alan adları (kutu boşsa `.env` değeri geçerlidir ve ipucunda yazar), X veri kaynağı, **kart stili** (`fxembed` / `otomatik` / `modern`), **otomatik Türkçe çeviri**, **kullanıcıyı taklit etme**, modernde kart **emoji seti**, medya yükleme (görsel/video, maks. görsel sayısı, maks. video boyutu, proxy yedeği) ve embed içeriği (metrik, tarih, topluluk notu, alıntı) seçenekleri.
+  - **Rol Tabanlı Filtreleme:** Her modül için ayrı `Devre Dışı` / `Kara Liste` / `Beyaz Liste`; roller sunucudan seçilir (Genel görünümünde rolün hangi sunucuya ait olduğu yazar) veya ID ile eklenir.
+  - Sistem promptu ve AI modelini web arayüzünden anlık güncelleme (`Ctrl+S` ile kaydetme, hata durumunda sunucu mesajı gösterilir).
+  - Yapılan tüm değişiklikler `settings.json` ile anında kalıcı olarak kaydedilir (eski tek `role_filter` alanı okunup modül filtresine taşınır, artık yazılmaz).
 
 ---
 
