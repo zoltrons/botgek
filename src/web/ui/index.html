@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>BOTGEK · kontrol paneli</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<a class="skip-link" href="#main">İçeriğe geç</a>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="shell">
+
+<!-- ═════════════════ RAY: marka · telemetri · bölüm indeksi · kapsam · kayıt ═════════════════ -->
+<aside class="rail" aria-label="Panel özeti">
+    <div class="brand">
+        <span class="brand-mark" aria-hidden="true">BG</span>
+        <span class="brand-text">
+            <strong class="brand-name">BOTGEK</strong>
+            <span class="brand-sub mono" id="brand-port">webui · —</span>
+        </span>
+        <span class="brand-version mono" id="app-version">v—</span>
+    </div>
+
+    <p class="telemetry">
+        <span class="led" id="led" data-state="wait" aria-hidden="true"></span>
+        <span class="mono" id="system-status">bağlanıyor…</span>
+    </p>
+
+    <nav class="rail-nav" aria-label="Bölümler">
+        <a class="rail-link is-active" href="#sec-modules" data-nav="sec-modules">
+            <span class="rail-num mono">01</span>
+            <span class="rail-label">Modüller</span>
+            <span class="rail-count mono" id="nav-count-modules">—</span>
+        </a>
+        <a class="rail-link" href="#sec-role-filters" data-nav="sec-role-filters">
+            <span class="rail-num mono">02</span>
+            <span class="rail-label">Rol filtresi</span>
+            <span class="rail-count mono" id="nav-count-roles">—</span>
+        </a>
+        <a class="rail-link" href="#sec-ai" data-nav="sec-ai">
+            <span class="rail-num mono">03</span>
+            <span class="rail-label">AI persona</span>
+            <span class="rail-count mono" id="nav-count-ai">—</span>
+        </a>
+        <a class="rail-link" href="#sec-engine" data-nav="sec-engine">
+            <span class="rail-num mono">04</span>
+            <span class="rail-label">Motor</span>
+            <span class="rail-count mono" id="nav-count-engine">—</span>
+        </a>
+    </nav>
+
+    <div class="rail-block">
+        <p class="micro">kapsam</p>
+        <label class="sr-only" for="server-select">Ayarların uygulanacağı kapsam</label>
+        <select class="select" id="server-select" autocomplete="off"></select>
+        <div class="rail-inline">
+            <span class="chip mono" id="server-custom-badge">genel varsayılan</span>
+            <button class="btn btn-quiet btn-xs" type="button" id="btn-toggle-custom" hidden>özelleştir</button>
+        </div>
+        <p class="note mono" id="server-inherit-notice" hidden>miras · bu sunucuda genel ayarlar geçerli</p>
+    </div>
+
+    <div class="rail-block rail-block--actions">
+        <p class="micro">kayıt durumu</p>
+        <p class="dirty-line" id="dirty-indicator">
+            <span class="led" id="dirty-led" data-state="ok" aria-hidden="true"></span>
+            <span class="mono" id="dirty-text">kayıtlı</span>
+        </p>
+        <div class="btn-row">
+            <button class="btn btn-primary" type="button" id="btn-save">Kaydet <span class="kbd mono">⌘S</span></button>
+            <button class="btn btn-quiet" type="button" id="btn-reload" title="Sunucudaki kayıtlı ayarları yeniden yükle">Geri yükle</button>
+        </div>
+    </div>
+</aside>
+
+<main class="main" id="main">
+<div class="ruler" aria-hidden="true"></div>
+
+<!-- ═════════════════ 01 · MODÜLLER ═════════════════ -->
+<section class="sheet" id="sec-modules" aria-labelledby="h-modules">
+    <header class="sheet-head">
+        <p class="sheet-num mono" aria-hidden="true">01</p>
+        <div class="sheet-title">
+            <h2 class="sheet-h" id="h-modules">Modüller</h2>
+            <p class="sheet-lede">Bağlantı dönüştürmeyi platform bazında açıp kapatın. Kapalı bir modül linke hiç dokunmaz.</p>
+        </div>
+        <p class="sheet-meta mono" id="active-modules-count">—</p>
+    </header>
+
+    <div class="mod-list">
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">TW</span>
+            <div class="mod-body">
+                <span class="mod-name">Twitter / X</span>
+                <span class="mod-host mono" data-host-key="twitter">—</span>
+            </div>
+            <span class="mod-state mono" id="status-twitter">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="twitter">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-twitter" data-module-key="twitter" role="switch" aria-label="Twitter / X modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">TT</span>
+            <div class="mod-body">
+                <span class="mod-name">TikTok</span>
+                <span class="mod-host mono" data-host-key="tiktok">—</span>
+            </div>
+            <span class="mod-state mono" id="status-tiktok">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="tiktok">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-tiktok" data-module-key="tiktok" role="switch" aria-label="TikTok modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">IG</span>
+            <div class="mod-body">
+                <span class="mod-name">Instagram</span>
+                <span class="mod-host mono" data-host-key="instagram">—</span>
+            </div>
+            <span class="mod-state mono" id="status-instagram">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="instagram">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-instagram" data-module-key="instagram" role="switch" aria-label="Instagram modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">RD</span>
+            <div class="mod-body">
+                <span class="mod-name">Reddit</span>
+                <span class="mod-host mono" data-host-key="reddit">—</span>
+            </div>
+            <span class="mod-state mono" id="status-reddit">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="reddit">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-reddit" data-module-key="reddit" role="switch" aria-label="Reddit modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">BS</span>
+            <div class="mod-body">
+                <span class="mod-name">Bluesky</span>
+                <span class="mod-host mono" data-host-key="bluesky">—</span>
+            </div>
+            <span class="mod-state mono" id="status-bluesky">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="bluesky">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-bluesky" data-module-key="bluesky" role="switch" aria-label="Bluesky modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">TR</span>
+            <div class="mod-body">
+                <span class="mod-name">Bayrak çevirisi</span>
+                <span class="mod-host mono">bayrak reaksiyonu</span>
+            </div>
+            <span class="mod-state mono" id="status-translation">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="translation">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-translation" data-module-key="translation" role="switch" aria-label="Bayrak çevirisi modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">AI</span>
+            <div class="mod-body">
+                <span class="mod-name">AI sohbet</span>
+                <span class="mod-host mono">etiket veya yanıt</span>
+            </div>
+            <span class="mod-state mono" id="status-ai_chat">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="ai_chat">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-ai_chat" data-module-key="ai_chat" role="switch" aria-label="AI sohbet modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+    </div>
+
+    <p class="note mono">yazılan kapsam: <span id="scope-echo">genel varsayılan</span></p>
+</section>
+
+<!-- ═════════════════ 02 · ROL FİLTRESİ ═════════════════ -->
+<section class="sheet" id="sec-role-filters" aria-labelledby="h-roles">
+    <header class="sheet-head">
+        <p class="sheet-num mono" aria-hidden="true">02</p>
+        <div class="sheet-title">
+            <h2 class="sheet-h" id="h-roles">Rol filtresi</h2>
+            <p class="sheet-lede">Kara liste: seçili roller modülü kullanamaz. Beyaz liste: yalnızca seçili roller kullanabilir. Filtre yoksa modül herkese açıktır.</p>
+        </div>
+        <p class="sheet-meta mono" id="filter-mode-badge">devre dışı</p>
+    </header>
+
+    <div class="studio">
+        <div class="studio-list" role="tablist" aria-orientation="vertical" aria-label="Modül seçimi">
+            <button class="studio-item is-active" type="button" role="tab" id="modtab-twitter" aria-selected="true" aria-controls="studio-panel" data-studio-module="twitter" tabindex="0">
+                <span class="studio-name">Twitter / X</span>
+                <span class="studio-badge mono" id="badge-twitter">filtre yok</span>
+            </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-tiktok" aria-selected="false" aria-controls="studio-panel" data-studio-module="tiktok" tabindex="-1">
+                <span class="studio-name">TikTok</span>
+                <span class="studio-badge mono" id="badge-tiktok">filtre yok</span>
+            </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-instagram" aria-selected="false" aria-controls="studio-panel" data-studio-module="instagram" tabindex="-1">
+                <span class="studio-name">Instagram</span>
+                <span class="studio-badge mono" id="badge-instagram">filtre yok</span>
+            </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-reddit" aria-selected="false" aria-controls="studio-panel" data-studio-module="reddit" tabindex="-1">
+                <span class="studio-name">Reddit</span>
+                <span class="studio-badge mono" id="badge-reddit">filtre yok</span>
+            </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-bluesky" aria-selected="false" aria-controls="studio-panel" data-studio-module="bluesky" tabindex="-1">
+                <span class="studio-name">Bluesky</span>
+                <span class="studio-badge mono" id="badge-bluesky">filtre yok</span>
+            </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-translation" aria-selected="false" aria-controls="studio-panel" data-studio-module="translation" tabindex="-1">
+                <span class="studio-name">Bayrak çevirisi</span>
+                <span class="studio-badge mono" id="badge-translation">filtre yok</span>
+            </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-ai_chat" aria-selected="false" aria-controls="studio-panel" data-studio-module="ai_chat" tabindex="-1">
+                <span class="studio-name">AI sohbet</span>
+                <span class="studio-badge mono" id="badge-ai_chat">filtre yok</span>
+            </button>
+        </div>
+
+        <div class="studio-panel" id="studio-panel" role="tabpanel" aria-labelledby="modtab-twitter" tabindex="0">
+            <p class="note note--warn mono" id="module-disabled-hint" hidden>modül kapalı · bu rol filtresi uygulanmaz</p>
+
+            <p class="micro">mod</p>
+            <div class="pill-row" role="radiogroup" aria-label="Filtre modu">
+                <label class="pill"><input type="radio" name="filter-mode" value="disabled"><span>devre dışı</span></label>
+                <label class="pill"><input type="radio" name="filter-mode" value="blacklist"><span>kara liste</span></label>
+                <label class="pill"><input type="radio" name="filter-mode" value="allowlist"><span>beyaz liste</span></label>
+            </div>
+
+            <div class="field-head">
+                <span class="micro">roller</span>
+                <span class="mono count-chip" id="role-count">0 rol</span>
+            </div>
+            <div class="chips" id="chips-container">
+                <span class="chips-empty">Bu modül için rol eklenmedi.</span>
+            </div>
+
+            <div class="role-actions">
+                <div class="picker">
+                    <button class="btn" type="button" id="btn-toggle-picker" aria-expanded="false" aria-haspopup="listbox" aria-controls="role-picker-dropdown">
+                        Sunucudan rol seç <span class="caret" aria-hidden="true"></span>
+                    </button>
+                    <div class="picker-pop" id="role-picker-dropdown" hidden>
+                        <div class="picker-head">
+                            <input class="input mono" type="search" id="role-search-input" placeholder="rol ara…" aria-label="Rol ara" autocomplete="off" spellcheck="false">
+                            <span class="picker-count mono" id="role-picker-count">0</span>
+                        </div>
+                        <div class="picker-list" id="role-picker-list" role="listbox" aria-multiselectable="true" aria-label="Sunucu rolleri"></div>
+                    </div>
+                </div>
+                <input class="input mono" type="text" id="role-input-box" inputmode="numeric" placeholder="veya rol ID (virgülle ayır)" aria-label="Rol ID ile ekle" autocomplete="off">
+                <button class="btn btn-quiet" type="button" id="btn-add-role">ID ekle</button>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═════════════════ 03 · AI PERSONA ═════════════════ -->
+<section class="sheet" id="sec-ai" aria-labelledby="h-ai">
+    <header class="sheet-head">
+        <p class="sheet-num mono" aria-hidden="true">03</p>
+        <div class="sheet-title">
+            <h2 class="sheet-h" id="h-ai">AI persona</h2>
+            <p class="sheet-lede">Bot etiketlendiğinde ya da mesajına yanıt verildiğinde OpenRouter üzerinden yanıt üretir.</p>
+        </div>
+        <p class="sheet-meta mono" id="ai-state">—</p>
+    </header>
+
+    <div class="field">
+        <div class="field-head">
+            <label class="field-label" for="ai-model-box">model</label>
+            <span class="micro">openrouter</span>
+        </div>
+        <input class="input mono" type="text" id="ai-model-box" spellcheck="false" autocomplete="off" placeholder="google/gemma-4-31b-it:free">
+        <div class="chips chips--presets">
+            <button class="chip-btn mono" type="button" data-model-preset="google/gemma-4-31b-it:free">gemma 4 31b · önerilen</button>
+            <button class="chip-btn mono" type="button" data-model-preset="openrouter/free">auto free router</button>
+            <button class="chip-btn mono" type="button" data-model-preset="meta-llama/llama-3.3-70b-instruct:free">llama 3.3 70b</button>
+            <button class="chip-btn mono" type="button" data-model-preset="mistralai/mistral-7b-instruct:free">mistral 7b</button>
+        </div>
+    </div>
+
+    <div class="field">
+        <div class="field-head">
+            <label class="field-label" for="ai-prompt-box">sistem ön komutu · kişilik</label>
+            <span class="mono count-chip" id="char-counter">0 / 4000</span>
+        </div>
+        <textarea class="input textarea" id="ai-prompt-box" rows="8" spellcheck="false"></textarea>
+        <p class="tile-hint">Sunucu tarafında 4000 karaktere kısaltılır. Botun üslubu tamamen bu metinden gelir.</p>
+    </div>
+</section>
+
+<!-- ═════════════════ 04 · MOTOR ═════════════════ -->
+<section class="sheet" id="sec-engine" aria-labelledby="h-engine">
+    <header class="sheet-head">
+        <p class="sheet-num mono" aria-hidden="true">04</p>
+        <div class="sheet-title">
+            <h2 class="sheet-h" id="h-engine">Dönüştürme motoru</h2>
+            <p class="sheet-lede">Proxy: link harici önizleme servisine gider, görünümü o servis belirler. Native embed: bot gönderiyi kendisi çözer ve Discord kartını kendisi üretir.</p>
+        </div>
+        <p class="sheet-meta mono" id="engine-summary">—</p>
+    </header>
+
+    <p class="micro">motor seçimi</p>
+    <div class="engine-table">
+        <div class="engine-head mono" aria-hidden="true">
+            <span>platform</span><span>mod</span><span>yedek alan adı (yalnızca proxy)</span>
+        </div>
+        <div class="engine-row">
+            <div class="engine-meta">
+                <span class="engine-name">Twitter / X</span>
+                <span class="engine-note mono" id="engine-note-twitter">—</span>
+            </div>
+            <div class="pill-row" role="radiogroup" aria-label="Twitter / X motoru">
+                <label class="pill"><input type="radio" name="engine-mode-twitter" value="proxy"><span>proxy</span></label>
+                <label class="pill"><input type="radio" name="engine-mode-twitter" value="builtin"><span>native</span></label>
+            </div>
+            <input class="input mono" type="text" id="engine-domain-twitter" data-domain-key="twitter" aria-label="Twitter / X yedek alan adı" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="engine-row">
+            <div class="engine-meta">
+                <span class="engine-name">TikTok</span>
+                <span class="engine-note mono" id="engine-note-tiktok">—</span>
+            </div>
+            <div class="pill-row" role="radiogroup" aria-label="TikTok motoru">
+                <label class="pill"><input type="radio" name="engine-mode-tiktok" value="proxy"><span>proxy</span></label>
+                <label class="pill"><input type="radio" name="engine-mode-tiktok" value="builtin"><span>native</span></label>
+            </div>
+            <input class="input mono" type="text" id="engine-domain-tiktok" data-domain-key="tiktok" aria-label="TikTok yedek alan adı" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="engine-row">
+            <div class="engine-meta">
+                <span class="engine-name">Instagram</span>
+                <span class="engine-note mono" id="engine-note-instagram">—</span>
+            </div>
+            <div class="pill-row" role="radiogroup" aria-label="Instagram motoru">
+                <label class="pill"><input type="radio" name="engine-mode-instagram" value="proxy"><span>proxy</span></label>
+                <label class="pill"><input type="radio" name="engine-mode-instagram" value="builtin"><span>native</span></label>
+            </div>
+            <input class="input mono" type="text" id="engine-domain-instagram" data-domain-key="instagram" aria-label="Instagram yedek alan adı" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="engine-row">
+            <div class="engine-meta">
+                <span class="engine-name">Reddit</span>
+                <span class="engine-note mono" id="engine-note-reddit">—</span>
+            </div>
+            <div class="pill-row" role="radiogroup" aria-label="Reddit motoru">
+                <label class="pill"><input type="radio" name="engine-mode-reddit" value="proxy"><span>proxy</span></label>
+                <label class="pill"><input type="radio" name="engine-mode-reddit" value="builtin"><span>native</span></label>
+            </div>
+            <input class="input mono" type="text" id="engine-domain-reddit" data-domain-key="reddit" aria-label="Reddit yedek alan adı" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="engine-row">
+            <div class="engine-meta">
+                <span class="engine-name">Bluesky</span>
+                <span class="engine-note mono" id="engine-note-bluesky">—</span>
+            </div>
+            <div class="pill-row" role="radiogroup" aria-label="Bluesky motoru">
+                <label class="pill"><input type="radio" name="engine-mode-bluesky" value="proxy"><span>proxy</span></label>
+                <label class="pill"><input type="radio" name="engine-mode-bluesky" value="builtin"><span>native</span></label>
+            </div>
+            <input class="input mono" type="text" id="engine-domain-bluesky" data-domain-key="bluesky" aria-label="Bluesky yedek alan adı" spellcheck="false" autocomplete="off">
+        </div>
+    </div>
+
+    <div class="field">
+        <div class="field-head">
+            <label class="field-label" for="engine-twitter-source">X veri kaynağı</label>
+            <span class="micro">native embed</span>
+        </div>
+        <select class="select" id="engine-twitter-source">
+            <option value="syndication">X syndication · üçüncü taraf yok, ücretsiz</option>
+            <option value="fxtwitter">fxTwitter · görüntülenme, repost ve topluluk notu içerir</option>
+            <option value="hybrid">hibrit · önce syndication, yanıt gelmezse fxTwitter</option>
+        </select>
+    </div>
+
+    <p class="micro">kart içeriği</p>
+    <div class="tile-grid">
+        <label class="tile"><span class="tile-body"><span class="tile-name">Otomatik Türkçe çeviri</span><span class="tile-hint">Türkçe/İngilizce dışı X gönderileri X'in kendi çevirisiyle gelir</span></span><span class="switch"><input type="checkbox" data-engine-switch="auto_translate" role="switch" aria-label="Otomatik Türkçe çeviri"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Etkileşim metrikleri</span><span class="tile-hint">Beğeni, repost, yanıt ve görüntülenme satırı</span></span><span class="switch"><input type="checkbox" data-engine-switch="show_metrics" role="switch" aria-label="Etkileşim metrikleri"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Gönderi tarihi</span><span class="tile-hint">Discord'un göreli zaman gösterimi (ör. 2 sa önce)</span></span><span class="switch"><input type="checkbox" data-engine-switch="show_timestamp" role="switch" aria-label="Gönderi tarihi"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Topluluk notu</span><span class="tile-hint">Varsa X'in topluluk notu ayrı alan olarak eklenir</span></span><span class="switch"><input type="checkbox" data-engine-switch="show_community_note" role="switch" aria-label="Topluluk notu"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Alıntılanan gönderi</span><span class="tile-hint">Alıntı kartın içinde blok alıntı olarak gösterilir</span></span><span class="switch"><input type="checkbox" data-engine-switch="show_quote" role="switch" aria-label="Alıntılanan gönderi"><span class="switch-track" aria-hidden="true"></span></span></label>
+    </div>
+
+    <p class="micro">gönderim</p>
+    <div class="tile-grid">
+        <div class="tile tile--static">
+            <div class="tile-body">
+                <span class="tile-name">Kart stili</span>
+                <span class="tile-hint">modern: tek parça V2 kartı · otomatik: video varsa modern · fxembed: klasik embed</span>
+            </div>
+            <label class="sr-only" for="engine-card-style">Kart stili</label>
+            <select class="select select--sm" id="engine-card-style">
+                <option value="modern">modern (V2)</option>
+                <option value="auto">otomatik</option>
+                <option value="fxembed">fxembed</option>
+            </select>
+        </div>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Kullanıcıyı taklit et</span><span class="tile-hint">Mesaj kullanıcının adı ve avatarıyla webhook olarak gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_user" role="switch" aria-label="Kullanıcıyı taklit et"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Yanıtlarda yanıtı koru</span><span class="tile-hint">Webhook mesajı yanıt olamadığı için yanıt olarak atılan linkler bot adına gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_skip_replies" role="switch" aria-label="Yanıtlarda yanıtı koru"><span class="switch-track" aria-hidden="true"></span></span></label>
+    </div>
+
+    <p class="micro">medya</p>
+    <div class="tile-grid">
+        <label class="tile"><span class="tile-body"><span class="tile-name">Görselleri dosya olarak ekle</span><span class="tile-hint">Tam çözünürlük; önizleme CDN'ine bağımlı olmaz</span></span><span class="switch"><input type="checkbox" data-engine-switch="attach_images" role="switch" aria-label="Görselleri dosya olarak ekle"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Videoları dosya olarak ekle</span><span class="tile-hint">Boyut limitinin altındaysa indirilir, üstündeyse link olarak paylaşılır</span></span><span class="switch"><input type="checkbox" data-engine-switch="attach_videos" role="switch" aria-label="Videoları dosya olarak ekle"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Proxy yedeği</span><span class="tile-hint">Native embed üretilemezse proxy linkine düş</span></span><span class="switch"><input type="checkbox" data-engine-switch="fallback_to_proxy" role="switch" aria-label="Proxy yedeği"><span class="switch-track" aria-hidden="true"></span></span></label>
+    </div>
+
+    <div class="range-grid">
+        <div class="field">
+            <div class="field-head">
+                <label class="field-label" for="engine-max-images">maks. görsel sayısı</label>
+                <output class="mono count-chip" id="engine-max-images-value" for="engine-max-images">4</output>
+            </div>
+            <input class="range" type="range" id="engine-max-images" data-engine-range="max_images" min="1" max="10" step="1">
+        </div>
+        <div class="field">
+            <div class="field-head">
+                <label class="field-label" for="engine-max-video">maks. video boyutu (mb)</label>
+                <output class="mono count-chip" id="engine-max-video-value" for="engine-max-video">8</output>
+            </div>
+            <input class="range" type="range" id="engine-max-video" data-engine-range="max_video_mb" min="1" max="50" step="1">
+        </div>
+    </div>
+
+    <p class="micro">kart emojileri · yalnızca modern kart</p>
+    <p class="tile-hint">Özel emojileri <span class="mono">&lt;:ad:id&gt;</span> biçiminde yazın. Boş alan Unicode emojiye düşer; kimliksiz ad (ör. <span class="mono">:twitter:</span>) botun kendi emojisine bağlanır — kart hiçbir durumda bozuk emoji göstermez.</p>
+    <div class="emoji-grid">
+        <div class="field"><label class="field-label" for="engine-emoji-verified">doğrulama işareti</label><input class="input mono" type="text" id="engine-emoji-verified" data-emoji-key="verified" spellcheck="false" autocomplete="off"></div>
+        <div class="field"><label class="field-label" for="engine-emoji-replies">yanıt</label><input class="input mono" type="text" id="engine-emoji-replies" data-emoji-key="replies" spellcheck="false" autocomplete="off"></div>
+        <div class="field"><label class="field-label" for="engine-emoji-reposts">repost</label><input class="input mono" type="text" id="engine-emoji-reposts" data-emoji-key="reposts" spellcheck="false" autocomplete="off"></div>
+        <div class="field"><label class="field-label" for="engine-emoji-likes">beğeni</label><input class="input mono" type="text" id="engine-emoji-likes" data-emoji-key="likes" spellcheck="false" autocomplete="off"></div>
+        <div class="field"><label class="field-label" for="engine-emoji-views">görüntülenme</label><input class="input mono" type="text" id="engine-emoji-views" data-emoji-key="views" spellcheck="false" autocomplete="off"></div>
+        <div class="field"><label class="field-label" for="engine-emoji-translation">çeviri notu</label><input class="input mono" type="text" id="engine-emoji-translation" data-emoji-key="translation" spellcheck="false" autocomplete="off"></div>
+        <div class="field"><label class="field-label" for="engine-emoji-twitter">X / Twitter logosu</label><input class="input mono" type="text" id="engine-emoji-twitter" data-emoji-key="twitter" spellcheck="false" autocomplete="off"></div>
+        <div class="field"><label class="field-label" for="engine-emoji-quote">alıntı göstergesi</label><input class="input mono" type="text" id="engine-emoji-quote" data-emoji-key="quote" spellcheck="false" autocomplete="off"></div>
+    </div>
+
+    <details class="manual">
+        <summary class="manual-head"><span class="mono">teknik notlar</span><span class="caret" aria-hidden="true"></span></summary>
+        <dl class="manual-list">
+            <div class="manual-item"><dt>Proxy modu</dt><dd>Link harici önizleme servisine çevrilir (webui alanı boşsa <span class="mono">.env</span> değeri geçerlidir). Görünümü tamamen o servis belirler; kartın içeriği ve emoji ayarları devreye girmez.</dd></div>
+            <div class="manual-item"><dt>Native embed</dt><dd>Bot gönderiyi kendisi çözer: yazar adı, doğrulama işareti, gönderi metni, metrikler, tarih, alıntı ve medya galerisi. Video ve görseller kartın içinde oynar.</dd></div>
+            <div class="manual-item"><dt>Yedek alan adı</dt><dd>Yalnızca proxy modunda kullanılır; native seçili platformda kutu devre dışı kalır. Boş bırakılan alan <span class="mono">.env</span> değerini kullanır (ipucu gerçek değeri yazar).</dd></div>
+            <div class="manual-item"><dt>Kart stili</dt><dd><span class="mono">modern</span> tek parça Components V2 kartıdır. <span class="mono">otomatik</span> video içeren gönderilerde kartı, diğerlerinde klasik embed'i kullanır. <span class="mono">fxembed</span> her zaman klasik embed gönderir.</dd></div>
+            <div class="manual-item"><dt>Medya yükleme</dt><dd>Görseller (ve limit altındaki videolar) mesaja dosya olarak eklenir; indirilemeyen medya otomatik olarak uzak URL'e düşer. Video indirilemezse kartta yalnızca video gösterilir, kapak ayrı öğe olarak eklenmez.</dd></div>
+            <div class="manual-item"><dt>Taklit</dt><dd>Mesaj kullanıcının adı ve avatarıyla webhook üzerinden gider, link ve etiket hilesi gerekmez (Manage Webhooks izni şart). Discord webhook mesajları yanıt olamadığı için yanıtlarda yanıt bağlantısı yalnızca "yanıtlarda yanıtı koru" açıkken korunur.</dd></div>
+            <div class="manual-item"><dt>Profil resmi</dt><dd>Kartta avatar gösterilmez: Discord bileşenleri küçük resmi yalnızca sağa koyabildiği için modelin solundaki avatar taklit edilemez. Ad ve doğrulama işareti gösterilir.</dd></div>
+            <div class="manual-item"><dt>Kullanıcı metni</dt><dd>Kullanıcının linkle yazdığı metin modern kartta kartın üstünde, kullanıcı mesajı gibi durur; kart içine alınmaz. Discord bileşenleri reddederse otomatik olarak klasik embed'e düşülür.</dd></div>
+        </dl>
+    </details>
+</section>
+
+<footer class="foot mono">
+    <span>botgek · kontrol paneli</span>
+    <span>kaydet · ⌘/Ctrl + S</span>
+    <span id="foot-api">api · —</span>
+</footer>
+</main>
+</div>
+
+<!-- ═════════════════ KAYDEDİLMEMİŞ DEĞİŞİKLİK ÇUBUĞU (dar ekran) ═════════════════ -->
+<div class="dock" id="dock" hidden>
+    <p class="dock-text mono" id="dock-text">—</p>
+    <div class="btn-row">
+        <button class="btn btn-quiet" type="button" id="btn-discard">Vazgeç</button>
+        <button class="btn btn-primary" type="button" id="btn-save-dock">Kaydet</button>
+    </div>
+</div>
+
+<!-- ═════════════════ BİLDİRİM ═════════════════ -->
+<div class="toast" id="toast" role="status" aria-live="polite">
+    <span class="led" id="toast-led" data-state="ok" aria-hidden="true"></span>
+    <span class="mono" id="toast-msg">hazır</span>
+</div>
+
+<!-- ═════════════════ ONAY PENCERESİ ═════════════════ -->
+<div class="modal" id="modal" hidden>
+    <button class="modal-scrim" type="button" data-modal-close tabindex="-1" aria-label="Pencereyi kapat"></button>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-body">
+        <p class="micro" id="modal-kicker">onay</p>
+        <h2 class="modal-title" id="modal-title">—</h2>
+        <p class="modal-body" id="modal-body">—</p>
+        <div class="btn-row modal-actions">
+            <button class="btn btn-quiet" type="button" id="modal-cancel" data-modal-close>Vazgeç</button>
+            <button class="btn btn-danger" type="button" id="modal-confirm">Onayla</button>
+        </div>
+    </div>
+</div>
+
+<noscript><p class="note">Bu panel JavaScript gerektirir; lütfen tarayıcınızda JavaScript'i açın.</p></noscript>
+<script src="/app.js" defer></script>
+</body>
+</html>
