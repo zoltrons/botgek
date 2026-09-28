@@ -61,15 +61,35 @@ pub async fn send_channel_message(
     parse_message_id(&body)
 }
 
+/// Webhook çalıştırma adresi.
+///
+/// `wait=true`: Discord oluşan mesajı yanıt olarak döner (mesaj kimliği 🗑️ silme kaydı için
+/// gerekir). `thread_id`: mesaj **alt başlığa** (veya forum gönderisine) gönderilir; Discord
+/// alt başlıklarda webhook oluşturmayı desteklemediği için webhook üst kanalda tutulur ve
+/// hedef bu parametreyle belirtilir.
+pub fn execute_webhook_url(webhook_id: WebhookId, token: &str, thread_id: Option<ChannelId>) -> String {
+    match thread_id {
+        Some(thread) => format!(
+            "{API_BASE}/webhooks/{}/{}?wait=true&thread_id={}",
+            webhook_id.get(),
+            token,
+            thread.get()
+        ),
+        None => format!("{API_BASE}/webhooks/{}/{}?wait=true", webhook_id.get(), token),
+    }
+}
+
 /// Webhook'u çalıştırır (`wait=true`) ve oluşan mesajın kimliğini döner.
+/// `thread_id` doluysa mesaj o alt başlığa/forum gönderisine gönderilir.
 pub async fn execute_webhook(
     client: &reqwest::Client,
     webhook_id: WebhookId,
     token: &str,
+    thread_id: Option<ChannelId>,
     payload: &serde_json::Value,
     files: &[CreateAttachment],
 ) -> Result<Option<MessageId>, String> {
-    let url = format!("{API_BASE}/webhooks/{}/{}?wait=true", webhook_id.get(), token);
+    let url = execute_webhook_url(webhook_id, token, thread_id);
     let json = serde_json::to_string(payload).map_err(|e| format!("Gövde serileştirilemedi: {e}"))?;
 
     let mut request = client.post(&url).header("user-agent", USER_AGENT).timeout(UPLOAD_TIMEOUT);
@@ -237,6 +257,22 @@ fn error_message(status: u16, body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webhook_url_targets_threads_with_thread_id() {
+        let webhook = WebhookId::new(42);
+
+        let plain = execute_webhook_url(webhook, "tok", None);
+        assert!(plain.ends_with("/webhooks/42/tok?wait=true"), "adres: {plain}");
+        assert!(
+            !plain.contains("thread_id"),
+            "alt başlık yoksa parametre eklenmemeli: {plain}"
+        );
+
+        // Alt başlık/forum gönderisi: webhook üst kanalda, mesaj `thread_id` ile o gönderiye.
+        let threaded = execute_webhook_url(webhook, "tok", Some(ChannelId::new(777)));
+        assert!(threaded.contains("?wait=true&thread_id=777"), "adres: {threaded}");
+    }
 
     #[test]
     fn multipart_body_carries_payload_and_files() {

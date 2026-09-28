@@ -23,7 +23,8 @@ use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use serenity::all::{
-    ChannelId, Context, CreateMessage, Embed, Message, MessageFlags, MessageId, ReactionType, UserId, WebhookId,
+    Channel, ChannelId, ChannelType, Context, CreateMessage, Embed, Message, MessageFlags, MessageId,
+    ReactionType, UserId, WebhookId,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -539,6 +540,90 @@ struct NamedWebhook {
     token: String,
 }
 
+/// Taklit webhook'unun hedefi.
+///
+/// Alt başlıklarda (`thread`, forum gönderileri) webhook **üst kanalda** tutulur: Discord bu
+/// kanallarda webhook oluşturmayı desteklemez, bu yüzden webhook üst kanalda aranır/oluşturulur
+/// ve mesaj `thread_id` ile alt başlığa gönderilir. Aksi hâlde taklit gönderimi reddedilir ve
+/// kart bot adına gönderiliyordu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WebhookTarget {
+    /// Webhook'un sahibi olan kanal (alt başlıklarda üst kanal: metin / duyuru / forum).
+    channel_id: ChannelId,
+    /// Mesajın gönderileceği alt başlık (forum gönderisi dâhil).
+    thread_id: Option<ChannelId>,
+}
+
+impl WebhookTarget {
+    /// Kanal türü ve üst kanalına göre hedefi belirler.
+    ///
+    /// Üst kanalı bilinmeyen bir alt başlıkta eski davranışa düşülür (kanalın kendisi denenir).
+    fn new(channel_id: ChannelId, kind: ChannelType, parent_id: Option<ChannelId>) -> Self {
+        match (is_thread_kind(kind), parent_id) {
+            (true, Some(parent)) => Self {
+                channel_id: parent,
+                thread_id: Some(channel_id),
+            },
+            _ => Self {
+                channel_id,
+                thread_id: None,
+            },
+        }
+    }
+}
+
+/// Kanal türü bir alt başlık mı?
+///
+/// Forum gönderileri Discord'da `PublicThread` olarak gelir; duyuru alt başlıkları ve kapalı
+/// alt başlıklar da aynı kuralla üst kanallarında webhook kullanır.
+fn is_thread_kind(kind: ChannelType) -> bool {
+    matches!(
+        kind,
+        ChannelType::NewsThread | ChannelType::PublicThread | ChannelType::PrivateThread
+    )
+}
+
+/// Mesajın bulunduğu kanalın taklit hedefini çözer.
+///
+/// Önbellek çoğu durumda yeterli (kanallar ve üst kanal kimlikleri önbellekte durur); soğuk
+/// önbellekte kanal REST'ten okunur.
+async fn webhook_target(ctx: &Context, msg: &Message) -> WebhookTarget {
+    let channel_id = msg.channel_id;
+    let cached = msg
+        .guild_id
+        .and_then(|guild_id| ctx.cache.guild(guild_id))
+        .and_then(|guild| {
+            // Alt başlıklar Discord'dan `threads` listesinde, normal kanallar `channels`
+            // haritasında gelir; ikisi de kontrol edilir.
+            guild
+                .channels
+                .get(&channel_id)
+                .or_else(|| guild.threads.iter().find(|thread| thread.id == channel_id))
+                .map(|channel| (channel.kind, channel.parent_id))
+        });
+    if let Some((kind, parent_id)) = cached {
+        return WebhookTarget::new(channel_id, kind, parent_id);
+    }
+
+    match ctx.http.get_channel(channel_id).await {
+        Ok(Channel::Guild(channel)) => WebhookTarget::new(channel_id, channel.kind, channel.parent_id),
+        Ok(_) => WebhookTarget {
+            channel_id,
+            thread_id: None,
+        },
+        Err(err) => {
+            warn!(
+                "Kanal bilgisi alınamadı ({}): {} — taklit webhook'u kanalın kendisinde denenecek",
+                channel_id, err
+            );
+            WebhookTarget {
+                channel_id,
+                thread_id: None,
+            }
+        }
+    }
+}
+
 /// Kanal → webhook önbelleği. `None`: kanalda webhook kullanılamıyor (yetki yok veya DM);
 /// her mesajda yeniden denenmez.
 static CHANNEL_WEBHOOKS: Lazy<Mutex<HashMap<ChannelId, Option<NamedWebhook>>>> =
@@ -681,8 +766,11 @@ pub fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
 // TAKLİT WEBHOOK'U
 // -------------------------------------------------------------------------------------
 
-/// Kanalın taklit webhook'unu döner: önbellekte yoksa botun kendi webhook'unu arar,
+/// Taklit webhook'unu döner: önbellekte yoksa botun kendi webhook'unu arar,
 /// hiç yoksa oluşturur. `refresh` önbelleği zorla yeniler (eskimiş token için).
+///
+/// `channel_id` webhook'un **sahibi** olan kanaldır ([`WebhookTarget::channel_id`]): alt
+/// başlıklarda webhook oluşturulamadığı için orada üst kanal verilir.
 async fn channel_webhook(
     ctx: &Context,
     client: &reqwest::Client,
@@ -758,22 +846,26 @@ async fn resolve_webhook(
 }
 
 /// Webhook üzerinden ham gövde gönderir; token eskimişse bir kez yenileyip tekrar dener.
+///
+/// Mesajın bulunduğu kanal bir alt başlık veya forum gönderisiyse webhook **üst kanalda**
+/// çözümlenir ve gönderim `thread_id` ile o alt başlığa yapılır (bkz. [`webhook_target`]).
 async fn send_via_webhook(
     ctx: &Context,
     client: &reqwest::Client,
     config: &Config,
-    channel_id: ChannelId,
+    msg: &Message,
     payload: &serde_json::Value,
     files: &[serenity::all::CreateAttachment],
 ) -> Result<MessageId, String> {
     let mut last_error = "Webhook kullanılamıyor".to_string();
+    let target = webhook_target(ctx, msg).await;
 
     for attempt in 0..2 {
-        let Some(webhook) = channel_webhook(ctx, client, config, channel_id, attempt > 0).await else {
+        let Some(webhook) = channel_webhook(ctx, client, config, target.channel_id, attempt > 0).await else {
             return Err(last_error);
         };
 
-        match raw::execute_webhook(client, webhook.id, &webhook.token, payload, files).await {
+        match raw::execute_webhook(client, webhook.id, &webhook.token, target.thread_id, payload, files).await {
             Ok(Some(message_id)) => return Ok(message_id),
             Ok(None) => last_error = "Webhook yanıtında mesaj kimliği yok".to_string(),
             Err(err) => last_error = err,
@@ -781,7 +873,7 @@ async fn send_via_webhook(
     }
 
     // İki denemede de başarısız: önbelleği bırak, sonraki mesajda yeniden çözümlenir.
-    CHANNEL_WEBHOOKS.lock().await.remove(&channel_id);
+    CHANNEL_WEBHOOKS.lock().await.remove(&target.channel_id);
     Err(last_error)
 }
 
@@ -992,7 +1084,7 @@ async fn send_components_v2(
     if identity.is_some() {
         // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
         // bu yüzden webhook denenir; başarısız olursa bot mesajı olarak (yanıtla) gönderilir.
-        match send_via_webhook(ctx, client, config, msg.channel_id, &payload, &resolved.attachments).await {
+        match send_via_webhook(ctx, client, config, msg, &payload, &resolved.attachments).await {
             Ok(message_id) => return Ok((message_id, true)),
             Err(err) => warn!("Components V2 taklit gönderimi başarısız ({}): {}", msg.id, err),
         }
@@ -1030,7 +1122,7 @@ async fn send_classic(
             allowed_mentions,
             reply_reference(msg),
         )?;
-        match send_via_webhook(ctx, client, config, msg.channel_id, &payload, &resolved.attachments).await {
+        match send_via_webhook(ctx, client, config, msg, &payload, &resolved.attachments).await {
             Ok(message_id) => return Ok((message_id, true)),
             Err(err) => warn!("Taklit mesaj gönderilemedi ({}): {} — bot adına gönderiliyor", msg.id, err),
         }
@@ -1356,6 +1448,68 @@ mod message_tests {
         assert!(!is_card_message(&ai_reply, bot_id));
         let user_message = message_fixture(MessageId::new(9_006), user_id, "merhaba", vec![], None);
         assert!(!is_card_message(&user_message, bot_id));
+    }
+
+    /// Alt başlıklarda (thread) ve forum gönderilerinde taklit webhook'u **üst kanalda**
+    /// tutulur; mesaj `thread_id` ile alt başlığa gönderilir. Discord alt başlıklarda webhook
+    /// oluşturmayı desteklemediği için (forum gönderileri de birer alt başlıktır) hedefin üst
+    /// kanal olması gerekir; aksi hâlde taklit gönderimi reddedilip kart bot adına gidiyordu.
+    #[test]
+    fn webhook_target_moves_threads_to_the_parent_channel() {
+        let parent = ChannelId::new(100);
+        let thread = ChannelId::new(200);
+
+        for kind in [
+            ChannelType::NewsThread,
+            ChannelType::PublicThread,
+            ChannelType::PrivateThread,
+        ] {
+            assert_eq!(
+                WebhookTarget::new(thread, kind, Some(parent)),
+                WebhookTarget {
+                    channel_id: parent,
+                    thread_id: Some(thread)
+                },
+                "alt başlıkta webhook üst kanalda olmalı ({kind:?})"
+            );
+        }
+
+        // Forum gönderileri `PublicThread` olarak gelir: webhook forum kanalında, mesaj gönderide.
+        let forum = ChannelId::new(300);
+        assert_eq!(
+            WebhookTarget::new(thread, ChannelType::PublicThread, Some(forum)),
+            WebhookTarget {
+                channel_id: forum,
+                thread_id: Some(thread)
+            }
+        );
+
+        // Normal kanallar (metin, duyuru, kategori, forum, ses): hedef kanalın kendisi.
+        for kind in [
+            ChannelType::Text,
+            ChannelType::News,
+            ChannelType::Category,
+            ChannelType::Forum,
+            ChannelType::Voice,
+        ] {
+            assert_eq!(
+                WebhookTarget::new(parent, kind, Some(ChannelId::new(1))),
+                WebhookTarget {
+                    channel_id: parent,
+                    thread_id: None
+                },
+                "normal kanalda hedef kanalın kendisi olmalı ({kind:?})"
+            );
+        }
+
+        // Üst kanalı bilinmeyen alt başlıkta eski davranış korunur (kanalın kendisi denenir).
+        assert_eq!(
+            WebhookTarget::new(thread, ChannelType::PublicThread, None),
+            WebhookTarget {
+                channel_id: thread,
+                thread_id: None
+            }
+        );
     }
 
     /// Discord gateway gövdesini taklit eden test mesajı.
