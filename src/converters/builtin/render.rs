@@ -3,12 +3,34 @@
 //! `CreateEmbed` alanları Discord'un karakter sınırlarına göre kesilir; medya ekleri
 //! `attachment://` referansıyla embed içinde gösterilir.
 
+use std::time::Duration;
+
 use serenity::all::{CreateAttachment, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, Timestamp};
+use tracing::debug;
 
 use super::media::{self, DISCORD_FILE_LIMIT};
 use super::{platform_color, BuiltinPost, Media, MediaKind, Stats};
 use crate::settings::EngineSettings;
 use crate::utils::truncate_chars;
+
+/// Medya indirmelerinin **süre bütçesi**: modern kart "anında" görünmelidir, bu yüzden
+/// indirme bütçeyi aşarsa görev iptal edilir ve ilgili medya **uzak bağlantı** olarak
+/// kartta gösterilir (video kartın içinde oynamaya devam eder, görsel CDN'den yüklenir).
+///
+/// Bütçeler bilinçli olarak farklıdır: görseller küçüktür ve hızlı gelir, video ise
+/// mesajın bel kemiğidir (kartın içinde oynaması için biraz daha beklenir).
+pub const IMAGE_BUDGET: Duration = Duration::from_millis(1_000);
+/// GIF yarışının toplam bütçesi (FxEmbed GIF servisi + yerel `ffmpeg` yedeği).
+pub const GIF_BUDGET: Duration = Duration::from_millis(1_800);
+/// Video indirme bütçesi (bütçe dolunca video kartta uzak bağlantıyla oynar).
+pub const VIDEO_BUDGET: Duration = Duration::from_millis(2_000);
+/// FxEmbed GIF servisinin tek deneme sınırı (servis CDN'de önbellekli gerçek GIF verir).
+const FX_GIF_TIMEOUT: Duration = Duration::from_millis(1_200);
+/// FxEmbed servisi yarışta öne alınır: genelde CDN'den anında gelir, bu yüzden yerel
+/// `ffmpeg` yedeği ancak bu gecikmeden sonra başlar (boşa bant genişliği harcanmaz).
+const GIF_HEAD_START: Duration = Duration::from_millis(250);
+/// GIF yarışında iç bütçenin üstüne eklenen güvenlik payı (dış zaman aşımı).
+const GIF_RACE_GRACE: Duration = Duration::from_millis(300);
 
 /// Embed toplamı 6000 karakteri geçemez: başlık/yazar/footer/alanlar için pay bırakılır.
 const EMBED_DESCRIPTION_LIMIT: usize = 3500;
@@ -164,7 +186,8 @@ pub async fn resolve_media(
 ) -> ResolvedMedia {
     let spoiler = post.sensitive;
 
-    // 1) Video (en büyük dosya) ve görseller aynı anda indirilir.
+    // 1) Video (en büyük dosya) ve görseller aynı anda indirilir. Her indirme kendi **süre
+    //    bütçesiyle** sınırlıdır: bütçe dolan indirme iptal edilir, kart beklemez.
     let max_video_bytes = options.max_video_bytes();
     let video_handle = plan.video.as_ref().filter(|_| options.attach_videos).map(|url| {
         let client = client.clone();
@@ -182,11 +205,14 @@ pub async fn resolve_media(
     }
 
     // 2) GIF'ler: FxEmbed'in hazır GIF servisi → yerel ffmpeg → mp4 (hepsi paralel görevde).
+    //    Dosya eki kapalıyken indirme hiç başlatılmaz: uzak bağlantı yeterlidir.
     let mut gif_handles = Vec::with_capacity(plan.gifs.len());
-    for url in &plan.gifs {
-        let client = client.clone();
-        let url = url.clone();
-        gif_handles.push(tokio::spawn(async move { download_gif(&client, &url).await }));
+    if options.attach_images {
+        for url in &plan.gifs {
+            let client = client.clone();
+            let url = url.clone();
+            gif_handles.push(tokio::spawn(async move { download_gif(&client, &url).await }));
+        }
     }
 
     let mut resolved = ResolvedMedia {
@@ -196,13 +222,20 @@ pub async fn resolve_media(
 
     if let Some(video_url) = &plan.video {
         match video_handle {
-            Some(handle) => match handle.await.unwrap_or(None) {
+            Some(handle) => match within(VIDEO_BUDGET, handle).await {
                 Some(file) => {
                     let name = attachment_name(&file.filename, spoiler);
                     resolved.attachments.push(media::to_attachment(file, spoiler));
                     resolved.attached_video = Some(format!("attachment://{name}"));
                 }
-                None => resolved.video_link = Some(video_url.clone()),
+                None => {
+                    // İndirilemedi ya da bütçe doldu: video kartın içinde uzak bağlantıyla oynar.
+                    debug!(
+                        "Video dosya olarak eklenemedi (bütçe {} ms), uzak bağlantı kullanılıyor: {video_url}",
+                        VIDEO_BUDGET.as_millis()
+                    );
+                    resolved.video_link = Some(video_url.clone());
+                }
             },
             // İndirme kapalı: video doğrudan bağlantı olarak mesaja yazılır.
             None => resolved.video_link = Some(video_url.clone()),
@@ -210,14 +243,15 @@ pub async fn resolve_media(
     }
 
     for (url, handle) in plan.images.iter().zip(image_handles) {
-        match handle.await.unwrap_or(None) {
+        match within(IMAGE_BUDGET, handle).await {
             Some(file) => {
                 let name = attachment_name(&file.filename, spoiler);
                 resolved.attachments.push(media::to_attachment(file, spoiler));
                 resolved.images.push(format!("attachment://{name}"));
             }
-            // İndirilemeyen görsel uzak URL olarak gösterilir (CDN erişilebilir kalır).
-            None => resolved.images.push(url.clone()),
+            // İndirilemeyen (veya bütçeyi aşan) görsel uzak URL olarak gösterilir; kartı
+            // yavaşlatan büyük yükleme yerine CDN'in `large` varyantı istenir.
+            None => resolved.images.push(media::with_size(url, "large")),
         }
     }
 
@@ -226,16 +260,16 @@ pub async fn resolve_media(
 
     if !options.attach_images {
         // Dosya eki kapalı: GIF'ler de uzak URL olarak gösterilir.
-        resolved.images.extend(plan.gifs.iter().cloned());
+        resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
     } else {
         for (url, handle) in plan.gifs.iter().zip(gif_handles) {
-            match handle.await.unwrap_or(None) {
+            match within(GIF_BUDGET + GIF_RACE_GRACE, handle).await {
                 Some(file) => {
                     let name = attachment_name(&file.filename, spoiler);
                     resolved.attachments.push(media::to_attachment(file, spoiler));
                     resolved.images.push(format!("attachment://{name}"));
                 }
-                None => resolved.images.push(url.clone()),
+                None => resolved.images.push(remote_gif_url(url)),
             }
         }
     }
@@ -243,34 +277,137 @@ pub async fn resolve_media(
     resolved
 }
 
-/// GIF'i mümkün olan en hızlı kaynaktan alır:
-/// 1. **FxEmbed GIF servisi** (`gif.fxtwitter.com`) — hazır, CDN'de önbellekli gerçek GIF,
-/// 2. yerel `ffmpeg` dönüşümü (servis yanıt vermezse),
-/// 3. hiçbiri olmazsa mp4 (Discord oynatıcı gösterir — eski davranış).
-async fn download_gif(client: &reqwest::Client, url: &str) -> Option<media::MediaFile> {
-    if let Some(gif_url) = media::fx_gif_url(url) {
-        // Servis bazen tek seferde yanıt vermeyebilir: bir kez daha denenir.
-        // İndirme sınırı Discord limitidir (uzun GIF'ler 8 MB'ı aşabilir).
-        for _ in 0..2 {
-            let Some(file) = media::download(client, &gif_url, media::DISCORD_FILE_LIMIT).await
-            else {
-                continue;
-            };
-            if media::is_gif(&file) {
-                return Some(file);
-            }
+/// Bir indirme görevini **süre bütçesi** içinde bekler. Bütçe dolarsa görev iptal edilir
+/// (yarıda kalan indirme ağ trafiğini de tüketmez) ve `None` döner; çağıran taraf uzak
+/// bağlantıya düşerek kartı yine anında gönderir.
+async fn within<T>(budget: Duration, mut handle: tokio::task::JoinHandle<Option<T>>) -> Option<T> {
+    match tokio::time::timeout(budget, &mut handle).await {
+        Ok(Ok(value)) => value,
+        // Görev panikledi: dönüşüm bozulmaz, medya uzak bağlantıya düşer.
+        Ok(Err(_)) => None,
+        Err(_) => {
+            handle.abort();
+            None
         }
     }
+}
 
-    // Yedek: mp4'ü yerel ffmpeg ile gerçek GIF'e çevir (ffmpeg kurulu değilse atlanır).
-    let file = media::download(client, url, MAX_IMAGE_BYTES).await?;
-    match media::to_gif(&file.bytes).await {
-        Some(bytes) => Some(media::MediaFile {
-            bytes,
-            filename: media::replace_extension(&file.filename, "gif"),
-            mime: "image/gif".to_string(),
-        }),
-        None => Some(file),
+/// Dosya eki olarak indirilemeyen GIF'in uzak bağlantısı: FxEmbed GIF servisi varsa
+/// gerçek `.gif` bağlantısı tercih edilir (kartta GIF gibi oynar), yoksa mp4 bağlantısı kalır.
+fn remote_gif_url(url: &str) -> String {
+    media::fx_gif_url(url).unwrap_or_else(|| url.to_string())
+}
+
+/// GIF'i mümkün olan en hızlı kaynaktan **yarıştırarak** alır:
+///
+/// 1. **FxEmbed GIF servisi** (`gif.fxtwitter.com`) — hazır, CDN'de önbellekli gerçek GIF
+///    (tercih edilen kaynak; [`GIF_HEAD_START`] kadar öne alınır),
+/// 2. yerel `ffmpeg` dönüşümü — servis gecikirse başlar ve **gerçek GIF** ürettiyse kazanır,
+/// 3. hiçbiri olmazsa mp4 (Discord oynatıcı gösterir — eski davranış).
+///
+/// Yarış [`GIF_BUDGET`] ile sınırlıdır: eskiden iki servis denemesi sırayla 2 × 45 sn
+/// bekleyebiliyordu (üstüne mp4 indirme + ffmpeg dönüşümü); artık kart en geç bütçe
+/// dolduğunda gönderilir (yerel mp4 hazırsa o, değilse uzak bağlantı kullanılır).
+async fn download_gif(client: &reqwest::Client, url: &str) -> Option<media::MediaFile> {
+    // 1) FxEmbed GIF servisi: hemen başlar (CDN'de önbellekli, genelde en hızlı kaynak).
+    let mut fx = media::fx_gif_url(url).map(|gif_url| {
+        let client = client.clone();
+        tokio::spawn(async move {
+            // Servis tek seferde yanıt vermeyebilir: iki deneme, her biri kısa süreli.
+            for _ in 0..2 {
+                let Ok(Some(file)) = tokio::time::timeout(
+                    FX_GIF_TIMEOUT,
+                    media::download(&client, &gif_url, media::DISCORD_FILE_LIMIT),
+                )
+                .await
+                else {
+                    continue;
+                };
+                if media::is_gif(&file) {
+                    return Some(file);
+                }
+            }
+            None
+        })
+    });
+
+    // 2) Yerel yedek: mp4 indirilir, `ffmpeg` ile gerçek GIF'e çevrilir; `ffmpeg` yoksa
+    //    mp4 döner (yalnızca FxEmbed servisi tamamen başarısız olursa kullanılır).
+    let mut local = Some({
+        let client = client.clone();
+        let url = url.to_string();
+        tokio::spawn(async move {
+            // Tercih edilen kaynağa öncelik: yerel yedek boşa bant genişliği harcamasın.
+            tokio::time::sleep(GIF_HEAD_START).await;
+            let file = media::download(&client, &url, MAX_IMAGE_BYTES).await?;
+            match media::to_gif(&file.bytes).await {
+                Some(bytes) => Some(media::MediaFile {
+                    bytes,
+                    filename: media::replace_extension(&file.filename, "gif"),
+                    mime: "image/gif".to_string(),
+                }),
+                None => Some(file),
+            }
+        })
+    });
+
+    let deadline = tokio::time::Instant::now() + GIF_BUDGET;
+    let mut fallback_mp4: Option<media::MediaFile> = None;
+
+    loop {
+        // Bekleyen kaynaklar bu turda sabitlenir: `select!` ön koşulu yalnızca hazır
+        // görevleri bekletir (iptal edilen görev tekrar beklenmez).
+        let awaiting_fx = fx.is_some();
+        let awaiting_local = local.is_some();
+        if !awaiting_fx && !awaiting_local {
+            // İki kaynak da yanıtladı: elde kalan (varsa) mp4 kullanılır.
+            return fallback_mp4;
+        }
+
+        tokio::select! {
+            biased;
+            // Tercih edilen kaynak: gerçek GIF geldiyse yarış biter.
+            result = async { fx.as_mut().expect("FxEmbed GIF kaynağı bekleniyor").await },
+                if awaiting_fx =>
+            {
+                match result {
+                    Ok(Some(gif)) => {
+                        if let Some(handle) = local.take() {
+                            handle.abort();
+                        }
+                        return Some(gif);
+                    }
+                    _ => fx = None,
+                }
+            }
+            result = async { local.as_mut().expect("yerel GIF yedeği bekleniyor").await },
+                if awaiting_local =>
+            {
+                match result {
+                    // Yerel dönüşüm gerçek GIF ürettiyse tercih edilen kaynağı beklemeden kazanır.
+                    Ok(Some(file)) if media::is_gif(&file) => {
+                        if let Some(handle) = fx.take() {
+                            handle.abort();
+                        }
+                        return Some(file);
+                    }
+                    // mp4: yalnızca FxEmbed servisi de başarısız olursa kullanılır.
+                    Ok(Some(file)) => fallback_mp4 = Some(file),
+                    _ => {}
+                }
+                local = None;
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                // Bütçe doldu: iki kaynak da iptal edilir, kart bekletilmez.
+                if let Some(handle) = fx.take() {
+                    handle.abort();
+                }
+                if let Some(handle) = local.take() {
+                    handle.abort();
+                }
+                return fallback_mp4;
+            }
+        }
     }
 }
 
@@ -775,6 +912,53 @@ mod tests {
             ..options()
         };
         assert_eq!(small.max_video_bytes(), 2 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn media_budget_keeps_slow_downloads_out_of_the_card() {
+        // Bütçe içinde biten indirme dosya olarak eklenir...
+        let fast = tokio::spawn(async { Some("hızlı".to_string()) });
+        assert_eq!(within(IMAGE_BUDGET, fast).await.as_deref(), Some("hızlı"));
+
+        // ...bütçeyi aşan indirme iptal edilir: kart beklemez, medya uzak bağlantıya düşer.
+        let slow = tokio::spawn(async {
+            tokio::time::sleep(VIDEO_BUDGET * 4).await;
+            Some("yavaş".to_string())
+        });
+        assert_eq!(within(Duration::from_millis(20), slow).await, None);
+    }
+
+    #[tokio::test]
+    async fn panicked_download_tasks_degrade_to_remote_urls() {
+        let broken: tokio::task::JoinHandle<Option<String>> =
+            tokio::spawn(async { panic!("indirme görevi çöktü") });
+        assert_eq!(within(IMAGE_BUDGET, broken).await, None);
+    }
+
+    #[test]
+    fn media_budgets_bound_the_card_latency() {
+        // Kart "anında" görünmeli: en kötü durumda beklenen süre tek bir bütçedir.
+        let worst_case = [IMAGE_BUDGET, GIF_BUDGET + GIF_RACE_GRACE, VIDEO_BUDGET]
+            .into_iter()
+            .max()
+            .expect("bütçe listesi boş olamaz");
+        assert!(
+            worst_case <= Duration::from_millis(2_500),
+            "en kötü medya beklemesi: {worst_case:?}"
+        );
+    }
+
+    #[test]
+    fn remote_gif_urls_prefer_the_fxembed_service() {
+        // FxEmbed GIF servisi varsa uzak bağlantı da gerçek `.gif` olur (kartta GIF gibi oynar).
+        assert_eq!(
+            remote_gif_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4"),
+            "https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif"
+        );
+        assert_eq!(
+            remote_gif_url("https://cdn.example/clip.mp4"),
+            "https://cdn.example/clip.mp4"
+        );
     }
 }
 

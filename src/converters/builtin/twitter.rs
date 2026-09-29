@@ -5,6 +5,8 @@
 //!   üçüncü taraf yok, API anahtarı yok. Metin/görsel/video/alıntı/metrik verir.
 //! - **FxTwitter** (`api.fxtwitter.com`): görüntülenme, repost, topluluk notu gibi ek alanlar.
 
+use std::time::Duration;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
@@ -22,6 +24,13 @@ const FXTWITTER_URL: &str = "https://api.fxtwitter.com";
 static TWEET_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]{1,20})/status/(\d{1,25})").expect("geçerli tweet regex")
 });
+
+/// Hızlı yol (FxTwitter) bu süre içinde yanıt vermezse X syndication ucu **paralel**
+/// başlatılır (hedge): yavaş veya askıda kalan uç kartın gelmesini geciktirmez.
+const HEDGE_DELAY: Duration = Duration::from_millis(1_500);
+/// Hedge sonrası X ucu kazandıysa, çeviri/metrikleri tamamlamak için FxTwitter'a tanınan
+/// ek süre (gelmezse X verisiyle devam edilir).
+const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(700);
 
 /// Gönderi verisini seçilen kaynaktan çeker.
 ///
@@ -48,25 +57,19 @@ pub async fn fetch(
 
     let source = engine.twitter_source;
     let translate = engine.auto_translate;
+    // Video varyantı, **indirilecek dosya bütçesine** göre seçilir (Discord limiti × ayar):
+    // bütçeyi aşan varyant seçilirse dosya indirilemez ve kart videoyu kaybediyordu.
+    let video_budget = super::render::RenderOptions::from_engine(engine).max_video_bytes();
     debug!("X verisi çekiliyor (kaynak: {}, id: {id})", source.key());
 
     // 1) Hızlı yol: tek FxTwitter isteği (çeviri açıksa dil ekli uç orijinal + çeviri verir).
     if source == TwitterSource::Fxtwitter || translate {
-        let language = translate.then_some(TARGET_LANGUAGE_CODE);
-        match from_fxtwitter(client, &parsed.original_url, &id, language).await {
-            Ok(post) => return Ok(post),
-            Err(err) => {
-                warn!("FxTwitter isteği başarısız ({id}): {err}");
-                if source == TwitterSource::Fxtwitter {
-                    return from_fxtwitter(client, &parsed.original_url, &id, None).await;
-                }
-            }
-        }
+        return fetch_fx_fast(client, &parsed.original_url, &id, source, translate, video_budget).await;
     }
 
     // 2) X syndication + FxTwitter aynı anda: biri hata verse de diğeri kullanılır.
     let (x_result, fx_result) = tokio::join!(
-        from_syndication(client, &parsed.original_url, &id),
+        from_syndication(client, &parsed.original_url, &id, video_budget),
         from_fxtwitter(client, &parsed.original_url, &id, None),
     );
 
@@ -84,6 +87,75 @@ pub async fn fetch(
     }
 
     Ok(post)
+}
+
+/// Hızlı yol: **tek** FxTwitter isteği + gecikme sigortası (hedge).
+///
+/// FxTwitter [`HEDGE_DELAY`] içinde yanıt vermezse X syndication ucu paralel başlatılır ve
+/// ilk kullanılabilir veri kartı üretir; X ucu kazanırsa FxTwitter'a çeviri ve metrikleri
+/// tamamlaması için yalnızca [`HEDGE_MERGE_GRACE`] kadar ek süre tanınır. Böylece yavaş ya
+/// da askıda kalan bir uç kartı 12 sn'ye kadar (istek zaman aşımı) geciktiremez.
+///
+/// Hızlı yol **hata verirse** FxTwitter ikinci kez istenmez: kaynak `syndication` ise doğrudan
+/// X ucu kullanılır (eskiden yavaş yol aynı isteği bir kez daha atıyordu).
+async fn fetch_fx_fast(
+    client: &reqwest::Client,
+    original_url: &str,
+    id: &str,
+    source: TwitterSource,
+    translate: bool,
+    max_video_bytes: u64,
+) -> Result<BuiltinPost, String> {
+    let language = translate.then_some(TARGET_LANGUAGE_CODE);
+    let fx = from_fxtwitter(client, original_url, id, language);
+    tokio::pin!(fx);
+
+    match tokio::time::timeout(HEDGE_DELAY, &mut fx).await {
+        Ok(Ok(post)) => return Ok(post),
+        Ok(Err(err)) => {
+            warn!("FxTwitter isteği başarısız ({id}): {err}");
+            if source == TwitterSource::Fxtwitter {
+                // Dil ekli uç sorun çıkarmış olabilir: bir kez dil olmadan denenir.
+                return from_fxtwitter(client, original_url, id, None).await;
+            }
+            return from_syndication(client, original_url, id, max_video_bytes)
+                .await
+                .map_err(|sy_err| format!("{err} | {sy_err}"));
+        }
+        // Yanıt gecikti: hedge devreye girer (X ucu da istenir).
+        Err(_elapsed) => debug!(
+            "FxTwitter {} ms içinde yanıt vermedi ({id}): X ucu da paralel istendi",
+            HEDGE_DELAY.as_millis()
+        ),
+    }
+
+    let syndication = from_syndication(client, original_url, id, max_video_bytes);
+    tokio::pin!(syndication);
+
+    // İki uç yarışır; FxTwitter tercih edilir (çeviri, topluluk notu ve görüntülenme onda).
+    let (fx_result, x_result) = tokio::select! {
+        biased;
+        result = &mut fx => (Some(result), None),
+        result = &mut syndication => (None, Some(result)),
+    };
+
+    if let Some(result) = fx_result {
+        return match result {
+            Ok(post) => Ok(post),
+            Err(err) => {
+                debug!("FxTwitter hedge sonrası hata verdi ({id}): {err}");
+                syndication.await.map_err(|sy_err| format!("{err} | {sy_err}"))
+            }
+        };
+    }
+
+    // X ucu kazandı: veri hazır. FxTwitter'a yalnızca kısa bir ek süre tanınır; gelmezse
+    // (veya hata verirse) X verisi kullanılır: kart hazırı bekletmek anlamsız olur.
+    if let Ok(Ok(fx_post)) = tokio::time::timeout(HEDGE_MERGE_GRACE, &mut fx).await {
+        return Ok(fx_post);
+    }
+
+    x_result.expect("select her zaman bir dalı döner")
 }
 
 
@@ -268,20 +340,89 @@ struct SyndicationNoteTweet {
     text: Option<String>,
 }
 
-/// En yüksek bit hızlı mp4 varyantını seçer (HLS/m3u8 oynatılamaz).
-fn best_mp4(variants: Option<&[SyndicationVariant]>) -> Option<String> {
-    variants?
-        .iter()
-        .filter(|v| {
-            let content_type = v.content_type.as_deref().unwrap_or("video/mp4");
-            content_type.contains("mp4")
-        })
-        .filter_map(|v| v.location().map(|url| (v.bitrate.unwrap_or(0), url.to_string())))
-        .max_by_key(|(bitrate, _)| *bitrate)
-        .map(|(_, url)| url)
+/// mp4 varyantı adayı (ağırlık hesabı için).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Variant<'a> {
+    url: &'a str,
+    /// Bit hızı (bit/sn); X vermezse 0.
+    bitrate: u64,
+    /// Bit hızı × süreden tahmin edilen dosya boyutu; bit hızı/süre yoksa `None`.
+    bytes: Option<u64>,
 }
 
-async fn from_syndication(client: &reqwest::Client, original_url: &str, id: &str) -> Result<BuiltinPost, String> {
+/// Bit hızı (bit/sn) ve süreden dosya boyutu tahmini (bayt).
+fn estimated_bytes(bitrate: Option<u64>, duration_ms: Option<u64>) -> Option<u64> {
+    let bitrate = bitrate.filter(|bitrate| *bitrate > 0)?;
+    let duration_ms = duration_ms.filter(|ms| *ms > 0)?;
+    Some(bitrate.saturating_mul(duration_ms) / 8_000)
+}
+
+/// En uygun mp4 varyantını seçer (HLS/m3u8 oynatılamaz).
+///
+/// **Ağırlık: kalite ÷ tahmini boyut.** Bütçeye (`max_bytes`: Discord limiti × ayar) sığan
+/// varyantlar arasından **en yüksek bit hızlı** olan seçilir; kart böylece indirilemeyecek
+/// (ve videoyu kaybettiren) dev bir varyant yerine hızlı inecek en iyi kaliteyi kullanır.
+/// Hiçbiri bütçeye sığmıyorsa **en küçük tahmini boyutlu** varyant seçilir: indirme hızlı
+/// tamamlanır; video dosya olarak eklenemezse bile uzak bağlantıyla kartta oynar.
+///
+/// `prefer_tweet_video`: X'in GIF kaynakları (`video.twimg.com/tweet_video/…`) varsa yalnızca
+/// onlar arasından seçilir; FxEmbed GIF servisinin adresi bu varyanttan türetilir.
+fn best_mp4(
+    variants: Option<&[SyndicationVariant]>,
+    duration_ms: Option<u64>,
+    max_bytes: u64,
+    prefer_tweet_video: bool,
+) -> Option<String> {
+    let candidates: Vec<Variant> = variants?
+        .iter()
+        .filter(|variant| {
+            variant
+                .content_type
+                .as_deref()
+                .unwrap_or("video/mp4")
+                .contains("mp4")
+        })
+        .filter_map(|variant| {
+            let url = variant.location()?;
+            Some(Variant {
+                url,
+                bitrate: variant.bitrate.unwrap_or(0),
+                bytes: estimated_bytes(variant.bitrate, duration_ms),
+            })
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let pool: Vec<Variant> = if prefer_tweet_video && candidates.iter().any(|v| v.url.contains("tweet_video")) {
+        candidates.iter().copied().filter(|v| v.url.contains("tweet_video")).collect()
+    } else {
+        candidates
+    };
+
+    // 1) Bütçeye sığanlar arasından en yüksek bit hızlı varyant (boyut bilinmiyorsa sığar sayılır).
+    if let Some(best) = pool
+        .iter()
+        .filter(|v| v.bytes.map(|bytes| bytes <= max_bytes).unwrap_or(true))
+        .max_by_key(|v| (v.bitrate, v.bytes.unwrap_or(0)))
+    {
+        return Some(best.url.to_string());
+    }
+
+    // 2) Hiçbiri bütçeye sığmıyorsa en küçük tahmini boyutlu varyant (en hızlı indirme).
+    pool.iter()
+        .min_by_key(|v| v.bytes.unwrap_or(u64::MAX))
+        .map(|v| v.url.to_string())
+}
+
+async fn from_syndication(
+    client: &reqwest::Client,
+    original_url: &str,
+    id: &str,
+    max_video_bytes: u64,
+) -> Result<BuiltinPost, String> {
     let url = format!("{SYNDICATION_URL}?id={id}&token={}&lang=en", syndication_token(id));
     let value = super::get_json(client, &url).await?;
     let tweet: SyndicationTweet = serde_json::from_value(value)
@@ -291,10 +432,14 @@ async fn from_syndication(client: &reqwest::Client, original_url: &str, id: &str
         return Err(format!("Gönderi bulunamadı (silinmiş veya korumalı olabilir): {id}"));
     }
 
-    syndication_to_post(&tweet, original_url)
+    syndication_to_post(&tweet, original_url, max_video_bytes)
 }
 
-fn syndication_to_post(tweet: &SyndicationTweet, url: &str) -> Result<BuiltinPost, String> {
+fn syndication_to_post(
+    tweet: &SyndicationTweet,
+    url: &str,
+    max_video_bytes: u64,
+) -> Result<BuiltinPost, String> {
     let user = tweet.user.as_ref();
     let handle = user.and_then(|u| u.screen_name.clone()).unwrap_or_default();
     let mut author = Author::new(
@@ -336,7 +481,7 @@ fn syndication_to_post(tweet: &SyndicationTweet, url: &str) -> Result<BuiltinPos
         views: None,
     };
     post.sensitive = tweet.possibly_sensitive.unwrap_or(false);
-    post.media = syndication_media(tweet);
+    post.media = syndication_media(tweet, max_video_bytes);
 
     if let Some(quoted) = tweet.quoted_tweet.as_deref() {
         let quoted_url = quoted.id_str.as_deref().map(|quoted_id| {
@@ -348,7 +493,7 @@ fn syndication_to_post(tweet: &SyndicationTweet, url: &str) -> Result<BuiltinPos
             format!("https://x.com/{quoted_handle}/status/{quoted_id}")
         });
         if let Some(quoted_url) = quoted_url {
-            if let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url) {
+            if let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url, max_video_bytes) {
                 post.quote = Some(Box::new(quoted_post));
             }
         }
@@ -388,10 +533,13 @@ fn expand_url_entities(text: &str, entities: Option<&SyndicationEntities>) -> St
 }
 
 /// `mediaDetails` (varsa) veya `photos` + `video` alanlarından medya listesi üretir.
-fn syndication_media(tweet: &SyndicationTweet) -> Vec<Media> {
+fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Media> {
     if let Some(details) = tweet.media_details.as_deref() {
         if !details.is_empty() {
-            return details.iter().filter_map(media_from_detail).collect();
+            return details
+                .iter()
+                .filter_map(|detail| media_from_detail(detail, max_video_bytes))
+                .collect();
         }
     }
 
@@ -411,7 +559,7 @@ fn syndication_media(tweet: &SyndicationTweet) -> Vec<Media> {
         }
     }
     if let Some(video) = tweet.video.as_ref() {
-        if let Some(url) = best_mp4(video.variants.as_deref()) {
+        if let Some(url) = best_mp4(video.variants.as_deref(), video.duration_ms, max_video_bytes, true) {
             media.push(Media {
                 kind: MediaKind::Video,
                 url,
@@ -425,7 +573,7 @@ fn syndication_media(tweet: &SyndicationTweet) -> Vec<Media> {
     media
 }
 
-fn media_from_detail(detail: &SyndicationMediaDetail) -> Option<Media> {
+fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> Option<Media> {
     let kind = detail.kind.as_deref()?;
     let info = detail.original_info.as_ref();
     let width = info.and_then(|i| i.width);
@@ -442,7 +590,13 @@ fn media_from_detail(detail: &SyndicationMediaDetail) -> Option<Media> {
         }),
         "video" | "animated_gif" => {
             let video_info = detail.video_info.as_ref()?;
-            let url = best_mp4(video_info.variants.as_deref())?;
+            let url = best_mp4(
+                video_info.variants.as_deref(),
+                video_info.duration_millis,
+                max_video_bytes,
+                // GIF kaynağı `tweet_video` varyantından türetilir: o varsa tercih edilir.
+                true,
+            )?;
             Some(Media {
                 kind: if kind == "animated_gif" {
                     MediaKind::Gif
@@ -818,6 +972,97 @@ mod tests {
         let post = post_from(&empty_translation);
         assert_eq!(post.text, "Guten Morgen zusammen");
         assert!(post.translation.is_none());
+    }
+
+    /// Ağırlık testleri için syndication video varyantı üretir.
+    fn variant(url: &str, content_type: &str, bitrate: Option<u64>) -> SyndicationVariant {
+        SyndicationVariant {
+            src: Some(url.to_string()),
+            url: None,
+            content_type: Some(content_type.to_string()),
+            bitrate,
+        }
+    }
+
+    #[test]
+    fn video_variant_weights_quality_against_estimated_size() {
+        let variants = vec![
+            variant(
+                "https://video.twimg.com/amplify_video/1/vid/1920x1080/hi.mp4",
+                "video/mp4",
+                Some(5_000_000),
+            ),
+            variant(
+                "https://video.twimg.com/amplify_video/1/vid/640x360/lo.mp4",
+                "video/mp4",
+                Some(600_000),
+            ),
+            // HLS/m3u8 oynatılamaz: bit hızı en yüksek olsa bile değerlendirilmez.
+            variant(
+                "https://video.twimg.com/amplify_video/1/pl/playlist.m3u8",
+                "application/x-mpegURL",
+                Some(9_000_000),
+            ),
+        ];
+
+        // 8 MB bütçe + 12 sn video: 5 Mbps ≈ 7.5 MB sığar → en yüksek kalite indirilir.
+        assert_eq!(
+            best_mp4(Some(&variants), Some(12_000), 8 * 1024 * 1024, false).as_deref(),
+            Some("https://video.twimg.com/amplify_video/1/vid/1920x1080/hi.mp4")
+        );
+
+        // Bütçe darsa hiçbir varyant sığmaz: **en küçük** dosya seçilir, kart beklemez.
+        assert_eq!(
+            best_mp4(Some(&variants), Some(12_000), 500 * 1024, false).as_deref(),
+            Some("https://video.twimg.com/amplify_video/1/vid/640x360/lo.mp4")
+        );
+    }
+
+    #[test]
+    fn gif_sources_prefer_the_tweet_video_variant() {
+        let variants = vec![
+            variant(
+                "https://video.twimg.com/amplify_video/1/vid/720x1280/amplify.mp4",
+                "video/mp4",
+                Some(2_000_000),
+            ),
+            variant(
+                "https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4",
+                "video/mp4",
+                Some(800_000),
+            ),
+        ];
+
+        // GIF kaynağı `tweet_video` varyantından türetilir (FxEmbed GIF servisi): tercih edilir.
+        assert_eq!(
+            best_mp4(Some(&variants), Some(3_000), 8 * 1024 * 1024, true).as_deref(),
+            Some("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4")
+        );
+        // Tercih kapalıyken yalnızca ağırlık kuralı işler: en yüksek bit hızı kazanır.
+        assert_eq!(
+            best_mp4(Some(&variants), Some(3_000), 8 * 1024 * 1024, false).as_deref(),
+            Some("https://video.twimg.com/amplify_video/1/vid/720x1280/amplify.mp4")
+        );
+    }
+
+    #[test]
+    fn size_estimates_need_both_bitrate_and_duration() {
+        // 1 Mbps × 8 sn = 1 MB
+        assert_eq!(estimated_bytes(Some(1_000_000), Some(8_000)), Some(1_000_000));
+        assert_eq!(estimated_bytes(None, Some(8_000)), None);
+        assert_eq!(estimated_bytes(Some(1_000_000), None), None);
+        assert_eq!(estimated_bytes(Some(0), Some(8_000)), None);
+
+        // Boyut bilinmiyorsa varyant yine de kullanılabilir ("sığar" sayılır).
+        let unknown = vec![variant(
+            "https://video.twimg.com/amplify_video/1/vid/x.mp4",
+            "video/mp4",
+            None,
+        )];
+        assert_eq!(
+            best_mp4(Some(&unknown), None, 8 * 1024 * 1024, false).as_deref(),
+            Some("https://video.twimg.com/amplify_video/1/vid/x.mp4")
+        );
     }
 }
 

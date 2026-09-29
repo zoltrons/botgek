@@ -40,8 +40,14 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - 📊 **Eksik metrikler tamamlanır:** Syndication uç noktası repost ve görüntülenme vermez; eksik alanlar FxTwitter yanıtından doldurulur (mevcut değerler korunur).
   - ⚡ **Hızlandırılmış akış (milisaniye seviyesi):**
     - **Tek istek:** Çeviri açıkken (varsayılan) metin, X'in Türkçe çevirisi, metrikler, topluluk notu ve medya bilgisi **tek FxTwitter yanıtında** gelir — ek istek yok.
+    - **Gecikme sigortası (hedge):** FxTwitter 1.5 sn içinde yanıt vermezse X syndication ucu **paralel** başlatılır ve ilk gelen veri kartı üretir; X ucu kazanırsa çeviri/metrikler için FxTwitter'a 0.7 sn ek süre tanınır. Yavaş veya askıda kalan bir uç kartı 12 sn'ye kadar geciktiremez.
+    - **Yedek istek tekrarı yok:** Hızlı yol hata verirse aynı istek yavaş yolda **ikinci kez** atılmaz (eskiden FxTwitter iki kez isteniyordu).
     - **Paralel istek:** Kaynak `syndication` iken X ucu ile FxTwitter **aynı anda** istenir; toplam gecikme tek istek kadardır.
     - **Paralel indirme:** Video + görseller + GIF'ler aynı anda indirilir; mesaj gecikmesi dosyaların toplamı değil en yavaş tek indirme kadardır.
+    - **Süre bütçesi (kart beklemez):** Her indirmenin bir bütçesi vardır — görsel **1,0 sn**, GIF **1,8 sn**, video **2,0 sn**. Bütçe dolan indirme iptal edilir (yarıda kalan trafik de tükenmez) ve ilgili medya **uzak bağlantı** olarak kartta gösterilir: video kartın içinde oynamaya devam eder. Böylece kart en kötü durumda ~2 sn'de gönderilir (eskiden tek bir GIF 2 × 45 sn, video 45 sn bekleyebiliyordu).
+    - **Ağırlıklı GIF yarışı:** FxEmbed GIF servisi (CDN'de önbellekli) yarışta 250 ms öne alınır; servis gecikirse yerel `ffmpeg` yedeği başlar ve **gerçek GIF** ürettiyse yarışı kazanır. Hiçbiri olmazsa hazır mp4, o da yoksa uzak bağlantı kullanılır.
+    - **Ağırlıklı video varyantı (kalite ÷ tahmini boyut):** X birden fazla mp4 sunuyorsa **indirilebilecek en yüksek kaliteli** varyant seçilir; bütçeyi aşan dev varyant hiç seçilmez (eskiden en yüksek bit hızlı varyant seçilip indirilemediği için kart videoyu kaybediyordu). Hiçbiri bütçeye sığmıyorsa en küçük dosya seçilir — indirme en hızlı biçimde tamamlanır.
+    - **Paralel yan işler:** Orijinal mesajı silme ve taklit webhook'unun çözümlenmesi (soğuk kanalda 1-2 REST çağrısı) **veri çekmeyle paralel** yürür; 🗑️ reaksiyonu ve gecikmiş silme mesaj gönderildikten sonra arka planda eklenir.
     - **Önbellek:** Aynı link 10 dakika içinde tekrar paylaşılırsa ağ isteği hiç yapılmaz (anında yanıt).
     - **HTTP/2 + bağlantı havuzu:** Paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması tekrarlanmaz.
     - Her dönüşümde süre log'lanır: `Hazırlık: veri X ms, medya Y ms` ve `toplam Z ms` (RUST_LOG=debug).

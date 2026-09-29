@@ -38,7 +38,10 @@ use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 
 /// Dış servis istekleri için zaman aşımı (mesaj gönderimini uzun süre bloklamamalı).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
-/// Video/görsel indirme için daha uzun zaman aşımı.
+/// Video/görsel indirme için daha uzun zaman aşımı (tek isteğin üst sınırı).
+///
+/// **Etkin** sınır bu değil [`render::VIDEO_BUDGET`] gibi süre bütçeleridir: kart, medya
+/// indirmesini beklemez; bütçe dolan indirme iptal edilir ve medya uzak bağlantıya düşer.
 pub const MEDIA_TIMEOUT: Duration = Duration::from_secs(45);
 /// Tek bir JSON/metin yanıtı için okunacak maksimum gövde boyutu (2 MB).
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
@@ -921,12 +924,37 @@ fn reply_reference(msg: &Message) -> Option<serde_json::Value> {
     Some(value)
 }
 
-/// Kullanıcının orijinal mesajını siler; zaten silinmişse sessizce geçer (🗑️ reaksiyonu
+/// Orijinal mesajı **arka planda** siler: REST silme isteği veri çekmeyi bloklamaz, bu
+/// yüzden kullanıcı mesajı dönüşümden önce kaybolur ve kart daha erken gelir.
+fn spawn_delete(ctx: &Context, msg: &Message) {
+    let ctx = ctx.clone();
+    let msg = msg.clone();
+    tokio::spawn(async move { delete_user_message(&ctx, &msg).await });
+}
+
+/// Orijinal mesajı siler; zaten silinmişse sessizce geçer (🗑️ reaksiyonu
 /// yeni mesaja eklenir, bu yüzden mükerrer silme denemesi hata üretmez).
 async fn delete_user_message(ctx: &Context, msg: &Message) {
     if let Err(err) = msg.delete(&ctx.http).await {
         debug!("Orijinal mesaj silinemedi (zaten silinmiş olabilir): {err:?}");
     }
+}
+
+/// Taklit webhook'unu **veri çekmeyle paralel** önceden çözer (önbelleğe yazar).
+///
+/// Soğuk kanalda webhook çözümlemesi 1-2 REST çağrısıdır (listele + gerekirse oluştur) ve
+/// eskiden gönderim anında bekleniyordu; artık dönüşümün kritik yolundan çıkar: kart
+/// gönderilirken webhook hazır olur. Başarısızlık önbelleğe yazılır ([`channel_webhook`]),
+/// bu yüzden gönderim yine tek denemede bot mesajına düşer.
+fn spawn_webhook_warmup(ctx: &Context, client: &reqwest::Client, config: &Config, msg: &Message) {
+    let ctx = ctx.clone();
+    let client = client.clone();
+    let config = config.clone();
+    let msg = msg.clone();
+    tokio::spawn(async move {
+        let target = webhook_target(&ctx, &msg).await;
+        let _ = channel_webhook(&ctx, &client, &config, target.channel_id, false).await;
+    });
 }
 
 /// Native embed akışı. Veri çekilemez veya mesaj gönderilemezse `false` döner; bu durumda
@@ -942,12 +970,20 @@ pub async fn handle(
     // Süre ölçümü: dönüşüm gecikmesi veri / medya / gönderim olarak log'lanır.
     let started = std::time::Instant::now();
 
+    // Taklit (webhook) kimliği ve erken silme **veri çekmeyle paralel** yürür: ikisi de REST
+    // çağrısıdır ve eskiden dönüşümün kritik yolunda sırayla bekleniyordu.
+    let identity = should_impersonate(engine, msg.message_reference.is_some())
+        .then(|| Impersonation::from_message(msg));
+    if identity.is_some() {
+        spawn_webhook_warmup(ctx, client, config, msg);
+    }
+
     // Orijinal mesaj **hemen** silinir: kullanıcının mesajı beklemeden kaybolur ve dönüşüm
     // gecikmeli hissettirmez. Proxy yedeği kapalıyken veri çekilemezse mesaj kaybolmasın
     // diye silme, veri geldikten sonra yapılır.
     let delete_early = config.delete_original && engine.fallback_to_proxy;
     if delete_early {
-        delete_user_message(ctx, msg).await;
+        spawn_delete(ctx, msg);
     }
 
     let post = match fetch(client, parsed, engine).await {
@@ -960,15 +996,13 @@ pub async fn handle(
     let fetched = started.elapsed();
 
     if config.delete_original && !delete_early {
-        delete_user_message(ctx, msg).await;
+        spawn_delete(ctx, msg);
     }
 
     let options = render::RenderOptions::from_engine(engine);
     let plan = render::plan_media(&post, &options);
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
     let media_done = started.elapsed();
-    let identity = should_impersonate(engine, msg.message_reference.is_some())
-        .then(|| Impersonation::from_message(msg));
 
     debug!(
         "Hazırlık: veri {} ms, medya {} ms ({})",
@@ -1007,7 +1041,7 @@ pub async fn handle(
                     "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}): {}",
                     parsed.platform, impersonated, parsed.original_url
                 );
-                finish(ctx, msg, config, message_id).await;
+                finish(ctx, msg, config, message_id);
                 return true;
             }
             Err(err) => {
@@ -1039,7 +1073,7 @@ pub async fn handle(
                 started.elapsed().as_millis(),
                 parsed.original_url
             );
-            finish(ctx, msg, config, message_id).await;
+            finish(ctx, msg, config, message_id);
             true
         }
         Err(err) => {
@@ -1210,22 +1244,30 @@ fn classic_payload(
 ///
 /// Yazar kaydı sayesinde taklit edilen (veya Components V2 ile gönderilen) mesajlarda
 /// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
-async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
+///
+/// Reaksiyon ve silme **arka planda** yapılır: kart kullanıcıya çoktan görünmüştür, bu iki
+/// REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest kalır).
+fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
     remember_author(message_id, msg.channel_id, msg.author.id);
 
-    if let Err(e) = msg
-        .channel_id
-        .create_reaction(&ctx.http, message_id, ReactionType::Unicode("🗑️".to_string()))
-        .await
-    {
-        error!("Silme reaksiyonu eklenemedi: {:?}", e);
-    }
+    let ctx = ctx.clone();
+    let msg = msg.clone();
+    let delete_original = config.delete_original;
+    tokio::spawn(async move {
+        if let Err(e) = msg
+            .channel_id
+            .create_reaction(&ctx.http, message_id, ReactionType::Unicode("🗑️".to_string()))
+            .await
+        {
+            error!("Silme reaksiyonu eklenemedi: {:?}", e);
+        }
 
-    // Orijinal mesaj normalde dönüşüm başında silinir; burada yalnızca geç kalan durumlar
-    // için (proy yedeği kapalı) tekrar denenir — zaten silinmişse sessizce geçilir.
-    if config.delete_original {
-        delete_user_message(ctx, msg).await;
-    }
+        // Orijinal mesaj normalde dönüşüm başında silinir; burada yalnızca geç kalan durumlar
+        // için (proxy yedeği kapalı) tekrar denenir — zaten silinmişse sessizce geçilir.
+        if delete_original {
+            delete_user_message(&ctx, &msg).await;
+        }
+    });
 }
 
 /// Discord'un 4xx yanıtı kalıcı bir ret anlamına gelir (ağ hatasından farklı olarak
