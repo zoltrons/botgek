@@ -36,13 +36,13 @@ use crate::utils::mentions::build_selective_allowed_mentions;
 use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 
 
-/// Dış servis istekleri için zaman aşımı (mesaj gönderimini uzun süre bloklamamalı).
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
+/// Dış servis istekleri için zaman aşımı (ışık hızı: askıda kalan istek kartı bekletmez).
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 /// Video/görsel indirme için daha uzun zaman aşımı (tek isteğin üst sınırı).
 ///
 /// **Etkin** sınır bu değil [`render::VIDEO_BUDGET`] gibi süre bütçeleridir: kart, medya
 /// indirmesini beklemez; bütçe dolan indirme iptal edilir ve medya uzak bağlantıya düşer.
-pub const MEDIA_TIMEOUT: Duration = Duration::from_secs(45);
+pub const MEDIA_TIMEOUT: Duration = Duration::from_secs(12);
 /// Tek bir JSON/metin yanıtı için okunacak maksimum gövde boyutu (2 MB).
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Tanımlayıcı User-Agent: fxtwitter gibi servisler uygulamanın kendini tanıtmasını ister.
@@ -1000,6 +1000,12 @@ pub async fn handle(
     }
 
     let options = render::RenderOptions::from_engine(engine);
+    debug!(
+        "Medya yöntemi: {} (dosya indirme: {}) — {}",
+        options.media_delivery.key(),
+        options.media_delivery.downloads_media(),
+        parsed.original_url
+    );
     let plan = render::plan_media(&post, &options);
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
     let media_done = started.elapsed();

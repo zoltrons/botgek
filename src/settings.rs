@@ -110,6 +110,41 @@ impl CardStyle {
     }
 }
 
+/// Medyanın karta nasıl taşınacağı (**kart hızını belirleyen ayar**).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaDelivery {
+    /// **Işık hızı (varsayılan):** hiçbir dosya indirilmez ve Discord'a yüklenmez. Görsel,
+    /// video ve GIF kartın içinde **FxEmbed / CDN bağlantılarıyla** gösterilir: video kartın
+    /// içinde oynar, GIF FxEmbed'in GIF servisinden (`gif.fxtwitter.com`) gelir, görsel
+    /// CDN'in hafif `large` varyantından gelir. Medya fazı ~0 ms'dir, kart veri gelir
+    /// gelmez gider (beklenen süre yok).
+    #[default]
+    Direct,
+    /// Medya **süre bütçesi** içinde inerse dosya olarak eklenir (tam çözünürlük), bütçe
+    /// aşılırsa bağlantıya düşülür. Hız ile CDN bağımsızlığı arasında denge kurar.
+    Auto,
+    /// Medya her zaman indirilip dosya olarak eklenir (tam çözünürlük + kaynak CDN'e
+    /// bağımlı olmama); yalnızca geniş bütçe aşılırsa bağlantıya düşülür. En yavaş seçenek.
+    Attach,
+}
+
+impl MediaDelivery {
+    /// WebUI ve log'larda kullanılan anahtar.
+    pub fn key(&self) -> &'static str {
+        match self {
+            MediaDelivery::Direct => "direct",
+            MediaDelivery::Auto => "auto",
+            MediaDelivery::Attach => "attach",
+        }
+    }
+
+    /// Medya dosya olarak mı eklenecek? (`direct` modunda hiç indirme yapılmaz.)
+    pub fn downloads_media(&self) -> bool {
+        matches!(self, MediaDelivery::Auto | MediaDelivery::Attach)
+    }
+}
+
 /// Platform bazlı motor seçimi.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -423,6 +458,8 @@ pub struct EngineSettings {
     pub domains: ProxyDomains,
     /// Twitter/X için veri kaynağı.
     pub twitter_source: TwitterSource,
+    /// Medyanın karta nasıl taşınacağı: ışık hızı (bağlantı) / süre bütçeli / her zaman dosya.
+    pub media_delivery: MediaDelivery,
     /// Görselleri indirip mesaja dosya olarak ekle (tam çözünürlük + CDN bağımsızlığı).
     pub attach_images: bool,
     /// Videoları indirip mesaja dosya olarak ekle (limit altındaysa).
@@ -464,6 +501,7 @@ impl Default for EngineSettings {
             modes: PlatformEngineModes::default(),
             domains: ProxyDomains::default(),
             twitter_source: TwitterSource::default(),
+            media_delivery: MediaDelivery::default(),
             attach_images: true,
             attach_videos: true,
             max_images: 4,
@@ -1068,6 +1106,29 @@ mod tests {
         };
         assert_eq!(unknown.twitter(), None, "tanınmayan ad platform adına düşer");
         assert_eq!(unknown.twitter.trim(), ":botgek_emoji:");
+    }
+
+    #[test]
+    fn media_delivery_defaults_to_light_speed_and_round_trips() {
+        assert_eq!(
+            AppSettings::default().engine.media_delivery,
+            MediaDelivery::Direct,
+            "varsayılan medya yöntemi ışık hızı olmalı"
+        );
+
+        let mut settings = AppSettings::default();
+        settings.engine.media_delivery = MediaDelivery::Attach;
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(
+            json.contains("\"media_delivery\":\"attach\""),
+            "serde adı WebUI değeriyle aynı olmalı: {json}"
+        );
+
+        let parsed: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.engine.media_delivery, MediaDelivery::Attach);
+        assert_eq!(parsed.engine.media_delivery.key(), "attach");
+        assert!(parsed.engine.media_delivery.downloads_media());
+        assert!(!MediaDelivery::Direct.downloads_media(), "ışık hızı indirme yapmaz");
     }
 
     #[test]

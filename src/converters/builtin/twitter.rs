@@ -12,7 +12,7 @@ use regex::Regex;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use super::media::with_size;
+use super::media::{light_image_url, with_size};
 use super::translate::{needs_turkish_translation, TARGET_LANGUAGE_CODE};
 use super::{parse_timestamp, strip_trailing_media_links, Author, BuiltinPost, Media, MediaKind, Stats, Translation};
 use crate::converters::parser::{ParsedPost, Platform};
@@ -27,10 +27,10 @@ static TWEET_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 /// Hızlı yol (FxTwitter) bu süre içinde yanıt vermezse X syndication ucu **paralel**
 /// başlatılır (hedge): yavaş veya askıda kalan uç kartın gelmesini geciktirmez.
-const HEDGE_DELAY: Duration = Duration::from_millis(1_500);
+const HEDGE_DELAY: Duration = Duration::from_millis(500);
 /// Hedge sonrası X ucu kazandıysa, çeviri/metrikleri tamamlamak için FxTwitter'a tanınan
 /// ek süre (gelmezse X verisiyle devam edilir).
-const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(700);
+const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(300);
 
 /// Gönderi verisini seçilen kaynaktan çeker.
 ///
@@ -70,7 +70,7 @@ pub async fn fetch(
     // 2) X syndication + FxTwitter aynı anda: biri hata verse de diğeri kullanılır.
     let (x_result, fx_result) = tokio::join!(
         from_syndication(client, &parsed.original_url, &id, video_budget),
-        from_fxtwitter(client, &parsed.original_url, &id, None),
+        from_fxtwitter(client, &parsed.original_url, &id, None, video_budget),
     );
 
     // Syndication repost/görüntülenme/alıntı vermez: paralel istenen yanıttan tamamlanır.
@@ -107,7 +107,7 @@ async fn fetch_fx_fast(
     max_video_bytes: u64,
 ) -> Result<BuiltinPost, String> {
     let language = translate.then_some(TARGET_LANGUAGE_CODE);
-    let fx = from_fxtwitter(client, original_url, id, language);
+    let fx = from_fxtwitter(client, original_url, id, language, max_video_bytes);
     tokio::pin!(fx);
 
     match tokio::time::timeout(HEDGE_DELAY, &mut fx).await {
@@ -116,7 +116,7 @@ async fn fetch_fx_fast(
             warn!("FxTwitter isteği başarısız ({id}): {err}");
             if source == TwitterSource::Fxtwitter {
                 // Dil ekli uç sorun çıkarmış olabilir: bir kez dil olmadan denenir.
-                return from_fxtwitter(client, original_url, id, None).await;
+                return from_fxtwitter(client, original_url, id, None, max_video_bytes).await;
             }
             return from_syndication(client, original_url, id, max_video_bytes)
                 .await
@@ -340,13 +340,13 @@ struct SyndicationNoteTweet {
     text: Option<String>,
 }
 
-/// mp4 varyantı adayı (ağırlık hesabı için).
+/// Bir mp4 adayı (ağırlık hesabı için).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Variant<'a> {
+struct VideoCandidate<'a> {
     url: &'a str,
-    /// Bit hızı (bit/sn); X vermezse 0.
+    /// Bit hızı (bit/sn); kaynak vermezse 0.
     bitrate: u64,
-    /// Bit hızı × süreden tahmin edilen dosya boyutu; bit hızı/süre yoksa `None`.
+    /// Dosya boyutu: kaynak tam boyut veriyorsa o, yoksa bit hızı × süre tahmini.
     bytes: Option<u64>,
 }
 
@@ -357,23 +357,59 @@ fn estimated_bytes(bitrate: Option<u64>, duration_ms: Option<u64>) -> Option<u64
     Some(bitrate.saturating_mul(duration_ms) / 8_000)
 }
 
-/// En uygun mp4 varyantını seçer (HLS/m3u8 oynatılamaz).
+/// Adaylar arasından **en uygun** mp4'ü seçer (HLS/m3u8 oynatılamaz, adaylara girmez).
 ///
-/// **Ağırlık: kalite ÷ tahmini boyut.** Bütçeye (`max_bytes`: Discord limiti × ayar) sığan
-/// varyantlar arasından **en yüksek bit hızlı** olan seçilir; kart böylece indirilemeyecek
-/// (ve videoyu kaybettiren) dev bir varyant yerine hızlı inecek en iyi kaliteyi kullanır.
-/// Hiçbiri bütçeye sığmıyorsa **en küçük tahmini boyutlu** varyant seçilir: indirme hızlı
-/// tamamlanır; video dosya olarak eklenemezse bile uzak bağlantıyla kartta oynar.
+/// **Ağırlık: kalite ÷ boyut.** `max_bytes` (Discord limiti × ayar) altında kalan adaylar
+/// arasından en yüksek bit hızlı olan seçilir: kart, oynatıcıyı kilitleyen dev varyant
+/// yerine **anında oynayan** en iyi kaliteyi kullanır (X'in kendisi de 1080p yerine
+/// izleyicinin hızına göre daha küçük varyant verir). Hiçbiri bütçeye sığmıyorsa **en küçük**
+/// dosya seçilir; böylece indirme hızlı tamamlanır ve video kartta oynar.
 ///
 /// `prefer_tweet_video`: X'in GIF kaynakları (`video.twimg.com/tweet_video/…`) varsa yalnızca
 /// onlar arasından seçilir; FxEmbed GIF servisinin adresi bu varyanttan türetilir.
+fn pick_video(
+    candidates: Vec<VideoCandidate<'_>>,
+    max_bytes: u64,
+    prefer_tweet_video: bool,
+) -> Option<String> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let pool: Vec<VideoCandidate> = if prefer_tweet_video
+        && candidates.iter().any(|c| c.url.contains("tweet_video"))
+    {
+        candidates
+            .into_iter()
+            .filter(|c| c.url.contains("tweet_video"))
+            .collect()
+    } else {
+        candidates
+    };
+
+    // 1) Bütçeye sığanlar arasından en yüksek bit hızlı aday (boyut bilinmiyorsa sığar sayılır).
+    if let Some(best) = pool
+        .iter()
+        .filter(|c| c.bytes.map(|bytes| bytes <= max_bytes).unwrap_or(true))
+        .max_by_key(|c| (c.bitrate, c.bytes.unwrap_or(0)))
+    {
+        return Some(best.url.to_string());
+    }
+
+    // 2) Hiçbiri bütçeye sığmıyorsa en küçük dosya (en hızlı indirme / en hızlı oynatma).
+    pool.iter()
+        .min_by_key(|c| c.bytes.unwrap_or(u64::MAX))
+        .map(|c| c.url.to_string())
+}
+
+/// X syndication varyant listesini [`pick_video`] ağırlığına çevirir (HLS oynatılamaz).
 fn best_mp4(
     variants: Option<&[SyndicationVariant]>,
     duration_ms: Option<u64>,
     max_bytes: u64,
     prefer_tweet_video: bool,
 ) -> Option<String> {
-    let candidates: Vec<Variant> = variants?
+    let candidates: Vec<VideoCandidate> = variants?
         .iter()
         .filter(|variant| {
             variant
@@ -383,38 +419,15 @@ fn best_mp4(
                 .contains("mp4")
         })
         .filter_map(|variant| {
-            let url = variant.location()?;
-            Some(Variant {
-                url,
+            Some(VideoCandidate {
+                url: variant.location()?,
                 bitrate: variant.bitrate.unwrap_or(0),
                 bytes: estimated_bytes(variant.bitrate, duration_ms),
             })
         })
         .collect();
 
-    if candidates.is_empty() {
-        return None;
-    }
-
-    let pool: Vec<Variant> = if prefer_tweet_video && candidates.iter().any(|v| v.url.contains("tweet_video")) {
-        candidates.iter().copied().filter(|v| v.url.contains("tweet_video")).collect()
-    } else {
-        candidates
-    };
-
-    // 1) Bütçeye sığanlar arasından en yüksek bit hızlı varyant (boyut bilinmiyorsa sığar sayılır).
-    if let Some(best) = pool
-        .iter()
-        .filter(|v| v.bytes.map(|bytes| bytes <= max_bytes).unwrap_or(true))
-        .max_by_key(|v| (v.bitrate, v.bytes.unwrap_or(0)))
-    {
-        return Some(best.url.to_string());
-    }
-
-    // 2) Hiçbiri bütçeye sığmıyorsa en küçük tahmini boyutlu varyant (en hızlı indirme).
-    pool.iter()
-        .min_by_key(|v| v.bytes.unwrap_or(u64::MAX))
-        .map(|v| v.url.to_string())
+    pick_video(candidates, max_bytes, prefer_tweet_video)
 }
 
 async fn from_syndication(
@@ -689,6 +702,20 @@ struct FxMediaItem {
     width: Option<u32>,
     height: Option<u32>,
     duration: Option<f64>,
+    /// Video varyantları: bit hızı, boyut ve kodek bilgisi buradan gelir (ağırlıklı seçim).
+    formats: Option<Vec<FxFormat>>,
+}
+
+/// FxTwitter'ın video varyantı (`formats[]`): mp4/m3u8 + bit hızı + (varsa) tam boyut.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FxFormat {
+    url: Option<String>,
+    container: Option<String>,
+    bitrate: Option<u64>,
+    size: Option<u64>,
+    width: Option<u32>,
+    height: Option<u32>,
 }
 
 /// FxTwitter'ın dil ekli ucundan gelen X çevirisi (`provider` X'in çeviri servisidir).
@@ -698,6 +725,9 @@ struct FxTranslation {
     text: Option<String>,
     source_lang: Option<String>,
     target_lang: Option<String>,
+    /// Çeviriyi üreten sağlayıcı: X'in kendi çevirisi `grok`, FxEmbed'in yedek çevirisi
+    /// `deepl` gibi başka bir değer olur.
+    provider: Option<String>,
 }
 
 async fn from_fxtwitter(
@@ -705,6 +735,7 @@ async fn from_fxtwitter(
     original_url: &str,
     id: &str,
     language: Option<&str>,
+    max_video_bytes: u64,
 ) -> Result<BuiltinPost, String> {
     // Dil eki (`/tr`) verildiğinde yanıt orijinal metinle birlikte X'in çevirisini de içerir.
     let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
@@ -726,10 +757,10 @@ async fn from_fxtwitter(
         .tweet
         .ok_or_else(|| format!("fxtwitter yanıtında gönderi yok: {id}"))?;
 
-    fx_to_post(&tweet, original_url)
+    fx_to_post(&tweet, original_url, max_video_bytes)
 }
 
-fn fx_to_post(tweet: &FxTweet, fallback_url: &str) -> Result<BuiltinPost, String> {
+fn fx_to_post(tweet: &FxTweet, fallback_url: &str, max_video_bytes: u64) -> Result<BuiltinPost, String> {
     let user = tweet.author.as_ref();
     let handle = user.and_then(|a| a.screen_name.clone()).unwrap_or_default();
     let mut author = Author::new(
@@ -773,7 +804,7 @@ fn fx_to_post(tweet: &FxTweet, fallback_url: &str) -> Result<BuiltinPost, String
         .and_then(|note| note.text.clone())
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty());
-    post.media = fx_media(tweet.media.as_ref());
+    post.media = fx_media(tweet.media.as_ref(), max_video_bytes);
 
     if let Some(quoted) = tweet.quote.as_deref() {
         let quoted_url = quoted
@@ -782,7 +813,7 @@ fn fx_to_post(tweet: &FxTweet, fallback_url: &str) -> Result<BuiltinPost, String
             .unwrap_or_default()
             .replace("://twitter.com/", "://x.com/");
         if !quoted_url.is_empty() {
-            if let Ok(quoted_post) = fx_to_post(quoted, &quoted_url) {
+            if let Ok(quoted_post) = fx_to_post(quoted, &quoted_url, max_video_bytes) {
                 post.quote = Some(Box::new(quoted_post));
             }
         }
@@ -796,8 +827,10 @@ fn fx_to_post(tweet: &FxTweet, fallback_url: &str) -> Result<BuiltinPost, String
 
 /// Dil ekli FxTwitter yanıtındaki X çevirisini gönderiye uygular.
 ///
-/// Yalnızca gönderi Türkçe/İngilizce değilse uygulanır; çeviri metni X'in kendi çeviri
-/// servisinden geldiği için orijinal metnin yerine kullanılır ve alt bilgiye not eklenir.
+/// Yalnızca gönderi Türkçe/İngilizce değilse uygulanır **ve çeviri Grok'tan gelmelidir**
+/// (X'in kendi çeviri servisi). FxEmbed, X çevirisi yoksa kendi yedek servisine (ör. DeepL)
+/// düşer; o çeviri **kullanılmaz** — gönderi orijinal metniyle ve çeviri notu olmadan
+/// gönderilir (bayrak reaksiyonuyla istenirse proxy linki üzerinden çevrilebilir).
 fn apply_fx_translation(post: &mut BuiltinPost, tweet: &FxTweet) {
     if !needs_turkish_translation(post.language.as_deref()) {
         return;
@@ -806,6 +839,16 @@ fn apply_fx_translation(post: &mut BuiltinPost, tweet: &FxTweet) {
     let Some(translation) = tweet.translation.as_ref() else {
         return;
     };
+
+    if !is_grok_translation(translation.provider.as_deref()) {
+        debug!(
+            "Çeviri Grok'tan gelmedi (sağlayıcı: {:?}), kullanılmıyor: {}",
+            translation.provider.as_deref().unwrap_or("bilinmiyor"),
+            post.url
+        );
+        return;
+    }
+
     let Some(text) = translation
         .text
         .as_deref()
@@ -822,6 +865,19 @@ fn apply_fx_translation(post: &mut BuiltinPost, tweet: &FxTweet) {
             .clone()
             .or_else(|| post.language.clone()),
     });
+}
+
+/// Çeviri **Grok** (X'in kendi çeviri servisi) tarafından mı üretildi?
+///
+/// Sağlayıcı bilinmiyorsa da kabul edilmez: "her zaman Grok" kuralı gereği yalnızca
+/// sağlayıcısı Grok olan çeviri karta yazılır (ör. `deepl`, `google` yok sayılır).
+fn is_grok_translation(provider: Option<&str>) -> bool {
+    provider
+        .map(|provider| {
+            let provider = provider.trim().to_ascii_lowercase();
+            provider.contains("grok") || provider == "xai" || provider == "x-ai"
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -849,7 +905,81 @@ mod tests {
     fn post_from(json: &serde_json::Value) -> BuiltinPost {
         let tweet: FxTweet =
             serde_json::from_value(json.clone()).expect("örnek JSON geçerli olmalı");
-        fx_to_post(&tweet, "https://x.com/kullanici/status/1").expect("gönderi üretilmeli")
+        fx_to_post(&tweet, "https://x.com/kullanici/status/1", 8 * 1024 * 1024)
+            .expect("gönderi üretilmeli")
+    }
+
+    #[test]
+    fn fx_video_uses_the_variant_that_plays_instantly() {
+        let mut json = translated_tweet("en");
+        json["media"] = serde_json::json!({
+            "all": [{
+                "type": "video",
+                "url": "https://video.twimg.com/amplify_video/1/vid/1920x1080/hi.mp4",
+                "duration": 61.494,
+                "width": 1920,
+                "height": 1080,
+                "formats": [
+                    { "url": "https://video.twimg.com/amplify_video/1/pl/x.m3u8", "container": "m3u8" },
+                    { "url": "https://video.twimg.com/amplify_video/1/vid/480x270/lo.mp4", "container": "mp4", "bitrate": 288000 },
+                    { "url": "https://video.twimg.com/amplify_video/1/vid/1920x1080/hi.mp4", "container": "mp4", "bitrate": 10368000 }
+                ]
+            }]
+        });
+
+        let post = post_from(&json);
+
+        assert_eq!(post.media[0].kind, MediaKind::Video);
+        // 8 MB bütçe: 480p (≈2,2 MB) seçilir; 1080p (≈79 MB) oynatıcıyı kilitlemez.
+        assert_eq!(
+            post.media[0].url,
+            "https://video.twimg.com/amplify_video/1/vid/480x270/lo.mp4"
+        );
+    }
+
+    #[test]
+    fn fx_photos_use_the_light_variant_in_the_card() {
+        let mut json = translated_tweet("en");
+        json["media"] = serde_json::json!({
+            "all": [{
+                "type": "photo",
+                "url": "https://pbs.twimg.com/media/ABC.jpg?name=orig",
+                "width": 1919,
+                "height": 894
+            }]
+        });
+
+        let post = post_from(&json);
+        assert_eq!(
+            post.media[0].url,
+            "https://pbs.twimg.com/media/ABC.jpg?name=large"
+        );
+    }
+
+    #[test]
+    fn fx_gifs_keep_the_tweet_video_source_for_the_gif_service() {
+        let mut json = translated_tweet("en");
+        json["media"] = serde_json::json!({
+            "all": [{
+                "type": "gif",
+                "url": "https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4",
+                "duration": 3.2,
+                "formats": [{
+                    "url": "https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4",
+                    "container": "mp4",
+                    "bitrate": 800000
+                }]
+            }]
+        });
+
+        let post = post_from(&json);
+
+        assert_eq!(post.media[0].kind, MediaKind::Gif);
+        // FxEmbed GIF adresi bu mp4'ten türetilir (`gif.fxtwitter.com/tweet_video/...gif`).
+        assert_eq!(
+            post.media[0].url,
+            "https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4"
+        );
     }
 
     #[test]
@@ -899,11 +1029,57 @@ mod tests {
         let post = post_from(&translated_tweet("de"));
 
         assert_eq!(post.language.as_deref(), Some("de"));
-        assert_eq!(post.text, "Herkese günaydın", "X çevirisi metne yazılmalı");
+        assert_eq!(post.text, "Herkese günaydın", "Grok (X) çevirisi metne yazılmalı");
         assert_eq!(
             post.translation.as_ref().and_then(|t| t.source.as_deref()),
             Some("de")
         );
+    }
+
+    #[test]
+    fn non_grok_translations_are_ignored() {
+        // FxEmbed, X çevirisi yoksa kendi yedek servisine (ör. DeepL) düşer; o çeviri
+        // kullanılmaz: gönderi orijinal metniyle ve çeviri notu olmadan kalır.
+        for provider in ["deepl", "google", "microsoft"] {
+            let mut json = translated_tweet("ja");
+            json["translation"]["provider"] = serde_json::json!(provider);
+
+            let post = post_from(&json);
+
+            assert_eq!(
+                post.text, "Guten Morgen zusammen",
+                "orijinal metin korunmalı ({provider})"
+            );
+            assert!(
+                post.translation.is_none(),
+                "Grok dışı çeviri karta yazılmamalı ({provider})"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_provider_is_not_treated_as_grok() {
+        let mut json = translated_tweet("de");
+        json["translation"]
+            .as_object_mut()
+            .expect("çeviri nesnesi")
+            .remove("provider");
+
+        let post = post_from(&json);
+
+        assert!(post.translation.is_none(), "sağlayıcı bilinmiyorsa Grok sayılmaz");
+        assert_eq!(post.text, "Guten Morgen zusammen");
+    }
+
+    #[test]
+    fn only_grok_providers_are_accepted() {
+        for provider in ["grok", "Grok", "xai", "x-ai", "grok-3"] {
+            assert!(is_grok_translation(Some(provider)), "{provider} kabul edilmeli");
+        }
+        for provider in ["deepl", "google", "microsoft", ""] {
+            assert!(!is_grok_translation(Some(provider)), "{provider} reddedilmeli");
+        }
+        assert!(!is_grok_translation(None), "sağlayıcı yoksa kabul edilmez");
     }
 
     #[test]
@@ -922,7 +1098,8 @@ mod tests {
         json["translation"] = serde_json::json!({
             "text": "asıl gönderinin çevirisi",
             "source_lang": "ja",
-            "target_lang": "tr"
+            "target_lang": "tr",
+            "provider": "grok"
         });
         json["quote"] = serde_json::json!({
             "url": "https://x.com/diger/status/2",
@@ -932,7 +1109,9 @@ mod tests {
             "translation": {
                 "text": "alıntı metni",
                 "source_lang": "ja",
-                "target_lang": "tr"
+                "target_lang": "tr",
+                // Yalnızca Grok (X'in kendi çevirisi) kabul edilir.
+                "provider": "grok"
             }
         });
 
@@ -1067,7 +1246,7 @@ mod tests {
 }
 
 /// `media.all` (sıralı) varsa onu, yoksa `photos` + `videos` listelerini kullanır.
-fn fx_media(media: Option<&FxMedia>) -> Vec<Media> {
+fn fx_media(media: Option<&FxMedia>, video_budget: u64) -> Vec<Media> {
     let Some(media) = media else {
         return Vec::new();
     };
@@ -1078,10 +1257,39 @@ fn fx_media(media: Option<&FxMedia>) -> Vec<Media> {
         items.extend(media.videos.as_deref().unwrap_or_default());
     }
 
-    items.iter().filter_map(|item| fx_media_item(item)).collect()
+    items
+        .iter()
+        .filter_map(|item| fx_media_item(item, video_budget))
+        .collect()
 }
 
-fn fx_media_item(item: &FxMediaItem) -> Option<Media> {
+/// FxTwitter'ın `formats` listesinden **anında oynayan** en uygun mp4'ü seçer.
+///
+/// `None` dönerse gönderinin kendi `url` alanı kullanılır (tek varyant verilmiş demektir).
+fn pick_fx_video(item: &FxMediaItem, max_bytes: u64) -> Option<String> {
+    let duration_ms = item
+        .duration
+        .map(|seconds| (seconds.max(0.0) * 1000.0).round() as u64);
+
+    let candidates: Vec<VideoCandidate> = item
+        .formats
+        .as_deref()?
+        .iter()
+        .filter(|format| format.container.as_deref() == Some("mp4"))
+        .filter_map(|format| {
+            Some(VideoCandidate {
+                url: format.url.as_deref()?,
+                bitrate: format.bitrate.unwrap_or(0),
+                // Kaynak tam boyut veriyorsa o, yoksa bit hızı × süre tahmini kullanılır.
+                bytes: format.size.or_else(|| estimated_bytes(format.bitrate, duration_ms)),
+            })
+        })
+        .collect();
+
+    pick_video(candidates, max_bytes, false)
+}
+
+fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
     let url = item.url.as_deref()?;
     let kind = match item.kind.as_deref()? {
         "photo" => MediaKind::Image,
@@ -1092,7 +1300,14 @@ fn fx_media_item(item: &FxMediaItem) -> Option<Media> {
 
     Some(Media {
         kind,
-        url: url.to_string(),
+        url: match kind {
+            // Görsel kartta CDN'den geldiği için hafif `large` varyantı kullanılır.
+            MediaKind::Image => light_image_url(url),
+            // Video: `formats` varsa ağırlıklı seçim (1080p dev varyant yerine hızlı oynayan).
+            MediaKind::Video => pick_fx_video(item, video_budget).unwrap_or_else(|| url.to_string()),
+            // GIF kaynağı `tweet_video` mp4'ü olarak kalmalı: FxEmbed GIF adresi ondan türetilir.
+            MediaKind::Gif => url.to_string(),
+        },
         poster: item.thumbnail_url.clone(),
         width: item.width,
         height: item.height,

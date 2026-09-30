@@ -420,6 +420,18 @@
 
     <p class="micro">medya</p>
     <div class="tile-grid">
+        <div class="tile tile--static">
+            <div class="tile-body">
+                <span class="tile-name">Medya yöntemi</span>
+                <span class="tile-hint">doğrudan: ışık hızı (indirme yok; görsel/video/GIF kart içinde FxEmbed &amp; CDN bağlantısıyla) · otomatik: hızlı inerse dosya eki · dosya eki: her zaman indir</span>
+            </div>
+            <label class="sr-only" for="engine-media-delivery">Medya yöntemi</label>
+            <select class="select select--sm" id="engine-media-delivery">
+                <option value="direct">doğrudan (ışık hızı)</option>
+                <option value="auto">otomatik</option>
+                <option value="attach">dosya eki</option>
+            </select>
+        </div>
         <label class="tile"><span class="tile-body"><span class="tile-name">Görselleri dosya olarak ekle</span><span class="tile-hint">Tam çözünürlük; önizleme CDN'ine bağımlı olmaz</span></span><span class="switch"><input type="checkbox" data-engine-switch="attach_images" role="switch" aria-label="Görselleri dosya olarak ekle"><span class="switch-track" aria-hidden="true"></span></span></label>
         <label class="tile"><span class="tile-body"><span class="tile-name">Videoları dosya olarak ekle</span><span class="tile-hint">Boyut limitinin altındaysa indirilir, üstündeyse link olarak paylaşılır</span></span><span class="switch"><input type="checkbox" data-engine-switch="attach_videos" role="switch" aria-label="Videoları dosya olarak ekle"><span class="switch-track" aria-hidden="true"></span></span></label>
         <label class="tile"><span class="tile-body"><span class="tile-name">Proxy yedeği</span><span class="tile-hint">Native embed üretilemezse proxy linkine düş</span></span><span class="switch"><input type="checkbox" data-engine-switch="fallback_to_proxy" role="switch" aria-label="Proxy yedeği"><span class="switch-track" aria-hidden="true"></span></span></label>
@@ -462,6 +474,7 @@
             <div class="manual-item"><dt>Native embed</dt><dd>Bot gönderiyi kendisi çözer: yazar adı, doğrulama işareti, gönderi metni, metrikler, tarih, alıntı ve medya galerisi. Video ve görseller kartın içinde oynar.</dd></div>
             <div class="manual-item"><dt>Yedek alan adı</dt><dd>Yalnızca proxy modunda kullanılır; native seçili platformda kutu devre dışı kalır. Boş bırakılan alan <span class="mono">.env</span> değerini kullanır (ipucu gerçek değeri yazar).</dd></div>
             <div class="manual-item"><dt>Kart stili</dt><dd><span class="mono">modern</span> tek parça Components V2 kartıdır. <span class="mono">otomatik</span> video içeren gönderilerde kartı, diğerlerinde klasik embed'i kullanır. <span class="mono">fxembed</span> her zaman klasik embed gönderir.</dd></div>
+            <div class="manual-item"><dt>Medya yöntemi</dt><dd><span class="mono">doğrudan</span> (varsayılan) <b>ışık hızı</b>dır: hiçbir dosya indirilmez/yüklenmez, görsel CDN'in <span class="mono">large</span> varyantından, video kart içinde oynayan en uygun mp4'ten, GIF ise FxEmbed'in GIF servisinden gelir — kart veri gelir gelmez gönderilir. <span class="mono">otomatik</span> medyayı kısa bir süre bütçesi içinde indirip dosya olarak ekler (yetişmezse bağlantıya düşer). <span class="mono">dosya eki</span> her zaman indirir (tam çözünürlük + kaynak CDN'e bağımlı olmama).</dd></div>
             <div class="manual-item"><dt>Medya yükleme</dt><dd>Görseller (ve limit altındaki videolar) mesaja dosya olarak eklenir; indirilemeyen medya otomatik olarak uzak URL'e düşer. Video indirilemezse kartta yalnızca video gösterilir, kapak ayrı öğe olarak eklenmez.</dd></div>
             <div class="manual-item"><dt>Taklit</dt><dd>Mesaj kullanıcının adı ve avatarıyla webhook üzerinden gider, link ve etiket hilesi gerekmez (Manage Webhooks izni şart). Discord webhook mesajları yanıt olamadığı için yanıtlarda yanıt bağlantısı yalnızca "yanıtlarda yanıtı koru" açıkken korunur.</dd></div>
             <div class="manual-item"><dt>Profil resmi</dt><dd>Kartta avatar gösterilmez: Discord bileşenleri küçük resmi yalnızca sağa koyabildiği için modelin solundaki avatar taklit edilemez. Ad ve doğrulama işareti gösterilir.</dd></div>

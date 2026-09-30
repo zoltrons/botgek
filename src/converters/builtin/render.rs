@@ -10,27 +10,32 @@ use tracing::debug;
 
 use super::media::{self, DISCORD_FILE_LIMIT};
 use super::{platform_color, BuiltinPost, Media, MediaKind, Stats};
-use crate::settings::EngineSettings;
+use crate::settings::{EngineSettings, MediaDelivery};
 use crate::utils::truncate_chars;
 
-/// Medya indirmelerinin **süre bütçesi**: modern kart "anında" görünmelidir, bu yüzden
-/// indirme bütçeyi aşarsa görev iptal edilir ve ilgili medya **uzak bağlantı** olarak
-/// kartta gösterilir (video kartın içinde oynamaya devam eder, görsel CDN'den yüklenir).
+/// Medya indirmelerinin **süre bütçesi**: kart "anında" görünmelidir, bu yüzden indirme
+/// bütçeyi aşarsa görev iptal edilir ve ilgili medya **uzak bağlantı** olarak kartta
+/// gösterilir (video kartın içinde oynamaya devam eder, görsel CDN'den yüklenir).
 ///
-/// Bütçeler bilinçli olarak farklıdır: görseller küçüktür ve hızlı gelir, video ise
-/// mesajın bel kemiğidir (kartın içinde oynaması için biraz daha beklenir).
-pub const IMAGE_BUDGET: Duration = Duration::from_millis(1_000);
+/// Bu değerler **`auto`** modun içindir: hızlıysa dosya eki, değilse bağlantı. `direct`
+/// modunda hiç indirme yapılmaz (bütçe kullanılmaz), `attach` modunda daha geniş bütçeler
+/// ([`ATTACH_VIDEO_BUDGET`] vb.) geçerlidir.
+pub const IMAGE_BUDGET: Duration = Duration::from_millis(600);
 /// GIF yarışının toplam bütçesi (FxEmbed GIF servisi + yerel `ffmpeg` yedeği).
-pub const GIF_BUDGET: Duration = Duration::from_millis(1_800);
+pub const GIF_BUDGET: Duration = Duration::from_millis(900);
 /// Video indirme bütçesi (bütçe dolunca video kartta uzak bağlantıyla oynar).
-pub const VIDEO_BUDGET: Duration = Duration::from_millis(2_000);
+pub const VIDEO_BUDGET: Duration = Duration::from_millis(1_200);
+/// **Dosya eki** modunda tam çözünürlük için tanınan daha geniş bütçeler.
+pub const ATTACH_IMAGE_BUDGET: Duration = Duration::from_millis(2_500);
+pub const ATTACH_GIF_BUDGET: Duration = Duration::from_millis(3_000);
+pub const ATTACH_VIDEO_BUDGET: Duration = Duration::from_millis(5_000);
 /// FxEmbed GIF servisinin tek deneme sınırı (servis CDN'de önbellekli gerçek GIF verir).
-const FX_GIF_TIMEOUT: Duration = Duration::from_millis(1_200);
+const FX_GIF_TIMEOUT: Duration = Duration::from_millis(600);
 /// FxEmbed servisi yarışta öne alınır: genelde CDN'den anında gelir, bu yüzden yerel
 /// `ffmpeg` yedeği ancak bu gecikmeden sonra başlar (boşa bant genişliği harcanmaz).
-const GIF_HEAD_START: Duration = Duration::from_millis(250);
+const GIF_HEAD_START: Duration = Duration::from_millis(150);
 /// GIF yarışında iç bütçenin üstüne eklenen güvenlik payı (dış zaman aşımı).
-const GIF_RACE_GRACE: Duration = Duration::from_millis(300);
+const GIF_RACE_GRACE: Duration = Duration::from_millis(200);
 
 /// Embed toplamı 6000 karakteri geçemez: başlık/yazar/footer/alanlar için pay bırakılır.
 const EMBED_DESCRIPTION_LIMIT: usize = 3500;
@@ -46,6 +51,8 @@ const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// Ayarlardan türetilen render davranışı.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderOptions {
+    /// Medya yöntemi: ışık hızı (bağlantı) / bütçeli indirme / her zaman dosya eki.
+    pub media_delivery: MediaDelivery,
     pub attach_images: bool,
     pub attach_videos: bool,
     pub max_images: u8,
@@ -58,9 +65,14 @@ pub struct RenderOptions {
 
 impl RenderOptions {
     pub fn from_engine(engine: &EngineSettings) -> Self {
+        // **Işık hızı (`direct`)**: hiçbir dosya indirilmez ve Discord'a yüklenmez. Bu yüzden
+        // "dosya eki kapalı" gibi davranılır: plan doğrudan uzak bağlantı üretir, indirme
+        // görevi hiç başlamaz ve kart veri gelir gelmez gönderilir.
+        let downloads = engine.media_delivery.downloads_media();
         Self {
-            attach_images: engine.attach_images,
-            attach_videos: engine.attach_videos,
+            media_delivery: engine.media_delivery,
+            attach_images: engine.attach_images && downloads,
+            attach_videos: engine.attach_videos && downloads,
             max_images: engine.max_images,
             max_video_mb: engine.max_video_mb,
             show_metrics: engine.show_metrics,
@@ -73,6 +85,30 @@ impl RenderOptions {
     /// Video indirme üst sınırı: ayar ne olursa olsun Discord limitini aşmaz.
     pub fn max_video_bytes(&self) -> u64 {
         (self.max_video_mb as u64 * 1024 * 1024).min(DISCORD_FILE_LIMIT)
+    }
+
+    /// Görsel indirme bütçesi (moda göre).
+    pub fn image_budget(&self) -> Duration {
+        match self.media_delivery {
+            MediaDelivery::Attach => ATTACH_IMAGE_BUDGET,
+            _ => IMAGE_BUDGET,
+        }
+    }
+
+    /// GIF yarışı bütçesi (moda göre).
+    pub fn gif_budget(&self) -> Duration {
+        match self.media_delivery {
+            MediaDelivery::Attach => ATTACH_GIF_BUDGET,
+            _ => GIF_BUDGET,
+        }
+    }
+
+    /// Video indirme bütçesi (moda göre).
+    pub fn video_budget(&self) -> Duration {
+        match self.media_delivery {
+            MediaDelivery::Attach => ATTACH_VIDEO_BUDGET,
+            _ => VIDEO_BUDGET,
+        }
     }
 }
 
@@ -186,6 +222,13 @@ pub async fn resolve_media(
 ) -> ResolvedMedia {
     let spoiler = post.sensitive;
 
+    // Işık hızı (`direct`): hiçbir medya indirilmez. Kart, görsel/video/GIF'i bağlantı
+    // olarak taşır (video kartın içinde oynar, GIF FxEmbed'in GIF servisinden gelir), bu
+    // yüzden medya fazı **~0 ms**'dir ve Discord'a yükleme yapılmaz.
+    if !options.media_delivery.downloads_media() {
+        return direct_media(plan);
+    }
+
     // 1) Video (en büyük dosya) ve görseller aynı anda indirilir. Her indirme kendi **süre
     //    bütçesiyle** sınırlıdır: bütçe dolan indirme iptal edilir, kart beklemez.
     let max_video_bytes = options.max_video_bytes();
@@ -211,7 +254,8 @@ pub async fn resolve_media(
         for url in &plan.gifs {
             let client = client.clone();
             let url = url.clone();
-            gif_handles.push(tokio::spawn(async move { download_gif(&client, &url).await }));
+            let budget = options.gif_budget();
+            gif_handles.push(tokio::spawn(async move { download_gif(&client, &url, budget).await }));
         }
     }
 
@@ -222,7 +266,7 @@ pub async fn resolve_media(
 
     if let Some(video_url) = &plan.video {
         match video_handle {
-            Some(handle) => match within(VIDEO_BUDGET, handle).await {
+            Some(handle) => match within(options.video_budget(), handle).await {
                 Some(file) => {
                     let name = attachment_name(&file.filename, spoiler);
                     resolved.attachments.push(media::to_attachment(file, spoiler));
@@ -232,7 +276,7 @@ pub async fn resolve_media(
                     // İndirilemedi ya da bütçe doldu: video kartın içinde uzak bağlantıyla oynar.
                     debug!(
                         "Video dosya olarak eklenemedi (bütçe {} ms), uzak bağlantı kullanılıyor: {video_url}",
-                        VIDEO_BUDGET.as_millis()
+                        options.video_budget().as_millis()
                     );
                     resolved.video_link = Some(video_url.clone());
                 }
@@ -243,7 +287,7 @@ pub async fn resolve_media(
     }
 
     for (url, handle) in plan.images.iter().zip(image_handles) {
-        match within(IMAGE_BUDGET, handle).await {
+        match within(options.image_budget(), handle).await {
             Some(file) => {
                 let name = attachment_name(&file.filename, spoiler);
                 resolved.attachments.push(media::to_attachment(file, spoiler));
@@ -263,7 +307,7 @@ pub async fn resolve_media(
         resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
     } else {
         for (url, handle) in plan.gifs.iter().zip(gif_handles) {
-            match within(GIF_BUDGET + GIF_RACE_GRACE, handle).await {
+            match within(options.gif_budget() + GIF_RACE_GRACE, handle).await {
                 Some(file) => {
                     let name = attachment_name(&file.filename, spoiler);
                     resolved.attachments.push(media::to_attachment(file, spoiler));
@@ -273,6 +317,32 @@ pub async fn resolve_media(
             }
         }
     }
+
+    resolved
+}
+
+/// Işık hızı (`direct`) modunda medyayı **hiç indirmeden** karta bağlar.
+///
+/// - Görseller: CDN'in hafif `large` varyantı (kart anında yüklenir).
+/// - Video: veri aşamasında seçilen en uygun mp4 varyantı kartın içinde oynar.
+/// - GIF: FxEmbed'in GIF servisi (`gif.fxtwitter.com`) → gerçek GIF, oynatıcısız döngü.
+///
+/// Hiçbir ağ isteği yapılmaz: bu yüzden medya fazı ~0 ms'dir ve Discord'a dosya yüklenmez.
+fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
+    let mut resolved = ResolvedMedia {
+        quote_media: plan.quote_media,
+        // Video kartın içinde oynar (medya galerisinin ilk öğesi).
+        video_link: plan.video.clone(),
+        ..ResolvedMedia::default()
+    };
+
+    resolved
+        .images
+        .extend(plan.images.iter().map(|url| media::with_size(url, "large")));
+    resolved
+        .images
+        .extend(plan.remote_images.iter().map(|url| media::with_size(url, "large")));
+    resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
 
     resolved
 }
@@ -305,10 +375,15 @@ fn remote_gif_url(url: &str) -> String {
 /// 2. yerel `ffmpeg` dönüşümü — servis gecikirse başlar ve **gerçek GIF** ürettiyse kazanır,
 /// 3. hiçbiri olmazsa mp4 (Discord oynatıcı gösterir — eski davranış).
 ///
-/// Yarış [`GIF_BUDGET`] ile sınırlıdır: eskiden iki servis denemesi sırayla 2 × 45 sn
-/// bekleyebiliyordu (üstüne mp4 indirme + ffmpeg dönüşümü); artık kart en geç bütçe
-/// dolduğunda gönderilir (yerel mp4 hazırsa o, değilse uzak bağlantı kullanılır).
-async fn download_gif(client: &reqwest::Client, url: &str) -> Option<media::MediaFile> {
+/// Yarış `budget` (moda göre: `auto` → [`GIF_BUDGET`], `attach` → [`ATTACH_GIF_BUDGET`]) ile
+/// sınırlıdır: eskiden iki servis denemesi sırayla 2 × 45 sn bekleyebiliyordu (üstüne mp4
+/// indirme + ffmpeg dönüşümü); artık bütçe dolduğunda yarış biter (yerel mp4 hazırsa o,
+/// değilse uzak bağlantı kullanılır) ve kart beklemez.
+async fn download_gif(
+    client: &reqwest::Client,
+    url: &str,
+    budget: Duration,
+) -> Option<media::MediaFile> {
     // 1) FxEmbed GIF servisi: hemen başlar (CDN'de önbellekli, genelde en hızlı kaynak).
     let mut fx = media::fx_gif_url(url).map(|gif_url| {
         let client = client.clone();
@@ -351,7 +426,7 @@ async fn download_gif(client: &reqwest::Client, url: &str) -> Option<media::Medi
         })
     });
 
-    let deadline = tokio::time::Instant::now() + GIF_BUDGET;
+    let deadline = tokio::time::Instant::now() + budget;
     let mut fallback_mp4: Option<media::MediaFile> = None;
 
     loop {
@@ -654,7 +729,55 @@ mod tests {
     }
 
     fn options() -> RenderOptions {
-        RenderOptions::from_engine(&EngineSettings::default())
+        // Testler **bütçeli indirme** modunu ölçer: motorun varsayılanı artık ışık hızı
+        // (`direct`) ve o modda hiçbir dosya indirilmez, plan yalnızca bağlantı taşır.
+        RenderOptions {
+            media_delivery: MediaDelivery::Auto,
+            attach_images: true,
+            attach_videos: true,
+            max_images: 4,
+            max_video_mb: 8,
+            show_metrics: true,
+            show_timestamp: true,
+            show_community_note: true,
+            show_quote: true,
+        }
+    }
+
+    #[test]
+    fn direct_mode_never_downloads_media() {
+        let mut engine = EngineSettings::default();
+        engine.media_delivery = MediaDelivery::Direct;
+        // Kullanıcı dosya eki seçmiş olsa bile ışık hızı modu indirme yapmaz.
+        engine.attach_images = true;
+        engine.attach_videos = true;
+
+        let options = RenderOptions::from_engine(&engine);
+        assert!(!options.attach_images, "ışık hızı: görsel indirme kapalı");
+        assert!(!options.attach_videos, "ışık hızı: video indirme kapalı");
+
+        let mut post = sample_post();
+        post.media = vec![
+            image("https://cdn/1.jpg"),
+            gif("https://video.twimg.com/tweet_video/x.mp4"),
+            video("https://cdn/v1.mp4", "https://cdn/v1.jpg"),
+        ];
+        let plan = plan_media(&post, &options);
+        assert!(plan.images.is_empty(), "indirilecek görsel yok");
+        assert_eq!(plan.remote_images, vec!["https://cdn/1.jpg"]);
+
+        // Medya hiç indirilmeden karta bağlanır: dosya eki yok, bağlantılar hazır.
+        let resolved = direct_media(&plan);
+        assert!(resolved.attachments.is_empty(), "Discord'a dosya yüklenmez");
+        assert_eq!(resolved.video_link.as_deref(), Some("https://cdn/v1.mp4"));
+        assert_eq!(
+            resolved.images,
+            vec![
+                "https://cdn/1.jpg".to_string(),
+                "https://gif.fxtwitter.com/tweet_video/x.gif".to_string()
+            ],
+            "GIF, FxEmbed'in GIF servisinden gelir"
+        );
     }
 
     #[test]

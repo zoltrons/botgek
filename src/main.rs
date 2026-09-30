@@ -16,6 +16,28 @@ use serenity::all::{Client, GatewayIntents};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+/// İlk dönüşümde DNS çözümlemesi + TLS el sıkışması beklenmesin diye ilgili uçlara
+/// **arka planda** ısıtma isteği yapar. Bot her açılışta bir kez çalışır; ilk kartın
+/// ~200-400 ms daha erken gelmesini sağlar (yanıt içeriği önemsiz, bağlantı havuzu ısınır).
+fn prewarm_connections(client: &reqwest::Client) {
+    /// Yanıtı yok sayar: amaç bağlantıyı kurmak (DNS + TLS + HTTP/2 el sıkışması).
+    async fn warm(client: &reqwest::Client, url: &str) {
+        let _ = client.get(url).send().await;
+    }
+
+    let client = client.clone();
+    tokio::spawn(async move {
+        tokio::join!(
+            // X verisi (FxEmbed/FxTwitter API) — hızlı yol
+            warm(&client, "https://api.fxtwitter.com/i/status/20"),
+            // Discord REST — kart gönderimi (serenity'den ayrı istemci kullanılır)
+            warm(&client, "https://discord.com/api/v10/gateway"),
+            // Medya CDN'i — ışık hızı modunda kart bu bağlantıları taşır
+            warm(&client, "https://pbs.twimg.com/media/"),
+        );
+    });
+}
+
 #[tokio::main]
 async fn main() {
     // .env dosyasını yükle
@@ -58,6 +80,9 @@ async fn main() {
         .tcp_nodelay(true)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
+
+    // Işık hızı: ilk dönüşümde DNS + TLS el sıkışması beklemesin diye bağlantılar ısıtılır.
+    prewarm_connections(&http_client);
 
     // Bot Gateway Intent'leri
     // NOT: Discord Developer Portal'dan "MESSAGE CONTENT INTENT" mutlaka aktif edilmelidir!

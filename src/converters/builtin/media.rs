@@ -55,6 +55,24 @@ pub fn with_size(url: &str, size: &str) -> String {
     format!("{url}?name={size}")
 }
 
+/// Görseli, Discord'un **anında** çekebileceği hafif varyanta çevirir.
+///
+/// X görselleri `?name=orig` ile birkaç MB gelebilir; kart görseli CDN'den çekildiği için
+/// (ışık hızı modu) `name=large` (~100-400 KB) kullanılır: kart anında açılır. Ölçek
+/// parametresi hiç verilmemiş X görsellerine de `name=large` eklenir.
+pub fn light_image_url(url: &str) -> String {
+    if !url.contains("pbs.twimg.com") {
+        return url.to_string();
+    }
+    if url.contains("name=orig") {
+        return url.replace("name=orig", "name=large");
+    }
+    if !url.contains('?') {
+        return format!("{url}?name=large");
+    }
+    url.to_string()
+}
+
 /// İndirme sırasında tam çözünürlüğü ister (Twitter `name=large` yerine `name=orig`).
 pub fn download_url(url: &str) -> String {
     if url.contains("pbs.twimg.com") {
@@ -328,6 +346,28 @@ mod tests {
         );
         assert_eq!(
             with_size("https://cdn.bsky.app/img/x.jpg", "large"),
+            "https://cdn.bsky.app/img/x.jpg"
+        );
+    }
+
+    #[test]
+    fn light_image_url_downsizes_card_media() {
+        // Kart görselleri CDN'den çekildiği için hafif varyant kullanılır (anında açılır).
+        assert_eq!(
+            light_image_url("https://pbs.twimg.com/media/ABC.jpg?name=orig"),
+            "https://pbs.twimg.com/media/ABC.jpg?name=large"
+        );
+        assert_eq!(
+            light_image_url("https://pbs.twimg.com/media/ABC.jpg"),
+            "https://pbs.twimg.com/media/ABC.jpg?name=large"
+        );
+        // Zaten ölçekli bağlantı ve yabancı CDN'ler dokunulmadan kalır.
+        assert_eq!(
+            light_image_url("https://pbs.twimg.com/media/ABC.jpg?name=small"),
+            "https://pbs.twimg.com/media/ABC.jpg?name=small"
+        );
+        assert_eq!(
+            light_image_url("https://cdn.bsky.app/img/x.jpg"),
             "https://cdn.bsky.app/img/x.jpg"
         );
     }
