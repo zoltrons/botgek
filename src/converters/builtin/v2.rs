@@ -27,6 +27,7 @@
 //! Sol kenarda renkli çubuk (container `accent_color`) kullanılmaz.
 
 use serde_json::{Value, json};
+use serenity::all::UserId;
 
 use super::render::{RenderOptions, ResolvedMedia, escape_markdown, format_count};
 use super::{BuiltinPost, Impersonation};
@@ -57,6 +58,12 @@ pub struct V2Card<'a> {
     pub resolved: &'a ResolvedMedia,
     /// Modern kartta kullanılacak özel emoji seti.
     pub emojis: &'a EmojiSettings,
+    /// Kullanıcı linki `||spoiler||` içine aldı mı? (kart içeriğini gizler)
+    pub spoiler: bool,
+    /// Kart bot adına gönderiliyor (yanıtta taklit kapalı) ve kartın üstüne paylaşanın
+    /// etiketi konacaksa o kullanıcı. Etiket ping atmaz: `allowed_mentions` listesinde
+    /// bulunmadığı için düz `@kullanıcı` metni olarak görünür.
+    pub sender: Option<UserId>,
     /// Kullanıcının linkin altına yazdığı ek metin (varsa).
     pub user_comment: Option<&'a str>,
     /// Taklit (webhook) kimliği; `None` ise mesaj bot adına gider.
@@ -81,10 +88,16 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         .into_iter()
         .collect();
 
+    // Kart bot adına gidiyorsa (yanıtta taklit kapalı) üstüne paylaşanın etiketi konur: kimin
+    // attığı görünür, etiket düz `@kullanıcı` olarak durur (bkz. [`V2Card::sender`]).
+    if let Some(sender) = card.sender {
+        top.insert(0, text(format!("<@{sender}>")));
+    }
+
     let mut children: Vec<Value> = vec![author_component(card.post, card.emojis)];
 
     if !card.post.text.trim().is_empty() {
-        children.push(text(spoiler_wrap(card.post.text.trim(), card.post.sensitive)));
+        children.push(text(spoiler_wrap(card.post.text.trim(), hidden(card))));
     }
     if card.options.show_community_note {
         if let Some(note) = card
@@ -249,21 +262,21 @@ fn separator() -> Value {
 /// Video **tek başına** gösterilir: ayrıca kapak görseli eklenmez. Kapak + video birlikte
 /// eklendiğinde galeri iki öğeyi **yan yana** (thumbnail + video) çiziyordu.
 fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
-    let post = card.post;
+    let hidden = hidden(card);
     let mut items: Vec<Value> = Vec::new();
 
     match (&card.resolved.attached_video, &card.resolved.video_link) {
         // Video dosya olarak eklendiyse doğrudan kart içinde oynar.
-        (Some(reference), _) => items.push(media_item(reference, post.sensitive)),
+        (Some(reference), _) => items.push(media_item(reference, hidden)),
         // İndirilemediyse uzak video bağlantısı kartın içinde oynar (Discord videoyu
         // dış bağlantıdan da oynatır); kapak görseli eklenmez, aksi halde galeri
         // kapak + video olarak iki öğe gösterirdi.
-        (None, Some(link)) => items.push(media_item(link, post.sensitive)),
+        (None, Some(link)) => items.push(media_item(link, hidden)),
         (None, None) => {}
     }
 
     for url in &card.resolved.images {
-        items.push(media_item(url, post.sensitive));
+        items.push(media_item(url, hidden));
     }
 
     // Alıntının görseli yalnızca ana karta alınmadıysa eklenir; gönderiye medya
@@ -271,7 +284,7 @@ fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
     if card.options.show_quote && !card.resolved.quote_media {
         if let Some(quote) = card.post.quote.as_deref() {
             if let Some(image) = quote.media.iter().find(|media| media.is_image()) {
-                items.push(media_item(&image.url, quote.sensitive));
+                items.push(media_item(&image.url, hidden || quote.sensitive));
             }
         }
     }
@@ -355,7 +368,7 @@ fn meta_line(card: &V2Card<'_>) -> String {
 
     // Gönderi linki kartın içinde durur.
     let link = format!("[Link]({})", post.url);
-    parts.push(spoiler_wrap(&link, post.sensitive));
+    parts.push(spoiler_wrap(&link, hidden(card)));
 
     // İndirilemeyen video için açma bağlantısı.
     if let Some(video) = &card.resolved.video_link {
@@ -372,6 +385,14 @@ fn spoiler_wrap(text: &str, spoiler: bool) -> String {
     } else {
         text.to_string()
     }
+}
+
+/// Kart içeriği gizlenmeli mi? Gönderi hassas olarak işaretliyse (`post.sensitive`) **veya**
+/// kullanıcı linki `||spoiler||` içine aldıysa (`is_spoiler`) içerik spoiler olur: metin
+/// `||...||` içine alınır, galeri öğeleri `spoiler` işaretlenir (klasik embed akışındaki
+/// `||link||` davranışının modern kart karşılığı).
+fn hidden(card: &V2Card<'_>) -> bool {
+    card.post.sensitive || card.spoiler
 }
 
 /// Yüklenen dosyalar `attachment://<dosya adı>` ile referans verildiği için
@@ -455,6 +476,8 @@ mod tests {
             options,
             resolved,
             emojis,
+            spoiler: false,
+            sender: None,
             user_comment: None,
             impersonation: None,
             allowed_mentions: None,
@@ -1007,6 +1030,62 @@ mod tests {
 
         let meta = texts(&payload).pop().unwrap();
         assert!(meta.contains("||[Link](https://x.com/kullanici/status/1)||"), "spoiler link: {meta}");
+    }
+
+    #[test]
+    fn user_spoiler_hides_text_link_and_media() {
+        let post = sample_post();
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia {
+            images: vec!["attachment://photo.jpg".to_string()],
+            ..ResolvedMedia::default()
+        };
+
+        let mut card = card(&post, &options, &resolved, &emojis);
+        card.spoiler = true;
+        let payload = build_payload(&card);
+
+        assert_eq!(components(&payload)[1]["content"], "||merhaba dünya||");
+        let gallery = components(&payload)
+            .iter()
+            .find(|component| component["type"] == TYPE_MEDIA_GALLERY)
+            .expect("galeri");
+        assert_eq!(gallery["items"][0]["spoiler"], true, "galeri öğesi de gizlenmeli");
+
+        let meta = texts(&payload).pop().unwrap();
+        assert!(
+            meta.contains("||[Link](https://x.com/kullanici/status/1)||"),
+            "spoiler link: {meta}"
+        );
+    }
+
+    #[test]
+    fn sender_tag_is_shown_above_the_card_only_for_bot_messages() {
+        let post = sample_post();
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+
+        let mut bot_card = card(&post, &options, &resolved, &emojis);
+        bot_card.sender = Some(UserId::new(42));
+        bot_card.user_comment = Some("selam");
+        let payload = build_payload(&bot_card);
+        assert_eq!(
+            top_level(&payload),
+            vec!["<@42>".to_string(), "selam".to_string()],
+            "etiket kullanıcı notunun üstünde durur"
+        );
+
+        // Taklit (webhook) açıkken mesaj kullanıcının adıyla gider: etiket eklenmez.
+        let identity = Impersonation {
+            username: "Eray".to_string(),
+            avatar_url: None,
+        };
+        let mut webhook_card = card(&post, &options, &resolved, &emojis);
+        webhook_card.impersonation = Some(&identity);
+        let payload = build_payload(&webhook_card);
+        assert!(top_level(&payload).is_empty(), "taklitte etiket olmamalı");
     }
 
     #[test]

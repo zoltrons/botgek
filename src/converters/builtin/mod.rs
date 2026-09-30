@@ -1083,6 +1083,60 @@ pub async fn handle(
     }
 }
 
+/// V2 kartı için `allowed_mentions` gövdesi.
+///
+/// Kart bot adına gönderildiğinde (`tag_sender`) paylaşanın etiketi kartın üstünde `<@id>`
+/// olarak durur; **ping atmaması** için izinli kullanıcı listesinden çıkarılır (Discord
+/// böylece etiketi düz `@kullanıcı` metni olarak gösterir — proxy/klasik akıştaki davranış).
+fn card_allowed_mentions(msg: &Message, tag_sender: bool) -> Option<serde_json::Value> {
+    let mut value = serde_json::to_value(build_selective_allowed_mentions(msg)).ok()?;
+    if !tag_sender {
+        return Some(value);
+    }
+
+    let author = msg.author.id.to_string();
+    if let Some(users) = value.get_mut("users").and_then(serde_json::Value::as_array_mut) {
+        users.retain(|entry| entry.as_str() != Some(author.as_str()));
+    }
+
+    Some(value)
+}
+
+/// V2 kart gövdesini üretir (yanıt bağlantısı dahil).
+///
+/// `sender` verilirse kartın üstünde paylaşanın etiketi durur ve [`card_allowed_mentions`]
+/// sayesinde ping atmaz; `impersonation` verilirse mesaj kullanıcının adıyla gider (taklit).
+#[allow(clippy::too_many_arguments)]
+fn v2_payload(
+    msg: &Message,
+    parsed: &ParsedPost,
+    post: &BuiltinPost,
+    options: &render::RenderOptions,
+    resolved: &render::ResolvedMedia,
+    emojis: &EmojiSettings,
+    impersonation: Option<&Impersonation>,
+    sender: Option<UserId>,
+) -> serde_json::Value {
+    let mut payload = v2::build_payload(&v2::V2Card {
+        post,
+        options,
+        resolved,
+        emojis,
+        spoiler: parsed.is_spoiler,
+        sender,
+        user_comment: parsed.user_comment.as_deref(),
+        impersonation,
+        allowed_mentions: card_allowed_mentions(msg, sender.is_some()),
+    });
+
+    // Yanıt bağlantısı: kullanıcı bir mesaja yanıt verdiyse bot da aynı mesaja yanıt verir.
+    if let Some(reference) = reply_reference(msg) {
+        payload["message_reference"] = reference;
+    }
+
+    payload
+}
+
 /// Components V2 kartını gönderir. Taklit istenmişse önce webhook denenir, olmazsa
 /// mesaj bot adına gönderilir (kart yine tek parça kalır).
 #[allow(clippy::too_many_arguments)]
@@ -1098,32 +1152,28 @@ async fn send_components_v2(
     emojis: &EmojiSettings,
     identity: Option<&Impersonation>,
 ) -> Result<(MessageId, bool), String> {
-    let allowed_mentions = serde_json::to_value(build_selective_allowed_mentions(msg)).ok();
-    let mut payload = v2::build_payload(&v2::V2Card {
-        post,
-        options,
-        resolved,
-        emojis,
-        user_comment: parsed.user_comment.as_deref(),
-        impersonation: identity,
-        allowed_mentions,
-    });
-
-    // Yanıt bağlantısı: kullanıcı bir mesaja yanıt verdiyse bot da aynı mesaja yanıt verir.
-    match reply_reference(msg) {
-        Some(reference) => payload["message_reference"] = reference,
-        None => {}
-    }
-
-    if identity.is_some() {
+    if let Some(identity) = identity {
         // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
-        // bu yüzden webhook denenir; başarısız olursa bot mesajı olarak (yanıtla) gönderilir.
+        // bu yüzden webhook denenir; başarısız olursa mesaj bot adına (yanıtla) gönderilir.
+        let payload = v2_payload(msg, parsed, post, options, resolved, emojis, Some(identity), None);
         match send_via_webhook(ctx, client, config, msg, &payload, &resolved.attachments).await {
             Ok(message_id) => return Ok((message_id, true)),
             Err(err) => warn!("Components V2 taklit gönderimi başarısız ({}): {}", msg.id, err),
         }
     }
 
+    // Kart bot adına gider (taklit kapalı ya da webhook yok): paylaşanın etiketi kartın üstüne
+    // konur, böylece linki kimin attığı görünür.
+    let payload = v2_payload(
+        msg,
+        parsed,
+        post,
+        options,
+        resolved,
+        emojis,
+        None,
+        Some(msg.author.id),
+    );
     let message_id =
         raw::send_channel_message(client, &config.discord_token, msg.channel_id, &payload, &resolved.attachments)
             .await?;
@@ -1626,6 +1676,27 @@ mod message_tests {
         assert_eq!(payload["content"], "[Twitter](https://x.com/kullanici/status/1)");
         assert_eq!(payload["embeds"][0]["title"], "başlık");
         assert_eq!(payload["attachments"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn bot_cards_do_not_ping_the_sender() {
+        let mut message = message_fixture(MessageId::new(1), UserId::new(42), "link", vec![], None);
+        // Discord kullanıcının kendini etiketlediği mesajlarda yazar `mentions` içinde gelir.
+        message.mentions = vec![serde_json::from_value(serde_json::json!({
+            "id": "42",
+            "username": "eray",
+            "discriminator": "0001",
+            "avatar": null
+        }))
+        .expect("kullanıcı çözümlenmeli")];
+
+        // Kart bot adına gidiyorsa etiket ping atmaz (yalnızca düz `@kullanıcı` görünür).
+        let tagged = card_allowed_mentions(&message, true).unwrap();
+        assert_eq!(tagged["users"], serde_json::json!([]), "paylaşan pinglenmemeli");
+
+        // Taklit (webhook) akışında kartın üstünde etiket yok → liste değişmez.
+        let plain = card_allowed_mentions(&message, false).unwrap();
+        assert_eq!(plain["users"], serde_json::json!(["42"]));
     }
 
     #[test]
