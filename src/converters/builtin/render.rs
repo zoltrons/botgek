@@ -145,9 +145,10 @@ pub struct ResolvedMedia {
 
 /// Gönderi medyasını indirme planına çevirir.
 ///
-/// Gönderiye **hiç medya eklenmemişse** (alıntılayan kişi görsel/video eklemediyse)
-/// alıntılanan gönderinin medyası plana alınır: X'in kendi kartı da bu durumda alıntının
-/// videosunu kartın içinde oynatır.
+/// Gönderiye **hiç medya eklenmemişse** (alıntılayan kişi görsel/video eklemediyse) alıntı
+/// **zincirindeki** ilk medya plana alınır: önce alıntılanan gönderi, o da medyasızsa onun
+/// alıntısı (3 seviyeye kadar). X'in kendi kartı da böyle yapar: alıntılayan medya
+/// eklemediyse alıntının (veya alıntının alıntısının) videosu kartın içinde oynar.
 pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
     let mut plan = MediaPlan::default();
     let max_images = options.max_images as usize;
@@ -156,23 +157,29 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
         push_media(&mut plan, media, options.attach_images, max_images);
     }
 
-    let quote_media_needed = plan.video.is_none()
-        && plan.gifs.is_empty()
-        && plan.images.is_empty()
-        && plan.remote_images.is_empty();
-    if quote_media_needed && options.show_quote {
-        if let Some(quote) = post.quote.as_deref() {
-            for media in &quote.media {
-                push_media(&mut plan, media, options.attach_images, max_images);
-            }
-            plan.quote_media = plan.video.is_some()
-                || !plan.gifs.is_empty()
-                || !plan.images.is_empty()
-                || !plan.remote_images.is_empty();
+    let mut next = post.quote.as_deref();
+    while let Some(candidate) = next {
+        if !options.show_quote || !plan_is_empty(&plan) {
+            break;
         }
+        for media in &candidate.media {
+            push_media(&mut plan, media, options.attach_images, max_images);
+        }
+        if !plan_is_empty(&plan) {
+            plan.quote_media = true;
+        }
+        next = candidate.quote.as_deref();
     }
 
     plan
+}
+
+/// Planda gösterilecek medya var mı?
+fn plan_is_empty(plan: &MediaPlan) -> bool {
+    plan.video.is_none()
+        && plan.gifs.is_empty()
+        && plan.images.is_empty()
+        && plan.remote_images.is_empty()
 }
 
 /// Tek bir medyayı plana ekler: GIF'ler ayrı tutulur, ilk video kazanır, görseller
@@ -204,11 +211,17 @@ fn push_media(plan: &mut MediaPlan, media: &Media, attach_images: bool, max_imag
     }
 }
 
-/// Kartta gösterilecek video kapağı: gönderinin kapağı, yoksa alıntının kapağı
-/// (video alıntıdan geldiğinde kapak da alıntıdan alınır).
+/// Kartta gösterilecek video kapağı: gönderinin kapağı, yoksa alıntı zincirindeki ilk kapak
+/// (video alıntıdan — veya alıntının alıntısından — geldiğinde kapak da oradan alınır).
 pub fn video_poster(post: &BuiltinPost) -> Option<String> {
-    post.poster_url()
-        .or_else(|| post.quote.as_deref().and_then(|quote| quote.poster_url()))
+    let mut current = Some(post);
+    while let Some(candidate) = current {
+        if let Some(poster) = candidate.poster_url() {
+            return Some(poster);
+        }
+        current = candidate.quote.as_deref();
+    }
+    None
 }
 
 /// Planı uygular. **Tüm indirmeler (video + görseller + GIF'ler) paralel** yapılır; böylece
@@ -294,8 +307,8 @@ pub async fn resolve_media(
                 resolved.images.push(format!("attachment://{name}"));
             }
             // İndirilemeyen (veya bütçeyi aşan) görsel uzak URL olarak gösterilir; kartı
-            // yavaşlatan büyük yükleme yerine CDN'in `large` varyantı istenir.
-            None => resolved.images.push(media::with_size(url, "large")),
+            // yavaşlatan büyük yükleme yerine CDN'in hafif varyantı istenir.
+            None => resolved.images.push(media::card_image_url(url)),
         }
     }
 
@@ -338,10 +351,10 @@ fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
 
     resolved
         .images
-        .extend(plan.images.iter().map(|url| media::with_size(url, "large")));
+        .extend(plan.images.iter().map(|url| media::card_image_url(url)));
     resolved
         .images
-        .extend(plan.remote_images.iter().map(|url| media::with_size(url, "large")));
+        .extend(plan.remote_images.iter().map(|url| media::card_image_url(url)));
     resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
 
     resolved
@@ -505,6 +518,16 @@ pub fn build_embeds(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
             // alıntı embed'inde tekrar gösterilmez.
             if let Some(embed) = build_quote_embed(quote, !resolved.quote_media) {
                 embeds.push(embed);
+            }
+
+            // Gönderiye **medya eklenmemişse** alıntının alıntısı da gösterilir (X'in kendi
+            // kartı medyasız zincirlerde üç gönderiyi birlikte gösterir).
+            if post.media.is_empty() {
+                if let Some(nested) = quote.quote.as_deref() {
+                    if let Some(embed) = build_quote_embed(nested, !resolved.quote_media) {
+                        embeds.push(embed);
+                    }
+                }
             }
         }
     }
@@ -875,6 +898,72 @@ mod tests {
         assert!(plan.video.is_none(), "gönderiye medya eklenmişse alıntının videosu alınmaz");
         assert_eq!(plan.images, vec!["https://cdn/own.jpg"]);
         assert!(!plan.quote_media);
+    }
+
+    /// Medyasız zincirin en içindeki gönderi (C).
+    fn inner_quote_with_video() -> BuiltinPost {
+        let mut inner = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/enic/status/3",
+            Author::new("En İç", "enic"),
+        );
+        inner.text = "en içteki metin".to_string();
+        inner.media = vec![video("https://cdn/inner.mp4", "https://cdn/inner.jpg")];
+        inner
+    }
+
+    /// Alıntılayan (A) ve alıntılanan (B) medyasız; B, C'yi alıntılar.
+    fn media_less_quote_chain() -> BuiltinPost {
+        let mut post = sample_post();
+        let mut middle = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/orta/status/2",
+            Author::new("Orta", "orta"),
+        );
+        middle.text = "ortadaki metin".to_string();
+        middle.quote = Some(Box::new(inner_quote_with_video()));
+        post.quote = Some(Box::new(middle));
+        post
+    }
+
+    #[test]
+    fn quote_chain_media_is_used_when_outer_posts_have_none() {
+        let post = media_less_quote_chain();
+
+        let plan = plan_media(&post, &options());
+
+        assert_eq!(
+            plan.video.as_deref(),
+            Some("https://cdn/inner.mp4"),
+            "A ve B medyasızsa C'nin medyası karta alınır (X davranışı)"
+        );
+        assert!(plan.quote_media, "medyanın alıntı zincirinden geldiği işaretlenir");
+        assert_eq!(
+            video_poster(&post).as_deref(),
+            Some("https://cdn/inner.jpg"),
+            "kapak görseli de zincirdeki gönderiden alınır"
+        );
+    }
+
+    #[test]
+    fn classic_embeds_show_three_posts_in_a_media_less_quote_chain() {
+        let post = media_less_quote_chain();
+
+        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
+        assert_eq!(embeds.len(), 3, "ana + alıntı + alıntının alıntısı");
+
+        let nested = serde_json::to_value(&embeds[2]).expect("embed serileşmeli");
+        assert_eq!(nested["description"], "en içteki metin");
+        assert_eq!(nested["author"]["name"], "↪ En İç (@enic)");
+    }
+
+    #[test]
+    fn quote_chain_stays_two_levels_when_the_post_has_media() {
+        let mut post = media_less_quote_chain();
+        post.media = vec![image("https://cdn/own.jpg")];
+
+        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
+        assert_eq!(embeds.len(), 2, "gönderide medya varsa zincir iki seviyede kalır");
     }
 
     #[test]

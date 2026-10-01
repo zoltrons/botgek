@@ -12,7 +12,7 @@ use regex::Regex;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use super::media::{light_image_url, with_size};
+use super::media::card_image_url;
 use super::translate::{needs_turkish_translation, TARGET_LANGUAGE_CODE};
 use super::{parse_timestamp, strip_trailing_media_links, Author, BuiltinPost, Media, MediaKind, Stats, Translation};
 use crate::converters::parser::{ParsedPost, Platform};
@@ -562,7 +562,7 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
             if let Some(url) = photo.url.as_deref() {
                 media.push(Media {
                     kind: MediaKind::Image,
-                    url: with_size(url, "large"),
+                    url: card_image_url(url),
                     poster: None,
                     width: photo.width,
                     height: photo.height,
@@ -576,7 +576,7 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
             media.push(Media {
                 kind: MediaKind::Video,
                 url,
-                poster: video.poster.as_deref().map(|p| with_size(p, "large")),
+                poster: video.poster.as_deref().map(|p| card_image_url(p)),
                 width: None,
                 height: None,
                 duration: video.duration_ms.map(|ms| ms / 1000),
@@ -595,7 +595,7 @@ fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> O
     match kind {
         "photo" => Some(Media {
             kind: MediaKind::Image,
-            url: with_size(detail.media_url_https.as_deref()?, "large"),
+            url: card_image_url(detail.media_url_https.as_deref()?),
             poster: None,
             width,
             height,
@@ -620,7 +620,7 @@ fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> O
                 poster: detail
                     .media_url_https
                     .as_deref()
-                    .map(|poster| with_size(poster, "large")),
+                    .map(|poster| card_image_url(poster)),
                 width,
                 height,
                 duration: video_info.duration_millis.map(|ms| ms / 1000),
@@ -952,7 +952,8 @@ mod tests {
         let post = post_from(&json);
         assert_eq!(
             post.media[0].url,
-            "https://pbs.twimg.com/media/ABC.jpg?name=large"
+            "https://pbs.twimg.com/media/ABC.jpg?name=medium",
+            "kart görseli hafif varyanta indirilir (daha erken belirir)"
         );
     }
 
@@ -1301,8 +1302,8 @@ fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
     Some(Media {
         kind,
         url: match kind {
-            // Görsel kartta CDN'den geldiği için hafif `large` varyantı kullanılır.
-            MediaKind::Image => light_image_url(url),
+            // Görsel kartta CDN'den geldiği için hafif varyantı kullanılır.
+            MediaKind::Image => card_image_url(url),
             // Video: `formats` varsa ağırlıklı seçim (1080p dev varyant yerine hızlı oynayan).
             MediaKind::Video => pick_fx_video(item, video_budget).unwrap_or_else(|| url.to_string()),
             // GIF kaynağı `tweet_video` mp4'ü olarak kalmalı: FxEmbed GIF adresi ondan türetilir.

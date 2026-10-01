@@ -47,30 +47,38 @@ pub fn to_attachment(file: MediaFile, spoiler: bool) -> CreateAttachment {
     CreateAttachment::bytes(file.bytes, filename)
 }
 
-/// Twitter görsellerine boyut parametresi ekler (`?name=large`).
-pub fn with_size(url: &str, size: &str) -> String {
-    if !url.contains("pbs.twimg.com") || url.contains('?') {
-        return url.to_string();
-    }
-    format!("{url}?name={size}")
-}
-
-/// Görseli, Discord'un **anında** çekebileceği hafif varyanta çevirir.
+/// Kart görsellerinde kullanılan X CDN varyantı.
 ///
-/// X görselleri `?name=orig` ile birkaç MB gelebilir; kart görseli CDN'den çekildiği için
-/// (ışık hızı modu) `name=large` (~100-400 KB) kullanılır: kart anında açılır. Ölçek
-/// parametresi hiç verilmemiş X görsellerine de `name=large` eklenir.
-pub fn light_image_url(url: &str) -> String {
+/// Discord kartı görseli en fazla ~550 px genişlikte çizer; `large` (2048 px, ~180-500 KB)
+/// gereksiz büyüktür. `medium` (1200 px) yüksek yoğunluklu ekranlarda da net görünür ve
+/// ~%35 daha az veri çekildiği için görsel **daha erken** belirir. `small` (680 px) daha da
+/// hafiftir ama büyük/kaliteli ekranlarda yumuşak kalır.
+pub const CARD_IMAGE_SIZE: &str = "medium";
+
+/// Görseli, Discord'un **anında** çekebileceği hafif varyanta çevirir (kart gösterimi için).
+///
+/// X görselleri `?name=orig`/`?name=large` ile birkaç yüz KB-MB gelebilir; kart görseli
+/// CDN'den çekildiği için [`CARD_IMAGE_SIZE`] varyantı kullanılır. Zaten daha hafif bir
+/// varyant seçilmişse (`small`, `thumb`, `medium`) dokunulmaz; X dışı CDN'ler olduğu gibi
+/// kalır. **İndirme** yolu bu işlevden geçmez: dosya eki modunda tam çözünürlük istenir.
+pub fn card_image_url(url: &str) -> String {
     if !url.contains("pbs.twimg.com") {
         return url.to_string();
     }
-    if url.contains("name=orig") {
-        return url.replace("name=orig", "name=large");
+    for lighter in ["name=small", "name=thumb", "name=medium"] {
+        if url.contains(lighter) {
+            return url.to_string();
+        }
     }
-    if !url.contains('?') {
-        return format!("{url}?name=large");
+    for heavier in ["name=orig", "name=large"] {
+        if url.contains(heavier) {
+            return url.replace(heavier, &format!("name={CARD_IMAGE_SIZE}"));
+        }
     }
-    url.to_string()
+    if url.contains('?') {
+        return format!("{url}&name={CARD_IMAGE_SIZE}");
+    }
+    format!("{url}?name={CARD_IMAGE_SIZE}")
 }
 
 /// İndirme sırasında tam çözünürlüğü ister (Twitter `name=large` yerine `name=orig`).
@@ -335,40 +343,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn twitter_sizes_are_applied_only_when_missing() {
+    fn card_image_url_downshifts_to_the_light_variant() {
+        // Kart görselleri CDN'den çekildiği için hafif varyant kullanılır (daha erken belirir).
         assert_eq!(
-            with_size("https://pbs.twimg.com/media/ABC.jpg", "large"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=large"
+            card_image_url("https://pbs.twimg.com/media/ABC.jpg?name=orig"),
+            "https://pbs.twimg.com/media/ABC.jpg?name=medium"
         );
         assert_eq!(
-            with_size("https://pbs.twimg.com/media/ABC.jpg?name=orig", "large"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=orig"
+            card_image_url("https://pbs.twimg.com/media/ABC.jpg?name=large"),
+            "https://pbs.twimg.com/media/ABC.jpg?name=medium"
         );
         assert_eq!(
-            with_size("https://cdn.bsky.app/img/x.jpg", "large"),
-            "https://cdn.bsky.app/img/x.jpg"
+            card_image_url("https://pbs.twimg.com/media/ABC.jpg"),
+            "https://pbs.twimg.com/media/ABC.jpg?name=medium"
         );
-    }
-
-    #[test]
-    fn light_image_url_downsizes_card_media() {
-        // Kart görselleri CDN'den çekildiği için hafif varyant kullanılır (anında açılır).
+        // Yeni X biçimi (`?format=jpg`) ve zaten hafif varyantlar korunur.
         assert_eq!(
-            light_image_url("https://pbs.twimg.com/media/ABC.jpg?name=orig"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=large"
+            card_image_url("https://pbs.twimg.com/media/ABC?format=jpg&name=large"),
+            "https://pbs.twimg.com/media/ABC?format=jpg&name=medium"
         );
         assert_eq!(
-            light_image_url("https://pbs.twimg.com/media/ABC.jpg"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=large"
+            card_image_url("https://pbs.twimg.com/media/ABC?format=jpg"),
+            "https://pbs.twimg.com/media/ABC?format=jpg&name=medium"
         );
-        // Zaten ölçekli bağlantı ve yabancı CDN'ler dokunulmadan kalır.
         assert_eq!(
-            light_image_url("https://pbs.twimg.com/media/ABC.jpg?name=small"),
+            card_image_url("https://pbs.twimg.com/media/ABC.jpg?name=small"),
             "https://pbs.twimg.com/media/ABC.jpg?name=small"
         );
         assert_eq!(
-            light_image_url("https://cdn.bsky.app/img/x.jpg"),
+            card_image_url("https://cdn.bsky.app/img/x.jpg"),
             "https://cdn.bsky.app/img/x.jpg"
+        );
+        assert_eq!(
+            card_image_url("https://i.redd.it/x.jpg"),
+            "https://i.redd.it/x.jpg"
         );
     }
 

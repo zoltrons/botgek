@@ -112,11 +112,28 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     }
     if card.options.show_quote {
         if let Some(quote) = card.post.quote.as_deref() {
+            // Gönderiye **medya eklenmemişse** alıntının alıntısı da gösterilir: X'in kendi
+            // kartı medyasız zincirlerde üç gönderiyi (ana + alıntı + alıntının alıntısı)
+            // birlikte gösterir. Medya varsa kart medyaya odaklanır, zincir iki seviyede kalır.
+            let nested = if card.post.media.is_empty() {
+                quote.quote.as_deref()
+            } else {
+                None
+            };
+
             if let Some(component) = quote_component(quote, card.emojis) {
                 // Hiyerarşi: alıntı bloğundan önce ince bir ayraç çizgisi ve büyük bir dikey
                 // boşluk bırakılır, böylece alıntı kartın gövdesinden ayrı okunur.
                 children.push(separator());
                 children.push(component);
+            }
+            if let Some(nested) = nested {
+                if let Some(component) = quote_component(nested, card.emojis) {
+                    // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
+                    // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
+                    children.push(separator());
+                    children.push(component);
+                }
             }
         }
     }
@@ -974,6 +991,71 @@ mod tests {
              from **durusal** ([**@gerginimhelll**](https://x.com/gerginimhelll))\n\
              > Durusal neşesi gerçek değil\n\
              > O sırada durusal neşesi"
+        );
+    }
+
+    #[test]
+    fn three_level_quote_chain_is_shown_when_the_post_has_no_media() {
+        let mut post = sample_post();
+        let mut inner = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/enic/status/3",
+            Author::new("En İç", "enic"),
+        );
+        inner.text = "en içteki metin".to_string();
+        let mut middle = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/orta/status/2",
+            Author::new("Orta", "orta"),
+        );
+        middle.text = "ortadaki metin".to_string();
+        middle.quote = Some(Box::new(inner));
+        post.quote = Some(Box::new(middle));
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let body = texts(&payload).join("\n");
+
+        assert!(body.contains("ortadaki metin"), "alıntı metni: {body}");
+        assert!(
+            body.contains("en içteki metin"),
+            "medyasız zincirde alıntının alıntısı da gösterilir: {body}"
+        );
+        assert!(
+            body.contains("https://x.com/enic/status/3"),
+            "iç içe alıntının linki kartta olmalı: {body}"
+        );
+    }
+
+    #[test]
+    fn quote_chain_stays_two_levels_when_the_post_has_media() {
+        let mut post = sample_post();
+        post.media = vec![image("https://cdn/1.jpg")];
+        let mut inner = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/enic/status/3",
+            Author::new("En İç", "enic"),
+        );
+        inner.text = "en içteki metin".to_string();
+        let mut middle = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/orta/status/2",
+            Author::new("Orta", "orta"),
+        );
+        middle.text = "ortadaki metin".to_string();
+        middle.quote = Some(Box::new(inner));
+        post.quote = Some(Box::new(middle));
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let body = texts(&payload).join("\n");
+
+        assert!(body.contains("ortadaki metin"));
+        assert!(
+            !body.contains("en içteki metin"),
+            "gönderide medya varsa kart medyaya odaklanır, zincir iki seviyede kalır: {body}"
         );
     }
 
