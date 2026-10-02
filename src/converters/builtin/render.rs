@@ -187,11 +187,17 @@ fn plan_is_empty(plan: &MediaPlan) -> bool {
 fn push_media(plan: &mut MediaPlan, media: &Media, attach_images: bool, max_images: usize) {
     // Animasyonlu GIF: sessiz mp4 olarak indirilir ve gerçek `.gif`'e çevrilir
     // (video oynatıcısı çıkmasın diye video alanına konmaz).
+    // Ancak servis yalnızca belirli platformları (örn. Twitter) destekler;
+    // dönüştürülemeyen (Reddit vb.) mp4 formatındaki GIF'ler video olarak işlenir
+    // ki kartta kırık görsel yerine oynatılabilir bir video çıksın.
     if media.kind == MediaKind::Gif {
-        if plan.gifs.len() < max_images {
-            plan.gifs.push(media.url.clone());
+        if media::gif_convert_url(&media.url).is_some() {
+            if plan.gifs.len() < max_images {
+                plan.gifs.push(media.url.clone());
+            }
+            return;
         }
-        return;
+        // Servisin desteklemediği GIF (örn. Reddit i.redd.it/*.mp4): video olarak devam et.
     }
 
     if media.is_video() {
@@ -361,10 +367,10 @@ pub fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
 }
 
 /// Dosya eki olarak indirilemeyen veya doğrudan moddaki GIF'in uzak bağlantısı:
-/// FxEmbed GIF servisi (`gif.fxtwitter.com`) varsa gerçek `.gif` bağlantısı kullanılır
-/// (kartta GIF gibi oynar), yoksa orijinal bağlantı korunur.
+/// vxTwitter gifconvert servisi (`gifconvert.vxtwitter.com`) varsa animasyonlu AVIF
+/// bağlantısı kullanılır (kartta animasyonlu görsel gibi oynar), yoksa orijinal bağlantı korunur.
 pub fn remote_gif_url(url: &str) -> String {
-    media::fx_gif_url(url).unwrap_or_else(|| url.to_string())
+    media::gif_convert_url(url).unwrap_or_else(|| url.to_string())
 }
 
 /// Bir indirme görevini **süre bütçesi** içinde bekler. Bütçe dolarsa görev iptal edilir
@@ -385,7 +391,7 @@ async fn within<T>(budget: Duration, mut handle: tokio::task::JoinHandle<Option<
 
 /// GIF'i mümkün olan en hızlı kaynaktan **yarıştırarak** alır:
 ///
-/// 1. **FxEmbed GIF servisi** (`gif.fxtwitter.com`) — hazır, CDN'de önbellekli gerçek GIF
+/// 1. **vxTwitter gifconvert servisi** (`gifconvert.vxtwitter.com`) — hazır, CDN'de önbellekli animasyonlu AVIF
 ///    (tercih edilen kaynak; [`GIF_HEAD_START`] kadar öne alınır),
 /// 2. yerel `ffmpeg` dönüşümü — servis gecikirse başlar ve **gerçek GIF** ürettiyse kazanır,
 /// 3. hiçbiri olmazsa mp4 (Discord oynatıcı gösterir — eski davranış).
@@ -399,8 +405,8 @@ async fn download_gif(
     url: &str,
     budget: Duration,
 ) -> Option<media::MediaFile> {
-    // 1) FxEmbed GIF servisi: hemen başlar (CDN'de önbellekli, genelde en hızlı kaynak).
-    let mut fx = media::fx_gif_url(url).map(|gif_url| {
+    // 1) vxTwitter GIF servisi: hemen başlar (CDN'de önbellekli, genelde en hızlı kaynak).
+    let mut fx = media::gif_convert_url(url).map(|gif_url| {
         let client = client.clone();
         tokio::spawn(async move {
             // Servis tek seferde yanıt vermeyebilir: iki deneme, her biri kısa süreli.
@@ -413,7 +419,7 @@ async fn download_gif(
                 else {
                     continue;
                 };
-                if media::is_gif(&file) {
+                if media::is_animated_image(&file) {
                     return Some(file);
                 }
             }
@@ -422,7 +428,7 @@ async fn download_gif(
     });
 
     // 2) Yerel yedek: mp4 indirilir, `ffmpeg` ile gerçek GIF'e çevrilir; `ffmpeg` yoksa
-    //    mp4 döner (yalnızca FxEmbed servisi tamamen başarısız olursa kullanılır).
+    //    mp4 döner (yalnızca vxTwitter servisi tamamen başarısız olursa kullanılır).
     let mut local = Some({
         let client = client.clone();
         let url = url.to_string();
@@ -454,8 +460,8 @@ async fn download_gif(
 
         tokio::select! {
             biased;
-            // Tercih edilen kaynak: gerçek GIF geldiyse yarış biter.
-            result = async { fx.as_mut().expect("FxEmbed GIF kaynağı bekleniyor").await },
+            // Tercih edilen kaynak: dönüştürülmüş görsel geldiyse yarış biter.
+            result = async { fx.as_mut().expect("vxTwitter GIF kaynağı bekleniyor").await },
                 if awaiting_fx =>
             {
                 match result {
@@ -472,8 +478,8 @@ async fn download_gif(
                 if awaiting_local =>
             {
                 match result {
-                    // Yerel dönüşüm gerçek GIF ürettiyse tercih edilen kaynağı beklemeden kazanır.
-                    Ok(Some(file)) if media::is_gif(&file) => {
+                    // Yerel dönüşüm gerçek animasyonlu görsel ürettiyse tercih edilen kaynağı beklemeden kazanır.
+                    Ok(Some(file)) if media::is_animated_image(&file) => {
                         if let Some(handle) = fx.take() {
                             handle.abort();
                         }
@@ -481,6 +487,7 @@ async fn download_gif(
                     }
                     _ => {}
                 }
+
                 local = None;
             }
             _ = tokio::time::sleep_until(deadline) => {
@@ -796,9 +803,9 @@ mod tests {
             resolved.images,
             vec![
                 "https://cdn/1.jpg".to_string(),
-                "https://gif.fxtwitter.com/tweet_video/x.gif".to_string()
+                "https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fx.mp4".to_string()
             ],
-            "GIF, FxEmbed'in GIF servisinden gelir (.gif)"
+            "GIF, vxTwitter'ın GIF servisinden gelir (.avif)"
         );
     }
 
@@ -1160,11 +1167,11 @@ mod tests {
     }
 
     #[test]
-    fn remote_gif_urls_prefer_the_fxembed_service() {
-        // FxEmbed GIF servisi varsa uzak bağlantı da gerçek `.gif` olur (kartta GIF gibi oynar).
+    fn remote_gif_urls_prefer_the_vxtwitter_service() {
+        // vxTwitter GIF servisi varsa uzak bağlantı da animasyonlu `.avif` olur.
         assert_eq!(
             remote_gif_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4"),
-            "https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif"
+            "https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2FHTEtNFcXEAAY4Dv.mp4"
         );
         assert_eq!(
             remote_gif_url("https://cdn.example/clip.mp4"),

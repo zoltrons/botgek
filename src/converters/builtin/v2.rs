@@ -1113,8 +1113,8 @@ mod tests {
 
         assert_eq!(
             gallery_urls(&payload),
-            vec!["https://gif.fxtwitter.com/tweet_video/HTm_K6jaEAAMaNm.gif"],
-            "GIF, gif.fxtwitter.com üzerinden .gif formatında galeride gösterilir"
+            vec!["https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2FHTm_K6jaEAAMaNm.mp4"],
+            "GIF, vxTwitter üzerinden AVIF formatında galeride gösterilir"
         );
         let meta = texts(&payload).pop().unwrap();
         assert!(

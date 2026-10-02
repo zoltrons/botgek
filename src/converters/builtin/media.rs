@@ -154,32 +154,38 @@ pub fn extension_from_mime(mime: &str) -> Option<&'static str> {
 }
 
 
-/// X'in animasyonlu GIF'leri için FxEmbed'in GIF servisi.
+/// X'in animasyonlu GIF'leri için vxTwitter'ın GIF dönüştürme servisi.
 ///
-/// X GIF'leri yalnızca sessiz mp4 olarak sunar; FxEmbed bunları gerçek `.gif` dosyasına
-/// çevirip CDN'inde önbellekler (`image/gif`, `max-age=1yıl`). Bu yüzden hem **anında**
-/// gelir hem de yerel dönüştürmeye (CPU) gerek kalmaz:
-/// `https://video.twimg.com/tweet_video/<ad>.mp4` → `https://gif.fxtwitter.com/tweet_video/<ad>.gif`
-pub fn fx_gif_url(url: &str) -> Option<String> {
-    if let Some((_, rest)) = url.split_once("gif.fxtwitter.com/tweet_video/") {
-        let name = rest.split(['?', '#']).next()?.trim();
-        let name = name.strip_suffix(".gif").unwrap_or(name);
-        if !name.is_empty() {
-            return Some(format!("https://gif.fxtwitter.com/tweet_video/{name}.gif"));
-        }
+/// X GIF'leri yalnızca sessiz mp4 olarak sunar; vxTwitter (BetterTwitFix) bunları
+/// animasyonlu AVIF'e çevirip CDN'inde önbellekler (`image/avif`, `max-age=1 hafta`).
+/// Servis yalnızca `video.twimg.com/tweet_video/` yolunu kabul eder:
+/// `https://video.twimg.com/tweet_video/<ad>.mp4`
+///   → `https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2F<ad>.mp4`
+pub fn gif_convert_url(url: &str) -> Option<String> {
+    // Zaten dönüştürülmüş bir URL ise olduğu gibi döner.
+    if url.starts_with("https://gifconvert.vxtwitter.com/") {
+        return Some(url.to_string());
     }
-    let rest = url.split_once("video.twimg.com/tweet_video/")?.1;
-    let name = rest.split(['?', '#']).next()?.trim();
-    let name = name.strip_suffix(".mp4").unwrap_or(name);
-    if name.is_empty() {
+    // Yalnızca tweet_video kaynaklı mp4'ler dönüştürülür.
+    if !url.contains("video.twimg.com/tweet_video/") {
         return None;
     }
-    Some(format!("https://gif.fxtwitter.com/tweet_video/{name}.gif"))
+    // Sorgu parametrelerini temizle: servis ham mp4 URL'ini bekler.
+    let clean = url.split(['?', '#']).next()?.trim();
+    if clean.is_empty() {
+        return None;
+    }
+    let encoded = urlencoding::encode(clean);
+    Some(format!("https://gifconvert.vxtwitter.com/convert.avif?url={encoded}"))
 }
 
-/// İndirilen içerik gerçekten GIF mi? (Servis beklenmedik bir şey döndürürse mp4'e düşülür.)
-pub fn is_gif(file: &MediaFile) -> bool {
-    file.mime == "image/gif" || file.bytes.starts_with(b"GIF8")
+/// İndirilen içerik animasyonlu görsel mi? GIF (`image/gif`) veya animasyonlu AVIF
+/// (`image/avif`, vxTwitter gifconvert servisi) kabul edilir. Servis beklenmedik bir şey
+/// döndürürse mp4'e düşülür.
+pub fn is_animated_image(file: &MediaFile) -> bool {
+    file.mime == "image/gif"
+        || file.bytes.starts_with(b"GIF8")
+        || file.mime == "image/avif"
 }
 
 /// Dosya adının uzantısını değiştirir (`x.mp4` → `x.gif`).
@@ -423,41 +429,48 @@ mod tests {
     }
 
     #[test]
-    fn fxembed_gif_urls_are_derived_from_tweet_videos() {
+    fn vxtwitter_gif_convert_urls_are_derived_from_tweet_videos() {
         assert_eq!(
-            fx_gif_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4").as_deref(),
-            Some("https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif")
+            gif_convert_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4").as_deref(),
+            Some("https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2FHTEtNFcXEAAY4Dv.mp4")
         );
-        // Sorgu parametreli/uzantısız varyantlar da desteklenir
+        // Sorgu parametreli varyantlar da desteklenir (parametreler temizlenir)
         assert_eq!(
-            fx_gif_url("https://video.twimg.com/tweet_video/abc.mp4?tag=12").as_deref(),
-            Some("https://gif.fxtwitter.com/tweet_video/abc.gif")
+            gif_convert_url("https://video.twimg.com/tweet_video/abc.mp4?tag=12").as_deref(),
+            Some("https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fabc.mp4")
         );
-        // Doğrudan gif.fxtwitter.com adresi de desteklenir
+        // Doğrudan gifconvert.vxtwitter.com adresi idempotent olarak döner
         assert_eq!(
-            fx_gif_url("https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif").as_deref(),
-            Some("https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif")
+            gif_convert_url("https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fx.mp4").as_deref(),
+            Some("https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fx.mp4")
         );
         // Gerçek videolar (amplify/ext_tw_video) GIF servisine gönderilmez
-        assert!(fx_gif_url("https://video.twimg.com/amplify_video/123/vid/720/x.mp4").is_none());
-        assert!(fx_gif_url("https://cdn.example/video.mp4").is_none());
+        assert!(gif_convert_url("https://video.twimg.com/amplify_video/123/vid/720/x.mp4").is_none());
+        assert!(gif_convert_url("https://cdn.example/video.mp4").is_none());
     }
 
     #[test]
-    fn gif_content_is_detected_from_mime_or_magic_bytes() {
+    fn animated_image_is_detected_from_mime_or_magic_bytes() {
         let gif = MediaFile {
             bytes: b"GIF89a....".to_vec(),
             filename: "x.gif".to_string(),
             mime: "application/octet-stream".to_string(),
         };
-        assert!(is_gif(&gif));
+        assert!(is_animated_image(&gif));
+
+        let avif = MediaFile {
+            bytes: vec![0, 0, 0, 28, b'f', b't', b'y', b'p'],
+            filename: "convert.avif".to_string(),
+            mime: "image/avif".to_string(),
+        };
+        assert!(is_animated_image(&avif));
 
         let mp4 = MediaFile {
             bytes: vec![0, 0, 0, 24, b'f', b't', b'y', b'p'],
             filename: "x.mp4".to_string(),
             mime: "video/mp4".to_string(),
         };
-        assert!(!is_gif(&mp4));
+        assert!(!is_animated_image(&mp4));
 
         assert_eq!(replace_extension("HTEtNFcXEAAY4Dv.mp4", "gif"), "HTEtNFcXEAAY4Dv.gif");
         assert_eq!(replace_extension("noext", "gif"), "noext.gif");
