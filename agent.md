@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕐 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-02 16:07] zoltrons — Reddit mobil paylaşım (/s/) linkleri için yönlendirme desteği eklendi
+- **Commit:** `c0b2d96`
+- **Yapılan:**
+  1. Reddit mobil paylaşım linklerinin (`/r/{sub}/s/{kod}`) kalıcı kimlik içermemesi sebebiyle User-Agent ile hedef adrese yönlendirme izlenmesi sağlandı.
+  2. Reddit JSON uç noktası bot engellerini (403) aşacak tarayıcı User-Agent'ı ve boyut sınırlarıyla korundu.
+  3. URL kimlik çıkarımı için birim testler eklendi.
+- **Etkilenen:** `src/converters/builtin/reddit.rs`
 ### [2026-10-02 16:03] zoltrons — GIF'ler her zaman gif.fxtwitter.com üzerinden .gif formatına ayarlandı
 - **Commit:** `1392d85`
 - **Yapılan:**

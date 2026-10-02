@@ -1,39 +1,49 @@
 //! Reddit gönderi verisi.
 //!
-//! Genel JSON uç noktası (`reddit.com/comments/{id}.json`) kullanılır: gönderi başlığı,
-//! selftext, skor, yorum sayısı, video/galeri medyası ve crosspost verisi içerir.
+//! `www.reddit.com/comments/{id}.json` herkese açık JSON uç noktası kullanılır: gönderi
+//! başlığı, selftext, skor, yorum sayısı, video/galeri medyası ve crosspost verisi içerir.
+//!
+//! Veri çekerken **fxreddit (rxddit.com)** ve **redlib** servislerinin kullandığı teknik
+//! izlenir:
+//! 1. İstekler tarayıcıya benzer bir User-Agent ile gönderilir; aksi halde Reddit bot
+//!    isteklerini `403 Forbidden` ile reddeder.
+//! 2. `/r/{sub}/s/{kod}` mobil paylaşım linkleri, yönlendirme izlenerek asıl kalıcı adrese
+//!    (permalink) çözülür; Reddit bu linkleri yalnızca hedefi yönlendirme ile açığa çıkarır,
+//!    doğrudan içerik vermez (fxreddit `Location` başlığını, redlib HEAD isteğini okur).
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use super::{Author, BuiltinPost, Media, MediaKind, Stats};
+use super::{Author, BuiltinPost, Media, MediaKind, Stats, MAX_BODY_BYTES, REQUEST_TIMEOUT};
 use crate::converters::parser::{ParsedPost, Platform};
 
-static REDDIT_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?:reddit\.com/(?:r/[^/]+/)?comments/|redd\.it/)([A-Za-z0-9]{4,12})")
-        .expect("geçerli reddit regex")
-});
+/// Reddit, tarayıcı dışı istekleri 403 ile engeller. fxreddit servisinin de kullandığı,
+/// gerçek bir Firefox istemcisi kılığındaki User-Agent gönderilir.
+const REDDIT_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0";
+
+/// Kalıcı adresteki gönderi kimliğini (`.../comments/{id}`) yakalar.
+static COMMENTS_ID_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"/comments/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
+
+/// `redd.it/{id}` biçimindeki kısa linkteki gönderi kimliğini yakalar.
+static SHORT_ID_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"redd\.it/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
 
 /// Gönderi verisini Reddit'in herkese açık JSON uç noktasından çeker.
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let id = REDDIT_ID_REGEX
-        .captures(&parsed.original_url)
-        .and_then(|captures| captures.get(1))
-        .map(|m| m.as_str().to_string())
-        .ok_or_else(|| format!("Reddit gönderi kimliği çözümlenemedi: {}", parsed.original_url))?;
-
-    let url = format!("https://www.reddit.com/comments/{id}.json?raw_json=1&limit=1");
-    let value = super::get_json(client, &url).await?;
+    let url = resolve_post_json_url(client, &parsed.original_url).await?;
+    let value = get_reddit_json(client, &url).await?;
     let listings: Vec<RedditListing> = serde_json::from_value(value)
-        .map_err(|e| format!("Reddit yanıtı çözümlenemedi ({id}): {e}"))?;
+        .map_err(|e| format!("Reddit yanıtı çözümlenemedi: {e}"))?;
 
     let post = listings
         .first()
         .and_then(|listing| listing.data.children.first())
         .map(|child| &child.data)
-        .ok_or_else(|| format!("Reddit gönderisi bulunamadı: {id}"))?;
+        .ok_or_else(|| "Reddit gönderisi bulunamadı".to_string())?;
 
     // Crosspost ise asıl içerik ebeveyn gönderide bulunur.
     let content = post
@@ -43,6 +53,108 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
         .unwrap_or(post);
 
     Ok(reddit_to_post(post, content))
+}
+
+/// Orijinal linki `www.reddit.com/comments/{id}.json` uç noktasına indirger.
+async fn resolve_post_json_url(
+    client: &reqwest::Client,
+    original_url: &str,
+) -> Result<String, String> {
+    let id = extract_post_id(client, original_url).await?;
+    Ok(format!(
+        "https://www.reddit.com/comments/{id}.json?raw_json=1&limit=1"
+    ))
+}
+
+/// Gönderi kimliğini linkten çıkarır; kimlik adres üzerinde yoksa (mobil paylaşım linki)
+/// linki yönlendirme izleyerek kalıcı adrese çözer.
+async fn extract_post_id(client: &reqwest::Client, original_url: &str) -> Result<String, String> {
+    // 1) Adres üzerinde gömülü kimlik (normal linkler ve kısa linkler).
+    if let Some(id) = post_id_from_url(original_url) {
+        return Ok(id);
+    }
+
+    // 2) Mobil paylaşım linki (`/r/{sub}/s/{kod}`): Reddit içeriği yalnızca hedef adrese
+    //    yönlendirerek verir. Link tarayıcı User-Agent'ı ile istenir ve sonunda varılan
+    //    kalıcı adresten kimlik okunur (fxreddit ve redlib de bunu yapar).
+    let response = client
+        .get(original_url)
+        .header("user-agent", REDDIT_USER_AGENT)
+        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("Reddit paylaşım linki çözülmedi ({original_url}): {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Beklenmeyen durum kodu ({original_url}): {}",
+            response.status()
+        ));
+    }
+
+    let final_url = response.url().to_string();
+    post_id_from_url(&final_url)
+        .ok_or_else(|| format!("Reddit gönderi kimliği çözümlenemedi: {original_url}"))
+}
+
+/// Gönderi kimliği adres üzerinde taşınıyorsa döner: normal `/r/.../comments/{id}` linkleri
+/// (`COMMENTS_ID_REGEX`) ve `redd.it/{id}` kısa linkleri (`SHORT_ID_REGEX`).
+fn post_id_from_url(original_url: &str) -> Option<String> {
+    if let Some(id) = COMMENTS_ID_REGEX
+        .captures(original_url)
+        .and_then(|c| c.get(1))
+    {
+        return Some(id.as_str().to_string());
+    }
+    SHORT_ID_REGEX
+        .captures(original_url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// JSON yanıtını çeker; gövde `MAX_BODY_BYTES` ile sınırlıdır. Tarayıcı kılığındaki
+/// User-Agent, Reddit'in bot isteklerine uyguladığı 403 engelinin önüne geçer.
+async fn get_reddit_json(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<serde_json::Value, String> {
+    let response = client
+        .get(url)
+        .header("user-agent", REDDIT_USER_AGENT)
+        .header("accept", "application/json")
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("İstek başarısız ({url}): {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Beklenmeyen durum kodu ({url}): {}",
+            response.status()
+        ));
+    }
+    if let Some(len) = response.content_length() {
+        if len > MAX_BODY_BYTES as u64 {
+            return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
+        }
+    }
+
+    let mut response = response;
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("Yanıt gövdesi okunamadı ({url}): {e}"))?
+    {
+        if body.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(format!("Yanıt gövdesi sınırı aşıldı ({url})"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let text = String::from_utf8(body).map_err(|_| format!("Yanıt UTF-8 değil ({url}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("JSON çözümlenemedi ({url}): {e}"))
 }
 
 fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
@@ -510,5 +622,29 @@ mod tests {
         let post = parse(json);
         assert!(post.text.is_empty(), "silinmiş selftext gösterilmemeli");
         assert_eq!(post.media[0].url, "https://i.redd.it/x.jpg?a=1&b=2");
+    }
+
+    #[test]
+    fn post_id_is_extracted_from_url_forms() {
+        // Normal kalıcı link (subreddit + başlık + sondaki slash).
+        assert_eq!(
+            post_id_from_url("https://www.reddit.com/r/rust/comments/1abc2x/bir_baslik/"),
+            Some("1abc2x".into())
+        );
+        // Kullanıcı profil linki (old.reddit.com + /user/).
+        assert_eq!(
+            post_id_from_url("https://old.reddit.com/user/biri/comments/abc123/x/"),
+            Some("abc123".into())
+        );
+        // Kısa link (redd.it).
+        assert_eq!(
+            post_id_from_url("https://redd.it/1w9fa2z"),
+            Some("1w9fa2z".into())
+        );
+        // Mobil paylaşım linki adres üzerinde kimlik taşımaz → yönlendirme adımı gerekir.
+        assert_eq!(
+            post_id_from_url("https://www.reddit.com/r/MutfakDertlileri/s/9spRJSE8Ar"),
+            None
+        );
     }
 }
