@@ -161,6 +161,13 @@ pub fn extension_from_mime(mime: &str) -> Option<&'static str> {
 /// gelir hem de yerel dönüştürmeye (CPU) gerek kalmaz:
 /// `https://video.twimg.com/tweet_video/<ad>.mp4` → `https://gif.fxtwitter.com/tweet_video/<ad>.gif`
 pub fn fx_gif_url(url: &str) -> Option<String> {
+    if let Some((_, rest)) = url.split_once("gif.fxtwitter.com/tweet_video/") {
+        let name = rest.split(['?', '#']).next()?.trim();
+        let name = name.strip_suffix(".gif").unwrap_or(name);
+        if !name.is_empty() {
+            return Some(format!("https://gif.fxtwitter.com/tweet_video/{name}.gif"));
+        }
+    }
     let rest = url.split_once("video.twimg.com/tweet_video/")?.1;
     let name = rest.split(['?', '#']).next()?.trim();
     let name = name.strip_suffix(".mp4").unwrap_or(name);
@@ -425,6 +432,11 @@ mod tests {
         assert_eq!(
             fx_gif_url("https://video.twimg.com/tweet_video/abc.mp4?tag=12").as_deref(),
             Some("https://gif.fxtwitter.com/tweet_video/abc.gif")
+        );
+        // Doğrudan gif.fxtwitter.com adresi de desteklenir
+        assert_eq!(
+            fx_gif_url("https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif").as_deref(),
+            Some("https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif")
         );
         // Gerçek videolar (amplify/ext_tw_video) GIF servisine gönderilmez
         assert!(fx_gif_url("https://video.twimg.com/amplify_video/123/vid/720/x.mp4").is_none());

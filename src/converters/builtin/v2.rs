@@ -1113,8 +1113,8 @@ mod tests {
 
         assert_eq!(
             gallery_urls(&payload),
-            vec!["https://video.twimg.com/tweet_video/HTm_K6jaEAAMaNm.mp4"],
-            "GIF, FxEmbed'in çöken servisi yerine doğrudan Twitter CDN mp4'üyle galeride oynar"
+            vec!["https://gif.fxtwitter.com/tweet_video/HTm_K6jaEAAMaNm.gif"],
+            "GIF, gif.fxtwitter.com üzerinden .gif formatında galeride gösterilir"
         );
         let meta = texts(&payload).pop().unwrap();
         assert!(

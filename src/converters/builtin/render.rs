@@ -316,8 +316,8 @@ pub async fn resolve_media(
     resolved.images.extend(plan.remote_images.iter().cloned());
 
     if !options.attach_images {
-        // Dosya eki kapalı: GIF'ler doğrudan kaynak mp4 bağlantısıyla gösterilir (kart içinde oynar).
-        resolved.images.extend(plan.gifs.iter().cloned());
+        // Dosya eki kapalı: GIF'ler de uzak URL olarak gösterilir (.gif formatında).
+        resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
     } else {
         for (url, handle) in plan.gifs.iter().zip(gif_handles) {
             match within(options.gif_budget() + GIF_RACE_GRACE, handle).await {
@@ -326,7 +326,7 @@ pub async fn resolve_media(
                     resolved.attachments.push(media::to_attachment(file, spoiler));
                     resolved.images.push(format!("attachment://{name}"));
                 }
-                None => resolved.images.push(url.clone()),
+                None => resolved.images.push(remote_gif_url(url)),
             }
         }
     }
@@ -338,8 +338,7 @@ pub async fn resolve_media(
 ///
 /// - Görseller: CDN'in hafif `large` varyantı (kart anında yüklenir).
 /// - Video: veri aşamasında seçilen en uygun mp4 varyantı kartın içinde oynar.
-/// - GIF: doğrudan kaynak mp4 varyantı kartın içinde oynar (Discord Media Gallery
-///   tarafından yerel olarak oynatılır; üçüncü taraf servise bağımlılık yok).
+/// - GIF: FxEmbed'in GIF servisi (`gif.fxtwitter.com`) → gerçek `.gif` olarak karta bağlanır.
 ///
 /// Hiçbir ağ isteği yapılmaz: bu yüzden medya fazı ~0 ms'dir ve Discord'a dosya yüklenmez.
 pub fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
@@ -356,9 +355,16 @@ pub fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
     resolved
         .images
         .extend(plan.remote_images.iter().map(|url| media::card_image_url(url)));
-    resolved.images.extend(plan.gifs.iter().cloned());
+    resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
 
     resolved
+}
+
+/// Dosya eki olarak indirilemeyen veya doğrudan moddaki GIF'in uzak bağlantısı:
+/// FxEmbed GIF servisi (`gif.fxtwitter.com`) varsa gerçek `.gif` bağlantısı kullanılır
+/// (kartta GIF gibi oynar), yoksa orijinal bağlantı korunur.
+pub fn remote_gif_url(url: &str) -> String {
+    media::fx_gif_url(url).unwrap_or_else(|| url.to_string())
 }
 
 /// Bir indirme görevini **süre bütçesi** içinde bekler. Bütçe dolarsa görev iptal edilir
@@ -436,7 +442,6 @@ async fn download_gif(
     });
 
     let deadline = tokio::time::Instant::now() + budget;
-    let mut fallback_mp4: Option<media::MediaFile> = None;
 
     loop {
         // Bekleyen kaynaklar bu turda sabitlenir: `select!` ön koşulu yalnızca hazır
@@ -444,8 +449,7 @@ async fn download_gif(
         let awaiting_fx = fx.is_some();
         let awaiting_local = local.is_some();
         if !awaiting_fx && !awaiting_local {
-            // İki kaynak da yanıtladı: elde kalan (varsa) mp4 kullanılır.
-            return fallback_mp4;
+            return None;
         }
 
         tokio::select! {
@@ -475,8 +479,6 @@ async fn download_gif(
                         }
                         return Some(file);
                     }
-                    // mp4: yalnızca FxEmbed servisi de başarısız olursa kullanılır.
-                    Ok(Some(file)) => fallback_mp4 = Some(file),
                     _ => {}
                 }
                 local = None;
@@ -489,7 +491,7 @@ async fn download_gif(
                 if let Some(handle) = local.take() {
                     handle.abort();
                 }
-                return fallback_mp4;
+                return None;
             }
         }
     }
@@ -573,17 +575,10 @@ fn build_main_embed(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
 
     // Kapak görseli: eklenen ilk görsel, yoksa videonun kapağı
     if let Some(first) = resolved.images.first() {
-        let is_video = first.contains(".mp4") || first.contains(".webm") || first.contains(".mov");
-        if is_video {
-            if let Some(poster) = video_poster(post) {
-                embed = embed.image(poster);
-            }
-        } else {
-            embed = match first.strip_prefix("attachment://") {
-                Some(filename) => embed.attachment(filename),
-                None => embed.image(first.clone()),
-            };
-        }
+        embed = match first.strip_prefix("attachment://") {
+            Some(filename) => embed.attachment(filename),
+            None => embed.image(first.clone()),
+        };
     } else if resolved.attached_video.is_some() || resolved.video_link.is_some() {
         // Kapak: gönderinin kapağı, video alıntıdan geldiyse alıntının kapağı.
         if let Some(poster) = video_poster(post) {
@@ -801,9 +796,9 @@ mod tests {
             resolved.images,
             vec![
                 "https://cdn/1.jpg".to_string(),
-                "https://video.twimg.com/tweet_video/x.mp4".to_string()
+                "https://gif.fxtwitter.com/tweet_video/x.gif".to_string()
             ],
-            "GIF, doğrudan kaynak mp4 bağlantısı olarak karta bağlanır"
+            "GIF, FxEmbed'in GIF servisinden gelir (.gif)"
         );
     }
 
@@ -1165,21 +1160,15 @@ mod tests {
     }
 
     #[test]
-    fn direct_gif_urls_preserve_tweet_video_source() {
-        let mut post = sample_post();
-        post.media = vec![gif("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4")];
-
-        let options = RenderOptions {
-            media_delivery: MediaDelivery::Direct,
-            ..options()
-        };
-        let plan = plan_media(&post, &options);
-        let resolved = direct_media(&plan);
-
-        // Modern kartta oynatılabilmesi için doğrudan tweet_video mp4 adresi korunur.
+    fn remote_gif_urls_prefer_the_fxembed_service() {
+        // FxEmbed GIF servisi varsa uzak bağlantı da gerçek `.gif` olur (kartta GIF gibi oynar).
         assert_eq!(
-            resolved.images,
-            vec!["https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4".to_string()]
+            remote_gif_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4"),
+            "https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif"
+        );
+        assert_eq!(
+            remote_gif_url("https://cdn.example/clip.mp4"),
+            "https://cdn.example/clip.mp4"
         );
     }
 }

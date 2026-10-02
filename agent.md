@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕐 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-02 16:03] zoltrons — GIF'ler her zaman gif.fxtwitter.com üzerinden .gif formatına ayarlandı
+- **Commit:** `1392d85`
+- **Yapılan:**
+  1. Kullanıcı direktifi doğrultusunda GIF'lerin doğrudan/uzak modda her zaman `.gif` formatında kalması ve `gif.fxtwitter.com` adresinin kullanılması sağlandı (`remote_gif_url`).
+  2. `media::fx_gif_url` hazır `gif.fxtwitter.com` linklerini de idempotent olarak tanıyacak şekilde güncellendi.
+  3. `download_gif` indirme/çevirme başarısız olduğunda MP4 fallback dosyası eklemek yerine `None` dönerek kartın gerçek `.gif` bağlantısına düşmesi güvenceye alındı; birim testler güncellendi.
+- **Etkilenen:** `src/converters/builtin/media.rs`, `src/converters/builtin/render.rs`, `src/converters/builtin/v2.rs`
+
 ### [2026-10-02 15:35] zoltrons — ışık hızında ve modern v2'de GIF'lerin görünmeme sorunu çözüldü
 - **Commit:** `0aff66e`
 - **Yapılan:**
