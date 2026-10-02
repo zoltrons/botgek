@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕐 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-02 15:35] zoltrons — ışık hızında ve modern v2'de GIF'lerin görünmeme sorunu çözüldü
+- **Commit:** `0aff66e`
+- **Yapılan:**
+  1. Işık hızı (`direct`) ve indirme yapılmayan modlarda GIF'lerin harici `gif.fxtwitter.com` servisine dönüştürülmesi kaldırıldı (FxEmbed fastgif servisi 500 Internal Server Error vererek çöktüğü için Discord kartında GIF boş kalıyordu).
+  2. Twitter'ın doğrudan yüksek erişilebilirlikli ve hızlı `video.twimg.com/tweet_video/*.mp4` adresi doğrudan kullanılarak Modern V2 (`Media Gallery`) kartında yerel ve anında oynatılması sağlandı.
+  3. Klasik embed fallback'inde MP4 içeren GIF'lerin bozuk görsel yerine poster görseliyle (`video_poster`) görüntülenmesi sağlandı; tüm birim testler güncellendi ve yenisi eklendi.
+- **Etkilenen:** `src/converters/builtin/render.rs`, `src/converters/builtin/v2.rs`
+
 ### [2026-10-02 14:48] zoltrons — agent.md iş günlüğü oluşturuldu (geçmiş geriye dönük dolduruldu)
 - **Commit:** bu dosyayı tanıtan ilk commit
 - **Yapılan:** `agent.md` bot iş günlüğü kuruldu; `main` üzerindeki 40 commit geriye dönük dolduruldu. Protokol, "Bilinen Kimlikler" tablosu ve log bölümü eklendi.

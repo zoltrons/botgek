@@ -1091,6 +1091,40 @@ mod tests {
     }
 
     #[test]
+    fn gif_in_direct_mode_plays_directly_in_media_gallery_without_video_button() {
+        let mut post = sample_post();
+        post.media = vec![crate::converters::builtin::Media {
+            kind: crate::converters::builtin::MediaKind::Gif,
+            url: "https://video.twimg.com/tweet_video/HTm_K6jaEAAMaNm.mp4".to_string(),
+            poster: Some("https://pbs.twimg.com/tweet_video_thumb/HTm_K6jaEAAMaNm.jpg".to_string()),
+            width: Some(1536),
+            height: Some(1536),
+            duration: Some(0),
+        }];
+
+        let options = RenderOptions {
+            media_delivery: crate::settings::MediaDelivery::Direct,
+            ..options()
+        };
+        let plan = crate::converters::builtin::render::plan_media(&post, &options);
+        let resolved = crate::converters::builtin::render::direct_media(&plan);
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+
+        assert_eq!(
+            gallery_urls(&payload),
+            vec!["https://video.twimg.com/tweet_video/HTm_K6jaEAAMaNm.mp4"],
+            "GIF, FxEmbed'in çöken servisi yerine doğrudan Twitter CDN mp4'üyle galeride oynar"
+        );
+        let meta = texts(&payload).pop().unwrap();
+        assert!(
+            !meta.contains("Videoyu aç"),
+            "GIF için videoyu aç butonu çıkmamalı: {meta}"
+        );
+    }
+
+
+    #[test]
     fn sensitive_posts_are_wrapped_and_gallery_items_are_blurred() {
         let mut post = sample_post();
         post.sensitive = true;
