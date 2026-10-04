@@ -15,7 +15,7 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 
    ```
    ### [YYYY-MM-DD HH:mm] <git user.name> — <tek satır özet>
-   - **Commit:** `<sha>`            # birden fazlaysa: <sha1>..<sha2>
+   - **Commit:** `80f274a..b26c4d6`            # birden fazlaysa: <sha1>..<sha2>
    - **Yapılan:** 1-3 madde (özet)
    - **Etkilenen:** <ana dosya / modül>   # opsiyonel
    ```
@@ -44,7 +44,7 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 
 <!-- LOG:START -->
 ### [2026-10-04 13:07] zoltrons — Discord API ve Geliştirici Dokümantasyonu uyumluluk düzeltmeleri
-- **Commit:** `<sha>`
+- **Commit:** `80f274a..b26c4d6`
 - **Yapılan:**
   1. Discord Developer Documentation standartlarına uygun resmi HTTP User-Agent başlığı eklendi (`DiscordBot ($url, $versionNumber)`).
   2. Components V2 Container (`type: 17`) azami alt bileşen limiti 12'den 10'a çekildi; toplam kümülatif bileşen metin boyutu 4.000 karakterle sınırlandırıldı.
