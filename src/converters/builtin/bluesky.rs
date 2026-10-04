@@ -3,7 +3,7 @@
 //! Resmî AppView'ın herkese açık XRPC uç noktaları kullanılır (`public.api.bsky.app`):
 //! önce handle → DID çözümlenir, sonra gönderi ipliği `getPostThread` ile çekilir.
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 
@@ -12,7 +12,7 @@ use crate::converters::parser::{ParsedPost, Platform};
 
 const API_BASE: &str = "https://public.api.bsky.app/xrpc";
 
-static BSKY_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
+static BSKY_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"bsky\.app/profile/([^/\s]+)/post/([A-Za-z0-9]+)").expect("geçerli bluesky regex")
 });
 
@@ -123,11 +123,10 @@ fn post_view_to_post(post: &PostView, fallback_handle: &str) -> BuiltinPost {
         built.media = parts.media;
 
         if let Some(card) = parts.external.as_ref() {
-            if built.text.trim().is_empty() {
-                if let Some(description) = card.description.as_deref() {
+            if built.text.trim().is_empty()
+                && let Some(description) = card.description.as_deref() {
                     built.text = description.trim().to_string();
                 }
-            }
             if built.title.is_none() {
                 built.title = card
                     .title
@@ -135,8 +134,8 @@ fn post_view_to_post(post: &PostView, fallback_handle: &str) -> BuiltinPost {
                     .filter(|title| !title.trim().is_empty());
             }
             // Bağlantı kartının küçük görseli kapak olarak kullanılır.
-            if built.media.is_empty() {
-                if let Some(thumb) = card.thumb.as_deref() {
+            if built.media.is_empty()
+                && let Some(thumb) = card.thumb.as_deref() {
                     built.media.push(Media {
                         kind: MediaKind::Image,
                         url: thumb.to_string(),
@@ -146,7 +145,6 @@ fn post_view_to_post(post: &PostView, fallback_handle: &str) -> BuiltinPost {
                         duration: None,
                     });
                 }
-            }
         }
 
         built.quote = parts.quote.map(Box::new);
@@ -197,18 +195,17 @@ fn apply_link_facets(text: &str, facets: Option<&[Facet]>) -> String {
                 feature
                     .kind
                     .as_deref()
-                    .map_or(true, |kind| kind.ends_with("#link"))
+                    .is_none_or(|kind| kind.ends_with("#link"))
             })
             .and_then(|feature| feature.uri.clone());
 
-        if let Some(uri) = uri {
-            if start < end && end <= text.len() && text.is_char_boundary(start) && text.is_char_boundary(end) {
+        if let Some(uri) = uri
+            && start < end && end <= text.len() && text.is_char_boundary(start) && text.is_char_boundary(end) {
                 ranges.push((start, end, uri));
             }
-        }
     }
 
-    ranges.sort_by(|a, b| b.0.cmp(&a.0));
+    ranges.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     let mut out = text.to_string();
     for (start, end, uri) in ranges {

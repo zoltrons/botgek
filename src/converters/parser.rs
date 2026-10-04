@@ -1,4 +1,4 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::config::Config;
@@ -42,93 +42,93 @@ pub struct ParsedPost {
 }
 
 // ==================== TWITTER / X ====================
-static TWITTER_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TWITTER_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?:www\.)?(?:x|twitter)\.com/([^/\s]+)/status/(\d+)(?:/([a-zA-Z0-9_/]+))?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Twitter regex deseni")
 });
-static TWITTER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TWITTER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:www\.)?(?:x|twitter)\.com/([^/\s]+)/status/(\d+)(?:/([a-zA-Z0-9_/]+))?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Twitter regex deseni")
 });
 
 // ==================== TIKTOK ====================
 // TikTok: @user/(video|photo)/id
-static TIKTOK_VIDEO_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TIKTOK_VIDEO_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?:www\.)?tiktok\.com/@([^/\s]+)/(video|photo)/(\d+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler TikTok Video regex deseni")
 });
-static TIKTOK_VIDEO_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TIKTOK_VIDEO_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:www\.)?tiktok\.com/@([^/\s]+)/(video|photo)/(\d+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz TikTok Video regex deseni")
 });
 
 // TikTok: /t/id (Kısa link)
-static TIKTOK_T_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TIKTOK_T_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?:www\.)?tiktok\.com/t/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler TikTok /t/ regex deseni")
 });
-static TIKTOK_T_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TIKTOK_T_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:www\.)?tiktok\.com/t/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz TikTok /t/ regex deseni")
 });
 
 // TikTok: vm.tiktok.com veya vt.tiktok.com
-static TIKTOK_SHORT_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TIKTOK_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(vm|vt)\.tiktok\.com/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler TikTok VM/VT regex deseni")
 });
-static TIKTOK_SHORT_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TIKTOK_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(vm|vt)\.tiktok\.com/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz TikTok VM/VT regex deseni")
 });
 
 // ==================== INSTAGRAM ====================
-static INSTAGRAM_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static INSTAGRAM_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?:www\.)?instagram\.com/(p|reel|reels|tv)/([a-zA-Z0-9_-]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Instagram regex deseni")
 });
-static INSTAGRAM_REGEX: Lazy<Regex> = Lazy::new(|| {
+static INSTAGRAM_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:www\.)?instagram\.com/(p|reel|reels|tv)/([a-zA-Z0-9_-]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Instagram regex deseni")
 });
 
 // ==================== REDDIT ====================
 // 1. Standart Gönderi: /r/subreddit/comments/id veya /(u|user)/username/comments/id
-static REDDIT_POST_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static REDDIT_POST_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?:(?:www|old|new|np)\.)?reddit\.com/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Post regex deseni")
 });
-static REDDIT_POST_REGEX: Lazy<Regex> = Lazy::new(|| {
+static REDDIT_POST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:(?:www|old|new|np)\.)?reddit\.com/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Reddit Post regex deseni")
 });
 
 // 2. Mobil Paylaşım Linki: /r/subreddit/s/share_id
-static REDDIT_SHARE_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static REDDIT_SHARE_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?:(?:www|old|new|np)\.)?reddit\.com/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Share regex deseni")
 });
-static REDDIT_SHARE_REGEX: Lazy<Regex> = Lazy::new(|| {
+static REDDIT_SHARE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:(?:www|old|new|np)\.)?reddit\.com/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz Reddit Share regex deseni")
 });
 
 // 3. Kısa Linkler: redd.it/id veya /comments/id
-static REDDIT_SHORT_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static REDDIT_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*(?:https?://redd\.it/([a-zA-Z0-9]+)|https?://(?:(?:www|old|new|np)\.)?reddit\.com/comments/([a-zA-Z0-9]+))(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Short regex deseni")
 });
-static REDDIT_SHORT_REGEX: Lazy<Regex> = Lazy::new(|| {
+static REDDIT_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:https?://redd\.it/([a-zA-Z0-9]+)|https?://(?:(?:www|old|new|np)\.)?reddit\.com/comments/([a-zA-Z0-9]+))(?:/[^\s]*)?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Reddit Short regex deseni")
 });
 
 // ==================== BLUESKY ====================
-static BLUESKY_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static BLUESKY_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?:www\.)?bsky\.app/profile/([^/\s]+)/post/([a-zA-Z0-9]+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Bluesky regex deseni")
 });
-static BLUESKY_REGEX: Lazy<Regex> = Lazy::new(|| {
+static BLUESKY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:www\.)?bsky\.app/profile/([^/\s]+)/post/([a-zA-Z0-9]+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz Bluesky regex deseni")
 });
