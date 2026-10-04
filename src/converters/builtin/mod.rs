@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, CreateMessage, Embed, Message, MessageFlags, MessageId,
+    Channel, ChannelId, ChannelType, Context, CreateMessage, Embed, Message, MessageId,
     ReactionType, UserId, WebhookId,
 };
 use tokio::sync::Mutex;
@@ -47,6 +47,12 @@ pub const MEDIA_TIMEOUT: Duration = Duration::from_secs(12);
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Tanımlayıcı User-Agent: fxtwitter gibi servisler uygulamanın kendini tanıtmasını ister.
 pub const USER_AGENT: &str = concat!("Botgek/", env!("CARGO_PKG_VERSION"), " (Discord link converter)");
+/// Discord REST API için resmi standartta User-Agent (Discord Developer Docs: `DiscordBot ($url, $versionNumber)`).
+pub const DISCORD_USER_AGENT: &str = concat!(
+    "DiscordBot (https://github.com/zoltrons/botgek, ",
+    env!("CARGO_PKG_VERSION"),
+    ")"
+);
 
 /// Platform anahtarı (`twitter`, `reddit` ...) — ayarlarda ve loglarda kullanılır.
 pub fn platform_key(platform: Platform) -> &'static str {
@@ -694,17 +700,52 @@ impl Impersonation {
 /// Webhook adını Discord kurallarına uygun hâle getirir: `@` temizlenir, yasaklı
 /// kelimeler nötrlenir, 80 karaktere kısaltılır.
 pub fn sanitize_webhook_name(name: &str) -> String {
-    let mut cleaned = name.trim().trim_start_matches('@').to_string();
-    for (from, to) in [("discord", "d!scord"), ("Discord", "D!scord"), ("clyde", "c!yde"), ("Clyde", "C!yde")]
-    {
-        cleaned = cleaned.replace(from, to);
+    let mut cleaned: String = name
+        .chars()
+        .filter(|&c| c != '@' && c != '#' && c != ':' && c != '`')
+        .collect();
+    let trimmed = cleaned.trim();
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "everyone" || lower == "here" || trimmed.is_empty() {
+        return "Botgek".to_string();
     }
+
+    cleaned = replace_case_insensitive(trimmed, "discord", "d!scord");
+    cleaned = replace_case_insensitive(&cleaned, "clyde", "c!yde");
+
     let cleaned: String = cleaned.trim().chars().take(80).collect();
     if cleaned.trim().is_empty() {
         "Botgek".to_string()
     } else {
         cleaned
     }
+}
+
+fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
+    let needle_lower = needle.to_ascii_lowercase();
+    let mut result = String::with_capacity(haystack.len());
+    let mut last_end = 0;
+    let haystack_lower = haystack.to_ascii_lowercase();
+
+    for (start, _) in haystack_lower.match_indices(&needle_lower) {
+        result.push_str(&haystack[last_end..start]);
+        let matched = &haystack[start..start + needle.len()];
+        if matched.chars().next().map_or(false, |c| c.is_uppercase()) {
+            let mut rep_chars = replacement.chars();
+            if let Some(first) = rep_chars.next() {
+                result.extend(first.to_uppercase());
+                result.extend(rep_chars);
+            } else {
+                result.push_str(replacement);
+            }
+        } else {
+            result.push_str(replacement);
+        }
+        last_end = start + needle.len();
+    }
+    result.push_str(&haystack[last_end..]);
+    result
 }
 
 /// Taklit edilen mesajın orijinal yazarını **kalıcı** olarak kaydeder (SQLite).
@@ -779,6 +820,12 @@ pub fn has_card_signature(
 pub fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
     if is_native_message(msg.id) {
         return true;
+    }
+
+    if let Some(flags) = msg.flags {
+        if (flags.bits() & (1 << 15) != 0) && (msg.author.id == bot_id || msg.webhook_id.is_some()) {
+            return true;
+        }
     }
 
     has_card_signature(
@@ -1279,7 +1326,6 @@ async fn send_classic(
     let mut builder = CreateMessage::new()
         .content(content)
         .allowed_mentions(build_selective_allowed_mentions(msg))
-        .flags(MessageFlags::SUPPRESS_EMBEDS)
         .embeds(embeds.to_vec());
 
     if !resolved.attachments.is_empty() {
@@ -1333,7 +1379,6 @@ fn classic_payload(
         "content": build_content(author_id, parsed, post, resolved, false),
         "embeds": embeds,
         "attachments": attachments,
-        "flags": MessageFlags::SUPPRESS_EMBEDS,
         "username": identity.username,
         "allowed_mentions": allowed_mentions,
     });
@@ -1387,6 +1432,9 @@ fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) 
 /// Discord'un 4xx yanıtı kalıcı bir ret anlamına gelir (ağ hatasından farklı olarak
 /// tekrar denemek anlamsızdır).
 fn is_discord_rejection(error: &str) -> bool {
+    if error.starts_with("Discord 429") || error.starts_with("Discord 408") {
+        return false;
+    }
     error.starts_with("Discord 4")
 }
 
@@ -1402,7 +1450,7 @@ fn build_content(
     resolved: &render::ResolvedMedia,
     mention_author: bool,
 ) -> String {
-    let link = format!("[{}]({})", parsed.platform.display_name(), post.url);
+    let link = format!("[{}](<{}>)", parsed.platform.display_name(), post.url);
     let link = if parsed.is_spoiler { format!("||{link}||") } else { link };
 
     let base_content = if mention_author {
@@ -1473,8 +1521,8 @@ mod message_tests {
             &render::ResolvedMedia::default(),
             false,
         );
-        assert_eq!(content, "[Twitter](https://x.com/kullanici/status/1)");
-        assert!(!content.contains("<https://"), "link hilesi kalmamalı: {content}");
+        // Discord Markdown: <URL> otomatik önizlemeyi bastırır, botun zengin embed'ini engellemez.
+        assert_eq!(content, "[Twitter](<https://x.com/kullanici/status/1>)");
         assert!(!content.contains("[:]("), "eski işaret kalmamalı: {content}");
     }
 
@@ -1487,7 +1535,7 @@ mod message_tests {
             &render::ResolvedMedia::default(),
             true,
         );
-        assert!(with_mention.starts_with("<@123> [Twitter]("), "içerik: {with_mention}");
+        assert!(with_mention.starts_with("<@123> [Twitter](<"), "içerik: {with_mention}");
     }
 
     #[test]
@@ -1502,9 +1550,19 @@ mod message_tests {
         };
         let content = build_content(UserId::new(9), &parsed, &post(), &resolved, false);
 
-        assert!(content.starts_with("||[Twitter](https://x.com/kullanici/status/1)||"), "içerik: {content}");
+        assert!(content.starts_with("||[Twitter](<https://x.com/kullanici/status/1>)||"), "içerik: {content}");
         assert!(content.contains("\n> şuna bak"), "içerik: {content}");
         assert!(content.contains("[🎬 Videoyu aç](https://cdn/v1.mp4)"), "içerik: {content}");
+    }
+
+    #[test]
+    fn is_discord_rejection_treats_transient_rates_and_timeouts_as_non_rejections() {
+        assert!(is_discord_rejection("Discord 400 döndü: Bad Request"));
+        assert!(is_discord_rejection("Discord 403 döndü: Missing Permissions"));
+        assert!(is_discord_rejection("Discord 404 döndü: Unknown Webhook"));
+        assert!(!is_discord_rejection("Discord 429 döndü: Too Many Requests"));
+        assert!(!is_discord_rejection("Discord 408 döndü: Request Timeout"));
+        assert!(!is_discord_rejection("Discord 500 döndü: Internal Server Error"));
     }
 
     /// Embed'i JSON'dan üretir: `serenity::all::Embed` `#[non_exhaustive]` olduğu için
@@ -1709,6 +1767,10 @@ mod message_tests {
         assert_eq!(sanitize_webhook_name(""), "Botgek");
         assert_eq!(sanitize_webhook_name("   "), "Botgek");
         assert_eq!(sanitize_webhook_name("Discord Clyde"), "D!scord C!yde");
+        assert_eq!(sanitize_webhook_name("DISCORD CLYDE"), "D!scord C!yde");
+        assert_eq!(sanitize_webhook_name("everyone"), "Botgek");
+        assert_eq!(sanitize_webhook_name("@here"), "Botgek");
+        assert_eq!(sanitize_webhook_name("User#1234:dev`"), "User1234dev");
         assert_eq!(sanitize_webhook_name(&"a".repeat(120)).chars().count(), 80);
     }
 
@@ -1736,8 +1798,8 @@ mod message_tests {
 
         assert_eq!(payload["username"], "Eray");
         assert_eq!(payload["avatar_url"], "https://cdn.example/a.png");
-        assert_eq!(payload["flags"], MessageFlags::SUPPRESS_EMBEDS.bits());
-        assert_eq!(payload["content"], "[Twitter](https://x.com/kullanici/status/1)");
+        assert!(payload.get("flags").is_none());
+        assert_eq!(payload["content"], "[Twitter](<https://x.com/kullanici/status/1>)");
         assert_eq!(payload["embeds"][0]["title"], "başlık");
         assert_eq!(payload["attachments"], serde_json::json!([]));
     }

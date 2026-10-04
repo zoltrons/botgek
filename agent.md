@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕐 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-04 13:07] zoltrons — Discord API ve Geliştirici Dokümantasyonu uyumluluk düzeltmeleri
+- **Commit:** `<sha>`
+- **Yapılan:**
+  1. Discord Developer Documentation standartlarına uygun resmi HTTP User-Agent başlığı eklendi (`DiscordBot ($url, $versionNumber)`).
+  2. Components V2 Container (`type: 17`) azami alt bileşen limiti 12'den 10'a çekildi; toplam kümülatif bileşen metin boyutu 4.000 karakterle sınırlandırıldı.
+  3. Webhook'larda `message_reference` alanı Discord REST uç noktasının 400 hatası vermemesi için temizlendi; 429 Too Many Requests yanıtları için Retry-After tabanlı yeniden deneme eklendi ve 429'un kalıcı özellik kapatma (V2_UNAVAILABLE / None webhook) tetiklemesi engellendi.
+  4. Klasik akışta botun kendi zengin embed'lerini gizleyen `SUPPRESS_EMBEDS` bayrağı kaldırıldı, URL Discord Markdown `<URL>` standardı ile sarıldı; webhook kullanıcı adı filtreleme case-insensitive yasaklı kelimeler ("discord", "clyde") ve reserved isimler ("everyone", "here") için güçlendirildi.
+  5. Kanal düzeyinde izin ezmelerini (channel overwrites) gözeten kanonik Serenity izin kontrolü uygulandı; DM reaksiyon intent'i eklendi.
+- **Etkilenen:** `src/converters/builtin/raw.rs`, `src/converters/builtin/v2.rs`, `src/converters/builtin/mod.rs`, `src/handler.rs`, `src/main.rs`
 ### [2026-10-04 11:01] zoltrons — Orijinal mesajı silme zamanlaması düzeltildi (hayalet mesaj / client desync)
 - **Commit:** `0fe58fd`
 - **Yapılan:**

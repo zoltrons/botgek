@@ -40,10 +40,12 @@ use crate::utils::truncate_chars;
 pub const COMPONENTS_V2_FLAG: u64 = 1 << 15;
 /// Tek bir `Text Display` bileşeninin Discord sınırı.
 pub const TEXT_DISPLAY_LIMIT: usize = 4000;
+/// Tüm bileşenler genelinde toplam kümülatif metin sınırı (Discord Developer Docs: max 4,000 chars across all components).
+pub const CUMULATIVE_TEXT_LIMIT: usize = 4000;
 /// `Media Gallery` bileşeni en fazla 10 öğe alır.
 pub const MEDIA_GALLERY_LIMIT: usize = 10;
-/// Kart içindeki bileşen sayısı (Discord sınırı 40).
-const MAX_CONTAINER_CHILDREN: usize = 12;
+/// Kart (Container) içindeki bileşen sayısı (Discord API sınırı 10).
+const MAX_CONTAINER_CHILDREN: usize = 10;
 
 // Bileşen türleri
 const TYPE_TEXT_DISPLAY: u64 = 10;
@@ -78,6 +80,38 @@ pub struct V2Card<'a> {
 /// (`Container`). Kullanıcı metni kartın **içinde** değil **üstünde**, düz mesaj metni
 /// olarak durur; taklit (webhook) açıkken mesaj kullanıcının adıyla gittiği için tam
 /// olarak kullanıcı yazmış gibi görünür.
+fn total_text_chars(top: &[Value], children: &[Value]) -> usize {
+    top.iter()
+        .chain(children.iter())
+        .filter(|comp| comp["type"] == TYPE_TEXT_DISPLAY)
+        .filter_map(|comp| comp["content"].as_str())
+        .map(|s| s.chars().count())
+        .sum()
+}
+
+fn enforce_cumulative_text_limit(top: &mut [Value], children: &mut [Value]) {
+    while total_text_chars(top, children) > CUMULATIVE_TEXT_LIMIT {
+        let overflow = total_text_chars(top, children) - CUMULATIVE_TEXT_LIMIT;
+        let largest = top
+            .iter_mut()
+            .chain(children.iter_mut())
+            .filter(|c| c["type"] == TYPE_TEXT_DISPLAY)
+            .max_by_key(|c| c["content"].as_str().map(|s| s.chars().count()).unwrap_or(0));
+
+        if let Some(comp) = largest {
+            let current = comp["content"].as_str().unwrap_or_default();
+            let current_len = current.chars().count();
+            if current_len == 0 {
+                break;
+            }
+            let new_len = current_len.saturating_sub(overflow);
+            comp["content"] = json!(truncate_chars(current, new_len));
+        } else {
+            break;
+        }
+    }
+}
+
 pub fn build_payload(card: &V2Card<'_>) -> Value {
     // Kullanıcı notu kartın dışına çıkar: alıntı bloğuna (`>`) çevrilmez, olduğu gibi yazılır.
     let mut top: Vec<Value> = card
@@ -145,7 +179,15 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     }
     children.push(text(meta_line(card)));
 
-    children.truncate(MAX_CONTAINER_CHILDREN);
+    if children.len() > MAX_CONTAINER_CHILDREN {
+        let last = children.pop();
+        children.truncate(MAX_CONTAINER_CHILDREN - 1);
+        if let Some(meta) = last {
+            children.push(meta);
+        }
+    }
+
+    enforce_cumulative_text_limit(&mut top, &mut children);
 
     // Kart her zaman son bileşendir: kullanıcı metni (varsa) onun üstünde durur.
     top.push(json!({
@@ -1251,7 +1293,61 @@ mod tests {
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let body = components(&payload)[1]["content"].as_str().unwrap();
-        assert_eq!(body.chars().count(), TEXT_DISPLAY_LIMIT);
+        assert!(body.chars().count() <= TEXT_DISPLAY_LIMIT);
+        let total: usize = top_level(&payload)
+            .iter()
+            .chain(texts(&payload).iter())
+            .map(|s| s.chars().count())
+            .sum();
+        assert!(total <= CUMULATIVE_TEXT_LIMIT);
+    }
+
+    #[test]
+    fn container_children_never_exceeds_discord_limit_of_ten() {
+        let mut post = sample_post();
+        let mut inner = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/enic/status/3",
+            Author::new("En İç", "enic"),
+        );
+        inner.text = "iç".to_string();
+        let mut middle = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/orta/status/2",
+            Author::new("Orta", "orta"),
+        );
+        middle.text = "orta".to_string();
+        middle.quote = Some(Box::new(inner));
+        post.quote = Some(Box::new(middle));
+        post.community_note = Some("Topluluk Notu İçeriği".to_string());
+        post.media = vec![image("https://cdn/1.jpg")];
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let children = components(&payload);
+        assert!(children.len() <= MAX_CONTAINER_CHILDREN);
+        assert_eq!(MAX_CONTAINER_CHILDREN, 10);
+    }
+
+    #[test]
+    fn cumulative_text_across_components_never_exceeds_four_thousand() {
+        let mut post = sample_post();
+        post.text = "p".repeat(3000);
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let mut card_data = card(&post, &options, &resolved, &emojis);
+        let comment = "c".repeat(2000);
+        card_data.user_comment = Some(&comment);
+        let payload = build_payload(&card_data);
+
+        let total: usize = top_level(&payload)
+            .iter()
+            .chain(texts(&payload).iter())
+            .map(|s| s.chars().count())
+            .sum();
+        assert!(total <= CUMULATIVE_TEXT_LIMIT);
     }
 }
 

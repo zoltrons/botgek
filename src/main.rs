@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use config::Config;
 use handler::Handler;
 use serenity::all::{Client, GatewayIntents};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 /// İlk dönüşümde DNS çözümlemesi + TLS el sıkışması beklenmesin diye ilgili uçlara
@@ -22,7 +22,11 @@ use tracing_subscriber::EnvFilter;
 fn prewarm_connections(client: &reqwest::Client) {
     /// Yanıtı yok sayar: amaç bağlantıyı kurmak (DNS + TLS + HTTP/2 el sıkışması).
     async fn warm(client: &reqwest::Client, url: &str) {
-        let _ = client.get(url).send().await;
+        let _ = client
+            .get(url)
+            .header("user-agent", converters::builtin::DISCORD_USER_AGENT)
+            .send()
+            .await;
     }
 
     let client = client.clone();
@@ -90,7 +94,8 @@ async fn main() {
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_MESSAGE_REACTIONS
-        | GatewayIntents::DIRECT_MESSAGES;
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGE_REACTIONS;
 
     let handler = Handler {
         config: config.clone(),

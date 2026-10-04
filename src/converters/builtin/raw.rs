@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serenity::all::{ChannelId, CreateAttachment, MessageId, WebhookId};
 
-use super::USER_AGENT;
+use super::DISCORD_USER_AGENT;
 
 /// Discord REST tabanı (API v10).
 pub const API_BASE: &str = "https://discord.com/api/v10";
@@ -19,6 +19,23 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(90);
 /// Hata gövdesinden log'a yazılacak en fazla karakter.
 const MAX_ERROR_BYTES: usize = 600;
 static BOUNDARY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Discord 429 (Rate Limit) yanıtından bekleme süresini (Retry-After) okur.
+pub fn extract_retry_after(headers: &reqwest::header::HeaderMap, body: &str) -> Duration {
+    if let Some(header_val) = headers.get("retry-after") {
+        if let Ok(s) = header_val.to_str() {
+            if let Ok(secs) = s.parse::<f64>() {
+                return Duration::from_secs_f64(secs.clamp(0.05, 5.0));
+            }
+        }
+    }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(secs) = val.get("retry_after").and_then(|v| v.as_f64()) {
+            return Duration::from_secs_f64(secs.clamp(0.05, 5.0));
+        }
+    }
+    Duration::from_millis(500)
+}
 
 /// Kanala mesaj gönderir ve oluşan mesajın kimliğini döner.
 pub async fn send_channel_message(
@@ -37,28 +54,40 @@ pub async fn send_channel_message(
     }
     let json = serde_json::to_string(&payload).map_err(|e| format!("Gövde serileştirilemedi: {e}"))?;
 
-    let mut request = client.post(&url).header("user-agent", USER_AGENT).timeout(UPLOAD_TIMEOUT);
-    request = if files.is_empty() {
-        request.header("content-type", "application/json").body(json)
-    } else {
-        let (boundary, body) = build_multipart(&json, files);
-        request
-            .header("content-type", format!("multipart/form-data; boundary={boundary}"))
-            .body(body)
-    };
+    for attempt in 0..3 {
+        let mut request = client.post(&url).header("user-agent", DISCORD_USER_AGENT).timeout(UPLOAD_TIMEOUT);
+        request = if files.is_empty() {
+            request.header("content-type", "application/json").body(json.clone())
+        } else {
+            let (boundary, body) = build_multipart(&json, files);
+            request
+                .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                .body(body)
+        };
 
-    let response = request
-        .header("authorization", format!("Bot {token}"))
-        .send()
-        .await
-        .map_err(|e| format!("İstek gönderilemedi: {e}"))?;
+        let response = request
+            .header("authorization", format!("Bot {token}"))
+            .send()
+            .await
+            .map_err(|e| format!("İstek gönderilemedi: {e}"))?;
 
-    let status = response.status().as_u16();
-    let body = response.text().await.unwrap_or_default();
-    if !(200..300).contains(&status) {
-        return Err(error_message(status, &body));
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response.text().await.unwrap_or_default();
+
+        if status == 429 && attempt < 2 {
+            let wait = extract_retry_after(&headers, &body);
+            tracing::warn!("Discord REST 429 (Rate Limit), {wait:?} bekleniyor (deneme {attempt})");
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+
+        if !(200..300).contains(&status) {
+            return Err(error_message(status, &body));
+        }
+        return parse_message_id(&body);
     }
-    parse_message_id(&body)
+    Err("Discord REST: 429 deneme sayısı aşıldı".to_string())
 }
 
 /// Webhook çalıştırma adresi.
@@ -90,26 +119,43 @@ pub async fn execute_webhook(
     files: &[CreateAttachment],
 ) -> Result<Option<MessageId>, String> {
     let url = execute_webhook_url(webhook_id, token, thread_id);
-    let json = serde_json::to_string(payload).map_err(|e| format!("Gövde serileştirilemedi: {e}"))?;
-
-    let mut request = client.post(&url).header("user-agent", USER_AGENT).timeout(UPLOAD_TIMEOUT);
-    request = if files.is_empty() {
-        request.header("content-type", "application/json").body(json)
-    } else {
-        let (boundary, body) = build_multipart(&json, files);
-        request
-            .header("content-type", format!("multipart/form-data; boundary={boundary}"))
-            .body(body)
-    };
-
-    let response = request.send().await.map_err(|e| format!("İstek gönderilemedi: {e}"))?;
-
-    let status = response.status().as_u16();
-    let body = response.text().await.unwrap_or_default();
-    if !(200..300).contains(&status) {
-        return Err(error_message(status, &body));
+    let mut payload = payload.clone();
+    // Discord Execute Webhook uç noktası `message_reference` alanını desteklemez (400 Bad Request döner).
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("message_reference");
     }
-    Ok(parse_message_id(&body).ok())
+    let json = serde_json::to_string(&payload).map_err(|e| format!("Gövde serileştirilemedi: {e}"))?;
+
+    for attempt in 0..3 {
+        let mut request = client.post(&url).header("user-agent", DISCORD_USER_AGENT).timeout(UPLOAD_TIMEOUT);
+        request = if files.is_empty() {
+            request.header("content-type", "application/json").body(json.clone())
+        } else {
+            let (boundary, body) = build_multipart(&json, files);
+            request
+                .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                .body(body)
+        };
+
+        let response = request.send().await.map_err(|e| format!("İstek gönderilemedi: {e}"))?;
+
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response.text().await.unwrap_or_default();
+
+        if status == 429 && attempt < 2 {
+            let wait = extract_retry_after(&headers, &body);
+            tracing::warn!("Discord REST 429 (Rate Limit), {wait:?} bekleniyor (deneme {attempt})");
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+
+        if !(200..300).contains(&status) {
+            return Err(error_message(status, &body));
+        }
+        return Ok(parse_message_id(&body).ok());
+    }
+    Err("Discord REST: 429 deneme sayısı aşıldı".to_string())
 }
 
 /// Kanalın webhook'larını listeler (Manage Webhooks izni gerekir).
@@ -119,24 +165,37 @@ pub async fn list_channel_webhooks(
     channel_id: ChannelId,
 ) -> Result<Vec<serde_json::Value>, String> {
     let url = format!("{API_BASE}/channels/{}/webhooks", channel_id.get());
-    let response = client
-        .get(&url)
-        .header("user-agent", USER_AGENT)
-        .header("authorization", format!("Bot {bot_token}"))
-        .timeout(UPLOAD_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("Webhook listesi istenemedi: {e}"))?;
 
-    let status = response.status().as_u16();
-    let body = response.text().await.unwrap_or_default();
-    if !(200..300).contains(&status) {
-        return Err(error_message(status, &body));
+    for attempt in 0..3 {
+        let response = client
+            .get(&url)
+            .header("user-agent", DISCORD_USER_AGENT)
+            .header("authorization", format!("Bot {bot_token}"))
+            .timeout(UPLOAD_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("Webhook listesi istenemedi: {e}"))?;
+
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response.text().await.unwrap_or_default();
+
+        if status == 429 && attempt < 2 {
+            let wait = extract_retry_after(&headers, &body);
+            tracing::warn!("Discord REST 429 (Rate Limit), {wait:?} bekleniyor (deneme {attempt})");
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+
+        if !(200..300).contains(&status) {
+            return Err(error_message(status, &body));
+        }
+
+        let value: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("Webhook listesi çözümlenemedi: {e}"))?;
+        return Ok(value.as_array().cloned().unwrap_or_default());
     }
-
-    let value: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("Webhook listesi çözümlenemedi: {e}"))?;
-    Ok(value.as_array().cloned().unwrap_or_default())
+    Err("Discord REST: 429 deneme sayısı aşıldı".to_string())
 }
 
 /// Kanala yeni bir webhook ekler.
@@ -147,22 +206,35 @@ pub async fn create_channel_webhook(
     name: &str,
 ) -> Result<serde_json::Value, String> {
     let url = format!("{API_BASE}/channels/{}/webhooks", channel_id.get());
-    let response = client
-        .post(&url)
-        .header("user-agent", USER_AGENT)
-        .header("authorization", format!("Bot {bot_token}"))
-        .json(&serde_json::json!({"name": name}))
-        .timeout(UPLOAD_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("Webhook oluşturma isteği başarısız: {e}"))?;
 
-    let status = response.status().as_u16();
-    let body = response.text().await.unwrap_or_default();
-    if !(200..300).contains(&status) {
-        return Err(error_message(status, &body));
+    for attempt in 0..3 {
+        let response = client
+            .post(&url)
+            .header("user-agent", DISCORD_USER_AGENT)
+            .header("authorization", format!("Bot {bot_token}"))
+            .json(&serde_json::json!({"name": name}))
+            .timeout(UPLOAD_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("Webhook oluşturma isteği başarısız: {e}"))?;
+
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response.text().await.unwrap_or_default();
+
+        if status == 429 && attempt < 2 {
+            let wait = extract_retry_after(&headers, &body);
+            tracing::warn!("Discord REST 429 (Rate Limit), {wait:?} bekleniyor (deneme {attempt})");
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+
+        if !(200..300).contains(&status) {
+            return Err(error_message(status, &body));
+        }
+        return serde_json::from_str(&body).map_err(|e| format!("Webhook yanıtı çözümlenemedi: {e}"));
     }
-    serde_json::from_str(&body).map_err(|e| format!("Webhook yanıtı çözümlenemedi: {e}"))
+    Err("Discord REST: 429 deneme sayısı aşıldı".to_string())
 }
 
 /// Webhook JSON'undan kimlik ve token'ı çıkarır.
@@ -320,6 +392,17 @@ mod tests {
         assert_eq!(mime_for_filename("photo.JPG"), "image/jpeg");
         assert_eq!(mime_for_filename("clip.webm"), "video/webm");
         assert_eq!(mime_for_filename("bilinmeyen"), "application/octet-stream");
+    }
+
+    #[test]
+    fn retry_after_is_extracted_from_header_and_body() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "1.5".parse().unwrap());
+        assert_eq!(extract_retry_after(&headers, "{}"), Duration::from_millis(1500));
+
+        let headers_empty = reqwest::header::HeaderMap::new();
+        let body = r#"{"retry_after": 2.25}"#;
+        assert_eq!(extract_retry_after(&headers_empty, body), Duration::from_millis(2250));
     }
 
     #[test]

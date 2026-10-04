@@ -247,14 +247,32 @@ impl EventHandler for Handler {
 
             let is_admin_or_mod = if let Some(guild_id) = reaction.guild_id {
                 if let Ok(member) = guild_id.member(&ctx.http, user_id).await {
-                    #[allow(deprecated)]
-                    member
-                        .permissions(&ctx.cache)
-                        .map(|perms| {
+                    if let Some(guild) = ctx.cache.guild(guild_id) {
+                        // Discord kanal izin ezmelerini (channel overwrites) hesaba katan kanonik izin kontrolü
+                        if let Some(channel) = guild.channels.get(&reaction.channel_id) {
+                            let perms = guild.user_permissions_in(channel, &member);
                             perms.contains(Permissions::MANAGE_MESSAGES)
                                 || perms.contains(Permissions::ADMINISTRATOR)
-                        })
-                        .unwrap_or(false)
+                        } else {
+                            #[allow(deprecated)]
+                            member
+                                .permissions(&ctx.cache)
+                                .map(|perms| {
+                                    perms.contains(Permissions::MANAGE_MESSAGES)
+                                        || perms.contains(Permissions::ADMINISTRATOR)
+                                })
+                                .unwrap_or(false)
+                        }
+                    } else {
+                        #[allow(deprecated)]
+                        member
+                            .permissions(&ctx.cache)
+                            .map(|perms| {
+                                perms.contains(Permissions::MANAGE_MESSAGES)
+                                    || perms.contains(Permissions::ADMINISTRATOR)
+                            })
+                            .unwrap_or(false)
+                    }
                 } else {
                     false
                 }
