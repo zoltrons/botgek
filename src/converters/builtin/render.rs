@@ -190,15 +190,14 @@ fn push_media(plan: &mut MediaPlan, media: &Media, attach_images: bool, max_imag
     // Ancak servis yalnızca belirli platformları (örn. Twitter) destekler;
     // dönüştürülemeyen (Reddit vb.) mp4 formatındaki GIF'ler video olarak işlenir
     // ki kartta kırık görsel yerine oynatılabilir bir video çıksın.
-    if media.kind == MediaKind::Gif {
-        if media::gif_convert_url(&media.url).is_some() {
+    if media.kind == MediaKind::Gif
+        && media::gif_convert_url(&media.url).is_some() {
             if plan.gifs.len() < max_images {
                 plan.gifs.push(media.url.clone());
             }
             return;
         }
         // Servisin desteklemediği GIF (örn. Reddit i.redd.it/*.mp4): video olarak devam et.
-    }
 
     if media.is_video() {
         if plan.video.is_none() {
@@ -517,8 +516,8 @@ pub fn build_embeds(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
         );
     }
 
-    if options.show_quote {
-        if let Some(quote) = post.quote.as_deref() {
+    if options.show_quote
+        && let Some(quote) = post.quote.as_deref() {
             // Alıntının medyası ana embed'e alındıysa (gönderinin kendi medyası yokken)
             // alıntı embed'inde tekrar gösterilmez.
             if let Some(embed) = build_quote_embed(quote, !resolved.quote_media) {
@@ -527,15 +526,12 @@ pub fn build_embeds(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
 
             // Gönderiye **medya eklenmemişse** alıntının alıntısı da gösterilir (X'in kendi
             // kartı medyasız zincirlerde üç gönderiyi birlikte gösterir).
-            if post.media.is_empty() {
-                if let Some(nested) = quote.quote.as_deref() {
-                    if let Some(embed) = build_quote_embed(nested, !resolved.quote_media) {
+            if post.media.is_empty()
+                && let Some(nested) = quote.quote.as_deref()
+                    && let Some(embed) = build_quote_embed(nested, !resolved.quote_media) {
                         embeds.push(embed);
                     }
-                }
-            }
         }
-    }
 
     embeds
 }
@@ -571,14 +567,13 @@ fn build_main_embed(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
         embed = embed.description(truncate_chars(&description, EMBED_DESCRIPTION_LIMIT));
     }
 
-    if options.show_community_note {
-        if let Some(note) = &post.community_note {
+    if options.show_community_note
+        && let Some(note) = &post.community_note {
             let value = truncate_chars(note, EMBED_FIELD_VALUE_LIMIT);
             if !value.is_empty() {
                 embed = embed.field("🔎 Topluluk Notu", value, false);
             }
         }
-    }
 
     // Kapak görseli: eklenen ilk görsel, yoksa videonun kapağı
     if let Some(first) = resolved.images.first() {
@@ -594,13 +589,11 @@ fn build_main_embed(post: &BuiltinPost, options: &RenderOptions, resolved: &Reso
     }
 
 
-    if options.show_timestamp {
-        if let Some(created_at) = post.created_at {
-            if let Ok(timestamp) = Timestamp::from_unix_timestamp(created_at) {
+    if options.show_timestamp
+        && let Some(created_at) = post.created_at
+            && let Ok(timestamp) = Timestamp::from_unix_timestamp(created_at) {
                 embed = embed.timestamp(timestamp);
             }
-        }
-    }
 
     embed.footer(CreateEmbedFooter::new(truncate_chars(
         &footer_text(post, options),
@@ -615,11 +608,10 @@ pub const CARD_SIGNATURE: &str = "Botgek";
 /// Alt bilgi: platform + ek bilgi + çeviri notu + etkileşim metrikleri.
 fn footer_text(post: &BuiltinPost, options: &RenderOptions) -> String {
     let mut parts = vec![format!("{} • {}", post.platform.display_name(), CARD_SIGNATURE)];
-    if let Some(extra) = &post.extra_label {
-        if !extra.trim().is_empty() {
+    if let Some(extra) = &post.extra_label
+        && !extra.trim().is_empty() {
             parts.push(extra.trim().to_string());
         }
-    }
     if let Some(translation) = &post.translation {
         parts.push(match translation.source.as_deref() {
             Some(source) => format!("🌐 {source} → tr"),
@@ -647,11 +639,10 @@ pub fn stats_line(stats: &Stats) -> String {
     if stats.quotes > 0 {
         parts.push(format!("❝ {}", format_count(stats.quotes)));
     }
-    if let Some(views) = stats.views {
-        if views > 0 {
+    if let Some(views) = stats.views
+        && views > 0 {
             parts.push(format!("👁️ {}", format_count(views)));
         }
-    }
     parts.join("  •  ")
 }
 
@@ -697,6 +688,49 @@ fn build_quote_embed(quote: &BuiltinPost, include_media: bool) -> Option<CreateE
     }
 
     Some(embed)
+}
+
+/// Alıntı embed'i için rengi koyulaştırır.
+fn dim_colour(colour: u32) -> u32 {
+    let dim = |channel: u32| (channel * 3) / 5;
+    (dim((colour >> 16) & 0xFF) << 16) | (dim((colour >> 8) & 0xFF) << 8) | dim(colour & 0xFF)
+}
+
+/// 999 → `999`, 1_234 → `1.2K`, 12_000 → `12K`, 1_500_000 → `1.5M`
+pub fn format_count(value: u64) -> String {
+    fn scaled(value: u64, divisor: f64, suffix: &str) -> String {
+        let text = format!("{:.1}", value as f64 / divisor);
+        let text = text.trim_end_matches(".0").to_string();
+        format!("{text}{suffix}")
+    }
+
+    match value {
+        0..=999 => value.to_string(),
+        1_000..=999_999 => scaled(value, 1_000.0, "K"),
+        1_000_000..=999_999_999 => scaled(value, 1_000_000.0, "M"),
+        _ => scaled(value, 1_000_000_000.0, "B"),
+    }
+}
+
+/// Kullanıcı kaynaklı metinlerde Discord markdown'ını etkisiz hâle getirir.
+pub fn escape_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '*' | '_' | '~' | '`' | '|' | '>' | '[' | ']') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Spoiler dosyalarında `attachment://` referansının gerçek dosya adını verir.
+fn attachment_name(filename: &str, spoiler: bool) -> String {
+    if spoiler {
+        format!("SPOILER_{filename}")
+    } else {
+        filename.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -775,8 +809,10 @@ mod tests {
 
     #[test]
     fn direct_mode_never_downloads_media() {
-        let mut engine = EngineSettings::default();
-        engine.media_delivery = MediaDelivery::Direct;
+        let mut engine = EngineSettings {
+            media_delivery: MediaDelivery::Direct,
+            ..Default::default()
+        };
         // Kullanıcı dosya eki seçmiş olsa bile ışık hızı modu indirme yapmaz.
         engine.attach_images = true;
         engine.attach_videos = true;
@@ -1177,48 +1213,5 @@ mod tests {
             remote_gif_url("https://cdn.example/clip.mp4"),
             "https://cdn.example/clip.mp4"
         );
-    }
-}
-
-/// Alıntı embed'i için rengi koyulaştırır.
-fn dim_colour(colour: u32) -> u32 {
-    let dim = |channel: u32| (channel * 3) / 5;
-    (dim((colour >> 16) & 0xFF) << 16) | (dim((colour >> 8) & 0xFF) << 8) | dim(colour & 0xFF)
-}
-
-/// 999 → `999`, 1_234 → `1.2K`, 12_000 → `12K`, 1_500_000 → `1.5M`
-pub fn format_count(value: u64) -> String {
-    fn scaled(value: u64, divisor: f64, suffix: &str) -> String {
-        let text = format!("{:.1}", value as f64 / divisor);
-        let text = text.trim_end_matches(".0").to_string();
-        format!("{text}{suffix}")
-    }
-
-    match value {
-        0..=999 => value.to_string(),
-        1_000..=999_999 => scaled(value, 1_000.0, "K"),
-        1_000_000..=999_999_999 => scaled(value, 1_000_000.0, "M"),
-        _ => scaled(value, 1_000_000_000.0, "B"),
-    }
-}
-
-/// Kullanıcı kaynaklı metinlerde Discord markdown'ını etkisiz hâle getirir.
-pub fn escape_markdown(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if matches!(ch, '\\' | '*' | '_' | '~' | '`' | '|' | '>' | '[' | ']') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// Spoiler dosyalarında `attachment://` referansının gerçek dosya adını verir.
-fn attachment_name(filename: &str, spoiler: bool) -> String {
-    if spoiler {
-        format!("SPOILER_{filename}")
-    } else {
-        filename.to_string()
     }
 }

@@ -1,8 +1,8 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use serenity::all::ReactionType;
 
-static TRANSLATE_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TRANSLATE_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\[:\]\((https?://[^/\s]+/(?:[^/\s]+/)?(?:[^/\s]+)/(?:status|post)/[a-zA-Z0-9]+)(?:/([a-z]{2}))?\)")
         .expect("Geçersiz çeviri regex deseni")
 });

@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 use tracing::{debug, warn};
@@ -21,7 +21,7 @@ use crate::settings::{EngineSettings, TwitterSource};
 const SYNDICATION_URL: &str = "https://cdn.syndication.twimg.com/tweet-result";
 const FXTWITTER_URL: &str = "https://api.fxtwitter.com";
 
-static TWEET_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
+static TWEET_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]{1,20})/status/(\d{1,25})").expect("geçerli tweet regex")
 });
 
@@ -74,7 +74,7 @@ pub async fn fetch(
     );
 
     // Syndication repost/görüntülenme/alıntı vermez: paralel istenen yanıttan tamamlanır.
-    let fx_stats = fx_result.as_ref().ok().map(|post| post.stats.clone());
+    let fx_stats = fx_result.as_ref().ok().map(|post| post.stats);
     let mut post = match x_result {
         Ok(post) => post,
         Err(err) => {
@@ -216,7 +216,7 @@ fn syndication_token(id: &str) -> String {
     }
 
     // JS referansındaki `.replace(/(0+|\.)/g, '')` ile aynı davranış
-    out.replace('.', "").replace('0', "")
+    out.replace(['.', '0'], "")
 }
 
 // =====================================================================================
@@ -505,11 +505,10 @@ fn syndication_to_post(
                 .unwrap_or_default();
             format!("https://x.com/{quoted_handle}/status/{quoted_id}")
         });
-        if let Some(quoted_url) = quoted_url {
-            if let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url, max_video_bytes) {
+        if let Some(quoted_url) = quoted_url
+            && let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url, max_video_bytes) {
                 post.quote = Some(Box::new(quoted_post));
             }
-        }
     }
 
     Ok(post)
@@ -547,14 +546,13 @@ fn expand_url_entities(text: &str, entities: Option<&SyndicationEntities>) -> St
 
 /// `mediaDetails` (varsa) veya `photos` + `video` alanlarından medya listesi üretir.
 fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Media> {
-    if let Some(details) = tweet.media_details.as_deref() {
-        if !details.is_empty() {
+    if let Some(details) = tweet.media_details.as_deref()
+        && !details.is_empty() {
             return details
                 .iter()
                 .filter_map(|detail| media_from_detail(detail, max_video_bytes))
                 .collect();
         }
-    }
 
     let mut media = Vec::new();
     if let Some(photos) = tweet.photos.as_deref() {
@@ -571,8 +569,8 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
             }
         }
     }
-    if let Some(video) = tweet.video.as_ref() {
-        if let Some(url) = best_mp4(video.variants.as_deref(), video.duration_ms, max_video_bytes, true) {
+    if let Some(video) = tweet.video.as_ref()
+        && let Some(url) = best_mp4(video.variants.as_deref(), video.duration_ms, max_video_bytes, true) {
             media.push(Media {
                 kind: MediaKind::Video,
                 url,
@@ -582,7 +580,6 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
                 duration: video.duration_ms.map(|ms| ms / 1000),
             });
         }
-    }
     media
 }
 
@@ -744,14 +741,13 @@ async fn from_fxtwitter(
     let response: FxResponse = serde_json::from_value(value)
         .map_err(|e| format!("fxtwitter yanıtı çözümlenemedi ({id}): {e}"))?;
 
-    if let Some(code) = response.code {
-        if code != 200 {
+    if let Some(code) = response.code
+        && code != 200 {
             return Err(format!(
                 "fxtwitter gönderiyi döndürmedi ({id}, kod {code}): {}",
                 response.message.unwrap_or_default()
             ));
         }
-    }
 
     let tweet = response
         .tweet
@@ -812,11 +808,10 @@ fn fx_to_post(tweet: &FxTweet, fallback_url: &str, max_video_bytes: u64) -> Resu
             .as_deref()
             .unwrap_or_default()
             .replace("://twitter.com/", "://x.com/");
-        if !quoted_url.is_empty() {
-            if let Ok(quoted_post) = fx_to_post(quoted, &quoted_url, max_video_bytes) {
+        if !quoted_url.is_empty()
+            && let Ok(quoted_post) = fx_to_post(quoted, &quoted_url, max_video_bytes) {
                 post.quote = Some(Box::new(quoted_post));
             }
-        }
     }
 
     // Alıntılanan gönderi de kendi `fx_to_post` çağrısında çevrilir.
@@ -879,6 +874,77 @@ fn is_grok_translation(provider: Option<&str>) -> bool {
         })
         .unwrap_or(false)
 }
+
+/// `media.all` (sıralı) varsa onu, yoksa `photos` + `videos` listelerini kullanır.
+fn fx_media(media: Option<&FxMedia>, video_budget: u64) -> Vec<Media> {
+    let Some(media) = media else {
+        return Vec::new();
+    };
+
+    let mut items: Vec<&FxMediaItem> = media.all.as_deref().unwrap_or_default().iter().collect();
+    if items.is_empty() {
+        items.extend(media.photos.as_deref().unwrap_or_default());
+        items.extend(media.videos.as_deref().unwrap_or_default());
+    }
+
+    items
+        .iter()
+        .filter_map(|item| fx_media_item(item, video_budget))
+        .collect()
+}
+
+/// FxTwitter'ın `formats` listesinden **anında oynayan** en uygun mp4'ü seçer.
+///
+/// `None` dönerse gönderinin kendi `url` alanı kullanılır (tek varyant verilmiş demektir).
+fn pick_fx_video(item: &FxMediaItem, max_bytes: u64) -> Option<String> {
+    let duration_ms = item
+        .duration
+        .map(|seconds| (seconds.max(0.0) * 1000.0).round() as u64);
+
+    let candidates: Vec<VideoCandidate> = item
+        .formats
+        .as_deref()?
+        .iter()
+        .filter(|format| format.container.as_deref() == Some("mp4"))
+        .filter_map(|format| {
+            Some(VideoCandidate {
+                url: format.url.as_deref()?,
+                bitrate: format.bitrate.unwrap_or(0),
+                // Kaynak tam boyut veriyorsa o, yoksa bit hızı × süre tahmini kullanılır.
+                bytes: format.size.or_else(|| estimated_bytes(format.bitrate, duration_ms)),
+            })
+        })
+        .collect();
+
+    pick_video(candidates, max_bytes, false)
+}
+
+fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
+    let url = item.url.as_deref()?;
+    let kind = match item.kind.as_deref()? {
+        "photo" => MediaKind::Image,
+        "gif" => MediaKind::Gif,
+        "video" => MediaKind::Video,
+        _ => return None,
+    };
+
+    Some(Media {
+        kind,
+        url: match kind {
+            // Görsel kartta CDN'den geldiği için vx/fxTwitter gibi tam çözünürlüklü varyantı (name=orig) kullanılır.
+            MediaKind::Image => card_image_url(url),
+            // Video: `formats` varsa ağırlıklı seçim (1080p dev varyant yerine hızlı oynayan).
+            MediaKind::Video => pick_fx_video(item, video_budget).unwrap_or_else(|| url.to_string()),
+            // GIF kaynağı `tweet_video` mp4'ü olarak kalmalı: FxEmbed GIF adresi ondan türetilir.
+            MediaKind::Gif => url.to_string(),
+        },
+        poster: item.thumbnail_url.clone(),
+        width: item.width,
+        height: item.height,
+        duration: item.duration.map(|seconds| seconds.round() as u64),
+    })
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1245,74 +1311,3 @@ mod tests {
         );
     }
 }
-
-/// `media.all` (sıralı) varsa onu, yoksa `photos` + `videos` listelerini kullanır.
-fn fx_media(media: Option<&FxMedia>, video_budget: u64) -> Vec<Media> {
-    let Some(media) = media else {
-        return Vec::new();
-    };
-
-    let mut items: Vec<&FxMediaItem> = media.all.as_deref().unwrap_or_default().iter().collect();
-    if items.is_empty() {
-        items.extend(media.photos.as_deref().unwrap_or_default());
-        items.extend(media.videos.as_deref().unwrap_or_default());
-    }
-
-    items
-        .iter()
-        .filter_map(|item| fx_media_item(item, video_budget))
-        .collect()
-}
-
-/// FxTwitter'ın `formats` listesinden **anında oynayan** en uygun mp4'ü seçer.
-///
-/// `None` dönerse gönderinin kendi `url` alanı kullanılır (tek varyant verilmiş demektir).
-fn pick_fx_video(item: &FxMediaItem, max_bytes: u64) -> Option<String> {
-    let duration_ms = item
-        .duration
-        .map(|seconds| (seconds.max(0.0) * 1000.0).round() as u64);
-
-    let candidates: Vec<VideoCandidate> = item
-        .formats
-        .as_deref()?
-        .iter()
-        .filter(|format| format.container.as_deref() == Some("mp4"))
-        .filter_map(|format| {
-            Some(VideoCandidate {
-                url: format.url.as_deref()?,
-                bitrate: format.bitrate.unwrap_or(0),
-                // Kaynak tam boyut veriyorsa o, yoksa bit hızı × süre tahmini kullanılır.
-                bytes: format.size.or_else(|| estimated_bytes(format.bitrate, duration_ms)),
-            })
-        })
-        .collect();
-
-    pick_video(candidates, max_bytes, false)
-}
-
-fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
-    let url = item.url.as_deref()?;
-    let kind = match item.kind.as_deref()? {
-        "photo" => MediaKind::Image,
-        "gif" => MediaKind::Gif,
-        "video" => MediaKind::Video,
-        _ => return None,
-    };
-
-    Some(Media {
-        kind,
-        url: match kind {
-            // Görsel kartta CDN'den geldiği için vx/fxTwitter gibi tam çözünürlüklü varyantı (name=orig) kullanılır.
-            MediaKind::Image => card_image_url(url),
-            // Video: `formats` varsa ağırlıklı seçim (1080p dev varyant yerine hızlı oynayan).
-            MediaKind::Video => pick_fx_video(item, video_budget).unwrap_or_else(|| url.to_string()),
-            // GIF kaynağı `tweet_video` mp4'ü olarak kalmalı: FxEmbed GIF adresi ondan türetilir.
-            MediaKind::Gif => url.to_string(),
-        },
-        poster: item.thumbnail_url.clone(),
-        width: item.width,
-        height: item.height,
-        duration: item.duration.map(|seconds| seconds.round() as u64),
-    })
-}
-

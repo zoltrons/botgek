@@ -11,7 +11,7 @@
 //!    (permalink) çözülür; Reddit bu linkleri yalnızca hedefi yönlendirme ile açığa çıkarır,
 //!    doğrudan içerik vermez (fxreddit `Location` başlığını, redlib HEAD isteğini okur).
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -25,12 +25,12 @@ const REDDIT_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0";
 
 /// Kalıcı adresteki gönderi kimliğini (`.../comments/{id}`) yakalar.
-static COMMENTS_ID_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"/comments/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
+static COMMENTS_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/comments/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
 
 /// `redd.it/{id}` biçimindeki kısa linkteki gönderi kimliğini yakalar.
-static SHORT_ID_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"redd\.it/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
+static SHORT_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"redd\.it/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
 
 /// Gönderi verisini Reddit'in herkese açık JSON uç noktasından çeker.
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
@@ -134,11 +134,10 @@ async fn get_reddit_json(
             response.status()
         ));
     }
-    if let Some(len) = response.content_length() {
-        if len > MAX_BODY_BYTES as u64 {
+    if let Some(len) = response.content_length()
+        && len > MAX_BODY_BYTES as u64 {
             return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
         }
-    }
 
     let mut response = response;
     let mut body: Vec<u8> = Vec::new();
@@ -215,11 +214,10 @@ fn reddit_extra_label(post: &RedditPost) -> Option<String> {
     if let Some(subreddit) = post.subreddit_name_prefixed.as_deref() {
         parts.push(subreddit.to_string());
     }
-    if let Some(flair) = post.link_flair_text.as_deref() {
-        if !flair.trim().is_empty() {
+    if let Some(flair) = post.link_flair_text.as_deref()
+        && !flair.trim().is_empty() {
             parts.push(flair.trim().to_string());
         }
-    }
     if parts.is_empty() {
         None
     } else {
@@ -230,16 +228,14 @@ fn reddit_extra_label(post: &RedditPost) -> Option<String> {
 
 /// Gönderi medyasını çıkarır: galeri > video > doğrudan görsel > önizleme görseli.
 fn reddit_media(post: &RedditPost) -> Vec<Media> {
-    if post.is_gallery.unwrap_or(false) {
-        if let Some(gallery) = gallery_media(post) {
-            if !gallery.is_empty() {
+    if post.is_gallery.unwrap_or(false)
+        && let Some(gallery) = gallery_media(post)
+            && !gallery.is_empty() {
                 return gallery;
             }
-        }
-    }
 
-    if let Some(video) = post.media.as_ref().and_then(|media| media.reddit_video.as_ref()) {
-        if let Some(url) = video.fallback_url.as_deref() {
+    if let Some(video) = post.media.as_ref().and_then(|media| media.reddit_video.as_ref())
+        && let Some(url) = video.fallback_url.as_deref() {
             return vec![Media {
                 kind: MediaKind::Video,
                 url: unescape_url(url),
@@ -249,7 +245,6 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
                 duration: video.duration,
             }];
         }
-    }
 
     if let Some(url) = direct_image_url(post) {
         let (width, height) = preview_dimensions(post);
@@ -281,7 +276,7 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
 fn direct_image_url(post: &RedditPost) -> Option<String> {
     let url = post.url_overridden_by_dest.as_deref()?;
     let path = url
-        .split(|c| c == '?')
+        .split('?')
         .next()
         .unwrap_or(url)
         .to_ascii_lowercase();
@@ -339,8 +334,8 @@ fn gallery_item_to_media(item: &MediaMeta) -> Option<Media> {
     let source = item.s.as_ref()?;
 
     // Hareketli görseller (gif) mp4 olarak da sunulur.
-    if item.e.as_deref() == Some("AnimatedImage") {
-        if let Some(mp4) = source.mp4.as_deref() {
+    if item.e.as_deref() == Some("AnimatedImage")
+        && let Some(mp4) = source.mp4.as_deref() {
             return Some(Media {
                 kind: MediaKind::Gif,
                 url: unescape_url(mp4),
@@ -350,7 +345,6 @@ fn gallery_item_to_media(item: &MediaMeta) -> Option<Media> {
                 duration: None,
             });
         }
-    }
 
     Some(Media {
         kind: MediaKind::Image,

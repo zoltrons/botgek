@@ -72,11 +72,10 @@ pub fn normalize_openrouter_model(raw: &str) -> String {
         };
     }
 
-    if let Some(rest) = model.strip_prefix("openrouter/") {
-        if rest.contains('/') {
+    if let Some(rest) = model.strip_prefix("openrouter/")
+        && rest.contains('/') {
             model = rest.to_string();
         }
-    }
 
     if model.is_empty() {
         DEFAULT_MODEL.to_string()
@@ -142,13 +141,11 @@ fn extract_reply(body_text: &str) -> Result<String, String> {
         return Err(format!("OpenRouter hata mesajı: {}", err.message));
     }
 
-    if let Some(choices) = parsed.choices {
-        if let Some(choice) = choices.into_iter().next() {
-            if let Some(content) = choice_text(&choice) {
+    if let Some(choices) = parsed.choices
+        && let Some(choice) = choices.into_iter().next()
+            && let Some(content) = choice_text(&choice) {
                 return Ok(content);
             }
-        }
-    }
 
     Err("OpenRouter'dan boş yanıt döndü.".to_string())
 }

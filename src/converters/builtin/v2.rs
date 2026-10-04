@@ -133,8 +133,8 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     if !card.post.text.trim().is_empty() {
         children.push(text(spoiler_wrap(card.post.text.trim(), hidden(card))));
     }
-    if card.options.show_community_note {
-        if let Some(note) = card
+    if card.options.show_community_note
+        && let Some(note) = card
             .post
             .community_note
             .as_deref()
@@ -143,9 +143,8 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         {
             children.push(text(format!("-# 🔎 Topluluk Notu\n{}", note)));
         }
-    }
-    if card.options.show_quote {
-        if let Some(quote) = card.post.quote.as_deref() {
+    if card.options.show_quote
+        && let Some(quote) = card.post.quote.as_deref() {
             // Gönderiye **medya eklenmemişse** alıntının alıntısı da gösterilir: X'in kendi
             // kartı medyasız zincirlerde üç gönderiyi (ana + alıntı + alıntının alıntısı)
             // birlikte gösterir. Medya varsa kart medyaya odaklanır, zincir iki seviyede kalır.
@@ -161,16 +160,14 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
                 children.push(separator());
                 children.push(component);
             }
-            if let Some(nested) = nested {
-                if let Some(component) = quote_component(nested, card.emojis) {
+            if let Some(nested) = nested
+                && let Some(component) = quote_component(nested, card.emojis) {
                     // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
                     // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
                     children.push(separator());
                     children.push(component);
                 }
-            }
         }
-    }
     if let Some(gallery) = media_gallery(card) {
         children.push(gallery);
     }
@@ -413,11 +410,10 @@ fn meta_line(card: &V2Card<'_>) -> String {
     if let Some(extra) = post.extra_label.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
         parts.push(extra.to_string());
     }
-    if card.options.show_timestamp {
-        if let Some(created_at) = post.created_at {
+    if card.options.show_timestamp
+        && let Some(created_at) = post.created_at {
             parts.push(format!("<t:{created_at}:R>"));
         }
-    }
 
     // Gönderi linki kartın içinde durur.
     let link = format!("[Link]({})", post.url);

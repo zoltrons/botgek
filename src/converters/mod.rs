@@ -61,11 +61,11 @@ pub async fn handle_message(
         let user_roles: Vec<String> = if let Some(ref member) = msg.member {
             member.roles.iter().map(|r| r.get().to_string()).collect()
         } else if let Some(guild_id) = msg.guild_id {
-            if let Ok(member) = guild_id.member(&ctx.http, msg.author.id).await {
+            match guild_id.member(&ctx.http, msg.author.id).await { Ok(member) => {
                 member.roles.iter().map(|r| r.get().to_string()).collect()
-            } else {
+            } _ => {
                 Vec::new()
-            }
+            }}
         } else {
             Vec::new()
         };
