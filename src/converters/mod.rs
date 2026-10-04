@@ -154,14 +154,9 @@ pub async fn handle_message(
         builder = builder.reference_message(message_ref.clone());
     }
 
-    // 7. Mesajı Gönder (orijinal mesaj **gönderimden hemen önce** silinir: kullanıcı mesajı
-    // beklemeden kaybolur, dönüşüm gecikmeli hissettirmez).
-    if config.delete_original {
-        if let Err(e) = msg.delete(&ctx.http).await {
-            warn!("Orijinal mesaj silinemedi (zaten silinmiş olabilir): {:?}", e);
-        }
-    }
-
+    // 7. Mesajı Gönder. Orijinal mesaj burada silinmez: erken silmek, gönderenin istemcisi
+    // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
+    // bırakır (discord-api-docs #850). Silme, gönderimden **sonra** arka planda yapılır.
     let sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
         Ok(m) => m,
         Err(e) => {
@@ -174,7 +169,14 @@ pub async fn handle_message(
         parsed.platform, parsed.original_url
     );
 
-    // 8. Kompakt 🗑️ reaksiyonu ekle
+    // 8. Orijinal mesajı **arka planda** sil (kart gönderildikten sonra). Builtin yardımcısı
+    // silmeyi mesaj en az DELETE_MIN_AGE yaşına gelene kadar erteler: gönderenin istemcisi
+    // optimistic mesajını eşleştirir ve mesaj "hayalet" olarak kalmaz.
+    if config.delete_original {
+        builtin::spawn_delete(ctx, msg);
+    }
+
+    // 9. Kompakt 🗑️ reaksiyonu ekle
     if let Err(e) = sent_msg
         .react(&ctx.http, ReactionType::Unicode("🗑️".to_string()))
         .await

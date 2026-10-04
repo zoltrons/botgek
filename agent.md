@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕐 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-04 11:01] zoltrons — Orijinal mesajı silme zamanlaması düzeltildi (hayalet mesaj / client desync)
+- **Commit:** `0fe58fd`
+- **Yapılan:**
+  1. Silme, kart gönderildikten sonra ve mesaj en az ~1,2 sn yaşına gelene kadar ertelenir hale getirildi; çok hızlı silinen mesaj, gönderenin istemcisi optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden silindiği için yalnızca gönderenin ekranında "hayalet" olarak kalıyordu (Discord istemci desync — discord-api-docs #850).
+  2. Proxy yolunda silme, gönderimden hemen önce yerine gönderimden sonra arka plana alındı; native akıştaki `delete_early` erken silme kaldırıldı, silme `finish()` içine taşındı.
+  3. `delete_wait()` mesaj yaşını snowflake ID'den hesaplar (serenity'nin chrono/time arka ucundan bağımsız); yeni birim test eklendi.
+- **Etkilenen:** `src/converters/mod.rs`, `src/converters/builtin/mod.rs`, `README.md`
 ### [2026-10-02 16:07] zoltrons — Reddit mobil paylaşım (/s/) linkleri için yönlendirme desteği eklendi
 - **Commit:** `c0b2d96`
 - **Yapılan:**

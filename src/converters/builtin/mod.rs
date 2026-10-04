@@ -19,7 +19,7 @@ pub mod v2;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
 use serenity::all::{
@@ -526,6 +526,31 @@ mod tests {
         assert_eq!(parse_timestamp("bugün"), None);
         assert!(parse_timestamp("2024-13-99T99:99:99Z").is_some(), "bozuk tarih panik yapmadan çözülmeli");
     }
+
+    /// Verilen UNIX-milisaniye anına denk gelen bir snowflake `MessageId` üretir
+    /// (testte "taze"/"eski" mesaj kurmak için).
+    fn snowflake_at(ms: i64) -> MessageId {
+        MessageId::new(((ms - DISCORD_EPOCH_MS) as u64) << 22)
+    }
+
+    #[test]
+    fn delete_wait_only_delays_fresh_messages() {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // Yeni gönderilmiş mesaj: hayalet penceresini doldurmak için pozitif, ama
+        // DELETE_MIN_AGE'i aşmayan bir bekleme olmalı.
+        let wait = delete_wait(snowflake_at(now_ms)).expect("taze mesaj ertelenmeli");
+        assert!(
+            wait > Duration::ZERO && wait <= DELETE_MIN_AGE,
+            "bekleme {wait:?} beklenen aralık dışında"
+        );
+
+        // Yaşlı mesaj: ek gecikme olmamalı.
+        assert!(delete_wait(snowflake_at(now_ms - 60_000)).is_none());
+    }
 }
 
 
@@ -924,9 +949,17 @@ fn reply_reference(msg: &Message) -> Option<serde_json::Value> {
     Some(value)
 }
 
-/// Orijinal mesajı **arka planda** siler: REST silme isteği veri çekmeyi bloklamaz, bu
-/// yüzden kullanıcı mesajı dönüşümden önce kaybolur ve kart daha erken gelir.
-fn spawn_delete(ctx: &Context, msg: &Message) {
+/// Gönderenin istemcisi bir mesajı gönderirken onu yerelde (`nonce` ile) hemen çizer ve
+/// sunucudaki kopyayla eşleştirince "onaylar". Mesaj bu eşleştirme penceresi içinde
+/// silinirse, silme olayı istemcide bir kopyayla eşleşmez ve mesaj yalnızca gönderenin
+/// ekranında "hayalet" (ghost) olarak kalır (bilinen Discord istemci davranışı —
+/// discord-api-docs #850). Silme bu yüzden mesaj en az bu yaşa gelene kadar ertelenir.
+const DELETE_MIN_AGE: Duration = Duration::from_millis(1200);
+
+/// Orijinal mesajı **arka planda** siler: REST silme isteği kart gönderimini/dönüşümü
+/// bloklamaz. Silme [`delete_user_message`] üzerinden yapılır; o da mesajın
+/// [`DELETE_MIN_AGE`] yaşını doldurmasını bekler (hayalet mesaj önlemi).
+pub fn spawn_delete(ctx: &Context, msg: &Message) {
     let ctx = ctx.clone();
     let msg = msg.clone();
     tokio::spawn(async move { delete_user_message(&ctx, &msg).await });
@@ -934,9 +967,40 @@ fn spawn_delete(ctx: &Context, msg: &Message) {
 
 /// Orijinal mesajı siler; zaten silinmişse sessizce geçer (🗑️ reaksiyonu
 /// yeni mesaja eklenir, bu yüzden mükerrer silme denemesi hata üretmez).
+///
+/// Silmeden **önce** mesajın en az [`DELETE_MIN_AGE`] yaşında olması beklenir; bu,
+/// gönderenin istemcisinin optimistic (nonce'lu) mesajını sunucu kopyasıyla
+/// eşleştirmesine zaman tanır ve "hayalet mesaj" oluşumunu engeller. Dönüşüm bu süreyi
+/// zaten aştıysa ek gecikme olmaz.
 async fn delete_user_message(ctx: &Context, msg: &Message) {
+    if let Some(wait) = delete_wait(msg.id) {
+        tokio::time::sleep(wait).await;
+    }
     if let Err(err) = msg.delete(&ctx.http).await {
         debug!("Orijinal mesaj silinemedi (zaten silinmiş olabilir): {err:?}");
+    }
+}
+
+/// Discord snowflake epoch (2015-01-01T00:00:00Z), milisaniye cinsinden.
+const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+
+/// "Hayalet penceresi"ni güvenle aşmak için beklenecek kalan süre; mesaj zaten
+/// yeterince yaşlıysa `None` (ek gecikme yok). Yaş, mesaj kimliğinin (snowflake)
+/// içerdiği oluşturulma anından ölçülür; böylece `Timestamp`'in chrono/time arka
+/// ucundan bağımsız ve milisaniye hassasiyetinde kalır.
+fn delete_wait(id: MessageId) -> Option<Duration> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let created_ms = (id.get() >> 22) as i64 + DISCORD_EPOCH_MS;
+    let age_ms = now_ms - created_ms;
+    if age_ms < DELETE_MIN_AGE.as_millis() as i64 {
+        Some(Duration::from_millis(
+            (DELETE_MIN_AGE.as_millis() as i64 - age_ms) as u64,
+        ))
+    } else {
+        None
     }
 }
 
@@ -970,7 +1034,7 @@ pub async fn handle(
     // Süre ölçümü: dönüşüm gecikmesi veri / medya / gönderim olarak log'lanır.
     let started = std::time::Instant::now();
 
-    // Taklit (webhook) kimliği ve erken silme **veri çekmeyle paralel** yürür: ikisi de REST
+    // Taklit (webhook) kimliğinin çözümlenmesi **veri çekmeyle paralel** yürür: ikisi de REST
     // çağrısıdır ve eskiden dönüşümün kritik yolunda sırayla bekleniyordu.
     let identity = should_impersonate(engine, msg.message_reference.is_some())
         .then(|| Impersonation::from_message(msg));
@@ -978,14 +1042,10 @@ pub async fn handle(
         spawn_webhook_warmup(ctx, client, config, msg);
     }
 
-    // Orijinal mesaj **hemen** silinir: kullanıcının mesajı beklemeden kaybolur ve dönüşüm
-    // gecikmeli hissettirmez. Proxy yedeği kapalıyken veri çekilemezse mesaj kaybolmasın
-    // diye silme, veri geldikten sonra yapılır.
-    let delete_early = config.delete_original && engine.fallback_to_proxy;
-    if delete_early {
-        spawn_delete(ctx, msg);
-    }
-
+    // Orijinal mesaj burada **silinmez**: silme, kart gönderildikten sonra yapılır (native
+    // akışta `finish()`, hata durumunda proxy akışı). Erken silmek, gönderenin istemcisi
+    // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
+    // bıraktığı için artık kullanılmaz (bkz. [`delete_user_message`]).
     let post = match fetch(client, parsed, engine).await {
         Ok(post) => post,
         Err(err) => {
@@ -994,10 +1054,6 @@ pub async fn handle(
         }
     };
     let fetched = started.elapsed();
-
-    if config.delete_original && !delete_early {
-        spawn_delete(ctx, msg);
-    }
 
     let options = render::RenderOptions::from_engine(engine);
     debug!(
@@ -1302,7 +1358,9 @@ fn classic_payload(
 /// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
 ///
 /// Reaksiyon ve silme **arka planda** yapılır: kart kullanıcıya çoktan görünmüştür, bu iki
-/// REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest kalır).
+/// REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest kalır). Silme,
+/// kart gönderildikten **sonra** ve [`DELETE_MIN_AGE`] kadar gecikmeyle yapılır (hayalet
+/// mesaj önlemi).
 fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
     remember_author(message_id, msg.channel_id, msg.author.id);
 
@@ -1318,8 +1376,8 @@ fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) 
             error!("Silme reaksiyonu eklenemedi: {:?}", e);
         }
 
-        // Orijinal mesaj normalde dönüşüm başında silinir; burada yalnızca geç kalan durumlar
-        // için (proxy yedeği kapalı) tekrar denenir — zaten silinmişse sessizce geçilir.
+        // Kart gönderildi; şimdi orijinal mesajı sil (en az DELETE_MIN_AGE yaşına gelene
+        // kadar bekleyerek: gönderenin istemcisi optimistic mesajını eşleştirebilsin).
         if delete_original {
             delete_user_message(&ctx, &msg).await;
         }
