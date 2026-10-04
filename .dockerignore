@@ -1,13 +1,26 @@
+# Build çıktıları ve yerel dizinler
 target/
+dist/
+
+# Git ve GitHub
 .git/
 .gitignore
-.env
+.github/
+
+# Dokümantasyon ve loglar
 README.md
 *.md
-docker-compose.yml
-Dockerfile
+*.log
+deploy-rpi.sh
+botgek.service
 
-# Yerel kayıt veritabanı ve veri dizini imaja girmemeli
+# Ortam değişkenleri ve yapılandırma
+.env
+.env.*
+!.env.example
+docker-compose.yml
+
+# Yerel kayıt veritabanı ve veri dizini
 botgek.db
 botgek.db-wal
 botgek.db-shm

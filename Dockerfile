@@ -42,11 +42,11 @@ FROM debian:bookworm-slim
 ARG WITH_FFMPEG=0
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    tzdata \
-    $( [ "$WITH_FFMPEG" = "1" ] && echo ffmpeg ) \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get update && \
+    PACKAGES="ca-certificates tzdata" && \
+    if [ "$WITH_FFMPEG" = "1" ]; then PACKAGES="$PACKAGES ffmpeg"; fi && \
+    apt-get install -y --no-install-recommends $PACKAGES && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 1000 botgek && \
     useradd -u 1000 -g botgek -m -s /bin/sh botgek && \
@@ -56,7 +56,7 @@ USER botgek
 WORKDIR /app
 
 # Derlenen ikili dosyayı kopyala
-COPY --from=builder --chown=botgek:botgek /usr/local/bin/botgek /app/botgek
+COPY --chmod=755 --from=builder --chown=botgek:botgek /usr/local/bin/botgek /app/botgek
 
 # Botu çalıştır
 CMD ["/app/botgek"]

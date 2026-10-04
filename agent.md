@@ -40,9 +40,17 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 
 ---
 
-## 🕐 Güncel Faaliyet (en yeni en üstte)
+## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-04 13:25] zoltrons — GitHub Actions, test ve Docker derleme adımları dokümantasyon standartlarına uyarlandı
+- **Commit:** `49c9604`
+- **Yapılan:**
+  1. GitHub Actions Security Best Practice: İş akışı seviyesindeki aşırı yetkiler `contents: read` olarak sınırlandı; `test` ve `build-and-package` işleri en az yetki ilkesine (least privilege) uyarlandı, `packages: write` izni yalnızca `docker-publish`'e verildi.
+  2. Concurrency denetimi eklendi (`cancel-in-progress`); gereksiz koşular ve koşu dakikası israfı engellendi.
+  3. Matris içerisindeki release yarış durumu (race condition ve 422 çakışması) giderildi: `release` adımı bağımsız bir işe taşındı, `actions/download-artifact@v4` `merge-multiple: true` ile tüm derleme çıktılarını tekil ve güvenli bir GitHub Release'e toplar hale getirildi.
+  4. Docker CI/CD güçlendirildi: PR'larda da Docker derleme testi (`push: false`) çalışacak şekilde ayarlandı, GHCR girişi yalnızca push durumlarında çalıştırıldı; `Organize binaries` adımına `chmod +x` ve Dockerfile'lara `--chmod=755` eklenerek ikili dosya çalıştırma izinleri güvenceye alındı; POSIX uyumlu paket kurulum koşulu ve temiz `.dockerignore` filtreleri uygulandı. Raspberry Pi tarball'ına eksik olan `deploy-rpi.sh` dahil edildi.
+- **Etkilenen:** `.github/workflows/build-release.yml`, `Dockerfile`, `Dockerfile.prebuilt`, `.dockerignore`
 ### [2026-10-04 13:07] zoltrons — Discord API ve Geliştirici Dokümantasyonu uyumluluk düzeltmeleri
 - **Commit:** `80f274a..b26c4d6`
 - **Yapılan:**
