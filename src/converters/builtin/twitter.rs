@@ -576,7 +576,7 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
             media.push(Media {
                 kind: MediaKind::Video,
                 url,
-                poster: video.poster.as_deref().map(|p| card_image_url(p)),
+                poster: video.poster.as_deref().map(card_image_url),
                 width: None,
                 height: None,
                 duration: video.duration_ms.map(|ms| ms / 1000),
@@ -620,7 +620,7 @@ fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> O
                 poster: detail
                     .media_url_https
                     .as_deref()
-                    .map(|poster| card_image_url(poster)),
+                    .map(card_image_url),
                 width,
                 height,
                 duration: video_info.duration_millis.map(|ms| ms / 1000),
@@ -938,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn fx_photos_use_the_light_variant_in_the_card() {
+    fn fx_photos_use_orig_variant_in_the_card() {
         let mut json = translated_tweet("en");
         json["media"] = serde_json::json!({
             "all": [{
@@ -952,8 +952,8 @@ mod tests {
         let post = post_from(&json);
         assert_eq!(
             post.media[0].url,
-            "https://pbs.twimg.com/media/ABC.jpg?name=medium",
-            "kart görseli hafif varyanta indirilir (daha erken belirir)"
+            "https://pbs.twimg.com/media/ABC.jpg?name=orig",
+            "kart görseli vx/fxTwitter gibi tam kalitede (name=orig) tutulur"
         );
     }
 
@@ -1302,7 +1302,7 @@ fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
     Some(Media {
         kind,
         url: match kind {
-            // Görsel kartta CDN'den geldiği için hafif varyantı kullanılır.
+            // Görsel kartta CDN'den geldiği için vx/fxTwitter gibi tam çözünürlüklü varyantı (name=orig) kullanılır.
             MediaKind::Image => card_image_url(url),
             // Video: `formats` varsa ağırlıklı seçim (1080p dev varyant yerine hızlı oynayan).
             MediaKind::Video => pick_fx_video(item, video_budget).unwrap_or_else(|| url.to_string()),

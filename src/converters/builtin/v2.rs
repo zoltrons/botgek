@@ -220,8 +220,8 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
 /// alıntının** içinde ve başlığın hemen ardından gelir (X/fxembed düzeni).
 fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value> {
     let body = quote.text.trim();
-    let has_image = quote.media.iter().any(|media| media.is_image());
-    if body.is_empty() && !has_image {
+    let has_media = !quote.media.is_empty();
+    if body.is_empty() && !has_media {
         return None;
     }
 
@@ -278,6 +278,10 @@ fn separator() -> Value {
 ///
 /// Video **tek başına** gösterilir: ayrıca kapak görseli eklenmez. Kapak + video birlikte
 /// eklendiğinde galeri iki öğeyi **yan yana** (thumbnail + video) çiziyordu.
+///
+/// Gönderiye medya eklenmemişse alıntının medyası zaten [`super::render::plan_media`]
+/// tarafından `card.resolved` içine alınır ve galeride gösterilir. Gönderinin kendi medyası
+/// varsa yalnızca o gösterilir (alıntılanan gönderinin medyası galeriye eklenmez).
 fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
     let hidden = hidden(card);
     let mut items: Vec<Value> = Vec::new();
@@ -294,16 +298,6 @@ fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
 
     for url in &card.resolved.images {
         items.push(media_item(url, hidden));
-    }
-
-    // Alıntının görseli yalnızca ana karta alınmadıysa eklenir; gönderiye medya
-    // eklenmemişse alıntının medyası zaten yukarıda yer alıyor (tekrar gösterilmez).
-    if card.options.show_quote && !card.resolved.quote_media {
-        if let Some(quote) = card.post.quote.as_deref() {
-            if let Some(image) = quote.media.iter().find(|media| media.is_image()) {
-                items.push(media_item(&image.url, hidden || quote.sensitive));
-            }
-        }
     }
 
     if items.is_empty() {
@@ -809,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn gallery_keeps_post_images_and_quote_image() {
+    fn gallery_ignores_quote_media_when_post_has_media() {
         let mut post = sample_post();
         let mut quote = BuiltinPost::new(
             Platform::Twitter,
@@ -831,9 +825,10 @@ mod tests {
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &resolved, &emojis));
 
+        // Alıntılayan kişi medya eklediyse alıntının görseli galeriye dahil edilmez.
         assert_eq!(
             gallery_urls(&payload),
-            vec!["attachment://photo.jpg", "https://cdn/second.jpg", "https://cdn/quote.jpg"]
+            vec!["attachment://photo.jpg", "https://cdn/second.jpg"]
         );
 
         let quote_text = texts(&payload)
@@ -848,6 +843,31 @@ mod tests {
         assert_eq!(
             quote_text.lines().next().unwrap(),
             "> <:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"
+        );
+    }
+
+    #[test]
+    fn quoted_image_is_shown_when_the_post_has_no_media() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.text = "alıntı".to_string();
+        quote.media = vec![image("https://cdn/quote.jpg")];
+        post.quote = Some(Box::new(quote));
+
+        let options = options();
+        let plan = crate::converters::builtin::render::plan_media(&post, &options);
+        let resolved = crate::converters::builtin::render::direct_media(&plan);
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+
+        assert_eq!(
+            gallery_urls(&payload),
+            vec!["https://cdn/quote.jpg"],
+            "alıntılayan medya eklemediyse alıntının görseli galeride gösterilmeli"
         );
     }
 

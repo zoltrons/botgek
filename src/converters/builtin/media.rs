@@ -49,30 +49,26 @@ pub fn to_attachment(file: MediaFile, spoiler: bool) -> CreateAttachment {
 
 /// Kart görsellerinde kullanılan X CDN varyantı.
 ///
-/// Discord kartı görseli en fazla ~550 px genişlikte çizer; `large` (2048 px, ~180-500 KB)
-/// gereksiz büyüktür. `medium` (1200 px) yüksek yoğunluklu ekranlarda da net görünür ve
-/// ~%35 daha az veri çekildiği için görsel **daha erken** belirir. `small` (680 px) daha da
-/// hafiftir ama büyük/kaliteli ekranlarda yumuşak kalır.
-pub const CARD_IMAGE_SIZE: &str = "medium";
+/// vxTwitter ve fxTwitter ile uyumlu olarak orijinal yüksek çözünürlük (`orig`) kullanılır.
+/// Böylece hem kart içinde keskin ve kaliteli görünür hem de kullanıcı Discord'da görsele
+/// tıkladığında/büyüttüğünde tam çözünürlüklü asıl görsel açılır.
+pub const CARD_IMAGE_SIZE: &str = "orig";
 
-/// Görseli, Discord'un **anında** çekebileceği hafif varyanta çevirir (kart gösterimi için).
+/// Görseli, Discord'da en yüksek kalitede görünmesi için orijinal çözünürlüğe (`name=orig`) çevirir.
 ///
-/// X görselleri `?name=orig`/`?name=large` ile birkaç yüz KB-MB gelebilir; kart görseli
-/// CDN'den çekildiği için [`CARD_IMAGE_SIZE`] varyantı kullanılır. Zaten daha hafif bir
-/// varyant seçilmişse (`small`, `thumb`, `medium`) dokunulmaz; X dışı CDN'ler olduğu gibi
-/// kalır. **İndirme** yolu bu işlevden geçmez: dosya eki modunda tam çözünürlük istenir.
+/// X/Twitter görsellerinde parametre verilmediğinde veya `name=medium` kullanıldığında
+/// Twitter CDN görseli sıkıştırıp 1200 px sınırına indirir; bu nedenle vx/fxTwitter gibi
+/// `name=orig` varyantı sağlanır. X dışı CDN'ler olduğu gibi kalır.
 pub fn card_image_url(url: &str) -> String {
     if !url.contains("pbs.twimg.com") {
         return url.to_string();
     }
-    for lighter in ["name=small", "name=thumb", "name=medium"] {
-        if url.contains(lighter) {
-            return url.to_string();
-        }
+    if url.contains("name=orig") {
+        return url.to_string();
     }
-    for heavier in ["name=orig", "name=large"] {
-        if url.contains(heavier) {
-            return url.replace(heavier, &format!("name={CARD_IMAGE_SIZE}"));
+    for variant in ["name=large", "name=medium", "name=small", "name=thumb"] {
+        if url.contains(variant) {
+            return url.replace(variant, &format!("name={CARD_IMAGE_SIZE}"));
         }
     }
     if url.contains('?') {
@@ -356,32 +352,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn card_image_url_downshifts_to_the_light_variant() {
-        // Kart görselleri CDN'den çekildiği için hafif varyant kullanılır (daha erken belirir).
+    fn card_image_url_ensures_orig_variant() {
+        // Kart görselleri vx/fxTwitter gibi orijinal yüksek çözünürlükle sunulur.
         assert_eq!(
             card_image_url("https://pbs.twimg.com/media/ABC.jpg?name=orig"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=medium"
+            "https://pbs.twimg.com/media/ABC.jpg?name=orig"
         );
         assert_eq!(
             card_image_url("https://pbs.twimg.com/media/ABC.jpg?name=large"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=medium"
+            "https://pbs.twimg.com/media/ABC.jpg?name=orig"
+        );
+        assert_eq!(
+            card_image_url("https://pbs.twimg.com/media/ABC.jpg?name=medium"),
+            "https://pbs.twimg.com/media/ABC.jpg?name=orig"
         );
         assert_eq!(
             card_image_url("https://pbs.twimg.com/media/ABC.jpg"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=medium"
+            "https://pbs.twimg.com/media/ABC.jpg?name=orig"
         );
-        // Yeni X biçimi (`?format=jpg`) ve zaten hafif varyantlar korunur.
+        // Yeni X biçimi (`?format=jpg`) desteklenir.
         assert_eq!(
             card_image_url("https://pbs.twimg.com/media/ABC?format=jpg&name=large"),
-            "https://pbs.twimg.com/media/ABC?format=jpg&name=medium"
+            "https://pbs.twimg.com/media/ABC?format=jpg&name=orig"
         );
         assert_eq!(
             card_image_url("https://pbs.twimg.com/media/ABC?format=jpg"),
-            "https://pbs.twimg.com/media/ABC?format=jpg&name=medium"
-        );
-        assert_eq!(
-            card_image_url("https://pbs.twimg.com/media/ABC.jpg?name=small"),
-            "https://pbs.twimg.com/media/ABC.jpg?name=small"
+            "https://pbs.twimg.com/media/ABC?format=jpg&name=orig"
         );
         assert_eq!(
             card_image_url("https://cdn.bsky.app/img/x.jpg"),
