@@ -140,7 +140,7 @@ async fn main() {
                     }
                 }
                 Err(err) => {
-                    warn!("SIGTERM dinleyicisi kaydedilemedi: {err:?}; yalnızca Ctrl+C dinleniyor");
+                    tracing::warn!("SIGTERM dinleyicisi kaydedilemedi: {err:?}; yalnızca Ctrl+C dinleniyor");
                     let _ = tokio::signal::ctrl_c().await;
                 }
             }
