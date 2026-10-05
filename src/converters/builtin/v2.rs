@@ -48,7 +48,9 @@ pub const MEDIA_GALLERY_LIMIT: usize = 10;
 const MAX_CONTAINER_CHILDREN: usize = 10;
 
 // Bileşen türleri
+const TYPE_SECTION: u64 = 9;
 const TYPE_TEXT_DISPLAY: u64 = 10;
+const TYPE_THUMBNAIL: u64 = 11;
 const TYPE_MEDIA_GALLERY: u64 = 12;
 const TYPE_SEPARATOR: u64 = 14;
 const TYPE_CONTAINER: u64 = 17;
@@ -81,21 +83,48 @@ pub struct V2Card<'a> {
 /// olarak durur; taklit (webhook) açıkken mesaj kullanıcının adıyla gittiği için tam
 /// olarak kullanıcı yazmış gibi görünür.
 fn total_text_chars(top: &[Value], children: &[Value]) -> usize {
-    top.iter()
-        .chain(children.iter())
-        .filter(|comp| comp["type"] == TYPE_TEXT_DISPLAY)
-        .filter_map(|comp| comp["content"].as_str())
-        .map(|s| s.chars().count())
-        .sum()
+    let count_comp = |comp: &Value| -> usize {
+        if comp["type"] == TYPE_TEXT_DISPLAY {
+            comp["content"].as_str().map(|s| s.chars().count()).unwrap_or(0)
+        } else if comp["type"] == TYPE_SECTION {
+            comp["components"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|c| c["type"] == TYPE_TEXT_DISPLAY)
+                        .filter_map(|c| c["content"].as_str())
+                        .map(|s| s.chars().count())
+                        .sum()
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    };
+
+    top.iter().chain(children.iter()).map(count_comp).sum()
 }
 
 fn enforce_cumulative_text_limit(top: &mut [Value], children: &mut [Value]) {
     while total_text_chars(top, children) > CUMULATIVE_TEXT_LIMIT {
         let overflow = total_text_chars(top, children) - CUMULATIVE_TEXT_LIMIT;
-        let largest = top
-            .iter_mut()
-            .chain(children.iter_mut())
-            .filter(|c| c["type"] == TYPE_TEXT_DISPLAY)
+        let mut displays: Vec<&mut Value> = Vec::new();
+        for comp in top.iter_mut().chain(children.iter_mut()) {
+            if comp["type"] == TYPE_TEXT_DISPLAY {
+                displays.push(comp);
+            } else if comp["type"] == TYPE_SECTION {
+                if let Some(arr) = comp["components"].as_array_mut() {
+                    for child in arr.iter_mut() {
+                        if child["type"] == TYPE_TEXT_DISPLAY {
+                            displays.push(child);
+                        }
+                    }
+                }
+            }
+        }
+
+        let largest = displays
+            .into_iter()
             .max_by_key(|c| c["content"].as_str().map(|s| s.chars().count()).unwrap_or(0));
 
         if let Some(comp) = largest {
@@ -143,6 +172,7 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         {
             children.push(text(format!("-# 🔎 Topluluk Notu\n{}", note)));
         }
+    let mut nested_has_thumbnail = false;
     if card.options.show_quote
         && let Some(quote) = card.post.quote.as_deref() {
             // Gönderiye **medya eklenmemişse** alıntının alıntısı da gösterilir: X'in kendi
@@ -165,10 +195,27 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
                     // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
                     // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
                     children.push(separator());
-                    children.push(component);
+
+                    // 3'lü alıntıda medya en alttaki orijinal tweete ait tek bir görselse
+                    // ayrı bir büyük galeri yerine alıntı metninin yanında küçük görsel (Section
+                    // Thumbnail aksesuarı) olarak gösterilir (X'in arayüz düzeni).
+                    let is_nested_image = card.post.media.is_empty()
+                        && quote.media.is_empty()
+                        && !nested.media.is_empty()
+                        && card.resolved.attached_video.is_none()
+                        && card.resolved.video_link.is_none()
+                        && card.resolved.images.len() == 1;
+
+                    if is_nested_image && let Some(image_url) = card.resolved.images.first() {
+                        let accessory = thumbnail(image_url, hidden(card));
+                        children.push(section(vec![component], accessory));
+                        nested_has_thumbnail = true;
+                    } else {
+                        children.push(component);
+                    }
                 }
         }
-    if let Some(gallery) = media_gallery(card) {
+    if let Some(gallery) = media_gallery(card, nested_has_thumbnail) {
         children.push(gallery);
     }
     if let Some(metrics) = metrics_line(card.post, card.options, card.emojis) {
@@ -321,7 +368,9 @@ fn separator() -> Value {
 /// Gönderiye medya eklenmemişse alıntının medyası zaten [`super::render::plan_media`]
 /// tarafından `card.resolved` içine alınır ve galeride gösterilir. Gönderinin kendi medyası
 /// varsa yalnızca o gösterilir (alıntılanan gönderinin medyası galeriye eklenmez).
-fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
+/// `skip_images` doğru olduğunda (ör. alıntı görseli Section Thumbnail olarak gösterildiğinde)
+/// görseller galeriye eklenmez.
+fn media_gallery(card: &V2Card<'_>, skip_images: bool) -> Option<Value> {
     let hidden = hidden(card);
     let mut items: Vec<Value> = Vec::new();
 
@@ -335,8 +384,10 @@ fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
         (None, None) => {}
     }
 
-    for url in &card.resolved.images {
-        items.push(media_item(url, hidden));
+    if !skip_images {
+        for url in &card.resolved.images {
+            items.push(media_item(url, hidden));
+        }
     }
 
     if items.is_empty() {
@@ -345,6 +396,24 @@ fn media_gallery(card: &V2Card<'_>) -> Option<Value> {
 
     items.truncate(MEDIA_GALLERY_LIMIT);
     Some(json!({"type": TYPE_MEDIA_GALLERY, "items": items}))
+}
+
+/// Bölüm bileşeni (Section): solunda metin, sağında aksesuar (küçük görsel/thumbnail).
+fn section(components: Vec<Value>, accessory: Value) -> Value {
+    json!({
+        "type": TYPE_SECTION,
+        "components": components,
+        "accessory": accessory,
+    })
+}
+
+/// Küçük görsel aksesuarı (Thumbnail).
+fn thumbnail(url: &str, spoiler: bool) -> Value {
+    json!({
+        "type": TYPE_THUMBNAIL,
+        "media": { "url": url },
+        "spoiler": spoiler,
+    })
 }
 
 fn media_item(url: &str, spoiler: bool) -> Value {
@@ -560,11 +629,21 @@ mod tests {
     }
 
     fn texts(payload: &Value) -> Vec<String> {
-        components(payload)
-            .iter()
-            .filter(|component| component["type"] == TYPE_TEXT_DISPLAY)
-            .map(|component| component["content"].as_str().unwrap().to_string())
-            .collect()
+        let mut out = Vec::new();
+        for component in components(payload) {
+            if component["type"] == TYPE_TEXT_DISPLAY {
+                out.push(component["content"].as_str().unwrap().to_string());
+            } else if component["type"] == TYPE_SECTION {
+                if let Some(arr) = component["components"].as_array() {
+                    for c in arr {
+                        if c["type"] == TYPE_TEXT_DISPLAY {
+                            out.push(c["content"].as_str().unwrap().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn gallery_urls(payload: &Value) -> Vec<String> {
@@ -1083,6 +1162,55 @@ mod tests {
         assert!(
             body.contains("https://x.com/enic/status/3"),
             "iç içe alıntının linki kartta olmalı: {body}"
+        );
+    }
+
+    #[test]
+    fn three_level_quote_with_bottom_media_uses_section_thumbnail() {
+        let mut post = sample_post();
+        let mut inner = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/enic/status/3",
+            Author::new("En İç", "enic"),
+        );
+        inner.text = "en içteki metin".to_string();
+        inner.media = vec![image("https://cdn/bottom.jpg")];
+
+        let mut middle = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/orta/status/2",
+            Author::new("Orta", "orta"),
+        );
+        middle.text = "ortadaki metin".to_string();
+        middle.quote = Some(Box::new(inner));
+        post.quote = Some(Box::new(middle));
+
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia {
+            images: vec!["https://cdn/bottom.jpg".to_string()],
+            quote_media: true,
+            ..ResolvedMedia::default()
+        };
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+        let comps = components(&payload);
+
+        // 3. seviyedeki alıntı bir Section (type 9) olarak oluşturulmalı ve Thumbnail (type 11) accessory taşımalı:
+        let sec = comps
+            .iter()
+            .find(|c| c["type"] == TYPE_SECTION)
+            .expect("en alttaki alıntı section olmalı");
+        assert_eq!(sec["accessory"]["type"], TYPE_THUMBNAIL);
+        assert_eq!(sec["accessory"]["media"]["url"], "https://cdn/bottom.jpg");
+
+        // Alıntı metni Section'ın components dizisinde bulunmalı:
+        let text_inside = sec["components"][0]["content"].as_str().unwrap();
+        assert!(text_inside.contains("en içteki metin"));
+
+        // Görsel thumbnail'a alındığı için ayrıca büyük media_gallery eklenmemeli:
+        assert!(
+            !comps.iter().any(|c| c["type"] == TYPE_MEDIA_GALLERY),
+            "tek görsel thumbnail'a taşındığından ayrı media gallery olmamalı"
         );
     }
 
