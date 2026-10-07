@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-07 19:15] zoltrons — Spotify dönüşümü eklendi: fxspotify önizleme çekme + fixspotify modern (Components V2) kartı
+- **Commit:** `40a5eae`
+- **Yapılan:**
+  1. Yeni `spotify` platformu: `open.spotify.com/(intl-xx/)?(track|album|playlist|artist|episode|show)/id` ve `spotify.link` kısa linkleri algılanır; kısa linkler native motorda `spotify.app.link` üzerinden hedefe çözülür.
+  2. **Önizleme çekme (fxspotify yaklaşımı):** `open.spotify.com/embed/{kind}/{id}` HTML sayfasındaki `__NEXT_DATA__` JSON'undan parça adı, sanatçılar, 30 sn `audioPreview.url`, albüm kapağı ve çıkış tarihi **API anahtarı olmadan** okunur.
+  3. **Modern embed (fixspotify yaklaşımı):** veri Discord Components V2 tek kartı olarak gönderilir — Spotify yeşili `accent_color` (`0x1DB954`), `Section` + `Thumbnail` (albüm kapağı), `Separator` ve `Action Row` içinde "▶ 30 sn önizleme" + "Spotify'da aç" link butonları.
+  4. `BuiltinPost`'a platforma özel hazır `custom_card` alanı eklendi; kart stili ne olursa olsun Spotify bu modern kartı zorunlu kullanır (V2 reddedilirse klasik embed'e düşer).
+  5. Ayar/WebUI entegrasyonu: modül anahtarı, motor seçimi (native/proxy), proxy alan adı (`SPOTIFY_DOMAIN`, varsayılan `open.fixspotify.com`), rol filtresi, panel modül satırı/sekmesi ve motor satırı eklendi.
+- **Etkilenen:** `src/converters/builtin/spotify.rs` (yeni), `src/converters/parser.rs`, `src/converters/builtin/mod.rs`, `src/converters/builtin/v2.rs`, `src/converters/mod.rs`, `src/settings.rs`, `src/config.rs`, `src/web/mod.rs`, `src/web/ui/index.html`, `src/web/ui/app.js`, `settings.json`, `.env.example`, `.gitignore` (`/local-test/` yerel test klasörü yok sayılır)
 ### [2026-10-04 13:25] zoltrons — GitHub Actions, test ve Docker derleme adımları dokümantasyon standartlarına uyarlandı
 - **Commit:** `49c9604`
 - **Yapılan:**
