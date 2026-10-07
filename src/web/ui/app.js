@@ -18,11 +18,11 @@
 'use strict';
 
 /* ── sabitler: Rust varsayılanlarıyla birebir aynı ───────────────────────── */
-const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'translation', 'ai_chat'];
-const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, translation: true, ai_chat: true };
+const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'translation', 'ai_chat'];
+const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, translation: true, ai_chat: true };
 const MODULE_LABELS = {
     twitter: 'Twitter / X', tiktok: 'TikTok', instagram: 'Instagram', reddit: 'Reddit',
-    bluesky: 'Bluesky', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
+    bluesky: 'Bluesky', spotify: 'Spotify', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
 };
 const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
 
@@ -31,12 +31,13 @@ const ENGINE_PLATFORMS = [
     { key: 'tiktok', label: 'TikTok' },
     { key: 'instagram', label: 'Instagram' },
     { key: 'reddit', label: 'Reddit' },
-    { key: 'bluesky', label: 'Bluesky' }
+    { key: 'bluesky', label: 'Bluesky' },
+    { key: 'spotify', label: 'Spotify' }
 ];
 
 const ENGINE_DEFAULTS = {
-    modes: { twitter: 'builtin', tiktok: 'proxy', instagram: 'proxy', reddit: 'builtin', bluesky: 'builtin' },
-    domains: { twitter: '', tiktok: '', instagram: '', reddit: '', bluesky: '' },
+    modes: { twitter: 'builtin', tiktok: 'proxy', instagram: 'proxy', reddit: 'builtin', bluesky: 'builtin', spotify: 'builtin' },
+    domains: { twitter: '', tiktok: '', instagram: '', reddit: '', bluesky: '', spotify: '' },
     twitter_source: 'syndication',
     media_delivery: 'direct',
     attach_images: true,

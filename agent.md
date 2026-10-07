@@ -43,6 +43,36 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-07 19:56] zoltrons — origin/main (PR #1–3 "modernize-rust-2024") birleştirildi; Spotify kodu std::sync::LazyLock'a taşındı
+- **Commit:** `df1c2d1`
+- **Yapılan:**
+  1. Uzak `main` (PR #1–3 modernize-rust-2024) yerel Spotify işiyle çakışmasız birleştirildi.
+  2. Uzak taraf `once_cell` bağımlılığını kaldırıp `std::sync::LazyLock`'a geçtiği için yeni `spotify.rs` statikleri ve parser'daki Spotify regex'leri de `LazyLock`'a taşındı.
+- **Etkilenen:** `src/converters/builtin/spotify.rs`, `src/converters/parser.rs`
+### [2026-10-07 19:52] zoltrons — Spotify ilk V2 karta döndü; önizleme butonu yerine Apple Music / YouTube Music
+- **Commit:** `8b4e18d`
+- **Yapılan:**
+  1. Discord V2 mesajları satır içi ses oynatmadığı ve V2'de link unfurl çalışmadığı için Spotify varsayılanı yeniden **native (Components V2 kart)** yapıldı; `fxspotify` proxy denemesi geri alındı (proxy + fxspotify hâlâ opsiyonel).
+  2. Karttaki "▶ 30 sn önizleme" butonu kaldırıldı; yerine **Apple Music** ve **YouTube Music** arama bağlantıları eklendi (Spotify butonu korundu). Etiketler yalnızca platform isimleri.
+  3. mp3 indirme / V2 `File` bileşeni ve `CustomCard.attachment` + `media` ses desteği geri alındı (ilk hâle dönüş).
+- **Etkilenen:** `src/converters/builtin/spotify.rs`, `src/converters/builtin/mod.rs`, `src/converters/builtin/v2.rs`, `src/converters/builtin/media.rs`, `src/converters/parser.rs`, `src/settings.rs`, `src/config.rs`, `src/web/mod.rs`, `src/web/ui/app.js`, `settings.json`, `.env.example`
+### [2026-10-07 19:40] zoltrons — Spotify önizlemesi artık Discord içinde oynuyor (fxspotify proxy + unfurl video embed)
+- **Commit:** `f629b12`
+- **Yapılan:**
+  1. Araştırma: Discord, bot embed'lerinin `video` alanını **yok sayıyor** (yalnızca link unfurl'u doldurur) ve mp3 ekine satır içi oynatıcı vermiyor. fxspotify (`templates/track.html`) çözümü: `og:video` = 30 sn mp3 (video/mp4 ilan) + `og:image` = kapak + `twitter:card=player`.
+  2. Spotify varsayılanı **proxy → `fxspotify.com`** yapıldı. Bot `[:](https://fxspotify.com/track/ID)` gönderince Discord sayfayı unfurl edip kapağı poster, önizlemeyi **oynatılabilir `video` embed** olarak gösteriyor (video üretimi/ffmpeg yok).
+  3. `SPOTIFY_DOMAIN` varsayılanı `fxspotify.com`; parser/settings/WebUI/settings.json ve testler güncellendi. Native (Components V2 kart) modu opsiyonel kaldı.
+  4. Native kartta 30 sn önizleme mp3'ü `File` bileşeniyle dosya olarak da eklenir (Discord'da indirilebilir; oynatıcı vermez) — asıl satır içi oynatma varsayılan proxy (fxspotify unfurl) ile sağlanır.
+- **Etkilenen:** `src/converters/parser.rs`, `src/settings.rs`, `src/config.rs`, `src/web/mod.rs`, `src/web/ui/app.js`, `settings.json`, `.env.example`
+### [2026-10-07 19:15] zoltrons — Spotify dönüşümü eklendi: fxspotify önizleme çekme + fixspotify modern (Components V2) kartı
+- **Commit:** `40a5eae`
+- **Yapılan:**
+  1. Yeni `spotify` platformu: `open.spotify.com/(intl-xx/)?(track|album|playlist|artist|episode|show)/id` ve `spotify.link` kısa linkleri algılanır; kısa linkler native motorda `spotify.app.link` üzerinden hedefe çözülür.
+  2. **Önizleme çekme (fxspotify yaklaşımı):** `open.spotify.com/embed/{kind}/{id}` HTML sayfasındaki `__NEXT_DATA__` JSON'undan parça adı, sanatçılar, 30 sn `audioPreview.url`, albüm kapağı ve çıkış tarihi **API anahtarı olmadan** okunur.
+  3. **Modern embed (fixspotify yaklaşımı):** veri Discord Components V2 tek kartı olarak gönderilir — Spotify yeşili `accent_color` (`0x1DB954`), `Section` + `Thumbnail` (albüm kapağı), `Separator` ve `Action Row` içinde "▶ 30 sn önizleme" + "Spotify'da aç" link butonları.
+  4. `BuiltinPost`'a platforma özel hazır `custom_card` alanı eklendi; kart stili ne olursa olsun Spotify bu modern kartı zorunlu kullanır (V2 reddedilirse klasik embed'e düşer).
+  5. Ayar/WebUI entegrasyonu: modül anahtarı, motor seçimi (native/proxy), proxy alan adı (`SPOTIFY_DOMAIN`, varsayılan `open.fixspotify.com`), rol filtresi, panel modül satırı/sekmesi ve motor satırı eklendi.
+- **Etkilenen:** `src/converters/builtin/spotify.rs` (yeni), `src/converters/parser.rs`, `src/converters/builtin/mod.rs`, `src/converters/builtin/v2.rs`, `src/converters/mod.rs`, `src/settings.rs`, `src/config.rs`, `src/web/mod.rs`, `src/web/ui/index.html`, `src/web/ui/app.js`, `settings.json`, `.env.example`, `.gitignore` (`/local-test/` yerel test klasörü yok sayılır)
 ### [2026-10-04 13:25] zoltrons — GitHub Actions, test ve Docker derleme adımları dokümantasyon standartlarına uyarlandı
 - **Commit:** `49c9604`
 - **Yapılan:**

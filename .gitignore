@@ -7,6 +7,9 @@ target/
 *.env.local
 *.env.*.local
 
+# Yerel test ortamı (token, settings.json, yerel SQLite) - depoya eklenmez
+/local-test/
+
 # Loglar ve geçici dosyalar
 *.log
 

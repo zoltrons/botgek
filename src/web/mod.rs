@@ -37,6 +37,7 @@ impl WebInfo {
             ("instagram", &config.instagram_domain),
             ("reddit", &config.reddit_domain),
             ("bluesky", &config.bluesky_domain),
+            ("spotify", &config.spotify_domain),
         ] {
             env_domains.insert(key.to_string(), value.clone());
         }
@@ -334,6 +335,7 @@ mod tests {
             instagram_domain: "ddinstagram.com".to_string(),
             reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
+            spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
             web_port: 8123,
@@ -349,7 +351,11 @@ mod tests {
         assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(info.env_domains.get("twitter").map(String::as_str), Some("fixupx.com"));
         assert_eq!(info.env_domains.get("bluesky").map(String::as_str), Some("fxbsky.app"));
-        assert_eq!(info.env_domains.len(), 5, "beş platform alan adı taşınmalı");
+        assert_eq!(
+            info.env_domains.get("spotify").map(String::as_str),
+            Some("open.fixspotify.com")
+        );
+        assert_eq!(info.env_domains.len(), 6, "altı platform alan adı taşınmalı");
     }
 
     /// **Varlık sözleşmesi:** görünüm katmanı ayrı dosyalara taşındığı için

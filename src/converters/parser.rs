@@ -10,6 +10,7 @@ pub enum Platform {
     Instagram,
     Reddit,
     Bluesky,
+    Spotify,
 }
 
 impl Platform {
@@ -20,6 +21,7 @@ impl Platform {
             Platform::Instagram => "Instagram",
             Platform::Reddit => "Reddit",
             Platform::Bluesky => "Bluesky",
+            Platform::Spotify => "Spotify",
         }
     }
 
@@ -133,6 +135,28 @@ static BLUESKY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Geçersiz Bluesky regex deseni")
 });
 
+// ==================== SPOTIFY ====================
+// open.spotify.com/(intl-xx/)?(track|album|playlist|artist|episode|show)/id
+// Spotify kimlikleri base62 (22 karakter) ama geriye dönük uyum için 16-40 aralığı kabul edilir.
+static SPOTIFY_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\|\|\s*https?://open\.spotify\.com/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})[^\s|]*\s*\|\|")
+        .expect("Geçersiz Spoiler Spotify regex deseni")
+});
+static SPOTIFY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://open\.spotify\.com/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})/?(?:\?[^\s]*)?")
+        .expect("Geçersiz Spotify regex deseni")
+});
+
+// spotify.link/token (Branch kısa linki) — native motorda hedefe çözülür.
+static SPOTIFY_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\|\|\s*https?://spotify\.link/([A-Za-z0-9]+)[^\s|]*\s*\|\|")
+        .expect("Geçersiz Spoiler Spotify kısa link regex deseni")
+});
+static SPOTIFY_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://spotify\.link/([A-Za-z0-9]+)")
+        .expect("Geçersiz Spotify kısa link regex deseni")
+});
+
 /// Characters that would prematurely close or corrupt the Markdown link the
 /// converter wraps these URLs in (`[:](url)` / `[**Platform**](<url>)`).
 /// Left unescaped they let a crafted post URL inject arbitrary link text and a
@@ -176,6 +200,7 @@ pub struct PlatformDomains {
     pub instagram: String,
     pub reddit: String,
     pub bluesky: String,
+    pub spotify: String,
 }
 
 impl Default for PlatformDomains {
@@ -186,6 +211,7 @@ impl Default for PlatformDomains {
             instagram: "ddinstagram.com".to_string(),
             reddit: "vxreddit.com".to_string(),
             bluesky: "fxbsky.app".to_string(),
+            spotify: "open.fixspotify.com".to_string(),
         }
     }
 }
@@ -198,6 +224,7 @@ impl From<&Config> for PlatformDomains {
             instagram: config.instagram_domain.clone(),
             reddit: config.reddit_domain.clone(),
             bluesky: config.bluesky_domain.clone(),
+            spotify: config.spotify_domain.clone(),
         }
     }
 }
@@ -240,6 +267,11 @@ pub fn parse_message_with_domains(raw_content: &str, domains: &PlatformDomains) 
 
     // 5. Bluesky
     if let Some(post) = parse_bluesky(raw_content, &domains.bluesky) {
+        return Some(sanitize_urls(post));
+    }
+
+    // 6. Spotify
+    if let Some(post) = parse_spotify(raw_content, &domains.spotify) {
         return Some(sanitize_urls(post));
     }
 
@@ -502,6 +534,56 @@ fn parse_bluesky(raw_content: &str, domain: &str) -> Option<ParsedPost> {
     None
 }
 
+fn parse_spotify(raw_content: &str, domain: &str) -> Option<ParsedPost> {
+    // 1. Track / album / playlist / artist (spoiler)
+    if let Some(caps) = SPOTIFY_SPOILER_REGEX.captures(raw_content) {
+        let kind = caps.get(1)?.as_str();
+        let id = caps.get(2)?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Spotify,
+            is_spoiler: true,
+            user_comment: extract_user_comment(raw_content, &SPOTIFY_SPOILER_REGEX),
+            original_url: format!("https://open.spotify.com/{kind}/{id}"),
+            fixed_url: format!("https://{domain}/{kind}/{id}"),
+        });
+    }
+    // 1. Track / album / playlist / artist (normal)
+    if let Some(caps) = SPOTIFY_REGEX.captures(raw_content) {
+        let kind = caps.get(1)?.as_str();
+        let id = caps.get(2)?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Spotify,
+            is_spoiler: false,
+            user_comment: extract_user_comment(raw_content, &SPOTIFY_REGEX),
+            original_url: format!("https://open.spotify.com/{kind}/{id}"),
+            fixed_url: format!("https://{domain}/{kind}/{id}"),
+        });
+    }
+    // 2. spotify.link kısa link (spoiler)
+    if let Some(caps) = SPOTIFY_SHORT_SPOILER_REGEX.captures(raw_content) {
+        let token = caps.get(1)?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Spotify,
+            is_spoiler: true,
+            user_comment: extract_user_comment(raw_content, &SPOTIFY_SHORT_SPOILER_REGEX),
+            original_url: format!("https://spotify.link/{token}"),
+            fixed_url: format!("https://{domain}/{token}"),
+        });
+    }
+    // 2. spotify.link kısa link (normal)
+    if let Some(caps) = SPOTIFY_SHORT_REGEX.captures(raw_content) {
+        let token = caps.get(1)?.as_str();
+        return Some(ParsedPost {
+            platform: Platform::Spotify,
+            is_spoiler: false,
+            user_comment: extract_user_comment(raw_content, &SPOTIFY_SHORT_REGEX),
+            original_url: format!("https://spotify.link/{token}"),
+            fixed_url: format!("https://{domain}/{token}"),
+        });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +596,7 @@ mod tests {
             instagram_domain: "ddinstagram.com".to_string(),
             reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
+            spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
             web_port: 3000,
@@ -677,6 +760,54 @@ mod tests {
         assert_eq!(parsed.original_url, "https://bsky.app/profile/alice.bsky.social/post/3k6abc123");
         assert_eq!(parsed.fixed_url, "https://fxbsky.app/profile/alice.bsky.social/post/3k6abc123");
         assert!(parsed.is_spoiler);
+    }
+
+    #[test]
+    fn test_spotify_track() {
+        let cfg = dummy_config();
+        let content = "Şu şarkıya bak https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc harika";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        assert_eq!(parsed.platform, Platform::Spotify);
+        assert_eq!(
+            parsed.original_url,
+            "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
+        );
+        assert_eq!(
+            parsed.fixed_url,
+            "https://open.fixspotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
+        );
+        assert!(!parsed.is_spoiler);
+        assert_eq!(parsed.user_comment.as_deref(), Some("Şu şarkıya bak  harika"));
+    }
+
+    #[test]
+    fn test_spotify_intl_and_spoiler() {
+        let cfg = dummy_config();
+        let content = "||https://open.spotify.com/intl-tr/album/1DFixLWuPkv3KT3TnV35m3||";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        assert_eq!(parsed.platform, Platform::Spotify);
+        assert_eq!(
+            parsed.original_url,
+            "https://open.spotify.com/album/1DFixLWuPkv3KT3TnV35m3"
+        );
+        assert_eq!(
+            parsed.fixed_url,
+            "https://open.fixspotify.com/album/1DFixLWuPkv3KT3TnV35m3"
+        );
+        assert!(parsed.is_spoiler);
+    }
+
+    #[test]
+    fn test_spotify_short_link() {
+        let cfg = dummy_config();
+        let content = "https://spotify.link/AbCdEf1234";
+        let parsed = parse_message(content, &cfg).unwrap();
+
+        assert_eq!(parsed.platform, Platform::Spotify);
+        assert_eq!(parsed.original_url, "https://spotify.link/AbCdEf1234");
+        assert_eq!(parsed.fixed_url, "https://open.fixspotify.com/AbCdEf1234");
     }
 }
 

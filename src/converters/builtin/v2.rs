@@ -157,6 +157,55 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         top.insert(0, text(format!("<@{sender}>")));
     }
 
+    let accent = card
+        .post
+        .custom_card
+        .as_ref()
+        .and_then(|custom| custom.accent_color);
+
+    let mut children: Vec<Value> = match &card.post.custom_card {
+        // Platforma özel kart (ör. Spotify): çocuk bileşenler platform modülünde hazır üretilir.
+        Some(custom) => custom.components.clone(),
+        None => generic_children(card),
+    };
+
+    enforce_cumulative_text_limit(&mut top, &mut children);
+
+    // Kart her zaman son bileşendir: kullanıcı metni (varsa) onun üstünde durur.
+    let mut container = json!({
+        "type": TYPE_CONTAINER,
+        "components": children,
+    });
+    if let Some(color) = accent {
+        container["accent_color"] = json!(color);
+    }
+    top.push(container);
+
+    let mut payload = json!({
+        "flags": COMPONENTS_V2_FLAG,
+        "components": top,
+        "attachments": attachments_json(card.resolved),
+    });
+
+    if let Some(allowed_mentions) = &card.allowed_mentions {
+        payload["allowed_mentions"] = allowed_mentions.clone();
+    }
+
+    // Taklit: mesaj kullanıcının adı/avatarı ile gönderilir.
+    if let Some(identity) = card.impersonation {
+        payload["username"] = json!(identity.username);
+        if let Some(avatar) = &identity.avatar_url {
+            payload["avatar_url"] = json!(avatar);
+        }
+    }
+
+    payload
+}
+
+/// Genel kart düzeni: yazar satırı, gövde metni, (varsa) topluluk notu, alıntı(lar),
+/// medya galerisi, metrikler ve alt bilgi. Platforma özel kartı olmayan tüm gönderiler
+/// bu yolu kullanır.
+fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     let mut children: Vec<Value> = vec![author_component(card.post, card.emojis)];
 
     if !card.post.text.trim().is_empty() {
@@ -231,33 +280,7 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         }
     }
 
-    enforce_cumulative_text_limit(&mut top, &mut children);
-
-    // Kart her zaman son bileşendir: kullanıcı metni (varsa) onun üstünde durur.
-    top.push(json!({
-        "type": TYPE_CONTAINER,
-        "components": children,
-    }));
-
-    let mut payload = json!({
-        "flags": COMPONENTS_V2_FLAG,
-        "components": top,
-        "attachments": attachments_json(card.resolved),
-    });
-
-    if let Some(allowed_mentions) = &card.allowed_mentions {
-        payload["allowed_mentions"] = allowed_mentions.clone();
-    }
-
-    // Taklit: mesaj kullanıcının adı/avatarı ile gönderilir.
-    if let Some(identity) = card.impersonation {
-        payload["username"] = json!(identity.username);
-        if let Some(avatar) = &identity.avatar_url {
-            payload["avatar_url"] = json!(avatar);
-        }
-    }
-
-    payload
+    children
 }
 
 /// `{"type": 10, "content": ...}` — markdown destekli metin bileşeni.

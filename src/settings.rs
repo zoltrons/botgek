@@ -12,6 +12,7 @@ pub struct PlatformModules {
     pub instagram: bool,
     pub reddit: bool,
     pub bluesky: bool,
+    pub spotify: bool,
     pub translation: bool,
     pub ai_chat: bool,
 }
@@ -24,6 +25,7 @@ impl Default for PlatformModules {
             instagram: true,
             reddit: true,
             bluesky: true,
+            spotify: true,
             translation: true,
             ai_chat: true,
         }
@@ -154,10 +156,11 @@ pub struct PlatformEngineModes {
     pub instagram: ConversionMode,
     pub reddit: ConversionMode,
     pub bluesky: ConversionMode,
+    pub spotify: ConversionMode,
 }
 
 impl Default for PlatformEngineModes {
-    /// Twitter, Reddit ve Bluesky için native embed motoru açıktır (başarısız olursa
+    /// Twitter, Reddit, Bluesky ve Spotify için native embed motoru açıktır (başarısız olursa
     /// `EngineSettings::fallback_to_proxy` sayesinde eski proxy davranışına düşer).
     /// TikTok (yalnızca kart) ve Instagram (native API yok) için varsayılan proxy'dir.
     fn default() -> Self {
@@ -167,6 +170,7 @@ impl Default for PlatformEngineModes {
             instagram: ConversionMode::Proxy,
             reddit: ConversionMode::Builtin,
             bluesky: ConversionMode::Builtin,
+            spotify: ConversionMode::Builtin,
         }
     }
 }
@@ -179,6 +183,7 @@ impl PlatformEngineModes {
             "instagram" => self.instagram,
             "reddit" => self.reddit,
             "bluesky" => self.bluesky,
+            "spotify" => self.spotify,
             _ => ConversionMode::Proxy,
         }
     }
@@ -192,6 +197,7 @@ impl PlatformEngineModes {
             "instagram" => self.instagram = mode,
             "reddit" => self.reddit = mode,
             "bluesky" => self.bluesky = mode,
+            "spotify" => self.spotify = mode,
             _ => {}
         }
     }
@@ -207,6 +213,7 @@ pub struct ProxyDomains {
     pub instagram: String,
     pub reddit: String,
     pub bluesky: String,
+    pub spotify: String,
 }
 
 impl ProxyDomains {
@@ -217,6 +224,7 @@ impl ProxyDomains {
             "instagram" => &self.instagram,
             "reddit" => &self.reddit,
             "bluesky" => &self.bluesky,
+            "spotify" => &self.spotify,
             _ => "",
         }
     }
@@ -228,6 +236,7 @@ impl ProxyDomains {
             "instagram" => self.instagram = value,
             "reddit" => self.reddit = value,
             "bluesky" => self.bluesky = value,
+            "spotify" => self.spotify = value,
             _ => {}
         }
     }
@@ -536,6 +545,7 @@ impl EngineSettings {
             "instagram" => config.instagram_domain.clone(),
             "reddit" => config.reddit_domain.clone(),
             "bluesky" => config.bluesky_domain.clone(),
+            "spotify" => config.spotify_domain.clone(),
             _ => String::new(),
         }
     }
@@ -543,7 +553,7 @@ impl EngineSettings {
     /// WebUI girdilerini güvenli sınırlara çeker ve alan adlarını temizler.
     /// Geçersiz alan adı boşaltılır (bu da `.env` değerinin kullanılması demektir).
     pub fn sanitize(&mut self) {
-        for key in ["twitter", "tiktok", "instagram", "reddit", "bluesky"] {
+        for key in ["twitter", "tiktok", "instagram", "reddit", "bluesky", "spotify"] {
             let cleaned = crate::config::clean_domain(self.domains.get(key)).unwrap_or_default();
             self.domains.set(key, cleaned);
         }
@@ -588,6 +598,8 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub bluesky: RoleFilterSettings,
     #[serde(default)]
+    pub spotify: RoleFilterSettings,
+    #[serde(default)]
     pub translation: RoleFilterSettings,
     #[serde(default)]
     pub ai_chat: RoleFilterSettings,
@@ -616,6 +628,7 @@ impl GuildSettings {
             "instagram" => &self.role_filters.instagram,
             "reddit" => &self.role_filters.reddit,
             "bluesky" => &self.role_filters.bluesky,
+            "spotify" => &self.role_filters.spotify,
             "translation" => &self.role_filters.translation,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
@@ -943,6 +956,7 @@ mod tests {
             instagram_domain: "ddinstagram.com".to_string(),
             reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
+            spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
             web_port: 3000,
