@@ -335,7 +335,7 @@ mod tests {
             instagram_domain: "ddinstagram.com".to_string(),
             reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
-            spotify_domain: "open.fixspotify.com".to_string(),
+            spotify_domain: "fxspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
             web_port: 8123,
@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(info.env_domains.get("bluesky").map(String::as_str), Some("fxbsky.app"));
         assert_eq!(
             info.env_domains.get("spotify").map(String::as_str),
-            Some("open.fixspotify.com")
+            Some("fxspotify.com")
         );
         assert_eq!(info.env_domains.len(), 6, "altı platform alan adı taşınmalı");
     }

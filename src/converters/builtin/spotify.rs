@@ -6,7 +6,9 @@
 //!   görseli ve çıkış tarihi okunur (Spotify API anahtarı gerekmez).
 //! - **Modern embed (fixspotify):** veri Discord'un bileşen düzeniyle (Components V2) tek
 //!   kart olarak gönderilir — Spotify yeşili `accent_color`, `Section` + `Thumbnail`,
-//!   `Separator` ve `Action Row` içinde önizleme ve Spotify butonları.
+//!   `Separator` ve `Action Row` içinde Spotify butonu. 30 sn önizleme **indirilip mesaja
+//!   dosya olarak eklenir** ve Components V2 `File` bileşeniyle gösterilir; böylece önizleme
+//!   Discord'un **kendi içinde** oynar (harici bağlantı açmaz).
 //!
 //! `track`, `album`, `playlist`, `artist`, `episode` ve `show` bağlantıları desteklenir;
 //! `spotify.link` kısa linkleri native motorda hedefe çözülür.
@@ -18,7 +20,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 
 use super::render::{escape_markdown, format_count};
-use super::{Author, BuiltinPost, CustomCard, MAX_BODY_BYTES};
+use super::{Author, BuiltinPost, CardAttachment, CustomCard, MAX_BODY_BYTES};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const SPOTIFY_OPEN: &str = "https://open.spotify.com";
@@ -32,12 +34,17 @@ const BROWSER_USER_AGENT: &str =
 const SPOTIFY_GREEN: u32 = 0x1DB954;
 /// Dış isteklere zaman aşımı.
 const TIMEOUT: Duration = Duration::from_secs(8);
+/// Önizleme sesi indirme bütçesi (küçük dosya; kart bunu beklemez).
+const PREVIEW_BUDGET: Duration = Duration::from_millis(3_000);
+/// Önizleme sesi için üst boyut (30 sn ~1 MB; güvenli pay).
+const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
 
 // Components V2 bileşen türleri (yalnızca burada kullanılanlar).
 const TYPE_ACTION_ROW: u64 = 1;
 const TYPE_SECTION: u64 = 9;
 const TYPE_TEXT_DISPLAY: u64 = 10;
 const TYPE_THUMBNAIL: u64 = 11;
+const TYPE_FILE: u64 = 13;
 const TYPE_SEPARATOR: u64 = 14;
 
 /// `open.spotify.com/(intl-xx/)?(kind)/id` — adres içinde (redirect/HTML gövdesi) aranır.
@@ -94,6 +101,13 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
         return Err(format!("Spotify başlığı okunamadı: {}", target.open_url));
     }
 
+    // 30 sn önizleme: Discord içinde oynayabilmesi için ses **dosya olarak** mesaja eklenir
+    // (File bileşeni yalnızca `attachment://` kabul eder; uzak ses bağlantısı oynatılamaz).
+    let preview = match view.preview.as_deref().filter(|url| url.starts_with("http")) {
+        Some(url) => download_preview(client, url).await,
+        None => None,
+    };
+
     let mut post = BuiltinPost::new(
         Platform::Spotify,
         target.open_url.clone(),
@@ -103,8 +117,27 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     post.text = view.subtitle.clone().unwrap_or_default();
     post.extra_label = Some("Spotify".to_string());
     post.sensitive = parsed.is_spoiler;
-    post.custom_card = Some(build_card(&view, &target.open_url, parsed.is_spoiler));
+    post.custom_card = Some(build_card(
+        &view,
+        &target.open_url,
+        parsed.is_spoiler,
+        preview.as_ref(),
+    ));
     Ok(post)
+}
+
+/// 30 sn önizleme sesini indirir (bütçe/sınır aşılırsa ya da içerik ses değilse `None`).
+async fn download_preview(
+    client: &reqwest::Client,
+    url: &str,
+) -> Option<super::media::MediaFile> {
+    tokio::time::timeout(
+        PREVIEW_BUDGET,
+        super::media::download(client, url, MAX_PREVIEW_BYTES),
+    )
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Hedefi `original_url`'den okur; `spotify.link` kısa linki ise hedefe çözer.
@@ -287,8 +320,17 @@ impl EntityView {
     }
 }
 
-/// Components V2 kart gövdesini (bölüm + ayraç + buton satırı) üretir.
-fn build_card(view: &EntityView, open_url: &str, spoiler: bool) -> CustomCard {
+/// Components V2 kart gövdesini (bölüm + [ses dosyası] + ayraç + buton satırı) üretir.
+///
+/// `audio` verilmişse 30 sn önizleme mesaja dosya olarak eklenir ve `File` bileşeniyle
+/// gösterilir: önizleme Discord'un **kendi içinde** oynar, bu yüzden harici "önizleme"
+/// bağlantı butonu eklenmez (yalnızca indirilemezse butona düşülür).
+fn build_card(
+    view: &EntityView,
+    open_url: &str,
+    spoiler: bool,
+    audio: Option<&super::media::MediaFile>,
+) -> CustomCard {
     let wrap = |text: String| {
         if spoiler && !text.is_empty() {
             format!("||{text}||")
@@ -322,25 +364,41 @@ fn build_card(view: &EntityView, open_url: &str, spoiler: bool) -> CustomCard {
         None => link_button("Spotify'da aç", open_url),
     };
 
+    let mut components: Vec<Value> = Vec::new();
+    components.push(json!({
+        "type": TYPE_SECTION,
+        "components": section_children,
+        "accessory": accessory,
+    }));
+
+    // 30 sn önizleme: dosya olarak eklendiğinde Discord içinde oynayan ses oynatıcısı çıkar.
+    if let Some(file) = audio {
+        components.push(json!({
+            "type": TYPE_FILE,
+            "file": { "url": format!("attachment://{}", file.filename) },
+            "spoiler": spoiler,
+        }));
+    }
+
+    components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
+
     let mut buttons: Vec<Value> = Vec::new();
-    if let Some(preview) = view.preview.as_deref().filter(|url| url.starts_with("http")) {
-        buttons.push(link_button("▶ 30 sn önizleme", preview));
+    // Ses inline oynayamıyorsa (indirilemedi) önizleme harici bağlantı butonuna düşer.
+    if audio.is_none() {
+        if let Some(preview) = view.preview.as_deref().filter(|url| url.starts_with("http")) {
+            buttons.push(link_button("▶ 30 sn önizleme", preview));
+        }
     }
     buttons.push(link_button("Spotify'da aç", open_url));
-
-    let components = vec![
-        json!({
-            "type": TYPE_SECTION,
-            "components": section_children,
-            "accessory": accessory,
-        }),
-        json!({ "type": TYPE_SEPARATOR, "spacing": 1 }),
-        json!({ "type": TYPE_ACTION_ROW, "components": buttons }),
-    ];
+    components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
 
     CustomCard {
         components,
         accent_color: Some(SPOTIFY_GREEN),
+        attachment: audio.map(|file| CardAttachment {
+            bytes: file.bytes.clone(),
+            filename: file.filename.clone(),
+        }),
     }
 }
 
@@ -473,7 +531,7 @@ mod tests {
         assert_eq!(view.image.as_deref(), Some("https://i.scdn.co/image/large.jpg"));
         assert_eq!(view.details, vec!["3:33", "Çıkış 1987-11-12"]);
 
-        let card = build_card(&view, "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", false);
+        let card = build_card(&view, "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", false, None);
         assert_eq!(card.accent_color, Some(0x1DB954));
         assert_eq!(card.components.len(), 3);
 
@@ -499,7 +557,7 @@ mod tests {
         assert!(view.subtitle.is_none());
         assert!(view.preview.is_none());
 
-        let card = build_card(&view, "https://open.spotify.com/playlist/x", false);
+        let card = build_card(&view, "https://open.spotify.com/playlist/x", false, None);
         // Görsel yoksa bölüm erişilebilirliği buton olur; yalnızca Spotify butonu kalır.
         assert_eq!(card.components[0]["accessory"]["type"], 2);
         assert_eq!(card.components[2]["components"].as_array().unwrap().len(), 1);
@@ -509,10 +567,47 @@ mod tests {
     fn spoiler_wraps_card_text() {
         let entity = json!({ "name": "Gizli parça", "artists": [{ "name": "Biri" }] });
         let view = EntityView::from(&entity, "track");
-        let card = build_card(&view, "https://open.spotify.com/track/x", true);
+        let card = build_card(&view, "https://open.spotify.com/track/x", true, None);
         assert!(card.components[0]["components"][0]["content"]
             .as_str()
             .unwrap()
             .contains("||"));
+    }
+
+    fn preview_file() -> super::super::media::MediaFile {
+        super::super::media::MediaFile {
+            bytes: vec![1, 2, 3],
+            filename: "preview.mp3".to_string(),
+            mime: "audio/mpeg".to_string(),
+        }
+    }
+
+    #[test]
+    fn audio_preview_renders_file_component_instead_of_link() {
+        let entity = json!({
+            "name": "Şarkı",
+            "artists": [{ "name": "Sanatçı" }],
+            "audioPreview": { "url": "https://p.scdn.co/mp3-preview/x.mp3" },
+            "visualIdentity": { "image": [ { "url": "https://i.scdn.co/image/a.jpg", "maxWidth": 640 } ] }
+        });
+        let view = EntityView::from(&entity, "track");
+        let audio = preview_file();
+        let card = build_card(&view, "https://open.spotify.com/track/x", false, Some(&audio));
+
+        // Ses dosyası karta işlendi (Discord içinde inline oynatılacak).
+        let attachment = card.attachment.as_ref().expect("ses eki olmalı");
+        assert_eq!(attachment.filename, "preview.mp3");
+        assert_eq!(attachment.bytes, vec![1, 2, 3]);
+
+        // Sıra: [Section, File, Separator, ActionRow]
+        assert_eq!(card.components.len(), 4);
+        let file = &card.components[1];
+        assert_eq!(file["type"], TYPE_FILE);
+        assert_eq!(file["file"]["url"], "attachment://preview.mp3");
+
+        // Önizleme inline oynadığı için harici önizleme butonu YOK; yalnızca Spotify butonu.
+        let buttons = card.components[3]["components"].as_array().unwrap();
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0]["url"], "https://open.spotify.com/track/x");
     }
 }

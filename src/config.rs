@@ -77,7 +77,7 @@ impl Config {
         let instagram_domain = sanitize_domain(env::var("INSTAGRAM_DOMAIN"), "ddinstagram.com");
         let reddit_domain = sanitize_domain(env::var("REDDIT_DOMAIN"), "vxreddit.com");
         let bluesky_domain = sanitize_domain(env::var("BLUESKY_DOMAIN"), "fxbsky.app");
-        let spotify_domain = sanitize_domain(env::var("SPOTIFY_DOMAIN"), "open.fixspotify.com");
+        let spotify_domain = sanitize_domain(env::var("SPOTIFY_DOMAIN"), "fxspotify.com");
 
         let delete_original = env::var("DELETE_ORIGINAL")
             .map(|v| v != "0" && v.to_lowercase() != "false")

@@ -36,7 +36,7 @@ const ENGINE_PLATFORMS = [
 ];
 
 const ENGINE_DEFAULTS = {
-    modes: { twitter: 'builtin', tiktok: 'proxy', instagram: 'proxy', reddit: 'builtin', bluesky: 'builtin', spotify: 'builtin' },
+    modes: { twitter: 'builtin', tiktok: 'proxy', instagram: 'proxy', reddit: 'builtin', bluesky: 'builtin', spotify: 'proxy' },
     domains: { twitter: '', tiktok: '', instagram: '', reddit: '', bluesky: '', spotify: '' },
     twitter_source: 'syndication',
     media_delivery: 'direct',

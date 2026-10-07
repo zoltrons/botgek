@@ -211,7 +211,7 @@ impl Default for PlatformDomains {
             instagram: "ddinstagram.com".to_string(),
             reddit: "vxreddit.com".to_string(),
             bluesky: "fxbsky.app".to_string(),
-            spotify: "open.fixspotify.com".to_string(),
+            spotify: "fxspotify.com".to_string(),
         }
     }
 }
@@ -596,7 +596,7 @@ mod tests {
             instagram_domain: "ddinstagram.com".to_string(),
             reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
-            spotify_domain: "open.fixspotify.com".to_string(),
+            spotify_domain: "fxspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
             web_port: 3000,
@@ -775,7 +775,7 @@ mod tests {
         );
         assert_eq!(
             parsed.fixed_url,
-            "https://open.fixspotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
+            "https://fxspotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
         );
         assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Şu şarkıya bak  harika"));
@@ -794,7 +794,7 @@ mod tests {
         );
         assert_eq!(
             parsed.fixed_url,
-            "https://open.fixspotify.com/album/1DFixLWuPkv3KT3TnV35m3"
+            "https://fxspotify.com/album/1DFixLWuPkv3KT3TnV35m3"
         );
         assert!(parsed.is_spoiler);
     }
@@ -807,7 +807,7 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Spotify);
         assert_eq!(parsed.original_url, "https://spotify.link/AbCdEf1234");
-        assert_eq!(parsed.fixed_url, "https://open.fixspotify.com/AbCdEf1234");
+        assert_eq!(parsed.fixed_url, "https://fxspotify.com/AbCdEf1234");
     }
 }
 
