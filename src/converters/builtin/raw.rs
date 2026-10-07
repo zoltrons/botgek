@@ -22,18 +22,15 @@ static BOUNDARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Discord 429 (Rate Limit) yanıtından bekleme süresini (Retry-After) okur.
 pub fn extract_retry_after(headers: &reqwest::header::HeaderMap, body: &str) -> Duration {
-    if let Some(header_val) = headers.get("retry-after") {
-        if let Ok(s) = header_val.to_str() {
-            if let Ok(secs) = s.parse::<f64>() {
+    if let Some(header_val) = headers.get("retry-after")
+        && let Ok(s) = header_val.to_str()
+            && let Ok(secs) = s.parse::<f64>() {
                 return Duration::from_secs_f64(secs.clamp(0.05, 5.0));
             }
-        }
-    }
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(secs) = val.get("retry_after").and_then(|v| v.as_f64()) {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(secs) = val.get("retry_after").and_then(|v| v.as_f64()) {
             return Duration::from_secs_f64(secs.clamp(0.05, 5.0));
         }
-    }
     Duration::from_millis(500)
 }
 

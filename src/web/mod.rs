@@ -165,7 +165,7 @@ async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
     {
         let guild_ids = state.cache.guilds();
         for guild_id in guild_ids {
-            if let Some(guild) = state.cache.guild(guild_id) {
+            match state.cache.guild(guild_id) { Some(guild) => {
                 let mut roles_list: Vec<DiscordRoleDto> = guild
                     .roles
                     .values()
@@ -188,9 +188,9 @@ async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
                     guild_name: guild.name.clone(),
                     roles: roles_list,
                 });
-            } else {
+            } _ => {
                 uncached_guild_ids.push(guild_id);
-            }
+            }}
         }
     }
 

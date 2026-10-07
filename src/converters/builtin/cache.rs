@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tokio::sync::Mutex;
 
 use super::BuiltinPost;
@@ -19,8 +19,8 @@ const TTL: Duration = Duration::from_secs(600);
 const MAX_ENTRIES: usize = 512;
 
 /// Önbellek girdisi: gönderi + eklenme zamanı.
-static CACHE: Lazy<Mutex<HashMap<String, (Instant, Arc<BuiltinPost>)>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+type CacheMap = Mutex<HashMap<String, (Instant, Arc<BuiltinPost>)>>;
+static CACHE: LazyLock<CacheMap> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Önbellekten gönderiyi döndürür (süresi dolmuşsa siler).
 pub async fn get(key: &str) -> Option<Arc<BuiltinPost>> {

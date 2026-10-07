@@ -80,7 +80,7 @@ pub fn card_image_url(url: &str) -> String {
 /// İndirme sırasında tam çözünürlüğü ister (Twitter `name=large` yerine `name=orig`).
 pub fn download_url(url: &str) -> String {
     if url.contains("pbs.twimg.com") {
-        let base = url.split(|c| c == '?').next().unwrap_or(url);
+        let base = url.split('?').next().unwrap_or(url);
         return format!("{base}?name=orig");
     }
     url.to_string()
@@ -88,7 +88,7 @@ pub fn download_url(url: &str) -> String {
 
 /// URL'den güvenli bir dosya adı türetir (uzantı yoksa `fallback_ext` kullanılır).
 pub fn filename_for(url: &str, fallback_ext: &str) -> String {
-    let without_query = url.split(|c| c == '?' || c == '#').next().unwrap_or(url);
+    let without_query = url.split(['?', '#']).next().unwrap_or(url);
     let path = without_query
         .strip_prefix("https://")
         .or_else(|| without_query.strip_prefix("http://"))
@@ -208,11 +208,10 @@ pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Op
     if !response.status().is_success() {
         return None;
     }
-    if let Some(len) = response.content_length() {
-        if len > max_bytes {
+    if let Some(len) = response.content_length()
+        && len > max_bytes {
             return None;
         }
-    }
 
     let mime = response
         .headers()

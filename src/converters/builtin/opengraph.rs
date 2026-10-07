@@ -4,7 +4,7 @@
 //! `og:` / `twitter:` meta etiketleri okunur. Instagram giriş duvarı döndürürse akış
 //! hata verir ve ayar açıksa proxy motoruna düşülür.
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 
 use super::{unescape_html, Author, BuiltinPost, Media, MediaKind};
@@ -12,16 +12,16 @@ use crate::converters::parser::ParsedPost;
 #[cfg(test)]
 use crate::converters::parser::Platform;
 
-static META_TAG_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<meta\s+[^>]*>").expect("geçerli meta regex"));
-static KEY_ATTR_REGEX: Lazy<Regex> = Lazy::new(|| {
+static META_TAG_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<meta\s+[^>]*>").expect("geçerli meta regex"));
+static KEY_ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)(?:property|name)\s*=\s*["']([^"']+)["']"#).expect("geçerli attribute regex")
 });
-static CONTENT_ATTR_REGEX: Lazy<Regex> = Lazy::new(|| {
+static CONTENT_ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)content\s*=\s*["']([^"']*)["']"#).expect("geçerli content regex")
 });
-static TITLE_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("geçerli title regex"));
+static TITLE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("geçerli title regex"));
 
 /// Sayfadan çıkarılan OpenGraph verisi.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -152,8 +152,8 @@ pub fn parse_open_graph(html: &str) -> OpenGraph {
     }
 
     // og:title yoksa <title> etiketi kullanılır.
-    if graph.title.is_none() {
-        if let Some(captures) = TITLE_REGEX.captures(html) {
+    if graph.title.is_none()
+        && let Some(captures) = TITLE_REGEX.captures(html) {
             let title = unescape_html(captures.get(1).map(|m| m.as_str()).unwrap_or_default())
                 .trim()
                 .to_string();
@@ -161,7 +161,6 @@ pub fn parse_open_graph(html: &str) -> OpenGraph {
                 graph.title = Some(title);
             }
         }
-    }
 
     graph
 }

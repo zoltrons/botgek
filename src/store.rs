@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use rusqlite::{Connection, OptionalExtension, params};
 use serenity::all::{ChannelId, MessageId, UserId};
 use tracing::{info, warn};
@@ -36,7 +36,7 @@ const MAX_RECORDS: i64 = 200_000;
 const PRUNE_EVERY: u64 = 512;
 
 /// Tek paylaşılan veritabanı bağlantısı.
-static DB: Lazy<Db> = Lazy::new(|| Db::open(&default_path()));
+static DB: LazyLock<Db> = LazyLock::new(|| Db::open(&default_path()));
 /// Son budamadan bu yana yapılan yazma sayısı.
 static WRITES: AtomicU64 = AtomicU64::new(0);
 

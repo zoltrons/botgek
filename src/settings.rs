@@ -375,11 +375,10 @@ fn resolve_emoji<'a>(
     if !colonized && valid_emoji(trimmed) {
         return trimmed;
     }
-    if let Some(name) = emoji_name(trimmed) {
-        if names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
+    if let Some(name) = emoji_name(trimmed)
+        && names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
             return default_custom;
         }
-    }
     // `:foo:` gibi tanınmayan kısa girdiler metne dökülmesin.
     if colonized {
         return unicode;
@@ -404,11 +403,10 @@ fn normalize_emoji(value: &str, default_custom: &str, names: &[&str]) -> String 
     if !colonized && valid_emoji(trimmed) {
         return trimmed.to_string();
     }
-    if let Some(name) = emoji_name(trimmed) {
-        if names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
+    if let Some(name) = emoji_name(trimmed)
+        && names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
             return default_custom.to_string();
         }
-    }
 
     String::new()
 }
@@ -619,8 +617,8 @@ pub struct GuildSettings {
     pub engine: EngineSettings,
 }
 
-static DEFAULT_DISABLED_FILTER: once_cell::sync::Lazy<RoleFilterSettings> =
-    once_cell::sync::Lazy::new(RoleFilterSettings::default);
+static DEFAULT_DISABLED_FILTER: std::sync::LazyLock<RoleFilterSettings> =
+    std::sync::LazyLock::new(RoleFilterSettings::default);
 
 impl GuildSettings {
     pub fn get_role_filter(&self, module_key: &str) -> &RoleFilterSettings {
@@ -670,8 +668,8 @@ impl AppSettings {
     }
 
     pub fn get_guild_settings(&self, guild_id: Option<serenity::all::GuildId>) -> GuildSettings {
-        if let Some(gid) = guild_id {
-            if let Some(custom) = self.guilds.get(&gid.to_string()) {
+        if let Some(gid) = guild_id
+            && let Some(custom) = self.guilds.get(&gid.to_string()) {
                 let mut resolved = custom.clone();
                 if resolved.ai.system_prompt.trim().is_empty() {
                     resolved.ai.system_prompt = self.ai.system_prompt.clone();
@@ -681,7 +679,6 @@ impl AppSettings {
                 }
                 return resolved;
             }
-        }
         self.default_guild_settings()
     }
 
@@ -975,9 +972,11 @@ mod tests {
 
     #[test]
     fn engine_sanitize_clamps_values_and_cleans_domains() {
-        let mut engine = EngineSettings::default();
-        engine.max_images = 0;
-        engine.max_video_mb = 200;
+        let mut engine = EngineSettings {
+            max_images: 0,
+            max_video_mb: 200,
+            ..Default::default()
+        };
         engine.domains.set("twitter", "https://FixupX.com/".to_string());
         engine.domains.set("reddit", "kötü domain!!".to_string());
 

@@ -2,15 +2,15 @@ use serenity::all::{
     async_trait, Context, CreateAllowedMentions, CreateMessage, EditMessage, EventHandler, Message, Permissions,
     Reaction, ReactionType, Ready, UserId,
 };
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, warn};
 
-static AI_COOLDOWNS: Lazy<Mutex<HashMap<UserId, Instant>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static AI_COOLDOWNS: LazyLock<Mutex<HashMap<UserId, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 use crate::config::Config;
 use crate::converters;
@@ -102,11 +102,11 @@ impl EventHandler for Handler {
                 let user_roles: Vec<String> = if let Some(ref member) = msg.member {
                     member.roles.iter().map(|r| r.get().to_string()).collect()
                 } else if let Some(guild_id) = msg.guild_id {
-                    if let Ok(member) = guild_id.member(&ctx.http, msg.author.id).await {
+                    match guild_id.member(&ctx.http, msg.author.id).await { Ok(member) => {
                         member.roles.iter().map(|r| r.get().to_string()).collect()
-                    } else {
+                    } _ => {
                         Vec::new()
-                    }
+                    }}
                 } else {
                     Vec::new()
                 };
@@ -133,12 +133,11 @@ impl EventHandler for Handler {
                 {
                     let mut cooldowns = AI_COOLDOWNS.lock().await;
                     cooldowns.retain(|_, instant| instant.elapsed() < Duration::from_secs(10));
-                    if let Some(last_time) = cooldowns.get(&msg.author.id) {
-                        if last_time.elapsed() < Duration::from_secs(3) {
+                    if let Some(last_time) = cooldowns.get(&msg.author.id)
+                        && last_time.elapsed() < Duration::from_secs(3) {
                             warn!("AI hız sınırı aşıldı, istek atlandı: {}", msg.author.id);
                             return;
                         }
-                    }
                     cooldowns.insert(msg.author.id, Instant::now());
                 }
 
@@ -246,8 +245,8 @@ impl EventHandler for Handler {
             let is_author = original_author_id == Some(user_id);
 
             let is_admin_or_mod = if let Some(guild_id) = reaction.guild_id {
-                if let Ok(member) = guild_id.member(&ctx.http, user_id).await {
-                    if let Some(guild) = ctx.cache.guild(guild_id) {
+                match guild_id.member(&ctx.http, user_id).await { Ok(member) => {
+                    match ctx.cache.guild(guild_id) { Some(guild) => {
                         // Discord kanal izin ezmelerini (channel overwrites) hesaba katan kanonik izin kontrolü
                         if let Some(channel) = guild.channels.get(&reaction.channel_id) {
                             let perms = guild.user_permissions_in(channel, &member);
@@ -263,7 +262,7 @@ impl EventHandler for Handler {
                                 })
                                 .unwrap_or(false)
                         }
-                    } else {
+                    } _ => {
                         #[allow(deprecated)]
                         member
                             .permissions(&ctx.cache)
@@ -272,10 +271,10 @@ impl EventHandler for Handler {
                                     || perms.contains(Permissions::ADMINISTRATOR)
                             })
                             .unwrap_or(false)
-                    }
-                } else {
+                    }}
+                } _ => {
                     false
-                }
+                }}
             } else {
                 false
             };
@@ -285,12 +284,12 @@ impl EventHandler for Handler {
                     "Reaksiyon ile mesaj silme onaylandı. Silen: {} (Orijinal Yazar: {:?})",
                     user_id, original_author_id
                 );
-                if let Err(e) = reaction.channel_id.delete_message(&ctx.http, reaction.message_id).await {
+                match reaction.channel_id.delete_message(&ctx.http, reaction.message_id).await { Err(e) => {
                     error!("Mesaj silinirken hata oluştu: {:?}", e);
-                } else {
+                } _ => {
                     // Kart artık yok: kaydı da bırakma (veritabanı temiz kalır).
                     crate::converters::builtin::forget_author(reaction.message_id);
-                }
+                }}
             } else {
                 warn!("Yetkisiz silme reaksiyonu! Tıklayan: {}", user_id);
                 let _ = reaction.delete(&ctx.http).await;
@@ -308,11 +307,11 @@ impl EventHandler for Handler {
         let role_filter = guild_settings.get_role_filter("translation");
         if role_filter.mode != crate::settings::FilterMode::Disabled && !role_filter.roles.is_empty() {
             let user_roles: Vec<String> = if let Some(guild_id) = reaction.guild_id {
-                if let Ok(member) = guild_id.member(&ctx.http, user_id).await {
+                match guild_id.member(&ctx.http, user_id).await { Ok(member) => {
                     member.roles.iter().map(|r| r.get().to_string()).collect()
-                } else {
+                } _ => {
                     Vec::new()
-                }
+                }}
             } else {
                 Vec::new()
             };
@@ -356,14 +355,14 @@ impl EventHandler for Handler {
 
             if let Some(new_content) = translation::update_link_translation(&target_msg.content, Some(lang_code)) {
                 let edit = EditMessage::new().content(new_content);
-                if let Err(e) = target_msg.edit(&ctx.http, edit).await {
+                match target_msg.edit(&ctx.http, edit).await { Err(e) => {
                     error!("Mesaj çevirisi güncellenemedi: {:?}", e);
-                } else {
+                } _ => {
                     info!(
                         "Mesaj çevirisi başarıyla güncellendi: {} (Dil: {})",
                         target_msg.id, lang_code
                     );
-                }
+                }}
             }
         }
     }
@@ -399,24 +398,23 @@ impl EventHandler for Handler {
         // Mesajda hala kalan başka bir bayrak emojisi var mı kontrol et
         let mut remaining_lang: Option<&'static str> = None;
         for r in &target_msg.reactions {
-            if r.count > 0 {
-                if let Some(code) = translation::emoji_to_lang_code(&r.reaction_type) {
+            if r.count > 0
+                && let Some(code) = translation::emoji_to_lang_code(&r.reaction_type) {
                     remaining_lang = Some(code);
                     break;
                 }
-            }
         }
 
         if let Some(new_content) = translation::update_link_translation(&target_msg.content, remaining_lang) {
             let edit = EditMessage::new().content(new_content);
-            if let Err(e) = target_msg.edit(&ctx.http, edit).await {
+            match target_msg.edit(&ctx.http, edit).await { Err(e) => {
                 error!("Mesaj çevirisi geri alınamadı: {:?}", e);
-            } else {
+            } _ => {
                 info!(
                     "Mesaj çevirisi güncellendi (kaldırma sonrası): {} (Aktif dil: {:?})",
                     target_msg.id, remaining_lang
                 );
-            }
+            }}
         }
     }
 }
@@ -475,16 +473,14 @@ pub fn should_trigger_ai_chat(
         return false;
     }
 
-    if let Some(author_id) = referenced_author_id {
-        if author_id == bot_id {
-            if let Some(content) = referenced_content {
-                if is_link_conversion_message(content) {
+    if let Some(author_id) = referenced_author_id
+        && author_id == bot_id {
+            if let Some(content) = referenced_content
+                && is_link_conversion_message(content) {
                     return false;
                 }
-            }
             return true;
         }
-    }
     is_mentioned
 }
 
@@ -492,9 +488,9 @@ pub fn should_trigger_ai_chat(
 /// sıfır genişlikli boşluk (zero-width space, U+200B) enjekte ederek tamamen etkisiz hale getirir.
 /// Bu sayede Discord mesajı metin olarak gösterse bile asla mention olarak algılamaz ve bildirim tetiklemez.
 pub fn sanitize_mentions(text: &str) -> String {
-    static RE_EVERYONE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"(?i)@\s*everyone").unwrap());
-    static RE_HERE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"(?i)@\s*here").unwrap());
-    static RE_ROLES: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"<@&(\d+)>").unwrap());
+    static RE_EVERYONE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)@\s*everyone").unwrap());
+    static RE_HERE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)@\s*here").unwrap());
+    static RE_ROLES: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"<@&(\d+)>").unwrap());
 
     let step1 = RE_EVERYONE.replace_all(text, "@\u{200b}everyone");
     let step2 = RE_HERE.replace_all(&step1, "@\u{200b}here");

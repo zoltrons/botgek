@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serenity::all::{
     Channel, ChannelId, ChannelType, Context, CreateMessage, Embed, Message, MessageId,
     ReactionType, UserId, WebhookId,
@@ -265,11 +265,10 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
     if !response.status().is_success() {
         return Err(format!("Beklenmeyen durum kodu ({url}): {}", response.status()));
     }
-    if let Some(len) = response.content_length() {
-        if len > MAX_BODY_BYTES as u64 {
+    if let Some(len) = response.content_length()
+        && len > MAX_BODY_BYTES as u64 {
             return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
         }
-    }
 
     let mut response = response;
     let mut body: Vec<u8> = Vec::new();
@@ -333,11 +332,8 @@ pub async fn fetch(
 /// Twitter, metnin sonuna görsel/video için kısa link ekler; bunlar embed'de gereksizdir.
 pub fn strip_trailing_media_links(text: &str) -> String {
     let mut cleaned = text.trim().to_string();
-    loop {
-        let last = match cleaned.split_whitespace().last() {
-            Some(last) => last.to_string(),
-            None => break,
-        };
+    while let Some(last) = cleaned.split_whitespace().last() {
+        let last = last.to_string();
         let is_media_link = last.starts_with("https://t.co/")
             || last.starts_with("http://t.co/")
             || last.starts_with("https://pic.x.com/")
@@ -683,8 +679,8 @@ async fn webhook_target(ctx: &Context, msg: &Message) -> WebhookTarget {
 
 /// Kanal → webhook önbelleği. `None`: kanalda webhook kullanılamıyor (yetki yok veya DM);
 /// her mesajda yeniden denenmez.
-static CHANNEL_WEBHOOKS: Lazy<Mutex<HashMap<ChannelId, Option<NamedWebhook>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static CHANNEL_WEBHOOKS: LazyLock<Mutex<HashMap<ChannelId, Option<NamedWebhook>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 /// Components V2 gönderimi Discord tarafından reddedilirse (ör. eski API) bir daha denenmez.
 static V2_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 
@@ -754,7 +750,7 @@ fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> 
     for (start, _) in haystack_lower.match_indices(&needle_lower) {
         result.push_str(&haystack[last_end..start]);
         let matched = &haystack[start..start + needle.len()];
-        if matched.chars().next().map_or(false, |c| c.is_uppercase()) {
+        if matched.chars().next().is_some_and(|c| c.is_uppercase()) {
             let mut rep_chars = replacement.chars();
             if let Some(first) = rep_chars.next() {
                 result.extend(first.to_uppercase());
@@ -845,11 +841,10 @@ pub fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
         return true;
     }
 
-    if let Some(flags) = msg.flags {
-        if (flags.bits() & (1 << 15) != 0) && (msg.author.id == bot_id || msg.webhook_id.is_some()) {
+    if let Some(flags) = msg.flags
+        && (flags.bits() & (1 << 15) != 0) && (msg.author.id == bot_id || msg.webhook_id.is_some()) {
             return true;
         }
-    }
 
     has_card_signature(
         msg.author.id,
@@ -878,11 +873,10 @@ async fn channel_webhook(
 ) -> Option<NamedWebhook> {
     {
         let cache = CHANNEL_WEBHOOKS.lock().await;
-        if !refresh {
-            if let Some(entry) = cache.get(&channel_id) {
+        if !refresh
+            && let Some(entry) = cache.get(&channel_id) {
                 return entry.clone();
             }
-        }
     }
     CHANNEL_WEBHOOKS.lock().await.remove(&channel_id);
 
@@ -1380,6 +1374,7 @@ async fn send_classic(
 /// Klasik embed gövdesini ham webhook isteği için JSON'a çevirir.
 /// `SUPPRESS_EMBEDS` sayesinde metindeki link için Discord kendi önizlemesini üretmez;
 /// bu yüzden link `< >` ile sarılmaz.
+#[allow(clippy::too_many_arguments)]
 fn classic_payload(
     author_id: UserId,
     parsed: &ParsedPost,
