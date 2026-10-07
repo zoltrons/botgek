@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-07 19:52] zoltrons — Spotify ilk V2 karta döndü; önizleme butonu yerine Apple Music / YouTube Music
+- **Commit:** `8b4e18d`
+- **Yapılan:**
+  1. Discord V2 mesajları satır içi ses oynatmadığı ve V2'de link unfurl çalışmadığı için Spotify varsayılanı yeniden **native (Components V2 kart)** yapıldı; `fxspotify` proxy denemesi geri alındı (proxy + fxspotify hâlâ opsiyonel).
+  2. Karttaki "▶ 30 sn önizleme" butonu kaldırıldı; yerine **Apple Music** ve **YouTube Music** arama bağlantıları eklendi (Spotify butonu korundu). Etiketler yalnızca platform isimleri.
+  3. mp3 indirme / V2 `File` bileşeni ve `CustomCard.attachment` + `media` ses desteği geri alındı (ilk hâle dönüş).
+- **Etkilenen:** `src/converters/builtin/spotify.rs`, `src/converters/builtin/mod.rs`, `src/converters/builtin/v2.rs`, `src/converters/builtin/media.rs`, `src/converters/parser.rs`, `src/settings.rs`, `src/config.rs`, `src/web/mod.rs`, `src/web/ui/app.js`, `settings.json`, `.env.example`
 ### [2026-10-07 19:40] zoltrons — Spotify önizlemesi artık Discord içinde oynuyor (fxspotify proxy + unfurl video embed)
 - **Commit:** `f629b12`
 - **Yapılan:**
