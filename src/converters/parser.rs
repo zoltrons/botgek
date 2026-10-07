@@ -138,21 +138,21 @@ static BLUESKY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 // ==================== SPOTIFY ====================
 // open.spotify.com/(intl-xx/)?(track|album|playlist|artist|episode|show)/id
 // Spotify kimlikleri base62 (22 karakter) ama geriye dönük uyum için 16-40 aralığı kabul edilir.
-static SPOTIFY_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static SPOTIFY_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://open\.spotify\.com/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})[^\s|]*\s*\|\|")
         .expect("Geçersiz Spoiler Spotify regex deseni")
 });
-static SPOTIFY_REGEX: Lazy<Regex> = Lazy::new(|| {
+static SPOTIFY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://open\.spotify\.com/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})/?(?:\?[^\s]*)?")
         .expect("Geçersiz Spotify regex deseni")
 });
 
 // spotify.link/token (Branch kısa linki) — native motorda hedefe çözülür.
-static SPOTIFY_SHORT_SPOILER_REGEX: Lazy<Regex> = Lazy::new(|| {
+static SPOTIFY_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://spotify\.link/([A-Za-z0-9]+)[^\s|]*\s*\|\|")
         .expect("Geçersiz Spoiler Spotify kısa link regex deseni")
 });
-static SPOTIFY_SHORT_REGEX: Lazy<Regex> = Lazy::new(|| {
+static SPOTIFY_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://spotify\.link/([A-Za-z0-9]+)")
         .expect("Geçersiz Spotify kısa link regex deseni")
 });

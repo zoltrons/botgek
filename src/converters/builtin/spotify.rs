@@ -11,9 +11,9 @@
 //! `track`, `album`, `playlist`, `artist`, `episode` ve `show` bağlantıları desteklenir;
 //! `spotify.link` kısa linkleri native motorda hedefe çözülür.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
 
@@ -41,17 +41,17 @@ const TYPE_THUMBNAIL: u64 = 11;
 const TYPE_SEPARATOR: u64 = 14;
 
 /// `open.spotify.com/(intl-xx/)?(kind)/id` — adres içinde (redirect/HTML gövdesi) aranır.
-static OPEN_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
+static OPEN_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)open\.spotify\.com/(?:intl-[a-z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})")
         .expect("geçerli Spotify link regex")
 });
 /// Embed sayfasındaki Next.js veri bloğu.
-static NEXT_DATA_REGEX: Lazy<Regex> = Lazy::new(|| {
+static NEXT_DATA_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
         .expect("geçerli __NEXT_DATA__ regex")
 });
 /// Sayfanın kanonik adresi (`og:url`) — kısa link çözümlemesinde yedek yol.
-static OG_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
+static OG_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<meta\s+property="og:url"\s+content="([^"]+)""#)
         .expect("geçerli og:url regex")
 });

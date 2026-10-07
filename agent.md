@@ -43,6 +43,12 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-07 19:56] zoltrons — origin/main (PR #1–3 "modernize-rust-2024") birleştirildi; Spotify kodu std::sync::LazyLock'a taşındı
+- **Commit:** `df1c2d1`
+- **Yapılan:**
+  1. Uzak `main` (PR #1–3 modernize-rust-2024) yerel Spotify işiyle çakışmasız birleştirildi.
+  2. Uzak taraf `once_cell` bağımlılığını kaldırıp `std::sync::LazyLock`'a geçtiği için yeni `spotify.rs` statikleri ve parser'daki Spotify regex'leri de `LazyLock`'a taşındı.
+- **Etkilenen:** `src/converters/builtin/spotify.rs`, `src/converters/parser.rs`
 ### [2026-10-07 19:52] zoltrons — Spotify ilk V2 karta döndü; önizleme butonu yerine Apple Music / YouTube Music
 - **Commit:** `8b4e18d`
 - **Yapılan:**
