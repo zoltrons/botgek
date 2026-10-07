@@ -155,7 +155,7 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     let mut payload = json!({
         "flags": COMPONENTS_V2_FLAG,
         "components": top,
-        "attachments": attachments_json(card),
+        "attachments": attachments_json(card.resolved),
     });
 
     if let Some(allowed_mentions) = &card.allowed_mentions {
@@ -472,26 +472,16 @@ fn hidden(card: &V2Card<'_>) -> bool {
 }
 
 /// Yüklenen dosyalar `attachment://<dosya adı>` ile referans verildiği için
-/// payload'da dosya listesi (id + ad) bulunmak zorundadır. Sıra, yüklenen dosyalarla
-/// ([`super::card_attachments`]) birebir eşleşir: önce işlenen medya, sonra platforma
-/// özel kart eki (ör. Spotify ses önizlemesi).
-fn attachments_json(card: &V2Card<'_>) -> Value {
-    let mut items: Vec<Value> = card
-        .resolved
-        .attachments
-        .iter()
-        .enumerate()
-        .map(|(id, file)| json!({ "id": id, "filename": file.filename }))
-        .collect();
-    if let Some(att) = card
-        .post
-        .custom_card
-        .as_ref()
-        .and_then(|custom| custom.attachment.as_ref())
-    {
-        items.push(json!({ "id": items.len(), "filename": att.filename }));
-    }
-    Value::Array(items)
+/// payload'da dosya listesi (id + ad) bulunmak zorundadır.
+fn attachments_json(resolved: &ResolvedMedia) -> Value {
+    Value::Array(
+        resolved
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(id, file)| json!({"id": id, "filename": file.filename}))
+            .collect(),
+    )
 }
 
 

@@ -131,12 +131,6 @@ pub fn known_extension(name: &str) -> Option<&'static str> {
         "m4v" => Some("m4v"),
         "mov" => Some("mov"),
         "webm" => Some("webm"),
-        "mp3" => Some("mp3"),
-        "m4a" => Some("m4a"),
-        "aac" => Some("aac"),
-        "ogg" | "oga" => Some("ogg"),
-        "opus" => Some("opus"),
-        "wav" => Some("wav"),
         _ => None,
     }
 }
@@ -151,13 +145,6 @@ pub fn extension_from_mime(mime: &str) -> Option<&'static str> {
         "video/mp4" => Some("mp4"),
         "video/webm" => Some("webm"),
         "video/quicktime" => Some("mov"),
-        "audio/mpeg" => Some("mp3"),
-        "audio/mp3" => Some("mp3"),
-        "audio/mp4" => Some("m4a"),
-        "audio/aac" => Some("aac"),
-        "audio/ogg" => Some("ogg"),
-        "audio/opus" => Some("opus"),
-        "audio/wav" | "audio/x-wav" => Some("wav"),
         _ => None,
     }
 }
@@ -240,7 +227,6 @@ pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Op
 
     let acceptable = mime.starts_with("image/")
         || mime.starts_with("video/")
-        || mime.starts_with("audio/")
         || mime == "application/octet-stream";
     if !acceptable {
         return None;
@@ -260,8 +246,6 @@ pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Op
 
     let fallback_ext = if mime.starts_with("video/") {
         extension_from_mime(&mime).unwrap_or("mp4")
-    } else if mime.starts_with("audio/") {
-        extension_from_mime(&mime).unwrap_or("mp3")
     } else {
         extension_from_mime(&mime).unwrap_or("jpg")
     };

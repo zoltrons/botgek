@@ -160,13 +160,9 @@ pub struct PlatformEngineModes {
 }
 
 impl Default for PlatformEngineModes {
-    /// Twitter, Reddit ve Bluesky için native embed motoru açıktır (başarısız olursa
+    /// Twitter, Reddit, Bluesky ve Spotify için native embed motoru açıktır (başarısız olursa
     /// `EngineSettings::fallback_to_proxy` sayesinde eski proxy davranışına düşer).
     /// TikTok (yalnızca kart) ve Instagram (native API yok) için varsayılan proxy'dir.
-    /// Spotify için **proxy** varsayılandır: link `fxspotify.com`'a yönlendirilir ve
-    /// Discord, fxspotify'ın Open Graph etiketlerinden **kapağı poster yapıp 30 sn
-    /// önizlemeyi oynatılabilir video** olarak gömülü bir embed üretir (botun kendi
-    /// embed'i Discord'da satır içi ses oynatamadığı için native yerine proxy tercih edilir).
     fn default() -> Self {
         Self {
             twitter: ConversionMode::Builtin,
@@ -174,7 +170,7 @@ impl Default for PlatformEngineModes {
             instagram: ConversionMode::Proxy,
             reddit: ConversionMode::Builtin,
             bluesky: ConversionMode::Builtin,
-            spotify: ConversionMode::Proxy,
+            spotify: ConversionMode::Builtin,
         }
     }
 }
@@ -963,7 +959,7 @@ mod tests {
             instagram_domain: "ddinstagram.com".to_string(),
             reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
-            spotify_domain: "fxspotify.com".to_string(),
+            spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
             web_port: 3000,

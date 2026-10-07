@@ -24,8 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, CreateAttachment, CreateMessage, Embed, Message,
-    MessageId, ReactionType, UserId, WebhookId,
+    Channel, ChannelId, ChannelType, Context, CreateMessage, Embed, Message, MessageId,
+    ReactionType, UserId, WebhookId,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -179,16 +179,6 @@ pub struct CustomCard {
     pub components: Vec<serde_json::Value>,
     /// Sol kenar renk çubuğu (`accent_color`); `None` ise çubuk çizilmez.
     pub accent_color: Option<u32>,
-    /// Karta dosya olarak eklenip Components V2 `File` bileşeniyle gösterilecek tek ek
-    /// (ör. Spotify 30 sn önizleme sesi → Discord içinde oynatılabilir ses oynatıcısı).
-    pub attachment: Option<CardAttachment>,
-}
-
-/// Platforma özel karta dosya olarak eklenecek ek.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CardAttachment {
-    pub bytes: Vec<u8>,
-    pub filename: String,
 }
 
 /// Motorun ürettiği platformdan bağımsız gönderi modeli (render katmanının girdisi).
@@ -1299,15 +1289,11 @@ async fn send_components_v2(
     emojis: &EmojiSettings,
     identity: Option<&Impersonation>,
 ) -> Result<(MessageId, bool), String> {
-    // Platforma özel kart eki (ör. Spotify ses önizlemesi) + işlenen medya dosyaları.
-    // Components V2'de `attachments` JSON listesinin sırası yüklenen dosyalarla birebir
-    // eşleşmek zorundadır; bu yüzden ikisi de aynı listeden üretilir.
-    let files = card_attachments(post, resolved);
     if let Some(identity) = identity {
         // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
         // bu yüzden webhook denenir; başarısız olursa mesaj bot adına (yanıtla) gönderilir.
         let payload = v2_payload(msg, parsed, post, options, resolved, emojis, Some(identity), None);
-        match send_via_webhook(ctx, client, config, msg, &payload, &files).await {
+        match send_via_webhook(ctx, client, config, msg, &payload, &resolved.attachments).await {
             Ok(message_id) => return Ok((message_id, true)),
             Err(err) => warn!("Components V2 taklit gönderimi başarısız ({}): {}", msg.id, err),
         }
@@ -1326,24 +1312,9 @@ async fn send_components_v2(
         Some(msg.author.id),
     );
     let message_id =
-        raw::send_channel_message(client, &config.discord_token, msg.channel_id, &payload, &files)
+        raw::send_channel_message(client, &config.discord_token, msg.channel_id, &payload, &resolved.attachments)
             .await?;
     Ok((message_id, false))
-}
-
-/// V2 mesajına yüklenecek tüm dosya ekleri: işlenen medya ekleri + platforma özel kart eki
-/// (ör. Spotify 30 sn önizleme sesi). `attachments` JSON listesi de bu sırayla üretilir
-/// ([`v2::build_payload`]).
-fn card_attachments(post: &BuiltinPost, resolved: &render::ResolvedMedia) -> Vec<CreateAttachment> {
-    let mut files = resolved.attachments.clone();
-    if let Some(att) = post
-        .custom_card
-        .as_ref()
-        .and_then(|card| card.attachment.as_ref())
-    {
-        files.push(CreateAttachment::bytes(att.bytes.clone(), att.filename.clone()));
-    }
-    files
 }
 
 /// Klasik embed mesajını gönderir. Taklit istenmişse webhook üzerinden (kullanıcı adı ve

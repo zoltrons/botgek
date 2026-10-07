@@ -54,7 +54,7 @@
       "instagram": "proxy",
       "reddit": "builtin",
       "bluesky": "builtin",
-      "spotify": "proxy"
+      "spotify": "builtin"
     },
     "domains": {
       "twitter": "",
