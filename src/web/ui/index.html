@@ -160,6 +160,19 @@
             </label>
         </div>
         <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">SP</span>
+            <div class="mod-body">
+                <span class="mod-name">Spotify</span>
+                <span class="mod-host mono" data-host-key="spotify">—</span>
+            </div>
+            <span class="mod-state mono" id="status-spotify">AKTİF</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="spotify">rol filtresi</button>
+            <label class="switch">
+                <input type="checkbox" id="mod-spotify" data-module-key="spotify" role="switch" aria-label="Spotify modülü">
+                <span class="switch-track" aria-hidden="true"></span>
+            </label>
+        </div>
+        <div class="mod-row">
             <span class="mod-key mono" aria-hidden="true">TR</span>
             <div class="mod-body">
                 <span class="mod-name">Bayrak çevirisi</span>
@@ -222,6 +235,10 @@
             <button class="studio-item" type="button" role="tab" id="modtab-bluesky" aria-selected="false" aria-controls="studio-panel" data-studio-module="bluesky" tabindex="-1">
                 <span class="studio-name">Bluesky</span>
                 <span class="studio-badge mono" id="badge-bluesky">filtre yok</span>
+            </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-spotify" aria-selected="false" aria-controls="studio-panel" data-studio-module="spotify" tabindex="-1">
+                <span class="studio-name">Spotify</span>
+                <span class="studio-badge mono" id="badge-spotify">filtre yok</span>
             </button>
             <button class="studio-item" type="button" role="tab" id="modtab-translation" aria-selected="false" aria-controls="studio-panel" data-studio-module="translation" tabindex="-1">
                 <span class="studio-name">Bayrak çevirisi</span>
@@ -376,6 +393,17 @@
                 <label class="pill"><input type="radio" name="engine-mode-bluesky" value="builtin"><span>native</span></label>
             </div>
             <input class="input mono" type="text" id="engine-domain-bluesky" data-domain-key="bluesky" aria-label="Bluesky yedek alan adı" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="engine-row">
+            <div class="engine-meta">
+                <span class="engine-name">Spotify</span>
+                <span class="engine-note mono" id="engine-note-spotify">—</span>
+            </div>
+            <div class="pill-row" role="radiogroup" aria-label="Spotify motoru">
+                <label class="pill"><input type="radio" name="engine-mode-spotify" value="proxy"><span>proxy</span></label>
+                <label class="pill"><input type="radio" name="engine-mode-spotify" value="builtin"><span>native</span></label>
+            </div>
+            <input class="input mono" type="text" id="engine-domain-spotify" data-domain-key="spotify" aria-label="Spotify yedek alan adı" spellcheck="false" autocomplete="off">
         </div>
     </div>
 

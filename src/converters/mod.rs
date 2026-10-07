@@ -18,6 +18,7 @@ fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::Platform
         instagram: engine.domain_for("instagram", config),
         reddit: engine.domain_for("reddit", config),
         bluesky: engine.domain_for("bluesky", config),
+        spotify: engine.domain_for("spotify", config),
     }
 }
 
@@ -49,6 +50,7 @@ pub async fn handle_message(
         parser::Platform::Instagram => (settings.modules.instagram, "instagram"),
         parser::Platform::Reddit => (settings.modules.reddit, "reddit"),
         parser::Platform::Bluesky => (settings.modules.bluesky, "bluesky"),
+        parser::Platform::Spotify => (settings.modules.spotify, "spotify"),
     };
 
     if !module_enabled {

@@ -5,6 +5,7 @@
     "instagram": true,
     "reddit": true,
     "bluesky": true,
+    "spotify": true,
     "translation": true,
     "ai_chat": true
   },
@@ -29,6 +30,10 @@
       "mode": "disabled",
       "roles": []
     },
+    "spotify": {
+      "mode": "disabled",
+      "roles": []
+    },
     "translation": {
       "mode": "disabled",
       "roles": []
@@ -48,14 +53,16 @@
       "tiktok": "proxy",
       "instagram": "proxy",
       "reddit": "builtin",
-      "bluesky": "builtin"
+      "bluesky": "builtin",
+      "spotify": "builtin"
     },
     "domains": {
       "twitter": "",
       "tiktok": "",
       "instagram": "",
       "reddit": "",
-      "bluesky": ""
+      "bluesky": "",
+      "spotify": ""
     },
     "twitter_source": "syndication",
     "media_delivery": "direct",

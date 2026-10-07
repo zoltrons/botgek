@@ -12,6 +12,7 @@ pub mod cache;
 pub mod raw;
 pub mod reddit;
 pub mod render;
+pub mod spotify;
 pub mod tiktok;
 pub mod translate;
 pub mod twitter;
@@ -62,6 +63,7 @@ pub fn platform_key(platform: Platform) -> &'static str {
         Platform::Instagram => "instagram",
         Platform::Reddit => "reddit",
         Platform::Bluesky => "bluesky",
+        Platform::Spotify => "spotify",
     }
 }
 
@@ -73,6 +75,7 @@ pub fn platform_color(platform: Platform) -> u32 {
         Platform::Instagram => 0xE1306C,
         Platform::Reddit => 0xFF4500,
         Platform::Bluesky => 0x1185FE,
+        Platform::Spotify => 0x1DB954,
     }
 }
 
@@ -163,6 +166,21 @@ pub struct Translation {
     pub source: Option<String>,
 }
 
+/// Platforma özel hazır kart (Components V2).
+///
+/// Bazı platformlar (ör. Spotify) genel kart düzeninden farklı bir görünüm ister:
+/// bölüm + küçük resim (thumbnail) + buton satırı. Platform modülü kartın çocuk
+/// bileşenlerini hazır JSON olarak üretip `BuiltinPost::custom_card`'a koyar; V2
+/// katmanı genel kart yerine bu bileşenleri **tek bir `Container`** içinde (verilen
+/// `accent_color` ile) gönderir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomCard {
+    /// `Container` içine yerleştirilecek Components V2 çocuk bileşenleri.
+    pub components: Vec<serde_json::Value>,
+    /// Sol kenar renk çubuğu (`accent_color`); `None` ise çubuk çizilmez.
+    pub accent_color: Option<u32>,
+}
+
 /// Motorun ürettiği platformdan bağımsız gönderi modeli (render katmanının girdisi).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltinPost {
@@ -188,6 +206,9 @@ pub struct BuiltinPost {
     pub language: Option<String>,
     /// Otomatik çeviri yapıldıysa çeviri bilgisi.
     pub translation: Option<Translation>,
+    /// Platforma özel hazır kart (Components V2); doluysa genel kart düzeni yerine bu
+    /// bileşenler gönderilir (ör. Spotify'ın bölüm + thumbnail + buton düzeni).
+    pub custom_card: Option<CustomCard>,
 }
 
 impl BuiltinPost {
@@ -207,6 +228,7 @@ impl BuiltinPost {
             extra_label: None,
             language: None,
             translation: None,
+            custom_card: None,
         }
     }
 
@@ -296,6 +318,7 @@ pub async fn fetch(
         Platform::Reddit => reddit::fetch(client, parsed).await,
         Platform::TikTok => tiktok::fetch(client, parsed).await,
         Platform::Instagram => opengraph::fetch(client, parsed).await,
+        Platform::Spotify => spotify::fetch(client, parsed).await,
     }?;
 
     cache::put(key, &post).await;
@@ -962,6 +985,11 @@ async fn send_via_webhook(
 /// kartın içinde oynar); diğer gönderiler fxembed tarzı klasik embed ile gönderilir ve
 /// profil resmi kullanıcı adının solunda küçük durur.
 fn use_modern_card(style: CardStyle, post: &BuiltinPost) -> bool {
+    // Platforma özel hazır kart (ör. Spotify) yalnızca Components V2 ile çizilebilir
+    // (bölüm + thumbnail + buton); kart stili ne olursa olsun modern yol zorunludur.
+    if post.custom_card.is_some() {
+        return true;
+    }
     match style {
         CardStyle::Modern => true,
         CardStyle::FxEmbed => false,

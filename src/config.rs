@@ -8,6 +8,7 @@ pub struct Config {
     pub instagram_domain: String,
     pub reddit_domain: String,
     pub bluesky_domain: String,
+    pub spotify_domain: String,
     pub delete_original: bool,
     pub openrouter_api_key: Option<String>,
     pub web_port: u16,
@@ -22,6 +23,7 @@ impl std::fmt::Debug for Config {
             .field("instagram_domain", &self.instagram_domain)
             .field("reddit_domain", &self.reddit_domain)
             .field("bluesky_domain", &self.bluesky_domain)
+            .field("spotify_domain", &self.spotify_domain)
             .field("delete_original", &self.delete_original)
             .field("openrouter_api_key", &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"))
             .field("web_port", &self.web_port)
@@ -75,6 +77,7 @@ impl Config {
         let instagram_domain = sanitize_domain(env::var("INSTAGRAM_DOMAIN"), "ddinstagram.com");
         let reddit_domain = sanitize_domain(env::var("REDDIT_DOMAIN"), "vxreddit.com");
         let bluesky_domain = sanitize_domain(env::var("BLUESKY_DOMAIN"), "fxbsky.app");
+        let spotify_domain = sanitize_domain(env::var("SPOTIFY_DOMAIN"), "open.fixspotify.com");
 
         let delete_original = env::var("DELETE_ORIGINAL")
             .map(|v| v != "0" && v.to_lowercase() != "false")
@@ -96,6 +99,7 @@ impl Config {
             instagram_domain,
             reddit_domain,
             bluesky_domain,
+            spotify_domain,
             delete_original,
             openrouter_api_key,
             web_port,
