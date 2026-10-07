@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-07 19:40] zoltrons — Spotify önizlemesi artık Discord içinde oynuyor (fxspotify proxy + unfurl video embed)
+- **Commit:** `f629b12`
+- **Yapılan:**
+  1. Araştırma: Discord, bot embed'lerinin `video` alanını **yok sayıyor** (yalnızca link unfurl'u doldurur) ve mp3 ekine satır içi oynatıcı vermiyor. fxspotify (`templates/track.html`) çözümü: `og:video` = 30 sn mp3 (video/mp4 ilan) + `og:image` = kapak + `twitter:card=player`.
+  2. Spotify varsayılanı **proxy → `fxspotify.com`** yapıldı. Bot `[:](https://fxspotify.com/track/ID)` gönderince Discord sayfayı unfurl edip kapağı poster, önizlemeyi **oynatılabilir `video` embed** olarak gösteriyor (video üretimi/ffmpeg yok).
+  3. `SPOTIFY_DOMAIN` varsayılanı `fxspotify.com`; parser/settings/WebUI/settings.json ve testler güncellendi. Native (Components V2 kart) modu opsiyonel kaldı.
+  4. Native kartta 30 sn önizleme mp3'ü `File` bileşeniyle dosya olarak da eklenir (Discord'da indirilebilir; oynatıcı vermez) — asıl satır içi oynatma varsayılan proxy (fxspotify unfurl) ile sağlanır.
+- **Etkilenen:** `src/converters/parser.rs`, `src/settings.rs`, `src/config.rs`, `src/web/mod.rs`, `src/web/ui/app.js`, `settings.json`, `.env.example`
 ### [2026-10-07 19:15] zoltrons — Spotify dönüşümü eklendi: fxspotify önizleme çekme + fixspotify modern (Components V2) kartı
 - **Commit:** `40a5eae`
 - **Yapılan:**
