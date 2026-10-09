@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 17:31] zoltrons — Twitter/X, Instagram ve Reddit **native-only**; Reddit videosu her modda sesli birleşir (proxy kaldırıldı)
+- **Commit:** `11813a6`
+- **Yapılan:**
+  1. **Proxy motoru kaldırıldı:** `NATIVE_ONLY_PLATFORMS = ["twitter", "instagram", "reddit"]` eklendi; `EngineSettings::mode_for` bu platformlarda daima `Builtin` döner ve `allows_proxy_fallback` proxy yedeğini yok sayar. `PlatformEngineModes`/`ProxyDomains`'ten bu üç platformun alanları, `Config`'ten `TWITTER_DOMAIN`/`INSTAGRAM_DOMAIN`/`REDDIT_DOMAIN`, WebUI'dan mod/yedek alan adı kontrolleri kaldırıldı. Parser artık native-only platformlarda proxy linki üretmez (`fixed_url` = `original_url`).
+  2. **Reddit videosu:** `RenderOptions::from_engine(engine, platform_key)` eklendi. Reddit'te **video her zaman indirilip sesiyle birleştirilir** (geniş `ATTACH_VIDEO_BUDGET` bütçesi gerekir; `auto`'nun 1,2 sn'si birleştirmeye yetmez) — `direct` modda bile; **görseller ise medya yöntemi ayarını izler** (direct'te indirilmez, bağlantı olarak kalır). Log satırı görsel/video indirme durumunu ayrı yazar.
+  3. **Doğrulama:** **213 test geçti** (yeni: `reddit_always_downloads_video_but_keeps_images_direct`, native-only mod/yedek ve parser beklentileri). Panel sözleşme testleri yeni şemaya uyarlandı (`data-domain-key`/`engine-mode-*` artık 3 platform, `env_domains` 3). Test botu yeni sürümle ve `media_delivery: direct` ile yeniden başlatıldı (Reddit: görsel bağlantı, video sesli ek).
+- **Etkilenen:** `src/settings.rs`, `src/config.rs`, `src/converters/parser.rs`, `src/converters/mod.rs`, `src/converters/builtin/{render,mod,twitter,v2}.rs`, `src/handler.rs`, `src/web/mod.rs`, `src/web/ui/{index.html,app.js,app.css}`, `.env.example`, `settings.json`, `README.md`
+
+
 ### [2026-10-09 17:15] zoltrons — Reddit sesli video: `hls-transmux` çok-izli oturuma geçiş + `waiter`/`end_input` düzeltmeleri
 - **Commit:** `ad16793`
 - **Yapılan:**
