@@ -14,6 +14,10 @@ ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
 # 1. Adım: Bağımlılıkları önbelleğe al
 COPY Cargo.toml Cargo.lock ./
+# `build.rs` + `build-support/` derleme zamanı sürüm bilgisini üretir (git bağlamda yoktur):
+# ikisi de kopyalanmazsa build script çalışmaz ve sürüm `+local` kalır.
+COPY build.rs build.rs
+COPY build-support ./build-support
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
@@ -22,6 +26,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 # 2. Adım: Gerçek kaynak kodları kopyala ve nihai binary'yi derle (önceki target cache'i yeniden kullanılır)
 COPY src ./src
+COPY build.rs build.rs
+COPY build-support ./build-support
+
+# Sürüm künyesi ikiliye gömülür (Docker bağlamında `.git` yoktur). Kaynak derlemesinde
+# etiketi elle verin, aksi hâlde `Cargo.toml` sürümü + `+local` raporlanır:
+#   docker build --build-arg BOTGEK_VERSION=v0.2.0 --build-arg BOTGEK_SHA=$(git rev-parse --short HEAD) .
+ARG BOTGEK_VERSION=""
+ARG BOTGEK_SHA=""
+ENV BOTGEK_BUILD_VERSION=$BOTGEK_VERSION \
+    BOTGEK_GIT_SHA=$BOTGEK_SHA
+
 RUN touch src/main.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \

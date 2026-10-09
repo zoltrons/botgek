@@ -27,7 +27,8 @@ for arg in "$@"; do
         --push) push=1 ;;
         --no-test) run_tests=0 ;;
         -h|--help)
-            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+            # Yalnızca baştaki yorum bloğunu (kullanım metnini) basar.
+            awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
             exit 0
             ;;
         -*) echo "bilinmeyen seçenek: $arg" >&2; exit 2 ;;
@@ -88,11 +89,12 @@ fi
 echo "sürüm: $current → $next"
 
 # 1) `Cargo.toml` [package] sürümü (yalnızca o satır).
+# Not: awk değişken adı `newver` — `next` gawk'ta rezerve kelimedir.
 tmp="$(mktemp)"
-awk -v next="$next" '
+awk -v newver="$next" '
     /^\[package\]/ { in_pkg = 1; print; next }
     /^\[/ { in_pkg = 0 }
-    in_pkg && !done && /^version[[:space:]]*=/ { print "version = \"" next "\""; done = 1; next }
+    in_pkg && !done && /^version[[:space:]]*=/ { print "version = \"" newver "\""; done = 1; next }
     { print }
 ' Cargo.toml > "$tmp"
 mv "$tmp" Cargo.toml

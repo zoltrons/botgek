@@ -3,6 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Kaynak derlemesinde `.git` bağlamda yoktur: sürüm künyesini buradan verin.
+        # Boş bırakılırsa `Cargo.toml` sürümü + `+local` gömülür (bot çalışır, künye eksik olur).
+        #   BOTGEK_VERSION=$(git describe --tags --abbrev=0) BOTGEK_SHA=$(git rev-parse --short HEAD) docker compose build
+        BOTGEK_VERSION: ${BOTGEK_VERSION:-}
+        BOTGEK_SHA: ${BOTGEK_SHA:-}
     # Veya GHCR üzerinden yayınlanan imajı kullanmak isterseniz:
     # image: ghcr.io/<kullanici_adiniz>/botgek:latest
     container_name: botgek

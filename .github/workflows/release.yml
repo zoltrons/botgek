@@ -1,0 +1,84 @@
+name: Release (sürüm bump + etiket)
+
+# Elle tetiklenir: sürümü bump'lar, `Cargo.toml` + `Cargo.lock`'u günceller, testleri çalıştırır,
+# `chore(release): vX.Y.Z` commit'i + **annotated tag** atar ve push'lar. Etiket push'u
+# `build-release.yml` zincirini başlatır: testler → `.deb`/`.tar.gz` → GitHub Release →
+# multi-arch Docker imajı (`ghcr.io/<repo>:X.Y.Z`, `:latest`).
+#
+# Sürüm mantığı **tek kaynak**tır: `release.sh` (yerelde de aynı script kullanılır).
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Sürüm artışı (patch 0.1.0→0.1.1 · minor 0.1.0→0.2.0 · major 0.1.0→1.0.0)'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: 'Açık sürüm (ör. 1.0.0) — doldurulursa `bump` yok sayılır'
+        required: false
+        type: string
+      skip_tests:
+        description: 'Testleri atla (önerilmez)'
+        required: false
+        default: false
+        type: boolean
+
+# En az yetki: yalnızca commit + etiket push'u için yazma.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Sürüm bump + etiket + push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (tam geçmiş + kimlik bilgileri)
+        uses: actions/checkout@v4
+        with:
+          # Sürüm etiketlerden türetilir; push için kimlik bilgileri korunur.
+          fetch-depth: 0
+
+      - name: Git kimliği (bot)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Sürümü bump'la, test et, etiketle ve push'la
+        env:
+          EXPLICIT_VERSION: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
+          SKIP_TESTS: ${{ inputs.skip_tests }}
+        run: |
+          set -eu
+          extra=""
+          if [ "${SKIP_TESTS:-false}" = "true" ]; then
+            extra="--no-test"
+          fi
+          if [ -n "${EXPLICIT_VERSION:-}" ]; then
+            ./release.sh "$EXPLICIT_VERSION" --push $extra
+          else
+            ./release.sh "$BUMP" --push $extra
+          fi
+
+      - name: Özet
+        run: |
+          set -eu
+          tag="$(git describe --tags --abbrev=0)"
+          echo "### Yayın: $tag" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Etiket push edildi; `build-release.yml` zinciri (.deb/.tar.gz → GitHub Release → Docker) çalışıyor.' >> "$GITHUB_STEP_SUMMARY"
