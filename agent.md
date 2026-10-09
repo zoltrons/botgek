@@ -44,7 +44,7 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 
 <!-- LOG:START -->
 ### [2026-10-09 16:25] zoltrons — Instagram platform göstergesi özel emoji + `INSTAGRAM_SESSIONID` Docker env
-- **Commit:** `7a0ca8f`
+- **Commit:** `09b7b8e`
 - **Yapılan:**
   1. Kartın son satırındaki platform göstergesi, X/Twitter'daki gibi Instagram için de **özel emoji** kullanır: `EmojiSettings.instagram` (varsayılan `<:instagram:1558099674731122758>`), `instagram()` erişimcisi ve `v2::meta_line` Instagram dalı. Emoji boş/tanınmazsa yine platform adı yazılır (bozuk emoji çıkmaz).
   2. WebUI emoji setine **“Instagram logosu”** kutusu (`data-emoji-key="instagram"`), `app.js` varsayılanları ve alan listesi eklendi; kök `settings.json` emoji nesnesine değer yazıldı. Panel sözleşme testi (HTML kutuları ↔ ayar şeması) tekrar geçiyor.
@@ -52,7 +52,7 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
   4. **204 test** geçiyor; çalışan süreçte `/api/settings` üzerinden doğrulandı: `emojis.instagram = <:instagram:1558099674731122758>`.
 - **Etkilenen:** `src/settings.rs`, `src/converters/builtin/v2.rs`, `src/web/ui/index.html`, `src/web/ui/app.js`, `settings.json`, `docker-compose.yml`, `README.md`
 ### [2026-10-09 16:12] zoltrons — Instagram: oturum çereziyle reel/video **mp4** (kart içinde oynar) + carousel + kesin metrikler
-- **Commit:** `1d3329e`
+- **Commit:** `a70c2e8`
 - **Yapılan:**
   1. **Araştırma:** Instagram reel/video akışını (mp4) girişsiz istemcilere **vermiyor** — embed sayfasının `contextJSON` alanı `null`, `/api/v1/media/{pk}/info/` giriş sayfasına **302**, `POST /api/graphql` HTML/`ssr_disabled_reason: fail_ssr_disabled`, `?__a=1` → **404**. `seirenkr/OGInstagram` kodu incelendi: aynı veriyi **proxy oturum havuzu** (`fetchViaProxy`) üzerinden alıyor; yt-dlp ise `curl_cffi` **TLS parmak izi taklidi** + çerez kullanıyor. Yani Rust/reqwest için tek pratik yol kimlikli oturum veya proxy.
   2. `.env`'de `INSTAGRAM_SESSIONID` tanımlıysa bot gönderiyi Instagram **uygulama API'sinden** (`/api/v1/media/{pk}/info/`, iOS app-id + mobil UA + çerez; iki uç ve iki çerez biçimi denenir) **paralel** çeker: **reel/video kartın içinde oynar**, carousel'in **tüm** görselleri galeriye girer, metrikler (beğeni/yorum/**görüntülenme**) ile görünen ad/doğrulama kesinleşir. Çerez yoksa veya süresi dolmuşsa davranış değişmez (kapak karesi + `Reel` etiketi) — akış hiçbir durumda bozulmaz.
@@ -60,7 +60,7 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
   4. **Canlı Discord doğrulaması:** reel kartı API'den okundu — galeri öğesi `type=video/mp4, 720x1280` (Instagram CDN mp4), `-# Instagram • Reel • … • [Link]` ve `:metric: 170.4M` görüntülenme ile birlikte. Log: `Instagram oturum verisi alındı … 1 medya, video: true`.
 - **Etkilenen:** `src/converters/builtin/instagram.rs`, `src/converters/builtin/mod.rs`, `src/config.rs`, `src/handler.rs`, `src/settings.rs`, `src/converters/parser.rs`, `src/web/mod.rs`, `.env.example`, `README.md`
 ### [2026-10-09 15:46] zoltrons — Instagram için native (Components V2) kart motoru: SSR embed + OpenGraph
-- **Commit:** `39f24bd`
+- **Commit:** `cd52c12`
 - **Yapılan:**
   1. Instagram'ın varsayılan motoru proxy'den (`ddinstagram.com`, artık DNS'te çözülmüyor) **native embed**'e alındı. Yeni `src/converters/builtin/instagram.rs` gönderiyi Instagram'ın herkese açık **SSR embed** sayfasından (`/{p|reel|reels|tv}/{kod}/embed/captioned/`) ve gönderi sayfasının **OpenGraph** meta etiketlerinden **paralel** çözer (toplam gecikme tek istek kadar): yazar kullanıcı adı, görünen ad, doğrulama işareti, avatar, açıklama, beğeni/yorum, tarih ve görsel.
   2. Instagram video/reel akışını (mp4) sayfa kaynağına koymadığı için kart videonun **kapak karesini** + `Reel`/`Video` etiketi ve gönderi bağlantısını gösterir. İki uç da başarısız olursa (giriş duvarı) akış hata verir ve ayar açıksa proxy yedeğine düşülür.
