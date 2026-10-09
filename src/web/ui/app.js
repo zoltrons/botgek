@@ -134,6 +134,10 @@ let dirty = false;
 let savedSnapshot = '';
 let pickerCursor = -1;
 let modalAction = null;
+/* Onay penceresi açılırken odaktaki öğe: kapanınca odak buraya döner. */
+let modalReturnFocus = null;
+/* "Kaydedildi" onayının geri alma zamanlayıcısı (yerinde onay, bildirim değil). */
+let saveConfirmTimer = null;
 let toastTimer = null;
 
 MODULE_KEYS.forEach(m => { appSettings.role_filters[m] = { mode: 'disabled', roles: [] }; });
@@ -417,6 +421,29 @@ function updateDirtyUI() {
         $('dock-text').textContent = 'kaydedilmemiş: ' + (head || 'değişiklik') + rest;
     }
     dock.hidden = !dirty;
+}
+
+/* Ayarlar satırındaki anahtarlar, satırdaki başlık ve açıklamayı **işaret eder**: ekran
+   okuyucu kısa adı ve nedeni birlikte duyurur. HTML'deki `aria-label` yalnızca yedek kalır
+   (JavaScript yoksa ad yine doğru olur); bağlama çalışınca kaldırılır. Id'ler burada
+   üretildiği için yeni bir kart eklemek yeterlidir, elle id yazmak gerekmez. */
+function wireSwitchLabels() {
+    qsa('[data-engine-switch]').forEach(input => {
+        const tile = input.closest('.tile');
+        if (!tile) return;
+        const key = input.dataset.engineSwitch || 'x';
+        const title = tile.querySelector('.tile-name');
+        const hint = tile.querySelector('.tile-hint');
+        if (title) {
+            if (!title.id) title.id = 'tile-title-' + key;
+            input.setAttribute('aria-labelledby', title.id);
+        }
+        if (hint) {
+            if (!hint.id) hint.id = 'tile-hint-' + key;
+            input.setAttribute('aria-describedby', hint.id);
+        }
+        if (title && hint) input.removeAttribute('aria-label');
+    });
 }
 
 /* Bir alan değişti: ilgili **bölümü** o sunucuda sabitler (miras → özel), dirty işaretler.
@@ -825,6 +852,9 @@ function renderRolePickerList(query) {
     const list = $('role-picker-list');
     if (!list) return;
     list.textContent = '';
+    // Önceki turdan kalan imleç adresi temizlenir: boş sonuç listesinde bayat id kalmasın.
+    const search = $('role-search-input');
+    if (search) search.removeAttribute('aria-activedescendant');
     const results = pickerResults(query);
     if ($('role-picker-count')) $('role-picker-count').textContent = results.length + '/' + discordRoles.length;
 
@@ -842,6 +872,9 @@ function renderRolePickerList(query) {
         const item = document.createElement('div');
         item.className = 'picker-item';
         item.setAttribute('role', 'option');
+        // Liste kutusu seçenekleri klavyeyle `aria-activedescendant` ile adreslenir: arama
+        // alanı odakta kalır (tek Tab durağı), ok tuşları imleci gezer.
+        item.id = 'role-option-' + role.id;
         item.setAttribute('aria-selected', selected.indexOf(role.id) > -1 ? 'true' : 'false');
         if (selected.indexOf(role.id) > -1) item.classList.add('is-selected');
         if (index === pickerCursor) item.classList.add('is-cursor');
@@ -880,6 +913,19 @@ function renderRolePickerList(query) {
         }
         list.appendChild(item);
     });
+
+    syncPickerActiveDescendant();
+}
+
+/* Arama alanındaki `aria-activedescendant`, ok tuşlarıyla gezinilen seçeneği gösterir:
+   ekran okuyucu odak taşımadan aktif seçeneği duyurur. */
+function syncPickerActiveDescendant() {
+    const search = $('role-search-input');
+    const list = $('role-picker-list');
+    if (!search || !list) return;
+    const active = pickerCursor > -1 ? list.children[pickerCursor] : null;
+    if (active && active.id) search.setAttribute('aria-activedescendant', active.id);
+    else search.removeAttribute('aria-activedescendant');
 }
 
 function openRolePicker() {
@@ -890,6 +936,8 @@ function openRolePicker() {
     const search = $('role-search-input');
     if (search) {
         search.value = '';
+        pickerCursor = -1;
+        search.setAttribute('aria-expanded', 'true');
         renderRolePickerList('');
         search.focus();
     }
@@ -900,6 +948,8 @@ function closeRolePicker() {
     if (!pop || pop.hidden) return;
     pop.hidden = true;
     $('btn-toggle-picker').setAttribute('aria-expanded', 'false');
+    const search = $('role-search-input');
+    if (search) search.setAttribute('aria-expanded', 'false');
 }
 
 function toggleRolePicker() {
@@ -918,6 +968,7 @@ function movePickerCursor(delta) {
     });
     const active = list.children[pickerCursor];
     if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+    syncPickerActiveDescendant();
 }
 
 function onPickerKeydown(e) {
@@ -1145,6 +1196,12 @@ function setSaving(busy) {
         const el = $(id);
         if (el) el.disabled = busy;
     });
+    // Kaydetme sürerken bölge "meşgul" işaretlenir: ekran okuyucu bekler ve tekrar denemez.
+    const region = $('main');
+    if (region) {
+        if (busy) region.setAttribute('aria-busy', 'true');
+        else region.removeAttribute('aria-busy');
+    }
     const button = $('btn-save');
     if (!button) return;
     if (busy) {
@@ -1159,6 +1216,7 @@ function setSaving(busy) {
 async function saveSettingsToServer() {
     commitDomToActiveConfig();
     setSaving(true);
+    let saved = false;
     try {
         const res = await fetch('/api/settings', {
             method: 'POST',
@@ -1168,6 +1226,7 @@ async function saveSettingsToServer() {
         if (res.ok) {
             savedSnapshot = JSON.stringify(buildPayload());
             dirty = false;
+            saved = true;
             updateDirtyUI();
             refreshScope();
             showToast('ayarlar kaydedildi · ' + new Date().toLocaleTimeString('tr-TR'));
@@ -1185,7 +1244,23 @@ async function saveSettingsToServer() {
         showToast('sunucuya bağlanılamadı · ' + err.message, true);
     } finally {
         setSaving(false);
+        if (saved) confirmSaveInPlace();
     }
+}
+
+/* Kaydetme başarısı **yerinde** onaylanır: birincil düğme kısa süre "Kaydedildi" der.
+   (Arc: ön plan eyleminin tek kanıtı bildirim olmamalı; bildirim yalnızca destekler.) */
+function confirmSaveInPlace() {
+    const button = $('btn-save');
+    if (!button) return;
+    clearTimeout(saveConfirmTimer);
+    const original = button.innerHTML;
+    button.dataset.confirmed = 'true';
+    button.textContent = 'Kaydedildi';
+    saveConfirmTimer = setTimeout(() => {
+        delete button.dataset.confirmed;
+        button.innerHTML = original;
+    }, 2400);
 }
 
 /* Sunucudaki kayıtlı ayarları geri yükler (kaydedilmemiş değişiklikleri atar). */
@@ -1228,6 +1303,31 @@ function renderUI() {
 
 /* ══ ONAY PENCERESİ ═══════════════════════════════════════════════════════ */
 
+/* Onay penceresindeki odaklanabilir öğeler (odak tuzağı için). */
+function modalFocusables() {
+    const card = qs('.modal-card');
+    if (!card) return [];
+    return Array.prototype.slice.call(
+        card.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    ).filter(el => !el.disabled && !el.hidden);
+}
+
+/* Odak pencere içinde döner: Tab son öğeden ilk öğeye, Shift+Tab tersine. */
+function trapModalFocus(e) {
+    if (e.key !== 'Tab') return;
+    const items = modalFocusables();
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+    }
+}
+
 function openModal(options) {
     const modal = $('modal');
     if (!modal) return;
@@ -1238,6 +1338,7 @@ function openModal(options) {
     confirm.textContent = options.confirmLabel || 'Onayla';
     confirm.classList.toggle('btn-danger', options.tone !== 'primary');
     modalAction = options.onConfirm || null;
+    modalReturnFocus = document.activeElement;
     modal.hidden = false;
     confirm.focus();
 }
@@ -1246,6 +1347,15 @@ function closeModal() {
     const modal = $('modal');
     if (modal) modal.hidden = true;
     modalAction = null;
+    // Odak, pencereyi açan öğeye döner: klavye kullanıcısı sayfada kaybolmaz.
+    if (
+        modalReturnFocus &&
+        typeof modalReturnFocus.focus === 'function' &&
+        document.contains(modalReturnFocus)
+    ) {
+        modalReturnFocus.focus();
+    }
+    modalReturnFocus = null;
 }
 
 function requestReload(title, body) {
@@ -1282,21 +1392,37 @@ function showToast(message, isError) {
 
 /* ══ KAYDIRMA KONUMUNA GÖRE BÖLÜM VURGUSU ═════════════════════════════════ */
 
+/* Aktif bölüm işaretini tek yerden uygular: görsel (`is-active`) + erişilebilirlik
+   (`aria-current`). Durum yalnızca renkle taşınmaz. */
+function setActiveNav(sectionId) {
+    qsa('[data-nav]').forEach(link => {
+        const on = link.dataset.nav === sectionId;
+        link.classList.toggle('is-active', on);
+        if (on) link.setAttribute('aria-current', 'true');
+        else link.removeAttribute('aria-current');
+    });
+}
+
 function initScrollspy() {
     if (!('IntersectionObserver' in window)) return;
-    const links = qsa('[data-nav]');
     const observer = new IntersectionObserver(entries => {
         entries.forEach(entry => {
             if (!entry.isIntersecting) return;
-            links.forEach(link => link.classList.toggle('is-active', link.dataset.nav === entry.target.id));
+            setActiveNav(entry.target.id);
         });
     }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
     qsa('.sheet').forEach(section => observer.observe(section));
+    // Açılışta HTML'deki başlangıç işaretiyle tutarlı kal.
+    const first = qs('[data-nav].is-active');
+    if (first) setActiveNav(first.dataset.nav);
 }
 
 /* ══ OLAYLAR ══════════════════════════════════════════════════════════════ */
 
 function bind() {
+    // Ayarlar satırları: anahtarın adı/açıklaması satırdaki metinlerden gelir
+    wireSwitchLabels();
+
     // Modül anahtarları
     MODULE_KEYS.forEach(key => {
         const box = $('mod-' + key);
@@ -1407,6 +1533,9 @@ function bind() {
         'Değişiklikleri at',
         'Kaydedilmemiş değişiklikler silinecek ve sunucudaki kayıtlı ayarlar geri yüklenecek.'
     ));
+
+    // Onay penceresi: odak tuzağı (Tab pencerede döner, Escape kapatır, kapanınca odak döner)
+    if ($('modal')) $('modal').addEventListener('keydown', trapModalFocus);
 
     // Onay penceresi
     if ($('modal-confirm')) $('modal-confirm').addEventListener('click', () => {

@@ -80,6 +80,7 @@
 </aside>
 
 <main class="main" id="main">
+<h1 class="sr-only">Botgek kontrol paneli</h1>
 <div class="ruler" aria-hidden="true"></div>
 
 <!-- ═════════════════ 01 · MODÜLLER ═════════════════ -->
@@ -105,7 +106,7 @@
                 <span class="mod-host mono" data-host-key="twitter">—</span>
             </div>
             <span class="mod-state mono" id="status-twitter">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="twitter">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="twitter" aria-label="Twitter / X rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-twitter" data-module-key="twitter" role="switch" aria-label="Twitter / X modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -118,7 +119,7 @@
                 <span class="mod-host mono" data-host-key="tiktok">—</span>
             </div>
             <span class="mod-state mono" id="status-tiktok">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="tiktok">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="tiktok" aria-label="TikTok rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-tiktok" data-module-key="tiktok" role="switch" aria-label="TikTok modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -131,7 +132,7 @@
                 <span class="mod-host mono" data-host-key="instagram">—</span>
             </div>
             <span class="mod-state mono" id="status-instagram">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="instagram">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="instagram" aria-label="Instagram rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-instagram" data-module-key="instagram" role="switch" aria-label="Instagram modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -144,7 +145,7 @@
                 <span class="mod-host mono" data-host-key="reddit">—</span>
             </div>
             <span class="mod-state mono" id="status-reddit">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="reddit">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="reddit" aria-label="Reddit rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-reddit" data-module-key="reddit" role="switch" aria-label="Reddit modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -157,7 +158,7 @@
                 <span class="mod-host mono" data-host-key="bluesky">—</span>
             </div>
             <span class="mod-state mono" id="status-bluesky">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="bluesky">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="bluesky" aria-label="Bluesky rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-bluesky" data-module-key="bluesky" role="switch" aria-label="Bluesky modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -170,7 +171,7 @@
                 <span class="mod-host mono" data-host-key="spotify">—</span>
             </div>
             <span class="mod-state mono" id="status-spotify">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="spotify">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="spotify" aria-label="Spotify rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-spotify" data-module-key="spotify" role="switch" aria-label="Spotify modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -183,7 +184,7 @@
                 <span class="mod-host mono">bayrak reaksiyonu</span>
             </div>
             <span class="mod-state mono" id="status-translation">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="translation">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="translation" aria-label="Bayrak çevirisi rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-translation" data-module-key="translation" role="switch" aria-label="Bayrak çevirisi modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -196,7 +197,7 @@
                 <span class="mod-host mono">etiket veya yanıt</span>
             </div>
             <span class="mod-state mono" id="status-ai_chat">AKTİF</span>
-            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="ai_chat">rol filtresi</button>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="ai_chat" aria-label="AI sohbet rol filtresine git">filtreye git</button>
             <label class="switch">
                 <input type="checkbox" id="mod-ai_chat" data-module-key="ai_chat" role="switch" aria-label="AI sohbet modülü">
                 <span class="switch-track" aria-hidden="true"></span>
@@ -283,7 +284,7 @@
                     </button>
                     <div class="picker-pop" id="role-picker-dropdown" hidden>
                         <div class="picker-head">
-                            <input class="input mono" type="search" id="role-search-input" placeholder="rol ara…" aria-label="Rol ara" autocomplete="off" spellcheck="false">
+                            <input class="input mono" type="search" id="role-search-input" placeholder="rol ara…" aria-label="Rol ara" role="combobox" aria-expanded="false" aria-controls="role-picker-list" aria-autocomplete="list" autocomplete="off" spellcheck="false">
                             <span class="picker-count mono" id="role-picker-count">0</span>
                         </div>
                         <div class="picker-list" id="role-picker-list" role="listbox" aria-multiselectable="true" aria-label="Sunucu rolleri"></div>
@@ -461,7 +462,7 @@
     </div>
 
     <p class="micro">kart emojileri · yalnızca modern kart</p>
-    <p class="tile-hint">Özel emojileri <span class="mono">&lt;:ad:id&gt;</span> biçiminde yazın. Boş alan Unicode emojiye düşer; kimliksiz ad (ör. <span class="mono">:twitter:</span>) botun kendi emojisine bağlanır — kart hiçbir durumda bozuk emoji göstermez.</p>
+    <p class="tile-hint">Özel emojileri <span class="mono">&lt;:ad:id&gt;</span> biçiminde yazın. Boş alan Unicode emojiye düşer; kimliksiz ad (ör. <span class="mono">:twitter:</span>) botun kendi emojisine bağlanır. Kart hiçbir durumda bozuk emoji göstermez.</p>
     <div class="emoji-grid">
         <div class="field"><label class="field-label" for="engine-emoji-verified">doğrulama işareti</label><input class="input mono" type="text" id="engine-emoji-verified" data-emoji-key="verified" spellcheck="false" autocomplete="off"></div>
         <div class="field"><label class="field-label" for="engine-emoji-replies">yanıt</label><input class="input mono" type="text" id="engine-emoji-replies" data-emoji-key="replies" spellcheck="false" autocomplete="off"></div>
@@ -482,8 +483,8 @@
             <div class="manual-item"><dt>Native embed</dt><dd>Bot gönderiyi kendisi çözer: yazar adı, doğrulama işareti, gönderi metni, metrikler, tarih, alıntı ve medya galerisi. Video ve görseller kartın içinde oynar. <b>Twitter/X, Instagram ve Reddit her zaman bu motorla çalışır</b> (proxy modu ve proxy yedeği kaldırıldı).</dd></div>
             <div class="manual-item"><dt>Yedek alan adı</dt><dd>Yalnızca proxy modu kullanılabilen platformlarda (TikTok, Bluesky, Spotify) görünür; native embed üretilemezse bu alan adına düşülür. Boş bırakılan alan <span class="mono">.env</span> değerini kullanır (ipucu gerçek değeri yazar).</dd></div>
             <div class="manual-item"><dt>Kart stili</dt><dd>Kart **her zaman** tek parça <span class="mono">Components V2</span> kartıdır; klasik (fxembed tarzı) embed yedeği kaldırılmıştır. Video ve görseller kartın içindeki galeride oynar, metrik/tarih/etiketler alt satırda durur.</dd></div>
-            <div class="manual-item"><dt>Medya</dt><dd><b>Işık hızı:</b> hiçbir medya indirilmez/yüklenmez — görseller CDN'in hafif (<span class="mono">large</span>) varyantından, video kart içinde oynayan en uygun mp4'ten, GIF ise FxEmbed'in GIF servisinden gelir; kart veri gelir gelmez gönderilir. Tek istisna <b>Reddit videosudur</b>: ses ayrı akışta geldiği için video+ses kısa bir bütçe içinde birleştirilip mesaja <b>dosya olarak</b> eklenir; bütçe dolarsa video kartta sessiz oynar. Medya yöntemi diye bir ayar yoktur.</dd></div>
-            <div class="manual-item"><dt>Medya eki</dt><dd>Yalnızca yukarıdaki istisna — birleştirilen <b>Reddit videosu</b> — mesaja dosya olarak eklenir. Diğer görseller ve videolar kart içinde uzak bağlantıyla gösterilir/oynar; hiçbiri indirilmez.</dd></div>
+            <div class="manual-item"><dt>Medya</dt><dd><b>Işık hızı:</b> hiçbir medya indirilmez/yüklenmez; görseller CDN'in hafif (<span class="mono">large</span>) varyantından, video kart içinde oynayan en uygun mp4'ten, GIF ise FxEmbed'in GIF servisinden gelir; kart veri gelir gelmez gönderilir. Tek istisna <b>Reddit videosudur</b>: ses ayrı akışta geldiği için video+ses kısa bir bütçe içinde birleştirilip mesaja <b>dosya olarak</b> eklenir; bütçe dolarsa video kartta sessiz oynar. Medya yöntemi diye bir ayar yoktur.</dd></div>
+            <div class="manual-item"><dt>Medya eki</dt><dd>Yalnızca yukarıdaki istisna (birleştirilen <b>Reddit videosu</b>) mesaja dosya olarak eklenir. Diğer görseller ve videolar kart içinde uzak bağlantıyla gösterilir/oynar; hiçbiri indirilmez.</dd></div>
             <div class="manual-item"><dt>Taklit</dt><dd>Mesaj kullanıcının adı ve avatarıyla webhook üzerinden gider, link ve etiket hilesi gerekmez (Manage Webhooks izni şart). Discord webhook mesajları yanıt olamadığı için yanıtlarda yanıt bağlantısı yalnızca "yanıtlarda yanıtı koru" açıkken korunur.</dd></div>
             <div class="manual-item"><dt>Profil resmi</dt><dd>Kartta avatar gösterilmez: Discord bileşenleri küçük resmi yalnızca sağa koyabildiği için modelin solundaki avatar taklit edilemez. Ad ve doğrulama işareti gösterilir.</dd></div>
             <div class="manual-item"><dt>Kullanıcı metni</dt><dd>Kullanıcının linkle yazdığı metin modern kartta kartın üstünde, kullanıcı mesajı gibi durur; kart içine alınmaz. Kart üretilemezse <b>klasik embed yedeği yoktur</b>: hata log'lanır ve dönülür.</dd></div>
