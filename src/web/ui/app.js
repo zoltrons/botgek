@@ -606,18 +606,35 @@ function updateEngineSummary() {
     if ($('nav-count-engine')) $('nav-count-engine').textContent = nativeCount + '/' + ENGINE_PLATFORMS.length;
 }
 
-/* Modül satırındaki adres: proxy modunda etkin alan adı, native modda "native embed". */
+/* Modül satırındaki adres: proxy modunda etkin alan adı, native modda "native embed".
+   Native-only platformlar (Twitter/Instagram/Reddit) **daima** native'dir; motor modu
+   kaydı olmadığı için bu satırlar proxy gibi etiketlenmemelidir. */
 function updatePlatformHosts() {
     const engine = getEngineConfig(getActiveConfig());
     const env = BOTGEK_INFO.env_domains || {};
     qsa('[data-host-key]').forEach(el => {
         const key = el.dataset.hostKey;
-        if (engine.modes[key] === 'builtin') {
+        const platform = ENGINE_PLATFORMS.filter(p => p.key === key)[0];
+        if ((platform && platform.nativeOnly) || engine.modes[key] === 'builtin') {
             el.textContent = 'native embed · bot çözer';
             return;
         }
         const host = env[key] || '';
         el.textContent = host ? 'proxy · ' + host : 'proxy · alan adı .env';
+    });
+}
+
+/* Motor bölümündeki alan bağımlılıkları. "Yanıtlarda yanıtı koru" yalnızca "Kullanıcıyı
+   taklit et" açıkken anlamlıdır (`should_impersonate = impersonate_user && !(isReply &&
+   impersonate_skip_replies)`); taklit kapalıyken alan devre dışı bırakılır ki kullanıcı
+   etkisiz bir ayar değiştirmesin. */
+function updateEngineDependencies() {
+    const engine = getEngineConfig(getActiveConfig());
+    qsa('[data-engine-switch="impersonate_skip_replies"]').forEach(el => {
+        el.disabled = !engine.impersonate_user;
+        const tile = el.closest('.tile');
+        if (tile) tile.classList.toggle('is-disabled', el.disabled);
+        el.title = el.disabled ? '"Kullanıcıyı taklit et" kapalı: bu ayar etkisizdir' : '';
     });
 }
 
@@ -941,6 +958,13 @@ function updateScopeUI() {
     const notice = $('server-inherit-notice');
     const echo = $('scope-echo');
     const guild = rawGuildsList.filter(g => g.guild_id === activeServer)[0];
+    const pickerLabel = $('picker-scope-label');
+    if (pickerLabel) {
+        // Genel kapsamda **tüm sunucuların** rolleri listelenir (picker'da sunucu adı da
+        // yazılır); etiket buna göre değişir, aksi hâlde genelde "sunucu rolü" yokmuş gibi
+        // okunuyordu.
+        pickerLabel.textContent = activeServer === 'global' ? 'Tüm sunuculardan rol seç' : 'Sunucudan rol seç';
+    }
 
     if (activeServer === 'global') {
         if (badge) { badge.textContent = 'genel varsayılan'; delete badge.dataset.tone; }
@@ -1164,6 +1188,7 @@ function renderUI() {
 
     updateModuleUI();
     updateEngineSummary();
+    updateEngineDependencies();
     updateCharCount();
     updatePresetChips();
     updatePlatformHosts();
@@ -1289,6 +1314,7 @@ function bind() {
     qsa('[data-engine-switch]').forEach(el => el.addEventListener('change', () => {
         onConfigModified('engine');
         updateEngineSummary();
+        updateEngineDependencies();
     }));
     qsa('[data-engine-range]').forEach(el => el.addEventListener('input', () => {
         onConfigModified('engine');
