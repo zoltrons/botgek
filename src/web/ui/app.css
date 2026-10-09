@@ -517,7 +517,6 @@ body {
 .tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 10px; margin-top: 10px; }
 .tile { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 12px 13px; background: var(--paper-2); border: 1px solid var(--rule); cursor: pointer; transition: background 0.15s, border-color 0.15s; }
 .tile:hover { background: var(--paper-3); border-color: var(--rule-strong); }
-.tile--static { cursor: default; align-items: center; }
 /* Bağımlılığı olmayan alan (ör. "Yanıtlarda yanıtı koru" taklit kapalıyken): devre dışı. */
 .tile.is-disabled { opacity: 0.5; cursor: not-allowed; }
 .tile-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
