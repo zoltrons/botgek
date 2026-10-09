@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 16:25] zoltrons — Instagram platform göstergesi özel emoji + `INSTAGRAM_SESSIONID` Docker env
+- **Commit:** `7a0ca8f`
+- **Yapılan:**
+  1. Kartın son satırındaki platform göstergesi, X/Twitter'daki gibi Instagram için de **özel emoji** kullanır: `EmojiSettings.instagram` (varsayılan `<:instagram:1558099674731122758>`), `instagram()` erişimcisi ve `v2::meta_line` Instagram dalı. Emoji boş/tanınmazsa yine platform adı yazılır (bozuk emoji çıkmaz).
+  2. WebUI emoji setine **“Instagram logosu”** kutusu (`data-emoji-key="instagram"`), `app.js` varsayılanları ve alan listesi eklendi; kök `settings.json` emoji nesnesine değer yazıldı. Panel sözleşme testi (HTML kutuları ↔ ayar şeması) tekrar geçiyor.
+  3. `INSTAGRAM_SESSIONID` **Docker ortam değişkeni** olarak `docker-compose.yml` `environment` bloğuna eklendi (`${INSTAGRAM_SESSIONID:-}`; `env_file: .env` zaten aktarır, boş değerde davranış değişmez) ve README'nin Docker bölümü bilgilendirildi.
+  4. **204 test** geçiyor; çalışan süreçte `/api/settings` üzerinden doğrulandı: `emojis.instagram = <:instagram:1558099674731122758>`.
+- **Etkilenen:** `src/settings.rs`, `src/converters/builtin/v2.rs`, `src/web/ui/index.html`, `src/web/ui/app.js`, `settings.json`, `docker-compose.yml`, `README.md`
 ### [2026-10-09 16:12] zoltrons — Instagram: oturum çereziyle reel/video **mp4** (kart içinde oynar) + carousel + kesin metrikler
 - **Commit:** `1d3329e`
 - **Yapılan:**
