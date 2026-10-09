@@ -11,6 +11,13 @@ pub struct Config {
     pub spotify_domain: String,
     pub delete_original: bool,
     pub openrouter_api_key: Option<String>,
+    /// Instagram oturum çerezi (`sessionid`), yalnızca `.env`'den okunur.
+    ///
+    /// Instagram, reel/video mp4'ünü (ve çoklu carousel görsellerini) girişsiz istemcilere
+    /// vermiyor. Bu değer ayarlanırsa bot, gönderi verisini Instagram'ın uygulama API'sinden
+    /// (`/api/v1/media/{pk}/info/`) çeker ve videoyu doğrudan karta koyar. Gizli bir değerdir:
+    /// `settings.json`'a ve WebUI'a yazılmaz.
+    pub instagram_sessionid: Option<String>,
     pub web_port: u16,
 }
 
@@ -26,6 +33,7 @@ impl std::fmt::Debug for Config {
             .field("spotify_domain", &self.spotify_domain)
             .field("delete_original", &self.delete_original)
             .field("openrouter_api_key", &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("instagram_sessionid", &self.instagram_sessionid.as_ref().map(|_| "[REDACTED]"))
             .field("web_port", &self.web_port)
             .finish()
     }
@@ -87,6 +95,12 @@ impl Config {
             .ok()
             .filter(|k| !k.trim().is_empty());
 
+        // Instagram oturum çerezi: yalnızca ortamdan okunur (sır; dosyaya/WebUI'a yazılmaz).
+        let instagram_sessionid = env::var("INSTAGRAM_SESSIONID")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
         let web_port = env::var("WEB_PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
@@ -102,6 +116,7 @@ impl Config {
             spotify_domain,
             delete_original,
             openrouter_api_key,
+            instagram_sessionid,
             web_port,
         })
     }

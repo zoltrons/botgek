@@ -36,6 +36,14 @@ impl EventHandler for Handler {
         info!("Instagram Alan Adı: {}", self.config.instagram_domain);
         info!("Reddit Alan Adı: {}", self.config.reddit_domain);
         info!("Bluesky Alan Adı: {}", self.config.bluesky_domain);
+        info!(
+            "Instagram Oturum Çerezi: {}",
+            if self.config.instagram_sessionid.is_some() {
+                "tanımlı (reel/video kartta oynar)"
+            } else {
+                "yok (reel kapak karesi + etiket olarak gösterilir)"
+            }
+        );
         info!("OpenRouter Entegrasyonu: {}", if self.config.openrouter_api_key.is_some() { "Aktif" } else { "Devre Dışı (API Key yok)" });
         info!("Orijinal Mesajı Silme: {}", self.config.delete_original);
         info!("===========================================");

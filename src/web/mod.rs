@@ -338,6 +338,7 @@ mod tests {
             spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
+            instagram_sessionid: None,
             web_port: 8123,
         }
     }

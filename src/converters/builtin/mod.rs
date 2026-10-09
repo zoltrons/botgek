@@ -298,6 +298,7 @@ pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
     engine: &EngineSettings,
+    instagram_sessionid: Option<&str>,
 ) -> Result<BuiltinPost, String> {
     // Sonucu etkileyen ayarlar anahtara dahil edilir (kaynak + çeviri).
     let key = format!(
@@ -317,7 +318,7 @@ pub async fn fetch(
         Platform::Bluesky => bluesky::fetch(client, parsed).await,
         Platform::Reddit => reddit::fetch(client, parsed).await,
         Platform::TikTok => tiktok::fetch(client, parsed).await,
-        Platform::Instagram => instagram::fetch(client, parsed).await,
+        Platform::Instagram => instagram::fetch(client, parsed, instagram_sessionid).await,
         Platform::Spotify => spotify::fetch(client, parsed).await,
     }?;
 
@@ -1116,7 +1117,7 @@ pub async fn handle(
     // akışta `finish()`, hata durumunda proxy akışı). Erken silmek, gönderenin istemcisi
     // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
     // bıraktığı için artık kullanılmaz (bkz. [`delete_user_message`]).
-    let post = match fetch(client, parsed, engine).await {
+    let post = match fetch(client, parsed, engine, config.instagram_sessionid.as_deref()).await {
         Ok(post) => post,
         Err(err) => {
             warn!("Native embed verisi alınamadı ({}): {}", parsed.original_url, err);
