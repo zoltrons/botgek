@@ -1,10 +1,10 @@
 //! Reddit (v.redd.it) videolarını **sesli tek MP4**'e birleştirir.
 //!
 //! Reddit video ve sesi ayrı akışlarda tutar: `CMAF_{h}.m3u8/mp4` **video-only**, `CMAF_AUDIO_*`
-//! **ses-only**. Projede **ffmpeg yok**; bu yüzden birleştirme, saf Rust **`hls-engine`** ile
+//! **ses-only**. Projede **ffmpeg yok**; bu yüzden birleştirme, saf Rust **`hls-transmux`** ile
 //! **yeniden kodlama yapılmadan** (örnekler opak kalır, yalnızca konteyner yeniden yazılır)
 //! yapılır: master playlist çözülür, video ve ses medya playlist'leri **iki ayrı girdi** olarak
-//! (`EngineInputs::with_audio`) tek oturuma verilir ve çıktı tek MP4 olur.
+//! (`MultiTrackInputs::with_audio`) tek oturuma verilir ve çıktı tek MP4 olur.
 //!
 //! Kaynaklar (master playlist + parçalar) v.redd.it CDN'inden **kimliksiz** erişilebilir; ek
 //! proxy gerekmez. HTTP, kendi `reqwest` istemcimizle sağlanır (`Source` uygulaması): böylece
@@ -21,14 +21,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hls_engine::crypto::key::{
+use hls_transmux::crypto::key::{
     KeyClock, KeyFuture, KeyProvider, KeyRequest, KeyResolution, KeySession, KeySessionOptions,
 };
-use hls_engine::legacy::Error as HlsError;
-use hls_engine::playlist::{InputId, PlaylistContext, parse_playlist_snapshot};
-use hls_engine::{
-    ByteRange, EmbeddedAudio, EngineInput, EngineInputs, EngineOptions, EngineSession, EngineWait,
-    OutputFormat, Source, SourceLocation, TextResource, TrackMetadata,
+use hls_transmux::playlist::{InputId, PlaylistContext, parse_playlist_snapshot};
+use hls_transmux::{
+    ByteRange, ContinuousError, ContinuousInput, ContinuousOptions, ContinuousWait, EmbeddedAudio,
+    Error as HlsError, MultiTrackInputs, MultiTrackSession, OutputFormat, Source, SourceLocation,
+    TextResource, TrackMetadata,
 };
 use tracing::{debug, warn};
 use url::Url;
@@ -296,7 +296,7 @@ fn adjust_trun_offsets(payload: &mut [u8], delta: i32) -> Option<()> {
 
 /// Parçadaki `sbgp`/`sgpd` (örnek grubu) kutularını çıkarır.
 ///
-/// `hls-engine` "resource-only" profilinde bu kutuları kabul etmez; Reddit'in **AAC** parçaları
+/// `hls-transmux` "resource-only" profilinde bu kutuları kabul etmez; Reddit'in **AAC** parçaları
 /// `sbgp`(roll) taşır (video parçalarında yoktur), bu yüzden doğrulama başarısız olur. Roll grubu
 /// yalnızca kodek primerleme ipucudur: kutular çıkarılırken **örnek verisi hiç değişmez**, yalnızca
 /// `moof`/`traf` boyutları ve `trun` göreli offsetleri tutarlı biçimde güncellenir.
@@ -409,8 +409,8 @@ fn hls_err<E: fmt::Debug>(err: E) -> HlsError {
 }
 
 /// Motor hatalarını, tanılamayı **kaybetmeden** (kaynak/örnek nedeni dahil) çevirir.
-fn engine_err(err: hls_engine::EngineError) -> HlsError {
-    match err.cause() {
+fn engine_err(err: ContinuousError) -> HlsError {
+    match err.raw_cause() {
         Some(cause) => HlsError::InvalidInput(format!("{err:?} | neden: {cause:?}")),
         None => hls_err(err),
     }
@@ -438,7 +438,7 @@ impl KeyClock for Clock {
 /// `InvalidOptions` döner).
 struct Waiter;
 
-impl EngineWait for Waiter {
+impl ContinuousWait for Waiter {
     fn wait(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(tokio::time::sleep(duration))
     }
@@ -446,7 +446,7 @@ impl EngineWait for Waiter {
 
 /// Reddit videosunu **sesli** tek MP4'e birleştirir.
 ///
-/// `hls-engine`'in future'ları `Send` **değildir**; bu yüzden birleştirme, kendi current-thread
+/// `hls-transmux`'ın future'ları `Send` **değildir**; bu yüzden birleştirme, kendi current-thread
 /// Tokio runtime'ına sahip ayrı bir iş parçacığında yürütülür ve sonuç kanalla geri taşınır —
 /// böylece çağıran taraf (serenity olay döngüsü) `Send` kalır.
 ///
@@ -551,8 +551,8 @@ async fn render_variant(
     )
     .map_err(hls_err)?;
 
-    let mut inputs = EngineInputs::new(
-        EngineInput::new(video_id_input.clone(), source.clone()),
+    let mut inputs = MultiTrackInputs::new(
+        ContinuousInput::new(video_id_input.clone(), source.clone()),
         // Video akışı ses içermez; ses ayrı bir girdi olarak eklenir.
         EmbeddedAudio::Exclude,
     );
@@ -574,7 +574,7 @@ async fn render_variant(
         )
         .map_err(hls_err)?;
         inputs = inputs.with_audio(
-            EngineInput::new(audio_id_input.clone(), source.clone()),
+            ContinuousInput::new(audio_id_input.clone(), source.clone()),
             TrackMetadata::new("und", "audio"),
         );
         audio_track = Some((audio_id_input, audio_snapshot));
@@ -589,8 +589,8 @@ async fn render_variant(
     )
     .map_err(hls_err)?;
     // Çok-izli oturumda `waiter` zorunludur (aksi halde motor `InvalidOptions` döner).
-    let options = EngineOptions::default().with_waiter(Arc::new(Waiter), Duration::from_secs(30));
-    let session = EngineSession::new(inputs, keys, options).map_err(engine_err)?;
+    let options = ContinuousOptions::default().with_waiter(Arc::new(Waiter), Duration::from_secs(30));
+    let session = MultiTrackSession::new(inputs, keys, options).map_err(engine_err)?;
 
     session
         .handle()

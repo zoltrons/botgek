@@ -158,7 +158,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dotenvy",
- "hls-engine",
+ "hls-transmux",
  "regex",
  "reqwest",
  "rusqlite",
@@ -594,10 +594,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "hls-engine"
-version = "1.0.1"
+name = "hls-transmux"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8590455ad8bd190eb0ac82ec6d098a1651339d94f5a727b5721d4de4bb3ed78"
+checksum = "e4d47db40d3306bba8e61cdbd7483fc15b9bfe92237dc4f45b3814ac2b08289e"
 dependencies = [
  "aes",
  "cbc",
