@@ -14,7 +14,7 @@ use tracing::{debug, warn};
 
 use super::media::card_image_url;
 use super::translate::{needs_turkish_translation, TARGET_LANGUAGE_CODE};
-use super::{parse_timestamp, strip_trailing_media_links, Author, BuiltinPost, Media, MediaKind, Stats, Translation};
+use super::{parse_timestamp, strip_trailing_media_links, Author, BuiltinPost, LinkPreview, Media, MediaKind, Stats, Translation};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::settings::{EngineSettings, TwitterSource};
 
@@ -31,6 +31,18 @@ const HEDGE_DELAY: Duration = Duration::from_millis(500);
 /// Hedge sonrası X ucu kazandıysa, çeviri/metrikleri tamamlamak için FxTwitter'a tanınan
 /// ek süre (gelmezse X verisiyle devam edilir).
 const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(300);
+/// Harici link önizlemesi (X'in "link kartı") için tanınan süre: hedef sayfa bu süre
+/// içinde yanıt vermezse kart önizlemesiz gönderilir (kart asla bekletilmez).
+const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(2500);
+/// Önizleme metinlerinin kart bütçesini yormaması için üst sınırlar.
+const LINK_PREVIEW_TITLE_LIMIT: usize = 180;
+const LINK_PREVIEW_DESCRIPTION_LIMIT: usize = 400;
+
+/// Metindeki bağlantıları bulur (X'in kendi adresleri ayrıca ayıklanır).
+static URL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"https?://[^\s<>()\[\]]+").expect("geçerli URL regex"));
+/// X/Twitter'a ait adresler link kartına konmaz (gönderi/alıntı/medya bağlantıları).
+static OWN_HOSTS: [&str; 5] = ["x.com", "twitter.com", "t.co", "pic.twitter.com", "twimg.com"];
 
 /// Gönderi verisini seçilen kaynaktan çeker.
 ///
@@ -69,7 +81,110 @@ pub async fn fetch(
         populate_nested_quote(client, &mut post, engine, video_budget).await;
     }
 
+    // Gönderi yalnızca link içeriyorsa X'in kendi arayüzünde gösterdiği link kartı
+    // (hedef sayfanın önizlemesi) da karta eklenir.
+    attach_link_preview(client, &mut post).await;
+
     Ok(post)
+}
+
+/// Gönderi yalnızca bir **harici bağlantı** içeriyorsa X'in "link kartı" önizlemesini ekler.
+///
+/// X, medyasız (ve alıntısız) gönderilerde metindeki harici adresin önizlemesini gösterir:
+/// hedef sayfanın `og:`/`twitter:` etiketleri okunur. Hiçbir medya indirilmez; önizleme
+/// görseli doğrudan CDN bağlantısıyla karta bağlanır. Sayfa yanıt vermezse, etiketler boşsa
+/// ya da [`LINK_PREVIEW_TIMEOUT`] dolarsa kart önizlemesiz gönderilir.
+async fn attach_link_preview(client: &reqwest::Client, post: &mut BuiltinPost) {
+    if !post.media.is_empty() || post.quote.is_some() {
+        return;
+    }
+    let Some(url) = external_link(&post.text) else {
+        return;
+    };
+
+    let html = match tokio::time::timeout(LINK_PREVIEW_TIMEOUT, super::get_text(client, &url)).await {
+        Ok(Ok(html)) => html,
+        Ok(Err(err)) => {
+            debug!("Link önizlemesi alınamadı ({url}): {err}");
+            return;
+        }
+        Err(_elapsed) => {
+            debug!(
+                "Link önizlemesi {} ms içinde gelmedi: {url}",
+                LINK_PREVIEW_TIMEOUT.as_millis()
+            );
+            return;
+        }
+    };
+
+    let graph = super::opengraph::parse_open_graph(&html);
+    let target = graph.url.unwrap_or(url);
+    let preview = LinkPreview {
+        site_name: meta_value(graph.site_name, 80).or_else(|| host_label(&target)),
+        title: meta_value(graph.title, LINK_PREVIEW_TITLE_LIMIT),
+        description: meta_value(graph.description, LINK_PREVIEW_DESCRIPTION_LIMIT),
+        image: meta_value(graph.image, 500),
+        url: target,
+    };
+
+    if preview.is_empty() {
+        debug!("Link önizlemesinde gösterilecek veri yok: {}", preview.url);
+        return;
+    }
+    debug!(
+        "Link kartı eklendi: {} ({})",
+        preview.url,
+        preview.site_name.as_deref().unwrap_or("-")
+    );
+    post.link_preview = Some(preview);
+}
+
+/// Metindeki ilk **harici** bağlantıyı döndürür (X/Twitter adresleri atlanır).
+fn external_link(text: &str) -> Option<String> {
+    URL_REGEX
+        .find_iter(text)
+        .map(|found| {
+            found
+                .as_str()
+                .trim_end_matches(['.', ',', ';', ':', '!', '?'])
+                .to_string()
+        })
+        .find(|url| {
+            let lower = url.to_ascii_lowercase();
+            let host = lower.split("://").nth(1).unwrap_or_default();
+            !OWN_HOSTS
+                .iter()
+                .any(|own| host == *own || host.starts_with(&format!("{own}/")))
+        })
+}
+
+/// Adresten alan adını çıkarır (`www.` ve alt alan adı olmadan): `https://www.bbc.com/x` →
+/// `bbc.com`. Site adı bildirmeyen sayfalar için yedek etikettir.
+fn host_label(url: &str) -> Option<String> {
+    let host = url
+        .split("://")
+        .nth(1)?
+        .split(['/', '?', '#'])
+        .next()?
+        .rsplit('@')
+        .next()?
+        .split(':')
+        .next()?
+        .trim()
+        .trim_start_matches("www.");
+    if host.is_empty() || OWN_HOSTS.iter().any(|own| host == *own) {
+        return None;
+    }
+    Some(host.to_string())
+}
+
+/// Meta etiketi değerini karta uygun hale getirir: kırpılır, boşlar `None` olur, uzun
+/// metinler sınıra kadar kesilir.
+fn meta_value(value: Option<String>, limit: usize) -> Option<String> {
+    value
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|text| !text.is_empty())
+        .map(|text| crate::utils::truncate_chars(&text, limit))
 }
 
 /// Gönderi verisini seçilen kaynaktan çeker.
@@ -1459,4 +1574,50 @@ mod tests {
         assert_eq!(inner_syn.author.handle, "DiscussingFilm");
         assert!(!inner_syn.media.is_empty(), "syndication medya tamamlanmalı");
     }
+    // =================================================================================
+    // LİNK KARTI (harici bağlantı önizlemesi)
+    // =================================================================================
+
+    #[test]
+    fn link_preview_skips_x_addresses_and_picks_the_external_one() {
+        let text = "yeni yazı: https://t.co/abc ve alıntı https://x.com/biri/status/9 \
+                    ardından https://example.com/haber?x=1";
+        assert_eq!(
+            external_link(text).as_deref(),
+            Some("https://example.com/haber?x=1"),
+            "X bağlantıları atlanır, harici adres seçilir"
+        );
+        assert!(external_link("sadece https://x.com/biri/status/9").is_none());
+        assert!(external_link("link içermeyen metin").is_none());
+    }
+
+    #[test]
+    fn link_preview_falls_back_to_the_host_name() {
+        assert_eq!(
+            host_label("https://www.bbc.com.tr/haber/1?x=2").as_deref(),
+            Some("bbc.com.tr")
+        );
+        assert_eq!(
+            host_label("https://example.com:8443/x").as_deref(),
+            Some("example.com")
+        );
+        assert!(host_label("https://x.com/biri/status/9").is_none());
+    }
+
+    #[test]
+    fn link_preview_meta_values_are_cleaned() {
+        assert_eq!(
+            meta_value(Some("  çok   boşluk  ".to_string()), 40).as_deref(),
+            Some("çok boşluk"),
+            "fazla boşluklar sadeleşir"
+        );
+        assert!(meta_value(Some("   ".to_string()), 40).is_none());
+        assert_eq!(
+            meta_value(Some("başlık".to_string()), 3).as_deref(),
+            Some("ba…"),
+            "uzun meta metni karta sığacak şekilde kesilir"
+        );
+    }
+
+
 }

@@ -200,6 +200,42 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     payload
 }
 
+/// Gönderinin içindeki harici bağlantının önizlemesi (X'in "link kartı").
+///
+/// X'in arayüzünde linkin altında görünen başlık (bağlantılı), açıklama ve site adı kartın
+/// içinde tek bir metin bloğu olarak durur; önizleme görseli medya galerisinde büyük olarak
+/// gösterilir (bkz. [`super::render::plan_media`]). Hiçbir şey indirilmez.
+fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
+    let preview = card
+        .post
+        .link_preview
+        .as_ref()
+        .filter(|preview| !preview.is_empty())?;
+
+    let mut lines: Vec<String> = Vec::new();
+    let label = preview.title.as_deref().unwrap_or(preview.url.as_str());
+    lines.push(format!(
+        "**🔗 [{}]({})**",
+        escape_markdown(label),
+        preview.url
+    ));
+    if let Some(description) = preview.description.as_deref() {
+        for line in description
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .take(5)
+        {
+            lines.push(format!("> {line}"));
+        }
+    }
+    if let Some(site_name) = preview.site_name.as_deref() {
+        lines.push(format!("-# {site_name}"));
+    }
+
+    Some(text(spoiler_wrap(&lines.join("\n"), hidden(card))))
+}
+
 /// Genel kart düzeni: yazar satırı, gövde metni, (varsa) topluluk notu, alıntı(lar),
 /// medya galerisi, metrikler ve alt bilgi. Platforma özel kartı olmayan tüm gönderiler
 /// bu yolu kullanır.
@@ -219,6 +255,9 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
         {
             children.push(text(format!("-# 🔎 Topluluk Notu\n{}", note)));
         }
+    if let Some(preview) = link_preview_component(card) {
+        children.push(preview);
+    }
     let mut nested_has_thumbnail = false;
     if card.options.show_quote
         && let Some(quote) = card.post.quote.as_deref() {
@@ -566,7 +605,7 @@ fn attachments_json(resolved: &ResolvedMedia) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converters::builtin::{Author, Media, MediaKind, Stats, Translation};
+    use crate::converters::builtin::{Author, LinkPreview, Media, MediaKind, Stats, Translation};
     use crate::settings::EngineSettings;
 
     fn image(url: &str) -> Media {
@@ -1572,5 +1611,65 @@ mod tests {
             .sum();
         assert!(total <= CUMULATIVE_TEXT_LIMIT);
     }
-}
 
+    #[test]
+    fn link_preview_is_shown_below_the_text_with_its_image_in_the_gallery() {
+        let mut post = sample_post();
+        post.link_preview = Some(LinkPreview {
+            url: "https://example.com/haber".to_string(),
+            title: Some("Haber başlığı".to_string()),
+            description: Some("İlk satır\n\nİkinci satır".to_string()),
+            image: Some("https://cdn.example.com/onizleme.jpg".to_string()),
+            site_name: Some("example.com".to_string()),
+        });
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia {
+            images: vec!["https://cdn.example.com/onizleme.jpg".to_string()],
+            ..ResolvedMedia::default()
+        };
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+
+        let texts = texts(&payload);
+        let preview = texts
+            .iter()
+            .find(|text| text.starts_with("**🔗"))
+            .expect("link kartı bloğu kartta durmalı");
+        assert_eq!(
+            preview,
+            "**🔗 [Haber başlığı](https://example.com/haber)**\n> İlk satır\n> İkinci satır\n-# example.com",
+            "başlık bağlantılı, açıklama alıntı bloğunda, site adı alt bilgide"
+        );
+        assert!(
+            texts.iter().position(|text| text == preview)
+                > texts.iter().position(|text| text == "merhaba dünya"),
+            "link kartı gövde metninin altında durur"
+        );
+        assert_eq!(
+            gallery_urls(&payload),
+            vec!["https://cdn.example.com/onizleme.jpg".to_string()],
+            "önizleme görseli kartın galerisinde gösterilir"
+        );
+    }
+
+    #[test]
+    fn empty_link_preview_adds_nothing_to_the_card() {
+        let mut post = sample_post();
+        post.link_preview = Some(LinkPreview {
+            url: "https://example.com/haber".to_string(),
+            ..LinkPreview::default()
+        });
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+
+        assert!(
+            !texts(&payload).iter().any(|text| text.contains("🔗")),
+            "gösterilecek veri yoksa link kartı eklenmez"
+        );
+    }
+
+
+
+}

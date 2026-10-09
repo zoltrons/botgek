@@ -120,6 +120,19 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
         next = candidate.quote.as_deref();
     }
 
+    // Link kartı (X'in link önizlemesi): gönderide gösterilecek medya yoksa önizleme görseli
+    // galeriye eklenir. İndirilmez: `og:image` adresi doğrudan gösterilir.
+    if max_images > 0
+        && plan_is_empty(&plan)
+        && let Some(image) = post
+            .link_preview
+            .as_ref()
+            .filter(|preview| !preview.is_empty())
+            .and_then(|preview| preview.image.as_deref())
+    {
+        plan.remote_images.push(image.to_string());
+    }
+
     plan
 }
 
@@ -293,7 +306,7 @@ fn attachment_name(filename: &str, spoiler: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converters::builtin::{Author, Media, MediaKind};
+    use crate::converters::builtin::{Author, LinkPreview, Media, MediaKind};
     use crate::converters::parser::Platform;
     use crate::settings::EngineSettings;
 
@@ -471,5 +484,49 @@ mod tests {
         // Discord kelime içi `_`yi vurgu saymaz: kaçış eklenirse kartta `\` görünür.
         assert_eq!(escape_markdown("world_record_egg"), "world_record_egg");
     }
-}
 
+    #[test]
+    fn link_preview_image_is_planned_only_for_media_less_posts() {
+        let options = options();
+        let mut post = sample_post();
+        post.link_preview = Some(link_preview(Some("https://cdn.example.com/onizleme.jpg")));
+
+        assert_eq!(
+            plan_media(&post, &options).remote_images,
+            vec!["https://cdn.example.com/onizleme.jpg".to_string()],
+            "medyasız gönderide önizleme görseli galeriye girer"
+        );
+
+        // Gönderi kendi medyasını taşıyorsa link kartı görseli plana alınmaz.
+        post.media = vec![image("https://cdn/1.jpg")];
+        assert_eq!(
+            plan_media(&post, &options).remote_images,
+            vec!["https://cdn/1.jpg".to_string()]
+        );
+    }
+
+    #[test]
+    fn link_preview_without_image_leaves_the_plan_untouched() {
+        let options = options();
+        let mut post = sample_post();
+        post.link_preview = Some(link_preview(None));
+
+        let plan = plan_media(&post, &options);
+        assert!(plan.remote_images.is_empty(), "görsel yoksa galeri boş kalır");
+        assert!(plan_is_empty(&plan));
+    }
+
+    /// Örnek link kartı (X'in harici bağlantı önizlemesi).
+    fn link_preview(image: Option<&str>) -> LinkPreview {
+        LinkPreview {
+            url: "https://example.com/haber".to_string(),
+            title: Some("Haber başlığı".to_string()),
+            description: Some("Kısa açıklama".to_string()),
+            image: image.map(str::to_string),
+            site_name: Some("example.com".to_string()),
+        }
+    }
+
+
+
+}

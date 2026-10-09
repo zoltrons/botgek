@@ -156,6 +156,33 @@ pub struct Translation {
     pub source: Option<String>,
 }
 
+/// Gönderinin içindeki **harici bağlantının** önizlemesi (X'in kendi arayüzünde gösterdiği
+/// "link kartı").
+///
+/// Gönderi medyasız olduğunda hedef sayfanın HTML'i çekilip `og:`/`twitter:` etiketleri
+/// okunur ([`opengraph`]); resim galeride büyük olarak, başlık/açıklama/site adı ise
+/// kartın içinde metin bloğu olarak gösterilir. Hiçbir medya indirilmez.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinkPreview {
+    /// Bağlantının hedef adresi (sayfa `og:url` bildirdiyse kanonik adres).
+    pub url: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    /// Sayfanın önizleme görseli (`og:image` / `twitter:image`); kartta CDN bağlantısıyla
+    /// gösterilir.
+    pub image: Option<String>,
+    /// Site adı (`og:site_name`) veya alan adı (`example.com`).
+    pub site_name: Option<String>,
+}
+
+impl LinkPreview {
+    /// Kartta gösterilecek veri yok mu? Başlık, açıklama ve görselin **tümü** boşsa
+    /// önizleme karta hiç eklenmez (boş bir link satırı kartı kirletir).
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.description.is_none() && self.image.is_none()
+    }
+}
+
 /// Platforma özel hazır kart (Components V2).
 ///
 /// Bazı platformlar (ör. Spotify) genel kart düzeninden farklı bir görünüm ister:
@@ -199,6 +226,9 @@ pub struct BuiltinPost {
     /// Platforma özel hazır kart (Components V2); doluysa genel kart düzeni yerine bu
     /// bileşenler gönderilir (ör. Spotify'ın bölüm + thumbnail + buton düzeni).
     pub custom_card: Option<CustomCard>,
+    /// Gönderinin içindeki harici bağlantının önizlemesi (X'in "link kartı"); yalnızca
+    /// medyasız gönderilerde doldurulur.
+    pub link_preview: Option<LinkPreview>,
 }
 
 impl BuiltinPost {
@@ -219,9 +249,9 @@ impl BuiltinPost {
             language: None,
             translation: None,
             custom_card: None,
+            link_preview: None,
         }
     }
-
 }
 
 // =====================================================================================
