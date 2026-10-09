@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 18:07] zoltrons — Reddit galeri görsellerinin **açıklamaları** karta eklendi (caption hatası)
+- **Commit:** `e0819c3`
+- **Yapılan:**
+  1. **Kök neden:** Reddit galerilerinde her görselin üstüne açıklama yazılabiliyor (`gallery_data.items[*].caption` / `media_metadata[*].caption`) ama dönüştürücü bu alanları **hiç okumuyordu**; V2 kartın galeri bileşeni de yalnızca görsel taşıdığı için açıklamalar kartta görünmüyordu.
+  2. **Düzeltme:** `gallery_captions()` eklendi (görsel sırasıyla, önce `gallery_data.items[i].caption`, yoksa `media_metadata[id].caption`) ve açıklamalar gönderi metnine **numaralı** olarak ekleniyor (`**Görsel açıklamaları**` bloğu). Açıklama yoksa metin aynen kalır (`gallery_without_captions_keeps_text_clean`).
+  3. **204 test geçti** (yeni: `gallery_captions_are_appended_to_the_card_text`, `gallery_without_captions_keeps_text_clean`).
+- **Etkilenen:** `src/converters/builtin/reddit.rs`
+
+
 ### [2026-10-09 18:03] zoltrons — Kartlar **yalnızca Components V2**: klasik embed ve fallback'leri koddan kaldırıldı
 - **Commit:** `7479768`
 - **Yapılan:**
