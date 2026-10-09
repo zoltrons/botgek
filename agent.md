@@ -43,6 +43,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 20:15] zoltrons — Panel HTML dengesizliği düzeltildi (medya bölümünün dağılması)
+- **Commit:** `eb92ff7` (bu dal) · `0b7faba` (`feat/versioning-system`, cherry-pick)
+- **Yapılan:**
+  1. **Kök neden:** `19fbd92` "medya yöntemi" seçimini kaldırırken etrafındaki `<div class="tile tile--static">` + `<div class="tile-body">` sarmalayıcıları ve tek `</div>` yerinde kaldı (**3 açılış / 1 kapanış**). Tarayıcının hata düzeltmesi, bölümün geri kalanını bir sonraki `</section>`'a kadar o kapsayıcıya hapsediyordu; `tile--static` satır yönlü bir flex olduğu için medya ızgarası, kaydırıcılar ve emoji alanları dar sütunlara sıkışıyordu (kullanıcının ekran görüntüsü).
+  2. **Düzeltme:** artakalan sarmalayıcı kaldırıldı — "Proxy yedeği" artık doğrudan `.tile-grid` çocuğu; ölü `.tile--static` CSS kuralı silindi.
+  3. **Regresyon testi:** yeni `panel_markup_is_balanced_and_nested_as_expected` panel HTML'ini yığın tabanlı doğrular: tüm etiketler dengeli ve doğru iç içe, üç ızgara (`tile-grid`/`range-grid`/`emoji-grid`) bir `tile` içine hapsolmamış, `data-engine-switch="fallback_to_proxy"` anahtarının **en yakın `div` atası** medya ızgarası. Test, düzeltme öncesi **başarısız** olarak hatayı birebir yakaladı (`<div> beklenirken </section>`).
+- **Test:** `cargo test` → **223 test geçti** (düzeltme öncesi 222); düzeltme `feat/versioning-system` dalına da cherry-pick edildi (aynı içerik, çakışmasız birleşir).
+- **Etkilenen:** `src/web/ui/index.html`, `src/web/ui/app.css`, `src/web/mod.rs`
+
+
 ### [2026-10-09 20:08] zoltrons — Sürüm sistemi: git etiketinden türetilen künye + `release.sh` + sürümlü paketler
 - **Commit:** `cbe8a94..5ac1bdb`
 - **Yapılan:**

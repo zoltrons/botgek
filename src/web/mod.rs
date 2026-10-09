@@ -559,6 +559,111 @@ mod tests {
         assert!(unrouted.is_empty(), "rotası olmayan API yolları: {unrouted:?}");
     }
 
+    /// Panel HTML'i **dengeli** ve **beklenen şekilde iç içe** olmalıdır.
+    ///
+    /// Kapanmayan tek bir `<div>`, tarayıcının hata düzeltmesiyle izleyen TÜM bölümü yanlış bir
+    /// kapsayıcıya hapseder: "medya" bölümündeki dağılma tam buydu — kaldırılan "medya yöntemi"
+    /// seçiminden artakalan `<div class="tile tile--static">` + `<div class="tile-body">`
+    /// sarmalayıcıları kapanmadan kalmış, ızgaranın geri kalanı ve emoji alanları
+    /// `tile--static`in (satır yönlü) çocuğu olarak dar sütunlara sıkışmıştı.
+    #[test]
+    fn panel_markup_is_balanced_and_nested_as_expected() {
+        // Yorumlar ayıklanır: içlerindeki `<...>` dizileri etiket sanılmasın.
+        let mut html = INDEX_HTML.to_string();
+        loop {
+            let (Some(start), Some(end)) = (html.find("<!--"), html.find("-->")) else {
+                break;
+            };
+            if end < start {
+                break;
+            }
+            html.replace_range(start..end + 3, "");
+        }
+
+        const VOID: [&str; 14] = [
+            "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+            "source", "track", "wbr",
+        ];
+        let tag = regex::Regex::new(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>").expect("desen geçerli");
+
+        // (etiket adı, ham açılış etiketi) yığını: ham etiket, sınıf denetimi için tutulur.
+        let mut stack: Vec<(String, String)> = Vec::new();
+        let mut fallback_ancestors: Option<Vec<String>> = None;
+        // Izgaraların ataları: bir `tile` içine hapsolurlarsa alanlar dar sütunlara sıkışır.
+        let mut gridd_ancestors: Vec<(String, Vec<String>)> = Vec::new();
+        const GRIDS: [&str; 3] = ["tile-grid", "range-grid", "emoji-grid"];
+
+        for captures in tag.captures_iter(&html) {
+            let closing = &captures[1] == "/";
+            let name = captures[2].to_lowercase();
+            let raw = captures[0].to_string();
+            let rest = captures[3].trim();
+
+            for grid in GRIDS {
+                if raw.contains(&format!("class=\"{grid}\"")) {
+                    gridd_ancestors.push((
+                        grid.to_string(),
+                        stack.iter().map(|(_, raw)| raw.clone()).collect(),
+                    ));
+                }
+            }
+
+            if raw.contains("data-engine-switch=\"fallback_to_proxy\"") {
+                // Bu anahtarın **en yakın `div` atası** doğrudan medya ızgarası olmalı.
+                fallback_ancestors = Some(
+                    stack
+                        .iter()
+                        .rev()
+                        .filter(|(tag, _)| tag == "div")
+                        .map(|(_, raw)| raw.clone())
+                        .collect(),
+                );
+            }
+
+            // Boşluk (void) elemanlar ve kendini kapatan etiketler yığına girmez.
+            if VOID.contains(&name.as_str()) || rest.ends_with('/') {
+                continue;
+            }
+
+            if closing {
+                let (opened, _) = stack
+                    .pop()
+                    .unwrap_or_else(|| panic!("fazladan kapanış etiketi: </{name}>"));
+                assert_eq!(opened, name, "yanlış kapanış: <{opened}> beklenirken </{name}>");
+            } else {
+                stack.push((name, raw));
+            }
+        }
+
+        assert!(stack.is_empty(), "kapanmayan etiketler: {stack:?}");
+        assert!(
+            !html.contains("tile--static"),
+            "kaldırılan sarmalayıcı sınıfı geri gelmemeli: dengesizlik kaynağıydı"
+        );
+
+        let ancestors = fallback_ancestors.expect("proxy yedeği anahtarı panelde bulunamadı");
+        let nearest_div = ancestors.first().expect("anahtar bir div içinde olmalı");
+        assert!(
+            nearest_div.contains("tile-grid"),
+            "proxy yedeği anahtarı doğrudan ızgarada olmalı; en yakın div: {nearest_div}"
+        );
+
+        // Izgaralar başka bir `tile`ın çocuğu olmamalı: ekran görüntüsündeki sıkışma tam
+        // olarak buydu (ızgara içeriği bir `tile--static`in satır yönlü flex'ine düşmüştü).
+        for grid in GRIDS {
+            assert!(
+                gridd_ancestors.iter().any(|(name, _)| name == grid),
+                "panelde `{grid}` bulunamadı"
+            );
+        }
+        for (grid, ancestors) in &gridd_ancestors {
+            assert!(
+                !ancestors.iter().any(|tag| tag.contains("tile")),
+                "`{grid}` bir `tile` içine hapsolmuş: {ancestors:?}"
+            );
+        }
+    }
+
     /// CSP `script-src 'self'` ile sıkı tutulduğu için panelde **satır içi** kod ve olay
     /// yöneticisi bulunmamalıdır; aksi hâlde sertleştirme paneli sessizce kırardı.
     #[test]
