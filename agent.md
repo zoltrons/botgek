@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 15:46] zoltrons — Instagram için native (Components V2) kart motoru: SSR embed + OpenGraph
+- **Commit:** `39f24bd`
+- **Yapılan:**
+  1. Instagram'ın varsayılan motoru proxy'den (`ddinstagram.com`, artık DNS'te çözülmüyor) **native embed**'e alındı. Yeni `src/converters/builtin/instagram.rs` gönderiyi Instagram'ın herkese açık **SSR embed** sayfasından (`/{p|reel|reels|tv}/{kod}/embed/captioned/`) ve gönderi sayfasının **OpenGraph** meta etiketlerinden **paralel** çözer (toplam gecikme tek istek kadar): yazar kullanıcı adı, görünen ad, doğrulama işareti, avatar, açıklama, beğeni/yorum, tarih ve görsel.
+  2. Instagram video/reel akışını (mp4) sayfa kaynağına koymadığı için kart videonun **kapak karesini** + `Reel`/`Video` etiketi ve gönderi bağlantısını gösterir. İki uç da başarısız olursa (giriş duvarı) akış hata verir ve ayar açıksa proxy yedeğine düşülür.
+  3. Eski `opengraph.rs` yalnızca paylaşılan meta çözümleyicisine indirgendi (`og:url` alanı eklendi); varsayılan motor ayarı, WebUI varsayılanı, `settings.json`, README ve `.env.example` güncellendi. Canlı kaynak testi (`live_fetch_photo_and_reel`) dahil **198 test** geçiyor.
+- **Etkilenen:** `src/converters/builtin/instagram.rs` (yeni), `src/converters/builtin/opengraph.rs`, `src/converters/builtin/mod.rs`, `src/settings.rs`, `src/web/ui/app.js`, `settings.json`, `README.md`, `.env.example`
 ### [2026-10-07 19:56] zoltrons — origin/main (PR #1–3 "modernize-rust-2024") birleştirildi; Spotify kodu std::sync::LazyLock'a taşındı
 - **Commit:** `df1c2d1`
 - **Yapılan:**
