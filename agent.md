@@ -43,6 +43,17 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 22:00] zoltrons — Arc MCP kuralları panele uygulandı (erişilebilirlik, dokunmatik hedefler, token hijyeni)
+- **Commit:** `9430dd4` (bu dal)
+- **Yapılan:**
+  1. **Kapsam sınırı:** Arc MCP'nin bileşenleri React + shadcn CLI + Tailwind + Motion istiyor; panel Rust binary'ye gömülü **vanilla** HTML/CSS/JS. Bu yüzden Arc **bileşenleri** kurulmadı (React'e geçiş = yeni toolchain + bağımlılıklar, onay gerektirir); Arc'ın *design / accessibility / responsive / copy / checklist* kuralları mevcut panele taşındı.
+  2. **Erişilebilirlik:** sayfaya tek `h1` (görsel gizli); rol seçici gerçek `combobox` + `listbox` (`role=option` seçenek id'leri, arama alanında `aria-expanded`/`aria-controls`/`aria-activedescendant`, boş sonuçta bayat adres temizliği); onay penceresinde **odak tuzağı** ve kapanınca **odağın tetikleyiciye dönmesi**; ayar anahtarlarının başlık + açıklamayı `aria-labelledby`/`aria-describedby` ile işaretlemesi (id'ler JS'te üretilir, `aria-label` JS'siz yedek kalır); sol indekste aktif bölüm `aria-current`; kaydetme sırasında bölge `aria-busy`.
+  3. **Durum ve etkileşim:** kaydetme başarısı birincil düğmede **yerinde** onaylanır ("Kaydedildi", 2,4 sn), bildirim artık tek kanıt değil; dokunmatikte (`pointer: coarse`) hedefler en az 44px (satır içi rol çipi 32px), anahtarın dokunma alanı görsel değişmeden büyür.
+  4. **Token hijyeni:** `--paper-hover`, `--rule-hover`, `--ink-placeholder`, `--signal-*`, `--live-*`, `--alert-*`, `--grid-*`, `--scrim`, `--shadow-*` eklendi; **`:root` ve SVG data-URI dışında ham renk kalmadı (0)**. Süs temizliği: işaretli anahtardaki 3px renkli halo kaldırıldı, prose'daki em dash'ler temizlendi, modül satırındaki düğme fiil + nesne oldu ("filtreye git") ve modüle özel `aria-label` aldı.
+  5. **Bilinçli olarak değiştirilmedi (kimlik kararı kullanıcıya bırakıldı):** `text-transform: uppercase` mikro etiketler (Arc: eyebrow/overline ve all caps yok), 700/800 display ağırlıkları (Arc: yalnızca 400/500) ve dekoratif zemin ızgarası/gren. Bunlar panelin "operasyon sayfası" kimliğini kuruyor ve Arc'ın sakin-nötr çubuğuyla çakışıyor.
+- **Test:** `cargo test` → **223 geçti** (sözleşme + markup dengesi); `node --check` temiz; yeni JS erişilebilirlik harness'ı **18/18** (etiket bağlama, odak tuzağı, `aria-activedescendant`, `aria-current`, yerinde kayıt onayı).
+- **Etkilenen:** `src/web/ui/index.html`, `src/web/ui/app.css`, `src/web/ui/app.js`
+
 ### [2026-10-09 20:15] zoltrons — Panel HTML dengesizliği düzeltildi (medya bölümünün dağılması)
 - **Commit:** `eb92ff7` (bu dal) · `0b7faba` (`feat/versioning-system`, cherry-pick)
 - **Yapılan:**
