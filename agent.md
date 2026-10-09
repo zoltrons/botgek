@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 17:07] zoltrons — Reddit videosu **sesli**: saf Rust `hls-engine` ile video+ses birleşimi (ffmpeg yok)
+- **Commit:** `93e890d`
+- **Yapılan:**
+  1. **Araştırma:** Reddit video ve sesi ayrı akışlarda tutar ve `v.redd.it` HLS master playlist'i (`HLSPlaylist.m3u8`) sesi **ayrı rendition** olarak verir (`#EXT-X-MEDIA:TYPE=AUDIO`); karşılık gelen dosyalar (`CMAF_{h}.mp4` video-only, `CMAF_AUDIO_*` mp4 **ses-only**) kimliksiz olarak **doğrudan indirilebiliyor** (403 yok) — yani birleştirme tamamen yerel, ek proxy gerekmez. Crate taraması: `hls-transmux` 0.10 **`HLS alternate media groups`**'u desteklemiyor (`Unsupported`); ardılı **`hls-engine` v1.0.1** çok-girdili/çok-izli oturumları (`EngineInputs::with_audio`) destekliyor ve `default-features = false` ile kendi `Source`'umuz verilebiliyor (ikinci bir reqwest sürümü gelmez).
+  2. **Uygulama:** `reddit_video.rs` eklendi — master playlist çözümleme (ses gruplarının `AUDIO="grup"` eşleşmesi), varyant merdiveni (yüksek → orta → düşük; ek limitine sığan ilk sonuç), kendi `reqwest` `Source`'umuz ve `EngineInputs::new(video, Exclude).with_audio(audio, …)` ile tek MP4 üretimi. Motorun gelecekleri **`Send` değil**, bu yüzden birleştirme kendi current-thread runtime'ı olan ayrı bir iş parçacığında çalışıp sonucu kanalla taşır. `media::download_video` v.redd.it bağlantılarında önce birleşimi dener, olmazsa video-only mp4'e düşer (kart sessiz oynar; akış bozulmaz).
+  3. **Engel ve çözüm (kanıtlı):** Motor `MediaValidation` ile ses parçalarını reddediyordu; kaynak kodundaki `validate_envelope` ("resource-only" profili) **`sbgp`/`sgpd`** kutularını yasaklıyor ve Reddit'in **AAC** parçaları `sbgp`(**roll**) taşıyor (video parçalarında yok — bayt düzeyinde doğrulandı: video `tfhd/tfdt/trun`, ses `tfhd/tfdt/trun/sbgp`). Bu kutular yalnızca primerleme ipucudur: `traf`/`moof` boyutları ve `trun.data_offset` düzeltilerek çıkarılıyor, **örnek verisi hiç değişmiyor**.
+  4. **Doğrulama:** **212 test** geçiyor. Canlı test (`live_reddit_video_is_merged_with_audio`) gerçek bir gönderiyi bulup birleştiriyor ve çıktıda `ftyp`, `mp4a` (AAC) ile `soun` (ses izi) arıyor: `ac17c5qqrcuh1: sesli MP4 birleştirildi — 5.735.062 bayt` (video 720p + 128k ses; Discord'un 10 MB ek limitine sığıyor). Log'da video ve ses parçalarının **dönüşümlü** çekildiği görülüyor.
+- **Etkilenen:** `src/converters/builtin/reddit_video.rs` (yeni), `src/converters/builtin/media.rs` (`download_video`), `src/converters/builtin/render.rs`, `src/converters/builtin/reddit.rs` (`pub(super)`), `Cargo.toml` (`hls-engine` + `url`), `README.md`
 ### [2026-10-09 16:52] zoltrons — Reddit native: `installed_client` OAuth ile 403 çözümü + `secure_media` (ffmpeg yok)
 - **Commit:** `654c466`
 - **Yapılan:**
