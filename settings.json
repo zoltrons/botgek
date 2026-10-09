@@ -49,18 +49,12 @@
   },
   "engine": {
     "modes": {
-      "twitter": "builtin",
       "tiktok": "proxy",
-      "instagram": "builtin",
-      "reddit": "builtin",
       "bluesky": "builtin",
       "spotify": "builtin"
     },
     "domains": {
-      "twitter": "",
       "tiktok": "",
-      "instagram": "",
-      "reddit": "",
       "bluesky": "",
       "spotify": ""
     },

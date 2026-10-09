@@ -32,10 +32,7 @@ impl WebInfo {
     pub fn from_config(config: &Config) -> Self {
         let mut env_domains = std::collections::BTreeMap::new();
         for (key, value) in [
-            ("twitter", &config.twitter_domain),
             ("tiktok", &config.tiktok_domain),
-            ("instagram", &config.instagram_domain),
-            ("reddit", &config.reddit_domain),
             ("bluesky", &config.bluesky_domain),
             ("spotify", &config.spotify_domain),
         ] {
@@ -330,10 +327,7 @@ mod tests {
     fn config() -> Config {
         Config {
             discord_token: "test-token".to_string(),
-            twitter_domain: "fixupx.com".to_string(),
             tiktok_domain: "tnktok.com".to_string(),
-            instagram_domain: "ddinstagram.com".to_string(),
-            reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
             spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
@@ -351,13 +345,21 @@ mod tests {
 
         assert_eq!(info.port, 8123);
         assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(info.env_domains.get("twitter").map(String::as_str), Some("fixupx.com"));
+        assert_eq!(info.env_domains.get("tiktok").map(String::as_str), Some("tnktok.com"));
         assert_eq!(info.env_domains.get("bluesky").map(String::as_str), Some("fxbsky.app"));
         assert_eq!(
             info.env_domains.get("spotify").map(String::as_str),
             Some("open.fixspotify.com")
         );
-        assert_eq!(info.env_domains.len(), 6, "altı platform alan adı taşınmalı");
+        assert_eq!(
+            info.env_domains.len(),
+            3,
+            "yalnızca proxy motoru kullanılabilen platformların yedek alan adı taşınır"
+        );
+        assert!(
+            !info.env_domains.contains_key("twitter"),
+            "Twitter/X native-only: yedek alan adı yok"
+        );
     }
 
     /// **Varlık sözleşmesi:** görünüm katmanı ayrı dosyalara taşındığı için
@@ -605,7 +607,7 @@ mod tests {
             .expect("info gövdesi");
         assert_eq!(info["port"], 8123);
         assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(info["env_domains"]["twitter"], "fixupx.com");
+        assert_eq!(info["env_domains"]["tiktok"], "tnktok.com");
 
         // 5) /api/settings eski `role_filter` alanını döndürmez (tek gerçek: role_filters).
         let settings: serde_json::Value = client

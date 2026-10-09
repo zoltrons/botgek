@@ -48,11 +48,25 @@ const MAX_EXTRA_IMAGE_EMBEDS: usize = 3;
 /// Tek bir görsel için indirme üst sınırı.
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Videosu **ayrı ses akışıyla** sunulan platformlar (Reddit): video ve ses ayrı medya
+/// playlist'lerinde gelir, sesli oynatma ancak ikisi indirilip tek MP4'e birleştirilerek
+/// mümkündür. Bu yüzden bu platformlarda video indirme **medya yöntemi ayarından bağımsız**
+/// olarak zorunludur (görseller ayarı izlemeye devam eder).
+fn video_requires_download(platform_key: &str) -> bool {
+    platform_key == "reddit"
+}
+
 /// Ayarlardan türetilen render davranışı.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderOptions {
     /// Medya yöntemi: ışık hızı (bağlantı) / bütçeli indirme / her zaman dosya eki.
+    /// **Kullanıcı ayarıdır**; platforma özel zorunluluklar (ör. Reddit videosu) aşağıdaki
+    /// alanlarda ayrıca tutulur.
     pub media_delivery: MediaDelivery,
+    /// Video **zorunlu** indirilir (platform gereği): Reddit'te ses ayrı akışta tutulduğu
+    /// için kart içi video ancak video+ses birleştirilerek sesli oynar. `direct` modda bile
+    /// video indirilir ve indirme **geniş** (dosya eki) bütçesini kullanır.
+    pub video_requires_download: bool,
     pub attach_images: bool,
     pub attach_videos: bool,
     pub max_images: u8,
@@ -64,15 +78,22 @@ pub struct RenderOptions {
 }
 
 impl RenderOptions {
-    pub fn from_engine(engine: &EngineSettings) -> Self {
-        // **Işık hızı (`direct`)**: hiçbir dosya indirilmez ve Discord'a yüklenmez. Bu yüzden
-        // "dosya eki kapalı" gibi davranılır: plan doğrudan uzak bağlantı üretir, indirme
-        // görevi hiç başlamaz ve kart veri gelir gelmez gönderilir.
+    /// Platforma göre uyarlanmış render seçenekleri.
+    ///
+    /// - **Reddit:** ses ayrı akışta tutulur (`CMAF_AUDIO_*`), bu yüzden video **her zaman**
+    ///   indirilir ([`Self::video_requires_download`]) — `direct` modda kart içi video sessiz
+    ///   kalırdı. **Görseller genel ayarı izler** (Reddit'te de `direct` modda indirilmez).
+    /// - Diğer platformlar: davranış tamamen medya yöntemi ayarına bağlıdır.
+    pub fn from_engine(engine: &EngineSettings, platform_key: &str) -> Self {
+        let requires_video_download = video_requires_download(platform_key);
         let downloads = engine.media_delivery.downloads_media();
         Self {
             media_delivery: engine.media_delivery,
+            video_requires_download: requires_video_download,
+            // Görseller medya yöntemini izler (`direct` modda hiç indirilmez).
             attach_images: engine.attach_images && downloads,
-            attach_videos: engine.attach_videos && downloads,
+            // Platform videosu zorunluysa kullanıcının "videoları ekle" anahtarı yeterlidir.
+            attach_videos: engine.attach_videos && (downloads || requires_video_download),
             max_images: engine.max_images,
             max_video_mb: engine.max_video_mb,
             show_metrics: engine.show_metrics,
@@ -103,8 +124,12 @@ impl RenderOptions {
         }
     }
 
-    /// Video indirme bütçesi (moda göre).
+    /// Video indirme bütçesi: platform videosu zorunsa (Reddit) **geniş** bütçe geçerlidir
+    /// (birleştirme, 1,2 sn'lik "otomatik" bütçeye sığmaz); aksi halde moda göre seçilir.
     pub fn video_budget(&self) -> Duration {
+        if self.video_requires_download {
+            return ATTACH_VIDEO_BUDGET;
+        }
         match self.media_delivery {
             MediaDelivery::Attach => ATTACH_VIDEO_BUDGET,
             _ => VIDEO_BUDGET,
@@ -792,11 +817,65 @@ mod tests {
         post
     }
 
+    /// Reddit: video **her zaman** indirilir (ses ayrı akışta gelir; sesli oynatma ancak
+    /// video+ses birleştirilerek mümkün), görseller ise medya yöntemi ayarını izler:
+    /// `direct` modda görsel indirilmez, video indirilir.
+    #[test]
+    fn reddit_always_downloads_video_but_keeps_images_direct() {
+        let engine = EngineSettings {
+            media_delivery: MediaDelivery::Direct,
+            ..Default::default()
+        };
+
+        let reddit = RenderOptions::from_engine(&engine, "reddit");
+        assert!(
+            reddit.video_requires_download,
+            "Reddit'te video zorunlu indirilir"
+        );
+        assert!(
+            reddit.attach_videos,
+            "ışık hızı modunda bile Reddit videosu ek olarak indirilir"
+        );
+        assert!(
+            !reddit.attach_images,
+            "Reddit görselleri ışık hızı modunda indirilmez"
+        );
+        assert_eq!(
+            reddit.video_budget(),
+            ATTACH_VIDEO_BUDGET,
+            "birleştirme geniş bütçeyle indirilir (otomatik modun 1,2 sn'si yetmez)"
+        );
+
+        // Diğer platformlarda davranış değişmez: `direct` → hiç indirme yok.
+        let twitter = RenderOptions::from_engine(&engine, "twitter");
+        assert!(!twitter.video_requires_download);
+        assert!(!twitter.attach_videos);
+        assert!(!twitter.attach_images);
+
+        // Kullanıcı videoları tamamen kapattıysa Reddit'te de indirilmez.
+        let no_videos = EngineSettings {
+            media_delivery: MediaDelivery::Direct,
+            attach_videos: false,
+            ..Default::default()
+        };
+        assert!(!RenderOptions::from_engine(&no_videos, "reddit").attach_videos);
+
+        // `attach` modunda ikisi de indirilir.
+        let attach = EngineSettings {
+            media_delivery: MediaDelivery::Attach,
+            ..Default::default()
+        };
+        let reddit_attach = RenderOptions::from_engine(&attach, "reddit");
+        assert!(reddit_attach.attach_images && reddit_attach.attach_videos);
+    }
+
+
     fn options() -> RenderOptions {
         // Testler **bütçeli indirme** modunu ölçer: motorun varsayılanı artık ışık hızı
         // (`direct`) ve o modda hiçbir dosya indirilmez, plan yalnızca bağlantı taşır.
         RenderOptions {
             media_delivery: MediaDelivery::Auto,
+            video_requires_download: false,
             attach_images: true,
             attach_videos: true,
             max_images: 4,
@@ -818,7 +897,7 @@ mod tests {
         engine.attach_images = true;
         engine.attach_videos = true;
 
-        let options = RenderOptions::from_engine(&engine);
+        let options = RenderOptions::from_engine(&engine, "twitter");
         assert!(!options.attach_images, "ışık hızı: görsel indirme kapalı");
         assert!(!options.attach_videos, "ışık hızı: video indirme kapalı");
 

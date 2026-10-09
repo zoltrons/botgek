@@ -55,7 +55,9 @@ pub async fn fetch(
         .map(|m| m.as_str().to_string())
         .ok_or_else(|| format!("Twitter gönderi kimliği yok: {}", parsed.original_url))?;
 
-    let video_budget = super::render::RenderOptions::from_engine(engine).max_video_bytes();
+    // `max_video_bytes` platforma bağlı değildir; anahtar sözleşmeyi açık tutar.
+    let video_budget =
+        super::render::RenderOptions::from_engine(engine, "twitter").max_video_bytes();
     debug!("X verisi çekiliyor (kaynak: {}, id: {id})", engine.twitter_source.key());
 
     let mut post = fetch_post_internal(client, &parsed.original_url, &id, engine, video_budget).await?;
@@ -1422,7 +1424,8 @@ mod tests {
         );
 
         // Modern V2 kart çıktısında 3 gönderi ve görsel de yer almalı:
-        let render_opts = crate::converters::builtin::render::RenderOptions::from_engine(&engine);
+        let render_opts =
+            crate::converters::builtin::render::RenderOptions::from_engine(&engine, "twitter");
         let plan = crate::converters::builtin::render::plan_media(&post, &render_opts);
         assert!(plan.quote_media, "medya alıntı zincirinden alınmalı");
         assert!(!plan.images.is_empty() || !plan.remote_images.is_empty(), "plan görsel içermeli");

@@ -13,10 +13,7 @@ use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 /// Ayarlardaki alan adı override'larını (WebUI) `.env` değerleriyle birleştirir.
 fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::PlatformDomains {
     parser::PlatformDomains {
-        twitter: engine.domain_for("twitter", config),
         tiktok: engine.domain_for("tiktok", config),
-        instagram: engine.domain_for("instagram", config),
-        reddit: engine.domain_for("reddit", config),
         bluesky: engine.domain_for("bluesky", config),
         spotify: engine.domain_for("spotify", config),
     }
@@ -91,16 +88,18 @@ pub async fn handle_message(
         }
     }
 
-    // 3. Motor Seçimi: native embed veya proxy yönlendirmesi
+    // 3. Motor Seçimi: native embed veya (yalnızca proxy destekleyen platformlarda) proxy
+    //    yönlendirmesi. Twitter/X, Instagram ve Reddit **native-only**'dir: `mode_for` bu
+    //    platformlarda daima `Builtin` döner ve proxy yedeği hiç kullanılmaz.
     let platform_key = builtin::platform_key(parsed.platform);
     if settings.engine.mode_for(platform_key) == ConversionMode::Builtin {
         if builtin::handle(ctx, msg, client, &parsed, config, &settings.engine).await {
             return;
         }
 
-        if !settings.engine.fallback_to_proxy {
+        if !settings.engine.allows_proxy_fallback(platform_key) {
             warn!(
-                "Native embed üretilemedi ve proxy yedeği kapalı, dönüştürme atlandı: {}",
+                "Native embed üretilemedi ve bu platformda proxy yedeği yok, dönüştürme atlandı: {}",
                 parsed.original_url
             );
             return;

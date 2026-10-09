@@ -1127,11 +1127,13 @@ pub async fn handle(
     };
     let fetched = started.elapsed();
 
-    let options = render::RenderOptions::from_engine(engine);
+    let platform = platform_key(parsed.platform);
+    let options = render::RenderOptions::from_engine(engine, platform);
     debug!(
-        "Medya yöntemi: {} (dosya indirme: {}) — {}",
+        "Medya yöntemi: {} (görsel indirme: {}, video indirme: {}) — {}",
         options.media_delivery.key(),
-        options.media_delivery.downloads_media(),
+        options.attach_images,
+        options.attach_videos,
         parsed.original_url
     );
     let plan = render::plan_media(&post, &options);

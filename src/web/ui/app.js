@@ -26,18 +26,20 @@ const MODULE_LABELS = {
 };
 const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
 
+/* `nativeOnly: true` platformlar proxy motorunu **hiç** kullanmaz: motor modu ve yedek alan
+   adı alanı yoktur (Rust tarafında da proxy modu + proxy yedeği kaldırılmıştır). */
 const ENGINE_PLATFORMS = [
-    { key: 'twitter', label: 'Twitter / X' },
+    { key: 'twitter', label: 'Twitter / X', nativeOnly: true },
     { key: 'tiktok', label: 'TikTok' },
-    { key: 'instagram', label: 'Instagram' },
-    { key: 'reddit', label: 'Reddit' },
+    { key: 'instagram', label: 'Instagram', nativeOnly: true },
+    { key: 'reddit', label: 'Reddit', nativeOnly: true },
     { key: 'bluesky', label: 'Bluesky' },
     { key: 'spotify', label: 'Spotify' }
 ];
 
 const ENGINE_DEFAULTS = {
-    modes: { twitter: 'builtin', tiktok: 'proxy', instagram: 'builtin', reddit: 'builtin', bluesky: 'builtin', spotify: 'builtin' },
-    domains: { twitter: '', tiktok: '', instagram: '', reddit: '', bluesky: '', spotify: '' },
+    modes: { tiktok: 'proxy', bluesky: 'builtin', spotify: 'builtin' },
+    domains: { tiktok: '', bluesky: '', spotify: '' },
     twitter_source: 'syndication',
     media_delivery: 'direct',
     attach_images: true,
@@ -464,10 +466,19 @@ function updateNavCounts() {
     if ($('ai-state')) $('ai-state').textContent = state;
 }
 
-/* Motor satırı: mod etiketi + alan adı kutusunun geçerliliği. */
+/* Motor satırı: mod etiketi + alan adı kutusunun geçerliliği. Native-only platformlarda
+   mod/yedek alan adı kutusu yoktur; satır sabit "native embed" gösterir. */
 function updateEngineNote(key) {
-    const radio = qs('input[name="engine-mode-' + key + '"]:checked');
+    const platform = ENGINE_PLATFORMS.find(p => p.key === key);
     const note = $('engine-note-' + key);
+    if (platform && platform.nativeOnly) {
+        if (note) {
+            note.textContent = 'native embed (sabit)';
+            note.dataset.on = 'true';
+        }
+        return;
+    }
+    const radio = qs('input[name="engine-mode-' + key + '"]:checked');
     const domain = document.querySelector('[data-domain-key="' + key + '"]');
     const builtin = !!radio && radio.value === 'builtin';
     if (note) {
@@ -482,7 +493,7 @@ function updateEngineNote(key) {
 
 function updateEngineSummary() {
     const engine = getEngineConfig(getActiveConfig());
-    const nativeCount = ENGINE_PLATFORMS.filter(p => engine.modes[p.key] === 'builtin').length;
+    const nativeCount = ENGINE_PLATFORMS.filter(p => p.nativeOnly || engine.modes[p.key] === 'builtin').length;
     const images = $('engine-max-images');
     const video = $('engine-max-video');
     if (images && $('engine-max-images-value')) $('engine-max-images-value').textContent = images.value + ' adet';

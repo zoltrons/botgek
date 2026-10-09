@@ -31,11 +31,11 @@ impl EventHandler for Handler {
         info!("Botgek başarıyla bağlandı!");
         info!("Giriş yapılan hesap: {}", ready.user.tag());
         info!("WebUI: http://localhost:{}", self.config.web_port);
-        info!("Twitter Alan Adı: {}", self.config.twitter_domain);
+        // Yedek (proxy) alan adları **yalnızca** proxy motoru kullanılabilen platformlar için
+        // yazılır: Twitter/X, Instagram ve Reddit native-only'dir (proxy modu ve yedeği yok).
         info!("TikTok Alan Adı: {}", self.config.tiktok_domain);
-        info!("Instagram Alan Adı: {}", self.config.instagram_domain);
-        info!("Reddit Alan Adı: {}", self.config.reddit_domain);
         info!("Bluesky Alan Adı: {}", self.config.bluesky_domain);
+        info!("Native-only Platformlar: Twitter/X, Instagram, Reddit (proxy yok)");
         info!(
             "Instagram Oturum Çerezi: {}",
             if self.config.instagram_sessionid.is_some() {

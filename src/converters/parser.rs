@@ -39,7 +39,8 @@ pub struct ParsedPost {
     pub user_comment: Option<String>,
     /// Orijinal link (örn: https://x.com/username/status/123)
     pub original_url: String,
-    /// Dönüştürülmüş link (örn: https://fixupx.com/username/status/123)
+    /// Dönüştürülmüş link (örn: https://tnktok.com/@user/video/123). Proxy motoru
+    /// kullanılmayan (native-only) platformlarda **orijinal linke eşittir**.
     pub fixed_url: String,
 }
 
@@ -193,12 +194,13 @@ fn sanitize_urls(post: ParsedPost) -> ParsedPost {
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
 /// Dönüştürme sırasında kullanılacak platform alan adları (proxy hedefleri).
 /// `.env` değerleri varsayılandır, WebUI üzerinden sunucu bazında değiştirilebilir.
+/// Proxy motoru kullanılabilen platformların yedek alan adları.
+///
+/// Twitter/X, Instagram ve Reddit **native-only**'dir (proxy motoru ve proxy yedeği
+/// kaldırıldı), bu yüzden burada yer almazlar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformDomains {
-    pub twitter: String,
     pub tiktok: String,
-    pub instagram: String,
-    pub reddit: String,
     pub bluesky: String,
     pub spotify: String,
 }
@@ -206,10 +208,7 @@ pub struct PlatformDomains {
 impl Default for PlatformDomains {
     fn default() -> Self {
         Self {
-            twitter: "fixupx.com".to_string(),
             tiktok: "tnktok.com".to_string(),
-            instagram: "ddinstagram.com".to_string(),
-            reddit: "vxreddit.com".to_string(),
             bluesky: "fxbsky.app".to_string(),
             spotify: "open.fixspotify.com".to_string(),
         }
@@ -219,10 +218,7 @@ impl Default for PlatformDomains {
 impl From<&Config> for PlatformDomains {
     fn from(config: &Config) -> Self {
         Self {
-            twitter: config.twitter_domain.clone(),
             tiktok: config.tiktok_domain.clone(),
-            instagram: config.instagram_domain.clone(),
-            reddit: config.reddit_domain.clone(),
             bluesky: config.bluesky_domain.clone(),
             spotify: config.spotify_domain.clone(),
         }
@@ -245,8 +241,8 @@ pub fn parse_message_with_domains(raw_content: &str, domains: &PlatformDomains) 
         return None;
     }
 
-    // 1. Twitter / X
-    if let Some(post) = parse_twitter(raw_content, &domains.twitter) {
+    // 1. Twitter / X — native-only: proxy motoru kaldırıldı, dönüştürme daima native.
+    if let Some(post) = parse_twitter(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -255,13 +251,13 @@ pub fn parse_message_with_domains(raw_content: &str, domains: &PlatformDomains) 
         return Some(sanitize_urls(post));
     }
 
-    // 3. Instagram
-    if let Some(post) = parse_instagram(raw_content, &domains.instagram) {
+    // 3. Instagram — native-only.
+    if let Some(post) = parse_instagram(raw_content) {
         return Some(sanitize_urls(post));
     }
 
-    // 4. Reddit
-    if let Some(post) = parse_reddit(raw_content, &domains.reddit) {
+    // 4. Reddit — native-only.
+    if let Some(post) = parse_reddit(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -287,14 +283,16 @@ fn extract_user_comment(raw_content: &str, regex: &Regex) -> Option<String> {
     }
 }
 
-fn parse_twitter(raw_content: &str, domain: &str) -> Option<ParsedPost> {
+/// Twitter/X: **native-only** platform (proxy motoru kaldırıldı), bu yüzden "dönüştürülmüş"
+/// link orijinal linkin kendisidir.
+fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
     if let Some(caps) = TWITTER_SPOILER_REGEX.captures(raw_content) {
         let username = caps.get(1)?.as_str();
         let tweet_id = caps.get(2)?.as_str();
         let extra = caps.get(3).map(|m| format!("/{}", m.as_str())).unwrap_or_default();
 
         let original_url = format!("https://x.com/{}/status/{}{}", username, tweet_id, extra);
-        let fixed_url = format!("https://{}/{}/status/{}{}", domain, username, tweet_id, extra);
+        let fixed_url = original_url.clone();
 
         return Some(ParsedPost {
             platform: Platform::Twitter,
@@ -311,7 +309,7 @@ fn parse_twitter(raw_content: &str, domain: &str) -> Option<ParsedPost> {
         let extra = caps.get(3).map(|m| format!("/{}", m.as_str())).unwrap_or_default();
 
         let original_url = format!("https://x.com/{}/status/{}{}", username, tweet_id, extra);
-        let fixed_url = format!("https://{}/{}/status/{}{}", domain, username, tweet_id, extra);
+        let fixed_url = original_url.clone();
 
         return Some(ParsedPost {
             platform: Platform::Twitter,
@@ -401,45 +399,50 @@ fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
     None
 }
 
-fn parse_instagram(raw_content: &str, domain: &str) -> Option<ParsedPost> {
+/// Instagram: **native-only** platform (proxy motoru kaldırıldı).
+fn parse_instagram(raw_content: &str) -> Option<ParsedPost> {
     if let Some(caps) = INSTAGRAM_SPOILER_REGEX.captures(raw_content) {
         let kind = caps.get(1)?.as_str();
         let id = caps.get(2)?.as_str();
+        let original_url = format!("https://www.instagram.com/{}/{}", kind, id);
         return Some(ParsedPost {
             platform: Platform::Instagram,
             is_spoiler: true,
             user_comment: extract_user_comment(raw_content, &INSTAGRAM_SPOILER_REGEX),
-            original_url: format!("https://www.instagram.com/{}/{}", kind, id),
-            fixed_url: format!("https://{}/{}/{}", domain, kind, id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
     if let Some(caps) = INSTAGRAM_REGEX.captures(raw_content) {
         let kind = caps.get(1)?.as_str();
         let id = caps.get(2)?.as_str();
+        let original_url = format!("https://www.instagram.com/{}/{}", kind, id);
         return Some(ParsedPost {
             platform: Platform::Instagram,
             is_spoiler: false,
             user_comment: extract_user_comment(raw_content, &INSTAGRAM_REGEX),
-            original_url: format!("https://www.instagram.com/{}/{}", kind, id),
-            fixed_url: format!("https://{}/{}/{}", domain, kind, id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
     None
 }
 
-fn parse_reddit(raw_content: &str, domain: &str) -> Option<ParsedPost> {
+/// Reddit: **native-only** platform (proxy motoru kaldırıldı).
+fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
     // 1. /r/sub/comments/id veya /(u|user)/username/comments/id (Spoiler)
     if let Some(caps) = REDDIT_POST_SPOILER_REGEX.captures(raw_content) {
         let prefix = caps.get(1)?.as_str();
         let target = caps.get(2)?.as_str();
         let id = caps.get(3)?.as_str();
         let section = if prefix == "u" { "user" } else { prefix };
+        let original_url = format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id);
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: true,
             user_comment: extract_user_comment(raw_content, &REDDIT_POST_SPOILER_REGEX),
-            original_url: format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id),
-            fixed_url: format!("https://{}/{}/{}/comments/{}", domain, section, target, id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
     // 1. /r/sub/comments/id veya /(u|user)/username/comments/id (Normal)
@@ -448,12 +451,13 @@ fn parse_reddit(raw_content: &str, domain: &str) -> Option<ParsedPost> {
         let target = caps.get(2)?.as_str();
         let id = caps.get(3)?.as_str();
         let section = if prefix == "u" { "user" } else { prefix };
+        let original_url = format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id);
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: false,
             user_comment: extract_user_comment(raw_content, &REDDIT_POST_REGEX),
-            original_url: format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id),
-            fixed_url: format!("https://{}/{}/{}/comments/{}", domain, section, target, id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
 
@@ -461,47 +465,51 @@ fn parse_reddit(raw_content: &str, domain: &str) -> Option<ParsedPost> {
     if let Some(caps) = REDDIT_SHARE_SPOILER_REGEX.captures(raw_content) {
         let sub = caps.get(1)?.as_str();
         let share_id = caps.get(2)?.as_str();
+        let original_url = format!("https://www.reddit.com/r/{}/s/{}", sub, share_id);
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: true,
             user_comment: extract_user_comment(raw_content, &REDDIT_SHARE_SPOILER_REGEX),
-            original_url: format!("https://www.reddit.com/r/{}/s/{}", sub, share_id),
-            fixed_url: format!("https://{}/r/{}/s/{}", domain, sub, share_id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
     // 2. /r/sub/s/share_id (Mobil Paylaşım Linki - Normal)
     if let Some(caps) = REDDIT_SHARE_REGEX.captures(raw_content) {
         let sub = caps.get(1)?.as_str();
         let share_id = caps.get(2)?.as_str();
+        let original_url = format!("https://www.reddit.com/r/{}/s/{}", sub, share_id);
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: false,
             user_comment: extract_user_comment(raw_content, &REDDIT_SHARE_REGEX),
-            original_url: format!("https://www.reddit.com/r/{}/s/{}", sub, share_id),
-            fixed_url: format!("https://{}/r/{}/s/{}", domain, sub, share_id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
 
     // 3. redd.it/id veya /comments/id (Kısa Linkler - Spoiler)
     if let Some(caps) = REDDIT_SHORT_SPOILER_REGEX.captures(raw_content) {
         let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
+        let original_url = format!("https://redd.it/{}", id);
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: true,
             user_comment: extract_user_comment(raw_content, &REDDIT_SHORT_SPOILER_REGEX),
-            original_url: format!("https://redd.it/{}", id),
-            fixed_url: format!("https://{}/comments/{}", domain, id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
     // 3. redd.it/id veya /comments/id (Kısa Linkler - Normal)
     if let Some(caps) = REDDIT_SHORT_REGEX.captures(raw_content) {
         let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
+        let original_url = format!("https://redd.it/{}", id);
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: false,
             user_comment: extract_user_comment(raw_content, &REDDIT_SHORT_REGEX),
-            original_url: format!("https://redd.it/{}", id),
-            fixed_url: format!("https://{}/comments/{}", domain, id),
+            fixed_url: original_url.clone(),
+            original_url,
         });
     }
 
@@ -591,10 +599,7 @@ mod tests {
     fn dummy_config() -> Config {
         Config {
             discord_token: "dummy".to_string(),
-            twitter_domain: "fixupx.com".to_string(),
             tiktok_domain: "tnktok.com".to_string(),
-            instagram_domain: "ddinstagram.com".to_string(),
-            reddit_domain: "vxreddit.com".to_string(),
             bluesky_domain: "fxbsky.app".to_string(),
             spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
@@ -613,7 +618,7 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Twitter);
         assert_eq!(parsed.original_url, "https://x.com/elonmusk/status/123456789");
-        assert_eq!(parsed.fixed_url, "https://fixupx.com/elonmusk/status/123456789");
+        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Harika video  mutlaka izleyin"));
     }
@@ -662,7 +667,10 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Instagram);
         assert_eq!(parsed.original_url, "https://www.instagram.com/reel/C3abcXYZ123");
-        assert_eq!(parsed.fixed_url, "https://ddinstagram.com/reel/C3abcXYZ123");
+        assert_eq!(
+            parsed.fixed_url, parsed.original_url,
+            "native-only platform: proxy linki üretilmez"
+        );
     }
 
     #[test]
@@ -673,7 +681,7 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/rust/comments/123456");
-        assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/rust/comments/123456");
+        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
     }
 
@@ -685,7 +693,7 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234");
-        assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/pcmasterrace/s/AbCdEf1234");
+        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Buna bak  harika"));
     }
@@ -698,7 +706,7 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://redd.it/123456");
-        assert_eq!(parsed.fixed_url, "https://vxreddit.com/comments/123456");
+        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
     }
 
@@ -710,7 +718,7 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/user/someone/comments/abcdef12");
-        assert_eq!(parsed.fixed_url, "https://vxreddit.com/user/someone/comments/abcdef12");
+        assert_eq!(parsed.fixed_url, parsed.original_url);
     }
 
     #[test]
@@ -721,7 +729,7 @@ mod tests {
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://www.reddit.com/r/news/comments/789xyz");
-        assert_eq!(parsed.fixed_url, "https://vxreddit.com/r/news/comments/789xyz");
+        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(parsed.is_spoiler);
     }
 
@@ -739,8 +747,8 @@ mod tests {
             assert!(!url.contains(']'), "Kaçırılmamış köşeli parantez: {url}");
         }
         assert_eq!(
-            parsed.fixed_url,
-            "https://vxreddit.com/r/x%29y%5Bsahte%5D/comments/abc"
+            parsed.fixed_url, parsed.original_url,
+            "native-only platform: dönüştürülmüş link orijinal linktir"
         );
     }
 
@@ -749,7 +757,7 @@ mod tests {
         let cfg = dummy_config();
         let content = "https://x.com/a%20b/status/123";
         let parsed = parse_message(content, &cfg).unwrap();
-        assert_eq!(parsed.fixed_url, "https://fixupx.com/a%20b/status/123");
+        assert_eq!(parsed.fixed_url, "https://x.com/a%20b/status/123");
     }
 
     #[test]

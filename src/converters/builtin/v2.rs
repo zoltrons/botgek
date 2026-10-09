@@ -604,7 +604,7 @@ mod tests {
     }
 
     fn options() -> RenderOptions {
-        RenderOptions::from_engine(&EngineSettings::default())
+        RenderOptions::from_engine(&EngineSettings::default(), "twitter")
     }
 
     fn emojis() -> EmojiSettings {
