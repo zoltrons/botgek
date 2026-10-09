@@ -64,6 +64,7 @@ const ENGINE_DEFAULTS = {
         translation: '<:translation:1476614397249061056>',
         twitter: '<:twitter:1476642012072920355>',
         instagram: '<:instagram:1558099674731122758>',
+    reddit: '<:reddit:1558112156195495956>',
         quote: '<:qutoe:1553728214998847569>'
     }
 };
@@ -78,6 +79,7 @@ const EMOJI_FIELDS = [
     { key: 'translation', label: 'çeviri notu' },
     { key: 'twitter', label: 'X logosu' },
     { key: 'instagram', label: 'Instagram logosu' },
+    { key: 'reddit', label: 'Reddit logosu' },
     { key: 'quote', label: 'alıntı' }
 ];
 

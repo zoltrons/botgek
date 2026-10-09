@@ -124,7 +124,7 @@ impl RenderOptions {
         }
     }
 
-    /// Video indirme bütçesi: platform videosu zorunsa (Reddit) **geniş** bütçe geçerlidir
+    /// Medya indirme bütçesi: platform videosu zorunsa (Reddit) **geniş** bütçe geçerlidir
     /// (birleştirme, 1,2 sn'lik "otomatik" bütçeye sığmaz); aksi halde moda göre seçilir.
     pub fn video_budget(&self) -> Duration {
         if self.video_requires_download {
@@ -134,6 +134,15 @@ impl RenderOptions {
             MediaDelivery::Attach => ATTACH_VIDEO_BUDGET,
             _ => VIDEO_BUDGET,
         }
+    }
+
+    /// **Hiçbir** dosya indirilmeden karta mı bağlanılacak (ışık hızı modu)?
+    ///
+    /// Platform videosu zorunlu indirilen Reddit bu kuralın **dışındadır**: ses ayrı akışta
+    /// geldiği için video indirilmezse kart sessiz kalırdı (bu yüzden `direct` modda bile
+    /// video indirme yolu çalışır; görseller ise bağlantı olarak kalır).
+    pub fn skips_all_downloads(&self) -> bool {
+        !self.media_delivery.downloads_media() && !self.video_requires_download
     }
 }
 
@@ -267,8 +276,10 @@ pub async fn resolve_media(
 
     // Işık hızı (`direct`): hiçbir medya indirilmez. Kart, görsel/video/GIF'i bağlantı
     // olarak taşır (video kartın içinde oynar, GIF FxEmbed'in GIF servisinden gelir), bu
-    // yüzden medya fazı **~0 ms**'dir ve Discord'a yükleme yapılmaz.
-    if !options.media_delivery.downloads_media() {
+    // yüzden medya fazı **~0 ms**'dir ve Discord'a yükleme yapılmaz. **İstisna:** platform
+    // videosu zorunlu olan Reddit (ses ayrı akışta; video birleştirilmezse kart sessiz kalır) —
+    // orada yalnızca video indirilir, görseller bağlantı olarak kalır.
+    if options.skips_all_downloads() {
         return direct_media(plan);
     }
 
@@ -867,6 +878,94 @@ mod tests {
         };
         let reddit_attach = RenderOptions::from_engine(&attach, "reddit");
         assert!(reddit_attach.attach_images && reddit_attach.attach_videos);
+
+        // Reddit'te video **zorunlu** indirildiği için `direct` modda da medya fazı atlanmaz;
+        // diğer platformlarda ışık hızı kuralı aynen geçerlidir.
+        assert!(twitter.skips_all_downloads(), "diğer platformlar: hiç indirme yok");
+        assert!(
+            !reddit.skips_all_downloads(),
+            "Reddit: video zorunlu indirilir (ses ancak birleştirmeyle gelir)"
+        );
+        assert!(!reddit_attach.skips_all_downloads());
+    }
+
+
+    /// **Canlı doğrulama:** `direct` (ışık hızı) modda Reddit videosu **yine de** indirilip
+    /// sesiyle birleştirilerek eklenir — ses ayrı akışta geldiği için tek sesli oynatma yolu
+    /// budur; görseller bağlantı olarak kalır. Ağ/upstream erişilemezse test atlanır.
+    #[tokio::test]
+    async fn live_reddit_video_is_attached_even_in_direct_mode() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        let Some(token) = super::super::reddit::oauth_token(
+            &client,
+            super::super::reddit::DEFAULT_CLIENT_ID,
+        )
+        .await
+        else {
+            println!("Reddit OAuth token alınamadı; test atlandı");
+            return;
+        };
+        let Ok(listing) = super::super::reddit::get_json_with_bearer(
+            &client,
+            "https://oauth.reddit.com/r/nextfuckinglevel/hot?limit=25&raw_json=1",
+            &token,
+        )
+        .await
+        else {
+            println!("Reddit listesi alınamadı; test atlandı");
+            return;
+        };
+        let Some(url) = listing["data"]["children"].as_array().and_then(|children| {
+            children.iter().find_map(|child| {
+                child["data"]["media"]["reddit_video"]["fallback_url"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+        }) else {
+            println!("canlı Reddit video bulunamadı; test atlandı");
+            return;
+        };
+
+        let engine = EngineSettings {
+            media_delivery: MediaDelivery::Direct,
+            ..Default::default()
+        };
+        let options = RenderOptions::from_engine(&engine, "reddit");
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/nextfuckinglevel/comments/1",
+            Author::new("op", "op"),
+        );
+        post.media = vec![
+            image("https://i.redd.it/ornek.jpg"),
+            video(&url, "https://i.redd.it/ornek-poster.jpg"),
+        ];
+
+        let plan = plan_media(&post, &options);
+        assert_eq!(plan.images.len(), 0, "ışık hızı: görsel indirilmez");
+        assert_eq!(
+            plan.remote_images,
+            vec!["https://i.redd.it/ornek.jpg".to_string()],
+            "ışık hızı: görsel bağlantı olarak planlanır"
+        );
+        assert_eq!(plan.video.as_deref(), Some(url.as_str()));
+
+        let resolved = resolve_media(&client, &post, &plan, &options).await;
+        let Some(attached) = resolved.attached_video.as_deref() else {
+            println!("{url} ek olarak indirilemedi; test atlandı");
+            return;
+        };
+        assert!(attached.starts_with("attachment://"), "ek referansı: {attached}");
+        let file = resolved.attachments.first().expect("video eki olmalı");
+        assert!(file.data.len() > 64 * 1024, "makul boyutta MP4 beklenir");
+        let has = |needle: &[u8]| file.data.windows(needle.len()).any(|window| window == needle);
+        assert!(has(b"ftyp"), "MP4 konteyneri (ftyp) olmalı");
+        assert!(has(b"mp4a"), "AAC ses kodek kutusu (mp4a) bulunmalı");
+        assert!(has(b"soun"), "ses izi işleyicisi (soun) bulunmalı");
     }
 
 

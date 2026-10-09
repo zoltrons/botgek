@@ -1475,7 +1475,7 @@ fn build_content(
     author_id: UserId,
     parsed: &ParsedPost,
     post: &BuiltinPost,
-    resolved: &render::ResolvedMedia,
+    _resolved: &render::ResolvedMedia,
     mention_author: bool,
 ) -> String {
     let link = format!("[{}](<{}>)", parsed.platform.display_name(), post.url);
@@ -1492,25 +1492,16 @@ fn build_content(
         format!("\n{}", quoted.join("\n"))
     });
 
-    let video_line = resolved
-        .video_link
-        .as_ref()
-        .map(|link| format!("\n[🎬 Videoyu aç]({link})"));
-
     let mut content = match &quoted_comment {
         Some(comment) => format!("{base_content}{comment}"),
         None => base_content.clone(),
     };
-    if let Some(video_line) = &video_line {
-        content.push_str(video_line);
-    }
 
-    // Discord 2000 karakteri aşan içeriği reddeder: önce alıntıyı düşür, sonra kırp
+    // Discord 2000 karakteri aşan içeriği reddeder: önce alıntıyı düşür, sonra kırp.
+    // (Kart dışına ayrıca "🎬 Videoyu aç" bağlantısı **eklenmez**: gönderi bağlantısı ve
+    // mesaja eklenen video yeterlidir; video zaten kartın içinde oynar.)
     if content.chars().count() > DISCORD_CONTENT_LIMIT {
         content = base_content;
-        if let Some(video_line) = &video_line {
-            content.push_str(video_line);
-        }
     }
 
     truncate_chars(&content, DISCORD_CONTENT_LIMIT)
@@ -1567,7 +1558,7 @@ mod message_tests {
     }
 
     #[test]
-    fn content_keeps_comment_spoiler_and_video_fallback() {
+    fn content_keeps_comment_and_spoiler_without_video_button() {
         let mut parsed = parsed();
         parsed.user_comment = Some("şuna bak".to_string());
         parsed.is_spoiler = true;
@@ -1580,7 +1571,10 @@ mod message_tests {
 
         assert!(content.starts_with("||[Twitter](<https://x.com/kullanici/status/1>)||"), "içerik: {content}");
         assert!(content.contains("\n> şuna bak"), "içerik: {content}");
-        assert!(content.contains("[🎬 Videoyu aç](https://cdn/v1.mp4)"), "içerik: {content}");
+        assert!(
+            !content.contains("Videoyu aç"),
+            "kart dışına ayrı video açma bağlantısı eklenmez: {content}"
+        );
     }
 
     #[test]

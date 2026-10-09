@@ -489,7 +489,7 @@ fn meta_line(card: &V2Card<'_>) -> String {
         });
     }
 
-    // Platform göstergesi: X ve Instagram için özel emoji, diğer platformlarda adı yazılır.
+    // Platform göstergesi: X, Instagram ve Reddit için özel emoji, diğerlerinde adı yazılır.
     parts.push(match post.platform {
         Platform::Twitter => card
             .emojis
@@ -499,6 +499,11 @@ fn meta_line(card: &V2Card<'_>) -> String {
         Platform::Instagram => card
             .emojis
             .instagram()
+            .map(str::to_string)
+            .unwrap_or_else(|| post.platform.display_name().to_string()),
+        Platform::Reddit => card
+            .emojis
+            .reddit()
             .map(str::to_string)
             .unwrap_or_else(|| post.platform.display_name().to_string()),
         _ => post.platform.display_name().to_string(),
@@ -516,10 +521,8 @@ fn meta_line(card: &V2Card<'_>) -> String {
     let link = format!("[Link]({})", post.url);
     parts.push(spoiler_wrap(&link, hidden(card)));
 
-    // İndirilemeyen video için açma bağlantısı.
-    if let Some(video) = &card.resolved.video_link {
-        parts.push(format!("[🎬 Videoyu aç]({video})"));
-    }
+    // Not: indirilemeyen video için ayrıca "🎬 Videoyu aç" bağlantısı **eklenmez**; video
+    // zaten kartın içindeki Media Gallery'de oynar (öğe başına tek gösterim yeterli).
 
     format!("-# {}", parts.join(" • "))
 }
@@ -821,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn non_twitter_platforms_use_their_name_and_extra_label() {
+    fn reddit_uses_its_own_emoji_and_extra_label() {
         let mut post = BuiltinPost::new(
             Platform::Reddit,
             "https://www.reddit.com/r/rust/comments/abc/x/",
@@ -842,8 +845,32 @@ mod tests {
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let meta = texts(&payload).last().unwrap().to_string();
 
-        assert!(meta.contains("Reddit"), "platform adı: {meta}");
+        assert!(
+            meta.contains("<:reddit:1558112156195495956>"),
+            "Reddit kendi emojisini kullanmalı: {meta}"
+        );
         assert!(meta.contains("r/rust • 128 yorum"), "ek bilgi: {meta}");
+        assert!(!meta.contains("twitter:"), "X emojisi kullanılmamalı: {meta}");
+    }
+
+    /// Emojisi olmayan platformlarda (TikTok/Bluesky/Spotify) platform **adı** yazılır.
+    #[test]
+    fn platforms_without_an_emoji_use_their_name() {
+        let mut post = BuiltinPost::new(
+            Platform::Bluesky,
+            "https://bsky.app/profile/alice.bsky.social/post/3k6abc",
+            Author::new("alice", "alice"),
+        );
+        post.text = "bluesky gönderisi".to_string();
+        post.extra_label = Some("3 yanıt".to_string());
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let meta = texts(&payload).last().unwrap().to_string();
+
+        assert!(meta.contains("Bluesky"), "platform adı: {meta}");
+        assert!(meta.contains("3 yanıt"), "ek bilgi: {meta}");
         assert!(!meta.contains("twitter:"), "X emojisi kullanılmamalı: {meta}");
     }
 
@@ -878,6 +905,7 @@ mod tests {
             translation: String::new(),
             twitter: String::new(),
             instagram: String::new(),
+            reddit: String::new(),
             quote: String::new(),
         };
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
@@ -945,7 +973,11 @@ mod tests {
             "galeri kapak + video olarak iki öğe göstermemeli (yan yana çıkıyordu)"
         );
         let meta = texts(&payload).pop().unwrap();
-        assert!(meta.contains("[🎬 Videoyu aç](https://cdn/v1.mp4)"), "son satır: {meta}");
+        assert!(
+            !meta.contains("Videoyu aç"),
+            "video kart içinde oynadığı için ayrı açma bağlantısı eklenmez: {meta}"
+        );
+        assert!(!meta.contains("🎬"), "video açma işareti kullanılmamalı: {meta}");
     }
 
     #[test]
@@ -1302,7 +1334,10 @@ mod tests {
             "alıntının videosu kartın içinde (kapağıyla birlikte değil, tek başına) gösterilmeli"
         );
         let meta = texts(&payload).pop().unwrap();
-        assert!(meta.contains("[🎬 Videoyu aç](https://cdn/q.mp4)"), "son satır: {meta}");
+        assert!(
+            !meta.contains("Videoyu aç"),
+            "alıntı videosu kartın içinde oynadığı için ayrı bağlantı eklenmez: {meta}"
+        );
     }
 
     #[test]

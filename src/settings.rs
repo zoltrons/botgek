@@ -267,6 +267,8 @@ pub struct EmojiSettings {
     pub twitter: String,
     /// Instagram göstergesi (kartın son satırında).
     pub instagram: String,
+    /// Reddit göstergesi (kartın son satırında).
+    pub reddit: String,
     /// Alıntılanan gönderi işareti (alıntı başlığı ve alıntı sayısı).
     pub quote: String,
 }
@@ -280,6 +282,7 @@ const DEFAULT_VIEWS_EMOJI: &str = "<:metric:1553712416242798712>";
 const DEFAULT_TRANSLATION_EMOJI: &str = "<:translation:1476614397249061056>";
 const DEFAULT_TWITTER_EMOJI: &str = "<:twitter:1476642012072920355>";
 const DEFAULT_INSTAGRAM_EMOJI: &str = "<:instagram:1558099674731122758>";
+const DEFAULT_REDDIT_EMOJI: &str = "<:reddit:1558112156195495956>";
 const DEFAULT_QUOTE_EMOJI: &str = "<:qutoe:1553728214998847569>";
 
 // Alanların kabul ettiği emoji adları: `:twitter:` gibi **kimliksiz** yazılmış değerler
@@ -292,6 +295,7 @@ const VIEWS_NAMES: &[&str] = &["metric", "metrics", "view", "views", "analytics"
 const TRANSLATION_NAMES: &[&str] = &["translation", "translate", "globe"];
 const TWITTER_NAMES: &[&str] = &["twitter", "x", "xlogo", "x_logo"];
 const INSTAGRAM_NAMES: &[&str] = &["instagram", "ig", "insta"];
+const REDDIT_NAMES: &[&str] = &["reddit", "rdt", "snoo"];
 const QUOTE_NAMES: &[&str] = &["qutoe", "quote", "quotes"];
 
 impl Default for EmojiSettings {
@@ -306,6 +310,7 @@ impl Default for EmojiSettings {
             translation: DEFAULT_TRANSLATION_EMOJI.to_string(),
             twitter: DEFAULT_TWITTER_EMOJI.to_string(),
             instagram: DEFAULT_INSTAGRAM_EMOJI.to_string(),
+            reddit: DEFAULT_REDDIT_EMOJI.to_string(),
             quote: DEFAULT_QUOTE_EMOJI.to_string(),
         }
     }
@@ -324,6 +329,7 @@ impl EmojiSettings {
             normalize_emoji(&self.translation, DEFAULT_TRANSLATION_EMOJI, TRANSLATION_NAMES);
         self.twitter = normalize_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, TWITTER_NAMES);
         self.instagram = normalize_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, INSTAGRAM_NAMES);
+        self.reddit = normalize_emoji(&self.reddit, DEFAULT_REDDIT_EMOJI, REDDIT_NAMES);
         self.quote = normalize_emoji(&self.quote, DEFAULT_QUOTE_EMOJI, QUOTE_NAMES);
     }
 
@@ -361,6 +367,12 @@ impl EmojiSettings {
     /// Instagram göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
     pub fn instagram(&self) -> Option<&str> {
         let resolved = resolve_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, "", INSTAGRAM_NAMES);
+        (!resolved.is_empty()).then_some(resolved)
+    }
+
+    /// Reddit göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
+    pub fn reddit(&self) -> Option<&str> {
+        let resolved = resolve_emoji(&self.reddit, DEFAULT_REDDIT_EMOJI, "", REDDIT_NAMES);
         (!resolved.is_empty()).then_some(resolved)
     }
 
@@ -951,6 +963,110 @@ mod tests {
         assert_eq!(decoded.engine.domains.spotify, "fixspotify.com");
     }
 
+    /// **Geriye dönük uyumluluk (migration gerekmez):** eski `settings.json` düzeni — kaldırılan
+    /// `twitter/instagram/reddit` motor modu ve yedek alan adları ile `emojis.reddit` alanı
+    /// yokken — **hatasız** yüklenir: bilinmeyen anahtarlar yok sayılır, eksik yeni alan
+    /// varsayılanını alır (serde `default` + `deny_unknown_fields` kullanılmıyor).
+    #[test]
+    fn legacy_settings_with_removed_engine_keys_load_without_migration() {
+        let json = r#"{
+            "modules": { "twitter": true, "reddit": true },
+            "role_filters": {},
+            "ai": { "model": "test/model", "system_prompt": "kişilik" },
+            "engine": {
+                "modes": {
+                    "twitter": "proxy",
+                    "tiktok": "proxy",
+                    "instagram": "proxy",
+                    "reddit": "proxy",
+                    "bluesky": "builtin",
+                    "spotify": "builtin"
+                },
+                "domains": {
+                    "twitter": "vxtwitter.com",
+                    "tiktok": "",
+                    "instagram": "ddinstagram.com",
+                    "reddit": "vxreddit.com",
+                    "bluesky": "",
+                    "spotify": ""
+                },
+                "twitter_source": "syndication",
+                "media_delivery": "direct",
+                "attach_images": true,
+                "attach_videos": true,
+                "max_images": 4,
+                "max_video_mb": 8,
+                "show_metrics": true,
+                "show_timestamp": true,
+                "show_community_note": true,
+                "show_quote": true,
+                "auto_translate": true,
+                "fallback_to_proxy": true,
+                "impersonate_user": true,
+                "impersonate_skip_replies": true,
+                "card_style": "modern",
+                "emojis": {
+                    "verified": "<:verified:1553709836859084841>",
+                    "replies": "",
+                    "reposts": "",
+                    "likes": "",
+                    "views": "",
+                    "translation": "",
+                    "twitter": "",
+                    "instagram": "",
+                    "quote": ""
+                }
+            },
+            "guilds": {
+                "4242": {
+                    "modules": { "twitter": true },
+                    "role_filters": {},
+                    "ai": { "model": "test/model", "system_prompt": "" },
+                    "engine": {
+                        "modes": {
+                            "twitter": "builtin",
+                            "tiktok": "proxy",
+                            "instagram": "proxy",
+                            "reddit": "builtin",
+                            "bluesky": "builtin",
+                            "spotify": "builtin"
+                        },
+                        "domains": {
+                            "twitter": "",
+                            "tiktok": "",
+                            "instagram": "",
+                            "reddit": "",
+                            "bluesky": "",
+                            "spotify": ""
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let settings: AppSettings =
+            serde_json::from_str(json).expect("eski settings.json düzeni hatasız yüklenmeli");
+
+        // Kaldırılan anahtarlar yok sayılır: native-only platformlar daima native.
+        assert_eq!(settings.engine.mode_for("twitter"), ConversionMode::Builtin);
+        assert_eq!(settings.engine.mode_for("instagram"), ConversionMode::Builtin);
+        assert_eq!(settings.engine.mode_for("reddit"), ConversionMode::Builtin);
+        assert!(!settings.engine.allows_proxy_fallback("reddit"));
+        // Proxy kullanılabilen platformlar okunmaya devam eder.
+        assert_eq!(settings.engine.modes.tiktok, ConversionMode::Proxy);
+        assert!(settings.engine.allows_proxy_fallback("tiktok"));
+        assert!(settings.engine.domains.tiktok.is_empty());
+        // Eski dosyada bulunmayan yeni alan varsayılanını alır ve çalışır.
+        assert_eq!(settings.engine.emojis.reddit, DEFAULT_REDDIT_EMOJI);
+        assert_eq!(settings.engine.emojis.reddit(), Some(DEFAULT_REDDIT_EMOJI));
+        // Sunucuya özel eski kayıt da (eksik alanlarıyla) yüklenir.
+        let guild = settings.get_guild_settings(Some(serenity::all::GuildId::new(4242)));
+        assert_eq!(guild.engine.mode_for("reddit"), ConversionMode::Builtin);
+        assert!(!guild.engine.allows_proxy_fallback("reddit"));
+        assert!(guild.engine.allows_proxy_fallback("bluesky"));
+    }
+
+
     #[test]
     fn engine_settings_missing_fields_fall_back_to_defaults() {
         // Native-only platformların (twitter/instagram/reddit) kayıtlı değerleri yok sayılır.
@@ -1099,6 +1215,7 @@ mod tests {
             translation: String::new(),
             twitter: String::new(),
             instagram: String::new(),
+            reddit: String::new(),
             quote: String::new(),
         };
         empty.sanitize();
@@ -1110,6 +1227,7 @@ mod tests {
         assert_eq!(empty.translation(), "🌐");
         assert_eq!(empty.twitter(), None);
         assert_eq!(empty.instagram(), None);
+        assert_eq!(empty.reddit(), None);
         assert_eq!(empty.quote(), "↪");
     }
 
@@ -1125,6 +1243,7 @@ mod tests {
             translation: ":translation:".to_string(),
             twitter: ":twitter:".to_string(),
             instagram: ":instagram:".to_string(),
+            reddit: ":reddit:".to_string(),
             quote: ":qutoe:".to_string(),
         };
         emojis.sanitize();
@@ -1137,9 +1256,11 @@ mod tests {
         assert_eq!(emojis.translation, DEFAULT_TRANSLATION_EMOJI);
         assert_eq!(emojis.twitter, DEFAULT_TWITTER_EMOJI);
         assert_eq!(emojis.instagram, DEFAULT_INSTAGRAM_EMOJI);
+        assert_eq!(emojis.reddit, DEFAULT_REDDIT_EMOJI);
         assert_eq!(emojis.quote, DEFAULT_QUOTE_EMOJI);
         assert_eq!(emojis.twitter(), Some(DEFAULT_TWITTER_EMOJI));
         assert_eq!(emojis.instagram(), Some(DEFAULT_INSTAGRAM_EMOJI));
+        assert_eq!(emojis.reddit(), Some(DEFAULT_REDDIT_EMOJI));
 
         // Kayıt temizlenmeden (sanitize edilmeden) okunsa bile mesajda bozuk emoji çıkmaz
         let raw = EmojiSettings {
@@ -1207,6 +1328,7 @@ mod tests {
             translation: "<:translation:1476614397249061056>".to_string(),
             twitter: " <:twitter:1476642012072920355> ".to_string(),
             instagram: "<:instagram:1558099674731122758>".to_string(),
+            reddit: "<:reddit:1558112156195495956>".to_string(),
             quote: ":qutoe:".to_string(),
         };
         emojis.sanitize();
