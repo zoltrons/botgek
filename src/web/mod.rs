@@ -260,24 +260,48 @@ async fn save_settings(
     // Link dönüştürme motoru: alan adları temizlenir, sayısal aralıklar güvenli sınıra çekilir
     new_settings.engine.sanitize();
 
-    // Sunucuya özel ayarları doğrula ve temizle
+    // Sunucuya özel (sparse) ayarları doğrula ve temizle. Kayıtta **yalnızca sabitlenmiş
+    // bölümler** bulunur; boş kalan kayıt saklanmaz (o sunucu genel ayarları miras alır).
     new_settings.guilds.retain(|gid, _| {
         !gid.is_empty() && gid.len() <= 25 && gid.chars().all(|c| c.is_ascii_digit())
     });
 
     for guild_cfg in new_settings.guilds.values_mut() {
-        sanitize_roles(&mut guild_cfg.role_filters.twitter.roles);
-        sanitize_roles(&mut guild_cfg.role_filters.tiktok.roles);
-        sanitize_roles(&mut guild_cfg.role_filters.instagram.roles);
-        sanitize_roles(&mut guild_cfg.role_filters.reddit.roles);
-        sanitize_roles(&mut guild_cfg.role_filters.bluesky.roles);
-        sanitize_roles(&mut guild_cfg.role_filters.translation.roles);
-        sanitize_roles(&mut guild_cfg.role_filters.ai_chat.roles);
+        if let Some(filters) = guild_cfg.role_filters.as_mut() {
+            // Not: `spotify` de temizlenir (eski kod bu modülü atlıyordu).
+            for roles in [
+                &mut filters.twitter.roles,
+                &mut filters.tiktok.roles,
+                &mut filters.instagram.roles,
+                &mut filters.reddit.roles,
+                &mut filters.bluesky.roles,
+                &mut filters.spotify.roles,
+                &mut filters.translation.roles,
+                &mut filters.ai_chat.roles,
+            ] {
+                sanitize_roles(roles);
+            }
+        }
 
-        safe_truncate_str(&mut guild_cfg.ai.system_prompt, 4000);
-        safe_truncate_str(&mut guild_cfg.ai.model, 128);
+        if let Some(ai) = guild_cfg.ai.as_mut() {
+            safe_truncate_str(&mut ai.system_prompt, 4000);
+            safe_truncate_str(&mut ai.model, 128);
+        }
 
-        guild_cfg.engine.sanitize();
+        if let Some(engine) = guild_cfg.engine.as_mut() {
+            engine.sanitize();
+        }
+    }
+
+    // "Miras" durumundaki (hiçbir bölümü sabitlenmemiş) kayıtlar saklanmaz.
+    new_settings.guilds.retain(|_, over| !over.is_empty());
+
+    // Şema sürümü panelden gelmez; sunucudaki değer **korunur**. Aksi hâlde sürüm 0'a düşer
+    // ve sunucu ayarları göçü her açılışta yeniden çalışarak bilerek sabitlenen bölümleri
+    // sessizce mirasa döndürebilirdi.
+    let stored_schema_version = state.settings.read().await.schema_version;
+    if new_settings.schema_version < stored_schema_version {
+        new_settings.schema_version = stored_schema_version;
     }
 
     if let Err(e) = new_settings.save() {
