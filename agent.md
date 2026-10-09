@@ -43,6 +43,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 18:35] zoltrons — Medyada **tek mod: doğrudan**; medya yöntemi/attach ayarları ve GIF-ffmpeg hattı kaldırıldı
+- **Commit:** `19fbd92`
+- **Yapılan:**
+  1. **Ayarlar kaldırıldı:** `MediaDelivery` enum'ı ile `media_delivery`, `attach_images`, `attach_videos` alanları silindi (settings şeması, `settings.json`, WebUI'daki "Medya yöntemi" seçimi ve iki anahtar, `app.js` varsayılanları/etiketleri).
+  2. **render.rs tek yola indirildi:** hiçbir medya indirilmez — görseller CDN'in hafif varyantıyla, GIF'ler vxTwitter gifconvert bağlantısıyla kartta gösterilir. **Tek istisna** sesi ayrı akışta gelen Reddit videosudur: `VIDEO_MERGE_BUDGET` (5 sn) içinde video+ses birleştirilir, sonuç mesaja ek olarak gönderilir; bütçe dolarsa video kartta uzak bağlantıyla (sessiz) oynar. `MediaPlan.images`, `image_budget`/`gif_budget` ve auto/attach bütçeleri kaldırıldı.
+  3. **Ölü hat temizliği:** GIF yarışı + ffmpeg dönüşümü (`download_gif`, `to_gif`, `convert`, `run_ffmpeg`, `is_animated_image`, `replace_extension`, ilgili sabitler) silindi; `render.rs` testleri yeni davranışa göre yeniden yazıldı (plan/görsel sınırı/GIF/doğrudan mod/kota testleri).
+  4. **194 test geçti** (uyarı yok); test botu yeni sürümle yeniden başlatıldı ve `/api/settings` üzerinden doğrulandı (`media_delivery` alanı artık yok).
+- **Etkilenen:** `src/settings.rs`, `src/converters/builtin/{render,media,mod,twitter,v2}.rs`, `src/web/ui/{index.html,app.js}`, `settings.json`
+
+
 ### [2026-10-09 18:07] zoltrons — Reddit galeri görsellerinin **açıklamaları** karta eklendi (caption hatası)
 - **Commit:** `e0819c3`
 - **Yapılan:**
