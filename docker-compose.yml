@@ -17,6 +17,11 @@ services:
     environment:
       # Kalıcı kayıt veritabanı (kart kayıtları: 🗑️ silme izni + AI koruması)
       - BOTGEK_DB_PATH=/app/data/botgek.db
+      # Instagram oturum çerezi: reel/video mp4'ünün KART İÇİNDE oynaması için gereklidir.
+      # Değer proje kökündeki .env'den (veya kabuk ortamından) interpolasyonla gelir; ayrıca
+      # yukarıdaki `env_file: .env` zaten aktarır. Boş bırakılırsa davranış değişmez
+      # (kart, reelin kapak karesini + "Reel" etiketini gösterir).
+      - INSTAGRAM_SESSIONID=${INSTAGRAM_SESSIONID:-}
     volumes:
       # WebUI üzerinden yapılan ayarların (modüller, roller) kalıcı olması için:
       - ./settings.json:/app/settings.json

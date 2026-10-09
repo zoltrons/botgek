@@ -61,6 +61,7 @@ const ENGINE_DEFAULTS = {
         views: '<:metric:1553712416242798712>',
         translation: '<:translation:1476614397249061056>',
         twitter: '<:twitter:1476642012072920355>',
+        instagram: '<:instagram:1558099674731122758>',
         quote: '<:qutoe:1553728214998847569>'
     }
 };
@@ -74,6 +75,7 @@ const EMOJI_FIELDS = [
     { key: 'views', label: 'görüntülenme' },
     { key: 'translation', label: 'çeviri notu' },
     { key: 'twitter', label: 'X logosu' },
+    { key: 'instagram', label: 'Instagram logosu' },
     { key: 'quote', label: 'alıntı' }
 ];
 

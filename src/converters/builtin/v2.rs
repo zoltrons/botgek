@@ -489,11 +489,16 @@ fn meta_line(card: &V2Card<'_>) -> String {
         });
     }
 
-    // Platform göstergesi: X için özel emoji, diğer platformlarda adı yazılır.
+    // Platform göstergesi: X ve Instagram için özel emoji, diğer platformlarda adı yazılır.
     parts.push(match post.platform {
         Platform::Twitter => card
             .emojis
             .twitter()
+            .map(str::to_string)
+            .unwrap_or_else(|| post.platform.display_name().to_string()),
+        Platform::Instagram => card
+            .emojis
+            .instagram()
             .map(str::to_string)
             .unwrap_or_else(|| post.platform.display_name().to_string()),
         _ => post.platform.display_name().to_string(),
@@ -872,6 +877,7 @@ mod tests {
             views: String::new(),
             translation: String::new(),
             twitter: String::new(),
+            instagram: String::new(),
             quote: String::new(),
         };
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));

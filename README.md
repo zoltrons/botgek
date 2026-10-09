@@ -30,7 +30,7 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
     - `-# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K`
     - `-# <:twitter:...> • <t:...:R> • [Link](gönderi)`
     - Video ve görseller **kartın içinde** oynar/görünür (klasik embed'lerde Discord bot mesajlarında `video` alanını göstermez); sol kenarda renkli çubuk kullanılmaz. Video indirilemediyse galeride **yalnızca video** gösterilir — kapak görseli ayrıca eklenmez (kapak + video yan yana iki öğe olarak çiziliyordu), oynatma bağlantısı kartın son satırında kalır.
-    - Kullanılan emojiler WebUI'dan (`<:ad:id>` biçiminde) değiştirilebilir; **kimlik yazılmayı unutulursa** (`:twitter:` gibi) alan botun kendi emojisine bağlanır, boş bırakılan alan Unicode emojiye düşer — böylece kart hiçbir durumda bozuk emoji göstermez. Discord bileşenleri reddederse otomatik olarak klasik embed'e düşülür.
+    - Kullanılan emojiler WebUI'dan (`<:ad:id>` biçiminde) değiştirilebilir — kartın son satırındaki **X** ve **Instagram** göstergeleri ile metrikler (`comment`/`rt`/`like`/`metric`), çeviri notu ve alıntı işareti bu setten gelir; **kimlik yazılmayı unutulursa** (`:instagram:` gibi) alan botun kendi emojisine bağlanır, boş bırakılan alan Unicode emojiye düşer — böylece kart hiçbir durumda bozuk emoji göstermez. Discord bileşenleri reddederse otomatik olarak klasik embed'e düşülür.
   - 💬 **Yanıt desteği:** Kullanıcı linki bir mesaja **yanıt olarak** attıysa bot da **aynı mesaja yanıt verir** (proxy motoruyla aynı davranış). Discord webhook mesajları yanıt olamadığı için taklit açıkken bile yanıtlarda mesaj **bot adına** gönderilir (WebUI: *“Yanıtlarda yanıtı koru”*; kapatılırsa taklit korunur, yanıt bağlantısı düşer).
   - 🧹 **Zamanlı silme (hayalet mesaj yok):** `DELETE_ORIGINAL` açıkken orijinal mesaj **kart gönderildikten sonra**, arka planda silinir. Silme, mesaj en az **~1,2 sn** yaşına gelene kadar ertelenir; bu, gönderenin istemcisinin optimistic (`nonce`'lu) mesajını sunucu kopyasıyla eşleştirmesine zaman tanır ve mesajın **yalnızca gönderenin ekranında "hayalet" olarak kalmasını** (Discord istemci desync — discord-api-docs #850) engeller. Dönüşüm genelde zaten >1 sn sürdüğü için pratikte ek gecikme hissedilmez.
   - 🎭 **Kullanıcıyı taklit etme (webhook):** Mesaj, paylaşan kullanıcının **adı ve avatarıyla** gönderilir (`Manage Webhooks` izni gerekir). Böylece `<@kullanıcı>` etiketi ve `<link>` sarma hilesi gibi workaround'lara ihtiyaç kalmaz; mesaj sanki kullanıcı linki kendisi paylaşmış gibi görünür. Webhook kullanılamıyorsa (veya yanıt olarak atılan linklerde) mesaj bot adına gönderilir. **Alt başlıklar ve forum gönderileri de desteklenir:** Discord alt başlık kanallarında webhook oluşturmayı desteklemediği için webhook **üst kanalda** (metin/duyuru/forum) tutulur ve mesaj `thread_id` ile alt başlığa gönderilir (forum gönderileri de Discord'da birer alt başlıktır).
@@ -165,6 +165,12 @@ nano .env
 # Docker Compose ile arka planda başlatın
 docker compose up -d --build
 ```
+
+> **Ortam değişkenleri:** `.env` içindeki tüm değerler (`docker-compose.yml` → `env_file`) container'a aktarılır.
+> Instagram reellerinin **kartın içinde oynaması** için `.env` dosyasına `INSTAGRAM_SESSIONID=<çerez>` satırını
+> eklemeniz yeterlidir (bkz. yukarıdaki *Instagram native kart* notu); değer gizli tutulur —
+> `settings.json`'a veya WebUI'a yazılmaz. Değeri doğrudan compose dosyasında/kabuk ortamında vermek
+> isterseniz `docker-compose.yml` içindeki `INSTAGRAM_SESSIONID=${INSTAGRAM_SESSIONID:-}` satırı bunu destekler.
 
 ---
 

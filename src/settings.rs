@@ -261,8 +261,10 @@ pub struct EmojiSettings {
     pub views: String,
     /// Çeviri notunun başındaki işaret (`de → tr`).
     pub translation: String,
-    /// Platform göstergesi — X/Twitter için kullanılır (diğer platformlarda adı yazılır).
+    /// X/Twitter göstergesi (kartın son satırında).
     pub twitter: String,
+    /// Instagram göstergesi (kartın son satırında).
+    pub instagram: String,
     /// Alıntılanan gönderi işareti (alıntı başlığı ve alıntı sayısı).
     pub quote: String,
 }
@@ -275,6 +277,7 @@ const DEFAULT_LIKES_EMOJI: &str = "<:like:1553712395057365102>";
 const DEFAULT_VIEWS_EMOJI: &str = "<:metric:1553712416242798712>";
 const DEFAULT_TRANSLATION_EMOJI: &str = "<:translation:1476614397249061056>";
 const DEFAULT_TWITTER_EMOJI: &str = "<:twitter:1476642012072920355>";
+const DEFAULT_INSTAGRAM_EMOJI: &str = "<:instagram:1558099674731122758>";
 const DEFAULT_QUOTE_EMOJI: &str = "<:qutoe:1553728214998847569>";
 
 // Alanların kabul ettiği emoji adları: `:twitter:` gibi **kimliksiz** yazılmış değerler
@@ -286,6 +289,7 @@ const LIKES_NAMES: &[&str] = &["like", "likes", "heart", "favorite"];
 const VIEWS_NAMES: &[&str] = &["metric", "metrics", "view", "views", "analytics"];
 const TRANSLATION_NAMES: &[&str] = &["translation", "translate", "globe"];
 const TWITTER_NAMES: &[&str] = &["twitter", "x", "xlogo", "x_logo"];
+const INSTAGRAM_NAMES: &[&str] = &["instagram", "ig", "insta"];
 const QUOTE_NAMES: &[&str] = &["qutoe", "quote", "quotes"];
 
 impl Default for EmojiSettings {
@@ -299,6 +303,7 @@ impl Default for EmojiSettings {
             views: DEFAULT_VIEWS_EMOJI.to_string(),
             translation: DEFAULT_TRANSLATION_EMOJI.to_string(),
             twitter: DEFAULT_TWITTER_EMOJI.to_string(),
+            instagram: DEFAULT_INSTAGRAM_EMOJI.to_string(),
             quote: DEFAULT_QUOTE_EMOJI.to_string(),
         }
     }
@@ -316,6 +321,7 @@ impl EmojiSettings {
         self.translation =
             normalize_emoji(&self.translation, DEFAULT_TRANSLATION_EMOJI, TRANSLATION_NAMES);
         self.twitter = normalize_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, TWITTER_NAMES);
+        self.instagram = normalize_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, INSTAGRAM_NAMES);
         self.quote = normalize_emoji(&self.quote, DEFAULT_QUOTE_EMOJI, QUOTE_NAMES);
     }
 
@@ -347,6 +353,12 @@ impl EmojiSettings {
     /// X/Twitter göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
     pub fn twitter(&self) -> Option<&str> {
         let resolved = resolve_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, "", TWITTER_NAMES);
+        (!resolved.is_empty()).then_some(resolved)
+    }
+
+    /// Instagram göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
+    pub fn instagram(&self) -> Option<&str> {
+        let resolved = resolve_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, "", INSTAGRAM_NAMES);
         (!resolved.is_empty()).then_some(resolved)
     }
 
@@ -1069,6 +1081,7 @@ mod tests {
             views: String::new(),
             translation: String::new(),
             twitter: String::new(),
+            instagram: String::new(),
             quote: String::new(),
         };
         empty.sanitize();
@@ -1079,6 +1092,7 @@ mod tests {
         assert_eq!(empty.views(), "👁️");
         assert_eq!(empty.translation(), "🌐");
         assert_eq!(empty.twitter(), None);
+        assert_eq!(empty.instagram(), None);
         assert_eq!(empty.quote(), "↪");
     }
 
@@ -1093,6 +1107,7 @@ mod tests {
             views: ":metric:".to_string(),
             translation: ":translation:".to_string(),
             twitter: ":twitter:".to_string(),
+            instagram: ":instagram:".to_string(),
             quote: ":qutoe:".to_string(),
         };
         emojis.sanitize();
@@ -1104,8 +1119,10 @@ mod tests {
         assert_eq!(emojis.views, DEFAULT_VIEWS_EMOJI);
         assert_eq!(emojis.translation, DEFAULT_TRANSLATION_EMOJI);
         assert_eq!(emojis.twitter, DEFAULT_TWITTER_EMOJI);
+        assert_eq!(emojis.instagram, DEFAULT_INSTAGRAM_EMOJI);
         assert_eq!(emojis.quote, DEFAULT_QUOTE_EMOJI);
         assert_eq!(emojis.twitter(), Some(DEFAULT_TWITTER_EMOJI));
+        assert_eq!(emojis.instagram(), Some(DEFAULT_INSTAGRAM_EMOJI));
 
         // Kayıt temizlenmeden (sanitize edilmeden) okunsa bile mesajda bozuk emoji çıkmaz
         let raw = EmojiSettings {
@@ -1172,6 +1189,7 @@ mod tests {
             views: "bu bir emoji değil".to_string(),
             translation: "<:translation:1476614397249061056>".to_string(),
             twitter: " <:twitter:1476642012072920355> ".to_string(),
+            instagram: "<:instagram:1558099674731122758>".to_string(),
             quote: ":qutoe:".to_string(),
         };
         emojis.sanitize();
