@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 18:45] zoltrons — "Gönderen: @kullanıcı" etiketi kartın **meta satırına** taşındı
+- **Commit:** `cd4929a`
+- **Yapılan:**
+  1. **Sorun:** Kullanıcı bir karta yanıt verdiğinde taklit (webhook) yapılamadığı için kart bot adına gidiyordu ve paylaşanı göstermek için kartın **üstünde** ayrı bir `<@id>` metin bileşeni ekleniyordu.
+  2. **Değişiklik:** Üstteki etiket bileşeni kaldırıldı; paylaşan artık kartın **sağ altında**, platform emojisi/tarih/link ile **aynı meta satırında** `Gönderen: <@kullanıcı>` olarak görünüyor. `card_allowed_mentions` sayesinde etiket **ping atmaz**, düz `@kullanıcı` olarak görünür. Taklit (webhook) açıkken etiket hiç eklenmez.
+  3. **Test:** `sender_tag_is_shown_in_the_meta_line_only_for_bot_messages` — üst satırda yalnızca kullanıcı notu kalır, meta satırı `Gönderen: <@42>` ile biter, platform emojisi ve tarih aynı satırdadır; taklitte etiket yok. **194 test geçti**; test botu yeniden başlatıldı.
+- **Etkilenen:** `src/converters/builtin/v2.rs`
+
+
 ### [2026-10-09 18:35] zoltrons — Medyada **tek mod: doğrudan**; medya yöntemi/attach ayarları ve GIF-ffmpeg hattı kaldırıldı
 - **Commit:** `19fbd92`
 - **Yapılan:**
