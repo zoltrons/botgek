@@ -51,7 +51,7 @@
     "modes": {
       "twitter": "builtin",
       "tiktok": "proxy",
-      "instagram": "proxy",
+      "instagram": "builtin",
       "reddit": "builtin",
       "bluesky": "builtin",
       "spotify": "builtin"

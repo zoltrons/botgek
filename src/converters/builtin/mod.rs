@@ -9,6 +9,7 @@ pub mod bluesky;
 pub mod media;
 pub mod opengraph;
 pub mod cache;
+pub mod instagram;
 pub mod raw;
 pub mod reddit;
 pub mod render;
@@ -316,7 +317,7 @@ pub async fn fetch(
         Platform::Bluesky => bluesky::fetch(client, parsed).await,
         Platform::Reddit => reddit::fetch(client, parsed).await,
         Platform::TikTok => tiktok::fetch(client, parsed).await,
-        Platform::Instagram => opengraph::fetch(client, parsed).await,
+        Platform::Instagram => instagram::fetch(client, parsed).await,
         Platform::Spotify => spotify::fetch(client, parsed).await,
     }?;
 

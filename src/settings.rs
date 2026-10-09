@@ -160,14 +160,14 @@ pub struct PlatformEngineModes {
 }
 
 impl Default for PlatformEngineModes {
-    /// Twitter, Reddit, Bluesky ve Spotify için native embed motoru açıktır (başarısız olursa
-    /// `EngineSettings::fallback_to_proxy` sayesinde eski proxy davranışına düşer).
-    /// TikTok (yalnızca kart) ve Instagram (native API yok) için varsayılan proxy'dir.
+    /// Twitter, Instagram, Reddit, Bluesky ve Spotify için native embed motoru açıktır
+    /// (başarısız olursa `EngineSettings::fallback_to_proxy` sayesinde eski proxy davranışına
+    /// düşer). TikTok (bot yalnızca kart üretir) için varsayılan proxy'dir.
     fn default() -> Self {
         Self {
             twitter: ConversionMode::Builtin,
             tiktok: ConversionMode::Proxy,
-            instagram: ConversionMode::Proxy,
+            instagram: ConversionMode::Builtin,
             reddit: ConversionMode::Builtin,
             bluesky: ConversionMode::Builtin,
             spotify: ConversionMode::Builtin,
@@ -902,13 +902,13 @@ mod tests {
         assert_eq!(serde_json::to_string(&ConversionMode::Builtin).unwrap(), "\"builtin\"");
         assert_eq!(serde_json::to_string(&ConversionMode::Proxy).unwrap(), "\"proxy\"");
 
-        // Varsayılan: twitter/reddit/bluesky builtin, tiktok/instagram proxy
+        // Varsayılan: twitter/instagram/reddit/bluesky/spotify builtin, tiktok proxy
         let cfg = AppSettings::default();
         assert_eq!(cfg.engine.mode_for("twitter"), ConversionMode::Builtin);
         assert_eq!(cfg.engine.mode_for("reddit"), ConversionMode::Builtin);
         assert_eq!(cfg.engine.mode_for("bluesky"), ConversionMode::Builtin);
         assert_eq!(cfg.engine.mode_for("tiktok"), ConversionMode::Proxy);
-        assert_eq!(cfg.engine.mode_for("instagram"), ConversionMode::Proxy);
+        assert_eq!(cfg.engine.mode_for("instagram"), ConversionMode::Builtin);
         assert_eq!(cfg.engine.mode_for("bilinmeyen"), ConversionMode::Proxy);
     }
 
