@@ -151,11 +151,9 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         .into_iter()
         .collect();
 
-    // Kart bot adına gidiyorsa (yanıtta taklit kapalı) üstüne paylaşanın etiketi konur: kimin
-    // attığı görünür, etiket düz `@kullanıcı` olarak durur (bkz. [`V2Card::sender`]).
-    if let Some(sender) = card.sender {
-        top.insert(0, text(format!("<@{sender}>")));
-    }
+    // Gönderen etiketi üstte ayrı bir bileşen olarak **konmaz**: kart bot adına gönderildiğinde
+    // paylaşanın adı en alt satırda `Gönderen: @kullanıcı` olarak görünür (bkz. [`meta_line`]
+    // ve [`V2Card::sender`]).
 
     let accent = card
         .post
@@ -520,6 +518,13 @@ fn meta_line(card: &V2Card<'_>) -> String {
     // Gönderi linki kartın içinde durur.
     let link = format!("[Link]({})", post.url);
     parts.push(spoiler_wrap(&link, hidden(card)));
+
+    // Gönderen: kart bot adına gönderildiğinde (taklit kapalı) linki atan kişi **kartın
+    // sağ altında** düz `@kullanıcı` olarak görünür. Etiket `allowed_mentions` ile
+    // ping atmaz (bkz. `card_allowed_mentions`).
+    if let Some(sender) = card.sender {
+        parts.push(format!("Gönderen: <@{sender}>"));
+    }
 
     // Not: indirilemeyen video için ayrıca "🎬 Videoyu aç" bağlantısı **eklenmez**; video
     // zaten kartın içindeki Media Gallery'de oynar (öğe başına tek gösterim yeterli).
@@ -1445,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn sender_tag_is_shown_above_the_card_only_for_bot_messages() {
+    fn sender_tag_is_shown_in_the_meta_line_only_for_bot_messages() {
         let post = sample_post();
         let options = options();
         let emojis = emojis();
@@ -1457,9 +1462,17 @@ mod tests {
         let payload = build_payload(&bot_card);
         assert_eq!(
             top_level(&payload),
-            vec!["<@42>".to_string(), "selam".to_string()],
-            "etiket kullanıcı notunun üstünde durur"
+            vec!["selam".to_string()],
+            "üstte yalnızca kullanıcı notu durur, etiket üstte gösterilmez"
         );
+        let meta = texts(&payload).pop().unwrap();
+        assert!(
+            meta.trim_end().ends_with("Gönderen: <@42>"),
+            "gönderen etiketi kartın sağ altında (meta satırı sonunda) durmalı: {meta}"
+        );
+        // Platform emojisi ve tarih de aynı satırdadır.
+        assert!(meta.contains("<:twitter:1476642012072920355>"), "platform: {meta}");
+        assert!(meta.contains("<t:1714998896:R>"), "tarih: {meta}");
 
         // Taklit (webhook) açıkken mesaj kullanıcının adıyla gider: etiket eklenmez.
         let identity = Impersonation {
@@ -1469,7 +1482,11 @@ mod tests {
         let mut webhook_card = card(&post, &options, &resolved, &emojis);
         webhook_card.impersonation = Some(&identity);
         let payload = build_payload(&webhook_card);
-        assert!(top_level(&payload).is_empty(), "taklitte etiket olmamalı");
+        assert!(top_level(&payload).is_empty(), "taklitte not/etiket olmamalı");
+        assert!(
+            !texts(&payload).pop().unwrap().contains("Gönderen:"),
+            "taklitte gönderen etiketi eklenmez"
+        );
     }
 
     #[test]
