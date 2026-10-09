@@ -2,7 +2,9 @@
    BOTGEK kontrol paneli · istemci mantığı
 
    Sunucu sözleşmesi (Rust tarafı, src/web/mod.rs):
-     GET  /api/info           → { version, port, env_domains }
+     GET  /api/info           → { version, full_version, display_version, is_release,
+                                  is_dirty, git_sha, git_tag, commits_since_tag,
+                                  build_date, target, port, env_domains }
      GET  /api/settings       → AppSettings (snake_case)
      POST /api/settings       → AppSettings gövdesi
      GET  /api/discord/roles  → [{ guild_id, guild_name, roles[] }]
@@ -106,7 +108,12 @@ const DIFF_LABELS = {
 };
 
 /* ── durum ───────────────────────────────────────────────────────────────── */
-let BOTGEK_INFO = { version: '', port: null, env_domains: {} };
+let BOTGEK_INFO = {
+    version: '', full_version: '', display_version: '',
+    is_release: false, is_dirty: false, git_sha: '', git_tag: null,
+    commits_since_tag: null, build_date: '', target: '',
+    port: null, env_domains: {}
+};
 let appSettings = {
     modules: Object.assign({}, MODULE_DEFAULTS),
     role_filters: {},
@@ -1049,6 +1056,30 @@ function toggleServerCustomSettings() {
 
 /* ══ AĞ ════════════════════════════════════════════════════════════════════ */
 
+/* Sürüm rozetini `/api/info` verisinden doldurur.
+   Yayın sürümünde `v0.2.0`; geliştirme derlemesinde `v0.2.0+5` (etiketten bu yana 5 commit)
+   veya `+dev`; kirli ağaçta `*`. Tam künye (sha, tarih, hedef, etiket) `title` içinde. */
+function updateVersionBadge() {
+    const badge = $('app-version');
+    if (!badge) return;
+    const semver = BOTGEK_INFO.version || '—';
+    const commits = BOTGEK_INFO.commits_since_tag;
+    const release = !!BOTGEK_INFO.is_release;
+    const suffix = release ? '' : (commits ? '+' + commits : '+dev');
+    badge.textContent = 'v' + semver + suffix + (BOTGEK_INFO.is_dirty ? '*' : '');
+    badge.dataset.tone = release ? 'release' : 'dev';
+    badge.title = [
+        BOTGEK_INFO.full_version || 'v' + semver,
+        release ? 'yayın sürümü' : (BOTGEK_INFO.is_dirty ? 'geliştirme · kirli ağaç' : 'geliştirme derlemesi'),
+        'commit ' + (BOTGEK_INFO.git_sha || 'unknown'),
+        BOTGEK_INFO.git_tag
+            ? BOTGEK_INFO.git_tag + (commits ? ' +' + commits + ' commit' : ' (tam isabet)')
+            : 'etiket yok',
+        BOTGEK_INFO.build_date || 'bilinmeyen tarih',
+        BOTGEK_INFO.target || 'bilinmeyen hedef'
+    ].join(' · ');
+}
+
 /* Sürüm, gerçek WebUI portu ve .env kaynaklı yedek alan adları. */
 async function fetchInfo() {
     try {
@@ -1058,7 +1089,7 @@ async function fetchInfo() {
         console.warn('api/info okunamadı', err);
     }
 
-    if ($('app-version') && BOTGEK_INFO.version) $('app-version').textContent = 'v' + BOTGEK_INFO.version;
+    updateVersionBadge();
     if ($('brand-port') && BOTGEK_INFO.port) $('brand-port').textContent = 'webui · port ' + BOTGEK_INFO.port;
     updateDomainPlaceholders();
     updatePlatformHosts();

@@ -23,13 +23,34 @@ pub type SharedSettings = Arc<RwLock<AppSettings>>;
 /// gerçek port/sürüm gösterilir, alan adı kutularının ipucu da gerçek `.env` değerini yazar.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WebInfo {
+    /// Semver taban sürüm (ör. `0.2.0`) — **geriye dönük uyumlu** alan.
     pub version: String,
+    /// `v` önekli tam sürüm (ör. `v0.2.0+5.g8fc2692`) — panel bunu gösterir.
+    pub full_version: String,
+    /// `v` öneksiz tam sürüm (ör. `0.2.0+5.g8fc2692`) — araçlar karşılaştırabilsin.
+    pub display_version: String,
+    /// Tam etiket isabeti + temiz ağaç (yayın sürümü) mı?
+    pub is_release: bool,
+    /// Derleme sırasında çalışma ağacı kirli miydi?
+    pub is_dirty: bool,
+    /// Kısaltılmış commit kimliği (`unknown` olabilir).
+    pub git_sha: String,
+    /// En yakın etiket (etiket yoksa `null`).
+    pub git_tag: Option<String>,
+    /// Etiketten bu yana commit sayısı (etiket yoksa `null`).
+    pub commits_since_tag: Option<u32>,
+    /// Derleme zamanı (UTC, ISO-8601; `SOURCE_DATE_EPOCH` ile tekrarlanabilir).
+    pub build_date: String,
+    /// Derlenen hedef üçlü (ör. `aarch64-unknown-linux-gnu`).
+    pub target: String,
     pub port: u16,
     pub env_domains: std::collections::BTreeMap<String, String>,
 }
 
 impl WebInfo {
     pub fn from_config(config: &Config) -> Self {
+        use crate::version;
+
         let mut env_domains = std::collections::BTreeMap::new();
         for (key, value) in [
             ("tiktok", &config.tiktok_domain),
@@ -40,7 +61,16 @@ impl WebInfo {
         }
 
         Self {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: version::SEMVER.to_string(),
+            full_version: version::FULL.to_string(),
+            display_version: version::DISPLAY.to_string(),
+            is_release: version::IS_RELEASE,
+            is_dirty: version::IS_DIRTY,
+            git_sha: version::GIT_SHA.to_string(),
+            git_tag: version::tag().map(str::to_string),
+            commits_since_tag: version::commits_since_tag(),
+            build_date: version::BUILD_DATE.to_string(),
+            target: version::TARGET.to_string(),
             port: config.web_port,
             env_domains,
         }
@@ -368,7 +398,18 @@ mod tests {
         let info = WebInfo::from_config(&config());
 
         assert_eq!(info.port, 8123);
-        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(info.version, crate::version::SEMVER);
+        // Sürüm alanları derleme zamanında gömülen değerlerle tutarlı olmalı: panel ve
+        // `/api/info` hangi ikilinin çalıştığını kesin olarak gösterebilsin.
+        assert_eq!(info.full_version, crate::version::FULL);
+        assert_eq!(info.display_version, crate::version::DISPLAY);
+        assert_eq!(info.is_release, crate::version::IS_RELEASE);
+        assert_eq!(info.git_sha, crate::version::GIT_SHA);
+        assert_eq!(info.git_tag.as_deref(), crate::version::tag());
+        assert_eq!(info.commits_since_tag, crate::version::commits_since_tag());
+        assert_eq!(info.build_date, crate::version::BUILD_DATE);
+        assert_eq!(info.target, crate::version::TARGET);
+        assert!(info.full_version.starts_with('v'), "panel biçimi: {}", info.full_version);
         assert_eq!(info.env_domains.get("tiktok").map(String::as_str), Some("tnktok.com"));
         assert_eq!(info.env_domains.get("bluesky").map(String::as_str), Some("fxbsky.app"));
         assert_eq!(
@@ -644,7 +685,12 @@ mod tests {
             .await
             .expect("info gövdesi");
         assert_eq!(info["port"], 8123);
-        assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(info["version"], crate::version::SEMVER);
+        assert_eq!(info["full_version"], crate::version::FULL);
+        assert_eq!(info["is_release"], crate::version::IS_RELEASE);
+        assert_eq!(info["git_sha"], crate::version::GIT_SHA);
+        assert_eq!(info["build_date"], crate::version::BUILD_DATE);
+        assert_eq!(info["target"], crate::version::TARGET);
         assert_eq!(info["env_domains"]["tiktok"], "tnktok.com");
 
         // 5) /api/settings eski `role_filter` alanını döndürmez (tek gerçek: role_filters).
