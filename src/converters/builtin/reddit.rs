@@ -357,6 +357,21 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
         .filter(|text| !text.is_empty() && *text != "[removed]" && *text != "[deleted]")
         .map(super::unescape_html)
         .unwrap_or_default();
+    // Galeri görsellerinin kendi açıklamaları (görsel üstüne yazılan metin) karta girer:
+    // galeri bileşeni yalnızca görsel taşıdığı için açıklamalar metne numaralı eklenir.
+    let captions = gallery_captions(content);
+    if captions.iter().any(|caption| !caption.is_empty()) {
+        if !built.text.is_empty() {
+            built.text.push_str("\n\n");
+        }
+        built.text.push_str("**Görsel açıklamaları**");
+        for (index, caption) in captions.iter().enumerate() {
+            if caption.is_empty() {
+                continue;
+            }
+            built.text.push_str(&format!("\n{}. {caption}", index + 1));
+        }
+    }
     built.created_at = content
         .created_utc
         .and_then(|secs| (secs > 0.0).then_some(secs as i64));
@@ -485,6 +500,46 @@ fn preview_dimensions(post: &RedditPost) -> (Option<u32>, Option<u32>) {
         Some(source) => (source.width, source.height),
         None => (None, None),
     }
+}
+
+/// Galeri görsellerinin kendi açıklamalarını **görsel sırasıyla** döner (boşlar `""`).
+///
+/// Reddit'te her galeri görselinin üstüne açıklama yazılabilir (`gallery_data.items[*].caption`
+/// veya `media_metadata[*].caption`). V2 kartın galeri bileşeni yalnızca görsel taşıdığı için
+/// bu açıklamalar gönderi metnine numaralı olarak eklenir; aksi hâlde kartta hiç görünmez.
+fn gallery_captions(post: &RedditPost) -> Vec<String> {
+    let meta = post.media_metadata.as_ref();
+    let items = post.gallery_data.as_ref().and_then(|data| data.items.as_ref());
+
+    // Sıra: `gallery_data.items` (yoksa medya meta anahtarları) — medya listesiyle aynı kural.
+    let order: Vec<String> = items
+        .map(|items| items.iter().filter_map(|item| item.media_id.clone()).collect())
+        .or_else(|| meta.map(|meta| meta.keys().cloned().collect()))
+        .unwrap_or_default();
+
+    order
+        .iter()
+        .enumerate()
+        .map(|(index, media_id)| {
+            // Önce `gallery_data.items[i].caption`, yoksa `media_metadata[id].caption`.
+            let from_item = items
+                .and_then(|items| items.get(index))
+                .and_then(|item| item.caption.as_deref());
+            let from_meta = meta
+                .and_then(|meta| meta.get(media_id))
+                .and_then(|entry| entry.caption.as_deref());
+            clean_caption(from_item.or(from_meta))
+        })
+        .collect()
+}
+
+/// Açıklamayı karta uygun hâle getirir: HTML varlıkları çözülür, boş/boşluk girdi `""` olur.
+fn clean_caption(caption: Option<&str>) -> String {
+    caption
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(super::unescape_html)
+        .unwrap_or_default()
 }
 
 /// Galeri gönderilerinde `media_metadata` + `gallery_data` sıralamasını kullanır.
@@ -630,6 +685,8 @@ struct GalleryData {
 #[serde(default)]
 struct GalleryItem {
     media_id: Option<String>,
+    /// Açıklamanın `gallery_data` tarafında tutulduğu yanıtlar için.
+    caption: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -638,6 +695,8 @@ struct MediaMeta {
     #[serde(rename = "e")]
     e: Option<String>,
     s: Option<MediaMetaSource>,
+    /// Görselin üstüne yazılan açıklama (Reddit galerilerinde bulunur).
+    caption: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -756,6 +815,69 @@ mod tests {
         let urls: Vec<&str> = post.media.iter().map(|m| m.url.as_str()).collect();
         assert_eq!(urls, vec!["https://i.redd.it/b.jpg", "https://i.redd.it/a.jpg"]);
         assert_eq!(post.media[0].width, Some(30));
+    }
+
+    #[test]
+    fn gallery_captions_are_appended_to_the_card_text() {
+        let json = r#"[{ "data": { "children": [{ "data": {
+            "id": "cap1",
+            "title": "Galeri",
+            "author": "foto",
+            "permalink": "/r/pics/comments/cap1/galeri/",
+            "is_gallery": true,
+            "selftext": "Açıklamalı galeri",
+            "gallery_data": { "items": [
+                { "media_id": "b", "caption": "İlk görsel açıklaması" },
+                { "media_id": "a" }
+            ] },
+            "media_metadata": {
+                "a": { "e": "Image", "caption": "İkinci görselin açıklaması", "s": { "u": "https://i.redd.it/a.jpg" } },
+                "b": { "e": "Image", "caption": "Yedek: gallery_data yoksa bu kullanılır", "s": { "u": "https://i.redd.it/b.jpg" } }
+            }
+        }}]}}]"#;
+
+        let post = parse(json);
+
+        // `gallery_data.items[*].caption` önceliklidir; sıra medya sırasıyla aynıdır.
+        assert!(
+            post.text.contains("**Görsel açıklamaları**"),
+            "açıklama başlığı eklenmeli: {}",
+            post.text
+        );
+        assert!(
+            post.text.contains("1. İlk görsel açıklaması"),
+            "1. görselin açıklaması: {}",
+            post.text
+        );
+        assert!(
+            post.text.contains("2. İkinci görselin açıklaması"),
+            "gallery_data'da yoksa media_metadata'dan alınmalı: {}",
+            post.text
+        );
+        assert!(post.text.starts_with("Açıklamalı galeri"), "selftext korunur");
+    }
+
+    #[test]
+    fn gallery_without_captions_keeps_text_clean() {
+        let json = r#"[{ "data": { "children": [{ "data": {
+            "id": "nocap",
+            "title": "Galeri",
+            "author": "foto",
+            "permalink": "/r/pics/comments/nocap/galeri/",
+            "is_gallery": true,
+            "gallery_data": { "items": [ { "media_id": "a" } ] },
+            "media_metadata": {
+                "a": { "e": "Image", "s": { "u": "https://i.redd.it/a.jpg" } }
+            }
+        }}]}}]"#;
+
+        let post = parse(json);
+        assert!(
+            !post.text.contains("Görsel açıklamaları"),
+            "açıklama yoksa ek blok eklenmez: {}",
+            post.text
+        );
+        assert!(post.text.is_empty());
     }
 
     #[test]
