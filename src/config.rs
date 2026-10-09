@@ -11,6 +11,14 @@ pub struct Config {
     pub spotify_domain: String,
     pub delete_original: bool,
     pub openrouter_api_key: Option<String>,
+    /// Reddit OAuth istemci kimliği (`REDDIT_CLIENT_ID`).
+    ///
+    /// Reddit, kimliksiz `.json` isteklerini 403 ile engelliyor. Bot, redlib'in kullandığı
+    /// **`installed_client`** akışıyla (kullanıcı izni gerektirmeyen, public istemci kimliği)
+    /// bearer token alıp `oauth.reddit.com` üzerinden okur. Varsayılan, projede gömülü olan
+    /// public istemci kimliğidir (redlib ile aynı); kendi Reddit uygulamanızın kimliğini
+    /// `.env`'de bu değere yazarak değiştirebilirsiniz. Sır değildir (public kimlik).
+    pub reddit_client_id: String,
     /// Instagram oturum çerezi (`sessionid`), yalnızca `.env`'den okunur.
     ///
     /// Instagram, reel/video mp4'ünü (ve çoklu carousel görsellerini) girişsiz istemcilere
@@ -33,6 +41,7 @@ impl std::fmt::Debug for Config {
             .field("spotify_domain", &self.spotify_domain)
             .field("delete_original", &self.delete_original)
             .field("openrouter_api_key", &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("reddit_client_id", &self.reddit_client_id)
             .field("instagram_sessionid", &self.instagram_sessionid.as_ref().map(|_| "[REDACTED]"))
             .field("web_port", &self.web_port)
             .finish()
@@ -95,6 +104,14 @@ impl Config {
             .ok()
             .filter(|k| !k.trim().is_empty());
 
+        // Reddit, kimliksiz `.json` isteklerini engellediği için `installed_client` OAuth
+        // akışıyla okunur; istemci kimliği public'tir ve `.env`'den değiştirilebilir.
+        let reddit_client_id = env::var("REDDIT_CLIENT_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| crate::converters::builtin::reddit::DEFAULT_CLIENT_ID.to_string());
+
         // Instagram oturum çerezi: yalnızca ortamdan okunur (sır; dosyaya/WebUI'a yazılmaz).
         let instagram_sessionid = env::var("INSTAGRAM_SESSIONID")
             .ok()
@@ -116,6 +133,7 @@ impl Config {
             spotify_domain,
             delete_original,
             openrouter_api_key,
+            reddit_client_id,
             instagram_sessionid,
             web_port,
         })

@@ -1,20 +1,27 @@
 //! Reddit gönderi verisi.
 //!
-//! `www.reddit.com/comments/{id}.json` herkese açık JSON uç noktası kullanılır: gönderi
-//! başlığı, selftext, skor, yorum sayısı, video/galeri medyası ve crosspost verisi içerir.
+//! Veri, Reddit'in **OAuth API'sinden** (`oauth.reddit.com`) çekilir: gönderi başlığı, selftext,
+//! skor, yorum sayısı, video/galeri medyası ve crosspost verisi içerir.
 //!
-//! Veri çekerken **fxreddit (rxddit.com)** ve **redlib** servislerinin kullandığı teknik
-//! izlenir:
-//! 1. İstekler tarayıcıya benzer bir User-Agent ile gönderilir; aksi halde Reddit bot
-//!    isteklerini `403 Forbidden` ile reddeder.
-//! 2. `/r/{sub}/s/{kod}` mobil paylaşım linkleri, yönlendirme izlenerek asıl kalıcı adrese
-//!    (permalink) çözülür; Reddit bu linkleri yalnızca hedefi yönlendirme ile açığa çıkarır,
-//!    doğrudan içerik vermez (fxreddit `Location` başlığını, redlib HEAD isteğini okur).
+//! Reddit, kimliksiz `.json` isteklerini `403` (JS meydan okuması) ile engellediği için
+//! **`installed_client`** OAuth akışı kullanılır: kullanıcı izni/parolası gerekmez, yalnızca
+//! herkese açık istemci kimliği yeterlidir (redlib'in kullandığı yöntem). Token bellekte
+//! önbelleklenir ve süresi dolmadan yenilenir. Kimlik doğrulama başarısız olursa (engellenmemiş
+//! IP'lerde çalışan) kimliksiz `www.reddit.com` yolu denenir; o da olmazsa proxy yedeğine düşülür.
+//!
+//! Video: Reddit'in verdiği mp4 (`fallback_url`, genelde `CMAF_*.mp4`) **video-only**'dir —
+//! Reddit sesi ayrı akışta tutar. Proje **ffmpeg kullanmaz**; bu yüzden video kartta sessiz
+//! oynar, sesli izlemek için gönderi bağlantısı (`[Link]`) Reddit'e gider. `secure_media`
+//! alanı da (bazı gönderilerde medya yalnızca orada) desteklenir.
 
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
+use tokio::sync::Mutex;
+use tracing::debug;
 
 use super::{Author, BuiltinPost, Media, MediaKind, Stats, MAX_BODY_BYTES, REQUEST_TIMEOUT};
 use crate::converters::parser::{ParsedPost, Platform};
@@ -32,10 +39,149 @@ static COMMENTS_ID_REGEX: LazyLock<Regex> =
 static SHORT_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"redd\.it/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
 
-/// Gönderi verisini Reddit'in herkese açık JSON uç noktasından çeker.
-pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let url = resolve_post_json_url(client, &parsed.original_url).await?;
+// =====================================================================================
+// OAUTH (installed_client)
+// =====================================================================================
+
+/// Reddit'in **herkese açık** OAuth istemci kimliği (redlib'in de kullandığı Android uygulama
+/// kimliği). `installed_client` akışı kullanıcı izni/parolası istemez. `.env`'deki
+/// `REDDIT_CLIENT_ID` ile kendi uygulamanızın kimliğiyle değiştirilebilir.
+pub const DEFAULT_CLIENT_ID: &str = "ohXpoqrZYub1kg";
+
+/// Token uç noktası ve OAuth API tabanı.
+const OAUTH_TOKEN_URL: &str = "https://www.reddit.com/api/v1/access_token";
+const OAUTH_API_BASE: &str = "https://oauth.reddit.com";
+/// `installed_client` akışında `device_id` zorunludur; "izleme yok" değeri kabul edilir.
+const OAUTH_DEVICE_ID: &str = "DO_NOT_TRACK_THIS_DEVICE";
+/// Token süresi dolmadan bu kadar önce yenilenir.
+const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(120);
+
+/// Bellekte tutulan OAuth token'ı (süre bitince yenilenir).
+#[derive(Debug, Clone)]
+struct TokenEntry {
+    token: String,
+    expires_at: Instant,
+}
+
+/// Süreç genelinde paylaşılan token önbelleği: her gönderi için yeni token alınmaz.
+static TOKEN: LazyLock<Mutex<Option<TokenEntry>>> = LazyLock::new(|| Mutex::new(None));
+
+/// `Basic` kimlik doğrulaması için minimal base64 kodlayıcı (ek bağımlılık yok).
+fn base64_ascii(input: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0] as u32;
+        let second = chunk.get(1).copied().unwrap_or(0) as u32;
+        let third = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (first << 16) | (second << 8) | third;
+        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((triple >> 6) & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(triple & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// `installed_client` akışıyla bearer token döner (önbellekten tazeyse ağ isteği yapılmaz).
+///
+/// Herhangi bir hata `None` döner; çağıran taraf kimliksiz yola düşer, akış bozulmaz.
+async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
+    {
+        let guard = TOKEN.lock().await;
+        if let Some(entry) = guard.as_ref()
+            && Instant::now() < entry.expires_at
+        {
+            return Some(entry.token.clone());
+        }
+    }
+
+    // Reddit `installed_client` akışında istemci kimliği Basic kullanıcı adı, parola boştur.
+    let credentials = base64_ascii(&format!("{client_id}:"));
+    let body = format!(
+        "grant_type=https%3A%2F%2Foauth.reddit.com%2Fgrants%2Finstalled_client&device_id={OAUTH_DEVICE_ID}"
+    );
+
+    let response = client
+        .post(OAUTH_TOKEN_URL)
+        .header("authorization", format!("Basic {credentials}"))
+        .header("user-agent", REDDIT_USER_AGENT)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "*/*")
+        .timeout(REQUEST_TIMEOUT)
+        .body(body)
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            debug!("Reddit OAuth token isteği reddedildi: {}", response.status());
+            return None;
+        }
+        Err(err) => {
+            debug!("Reddit OAuth token isteği başarısız: {err}");
+            return None;
+        }
+    };
+
+    let json = read_json_response(response, OAUTH_TOKEN_URL).await.ok()?;
+    let token = json.get("access_token")?.as_str()?.to_string();
+    let expires_in = json
+        .get("expires_in")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(3_600);
+    let lifetime = Duration::from_secs(expires_in).saturating_sub(TOKEN_REFRESH_MARGIN);
+
+    let mut guard = TOKEN.lock().await;
+    *guard = Some(TokenEntry {
+        token: token.clone(),
+        expires_at: Instant::now() + lifetime,
+    });
+    debug!("Reddit OAuth token alındı ({} sn geçerli)", lifetime.as_secs());
+
+    Some(token)
+}
+
+/// Gönderi verisini Reddit'ten çeker: önce **OAuth** (`oauth.reddit.com`, bearer token),
+/// olmazsa kimliksiz `www.reddit.com` yolu. İkisi de başarısız olursa hata döner ve (ayar
+/// açıksa) proxy yedeğine düşülür.
+pub async fn fetch(
+    client: &reqwest::Client,
+    parsed: &ParsedPost,
+    client_id: &str,
+) -> Result<BuiltinPost, String> {
+    let id = extract_post_id(client, &parsed.original_url).await?;
+
+    // 1) OAuth: Reddit'in kimliksiz istekleri engellediği (403) durumlarda da çalışır.
+    if let Some(token) = oauth_token(client, client_id).await {
+        let url = format!("{OAUTH_API_BASE}/comments/{id}?raw_json=1&limit=1");
+        match get_json_with_bearer(client, &url, &token).await {
+            Ok(value) => match listings_to_post(value) {
+                Ok(post) => return Ok(post),
+                Err(err) => debug!("Reddit OAuth yanıtı kullanılamadı ({id}): {err}"),
+            },
+            Err(err) => debug!("Reddit OAuth isteği başarısız ({id}): {err}"),
+        }
+    }
+
+    // 2) Kimliksiz yol: engellenmemiş IP'lerde (ör. ev bağlantısı) çalışır.
+    let url = format!("https://www.reddit.com/comments/{id}.json?raw_json=1&limit=1");
     let value = get_reddit_json(client, &url).await?;
+    listings_to_post(value)
+}
+
+/// JSON gönderi listesini karta çevirir (crosspost ise asıl içerik ebeveyn gönderdedir).
+fn listings_to_post(value: serde_json::Value) -> Result<BuiltinPost, String> {
     let listings: Vec<RedditListing> = serde_json::from_value(value)
         .map_err(|e| format!("Reddit yanıtı çözümlenemedi: {e}"))?;
 
@@ -45,7 +191,6 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
         .map(|child| &child.data)
         .ok_or_else(|| "Reddit gönderisi bulunamadı".to_string())?;
 
-    // Crosspost ise asıl içerik ebeveyn gönderide bulunur.
     let content = post
         .crosspost_parent_list
         .as_deref()
@@ -53,17 +198,6 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
         .unwrap_or(post);
 
     Ok(reddit_to_post(post, content))
-}
-
-/// Orijinal linki `www.reddit.com/comments/{id}.json` uç noktasına indirger.
-async fn resolve_post_json_url(
-    client: &reqwest::Client,
-    original_url: &str,
-) -> Result<String, String> {
-    let id = extract_post_id(client, original_url).await?;
-    Ok(format!(
-        "https://www.reddit.com/comments/{id}.json?raw_json=1&limit=1"
-    ))
 }
 
 /// Gönderi kimliğini linkten çıkarır; kimlik adres üzerinde yoksa (mobil paylaşım linki)
@@ -113,8 +247,8 @@ fn post_id_from_url(original_url: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-/// JSON yanıtını çeker; gövde `MAX_BODY_BYTES` ile sınırlıdır. Tarayıcı kılığındaki
-/// User-Agent, Reddit'in bot isteklerine uyguladığı 403 engelinin önüne geçer.
+/// Kimliksiz JSON isteği. Tarayıcı kılığındaki User-Agent, Reddit'in bot isteklerine
+/// uyguladığı 403 engelinin önüne geçmeye çalışır (engellenen IP'lerde OAuth devreye girer).
 async fn get_reddit_json(
     client: &reqwest::Client,
     url: &str,
@@ -134,12 +268,47 @@ async fn get_reddit_json(
             response.status()
         ));
     }
-    if let Some(len) = response.content_length()
-        && len > MAX_BODY_BYTES as u64 {
-            return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
-        }
 
-    let mut response = response;
+    read_json_response(response, url).await
+}
+
+/// OAuth API isteği (`Authorization: bearer`).
+async fn get_json_with_bearer(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+) -> Result<serde_json::Value, String> {
+    let response = client
+        .get(url)
+        .header("authorization", format!("bearer {token}"))
+        .header("user-agent", REDDIT_USER_AGENT)
+        .header("accept", "application/json")
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("OAuth isteği başarısız ({url}): {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Beklenmeyen durum kodu ({url}): {}",
+            response.status()
+        ));
+    }
+
+    read_json_response(response, url).await
+}
+
+/// Yanıt gövdesini `MAX_BODY_BYTES` sınırıyla okuyup JSON'a çevirir.
+async fn read_json_response(
+    mut response: reqwest::Response,
+    url: &str,
+) -> Result<serde_json::Value, String> {
+    if let Some(len) = response.content_length()
+        && len > MAX_BODY_BYTES as u64
+    {
+        return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
+    }
+
     let mut body: Vec<u8> = Vec::new();
     while let Some(chunk) = response
         .chunk()
@@ -234,7 +403,14 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
                 return gallery;
             }
 
-    if let Some(video) = post.media.as_ref().and_then(|media| media.reddit_video.as_ref())
+    // Gönderinin videosu `media` **veya** `secure_media` altında olabilir (fxreddit de ikisini
+    // okur; bazı gönderilerde medya yalnızca `secure_media` içinde bulunur).
+    let reddit_video = post
+        .media
+        .as_ref()
+        .or(post.secure_media.as_ref())
+        .and_then(|media| media.reddit_video.as_ref());
+    if let Some(video) = reddit_video
         && let Some(url) = video.fallback_url.as_deref() {
             return vec![Media {
                 kind: MediaKind::Video,
@@ -400,6 +576,8 @@ struct RedditPost {
     gallery_data: Option<GalleryData>,
     media_metadata: Option<HashMap<String, MediaMeta>>,
     media: Option<RedditMedia>,
+    /// Bazı gönderilerde video yalnızca burada bulunur (fxreddit de bunu okur).
+    secure_media: Option<RedditMedia>,
     preview: Option<RedditPreview>,
     crosspost_parent_list: Option<Vec<RedditPost>>,
 }
@@ -414,6 +592,9 @@ struct RedditMedia {
 #[serde(default)]
 struct RedditVideo {
     fallback_url: Option<String>,
+    /// Reddit sesi ayrı akışta tutar; `false` ise video zaten sessizdir (GIF benzeri).
+    has_audio: Option<bool>,
+    is_gif: Option<bool>,
     width: Option<u32>,
     height: Option<u32>,
     duration: Option<u64>,
@@ -639,6 +820,110 @@ mod tests {
         assert_eq!(
             post_id_from_url("https://www.reddit.com/r/MutfakDertlileri/s/9spRJSE8Ar"),
             None
+        );
+    }
+
+    #[test]
+    fn base64_matches_known_vectors() {
+        // Bu değer gerçek OAuth isteğinde kullanıldı ve curl ile doğrulandı.
+        assert_eq!(base64_ascii("ohXpoqrZYub1kg:"), "b2hYcG9xclpZdWIxa2c6");
+        assert_eq!(base64_ascii("a"), "YQ==");
+        assert_eq!(base64_ascii("ab"), "YWI=");
+        assert_eq!(base64_ascii("abc"), "YWJj");
+        assert_eq!(base64_ascii(""), "");
+    }
+
+    #[test]
+    fn secure_media_video_is_used_when_media_is_missing() {
+        // Bazı gönderilerde `media` boş gelir; video yalnızca `secure_media` altındadır
+        // (fxreddit de bu yüzden iki alanı birlikte okur).
+        let json = r#"[{
+            "kind": "Listing",
+            "data": { "children": [{ "kind": "t3", "data": {
+                "id": "sec123",
+                "title": "Sadece secure_media iceren gonderi",
+                "author": "biri",
+                "subreddit_name_prefixed": "r/Deneme",
+                "permalink": "/r/Deneme/comments/sec123/baslik/",
+                "score": 12,
+                "num_comments": 3,
+                "created_utc": 1700000000.0,
+                "post_hint": "hosted:video",
+                "is_video": true,
+                "secure_media": { "reddit_video": {
+                    "fallback_url": "https://v.redd.it/secvid/CMAF_720.mp4?source=fallback",
+                    "width": 720,
+                    "height": 1280,
+                    "duration": 30,
+                    "has_audio": true,
+                    "is_gif": false
+                } },
+                "preview": { "images": [{ "source": { "url": "https://preview.redd.it/sec.jpg" } }] }
+            }}]}}
+        ]"#;
+
+        let post = parse(json);
+        assert_eq!(post.media.len(), 1);
+        assert_eq!(post.media[0].kind, MediaKind::Video);
+        assert_eq!(
+            post.media[0].url,
+            "https://v.redd.it/secvid/CMAF_720.mp4?source=fallback"
+        );
+        assert_eq!(
+            post.media[0].poster.as_deref(),
+            Some("https://preview.redd.it/sec.jpg")
+        );
+        assert_eq!(post.media[0].duration, Some(30));
+        assert_eq!(post.media[0].width, Some(720));
+        assert_eq!(post.media[0].height, Some(1280));
+    }
+
+    /// Canlı test: `installed_client` OAuth akışı Reddit API'sinden veri getirmeli.
+    ///
+    /// Reddit kimliksiz `.json` isteklerini `403` ile engellediği (JS meydan okuması) için
+    /// bu akış native motorun çalışması adına zorunludur.
+    #[tokio::test]
+    async fn live_oauth_fetch_returns_post() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .unwrap();
+
+        let token = oauth_token(&client, DEFAULT_CLIENT_ID)
+            .await
+            .expect("installed_client token alınmalı");
+        assert!(!token.is_empty());
+
+        // Gönderi kimliği canlı listeden alınır: test silinmiş gönderilere bağlı kalmaz.
+        let listing = get_json_with_bearer(
+            &client,
+            "https://oauth.reddit.com/r/videos/hot?limit=5&raw_json=1",
+            &token,
+        )
+        .await
+        .expect("liste isteği başarılı olmalı");
+        let id = listing["data"]["children"]
+            .as_array()
+            .and_then(|children| children.first())
+            .and_then(|child| child["data"]["id"].as_str())
+            .expect("liste gönderi kimliği içermeli")
+            .to_string();
+
+        let parsed = ParsedPost {
+            platform: Platform::Reddit,
+            is_spoiler: false,
+            user_comment: None,
+            original_url: format!("https://www.reddit.com/comments/{id}"),
+            fixed_url: format!("https://vxreddit.com/comments/{id}"),
+        };
+        let post = fetch(&client, &parsed, DEFAULT_CLIENT_ID)
+            .await
+            .expect("Reddit gönderisi çekilmeli");
+
+        assert!(
+            post.title.as_deref().is_some_and(|title| !title.trim().is_empty()),
+            "başlık gelmeli: {:?}",
+            post.title
         );
     }
 }
