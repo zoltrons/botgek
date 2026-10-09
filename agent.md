@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 16:12] zoltrons — Instagram: oturum çereziyle reel/video **mp4** (kart içinde oynar) + carousel + kesin metrikler
+- **Commit:** `1d3329e`
+- **Yapılan:**
+  1. **Araştırma:** Instagram reel/video akışını (mp4) girişsiz istemcilere **vermiyor** — embed sayfasının `contextJSON` alanı `null`, `/api/v1/media/{pk}/info/` giriş sayfasına **302**, `POST /api/graphql` HTML/`ssr_disabled_reason: fail_ssr_disabled`, `?__a=1` → **404**. `seirenkr/OGInstagram` kodu incelendi: aynı veriyi **proxy oturum havuzu** (`fetchViaProxy`) üzerinden alıyor; yt-dlp ise `curl_cffi` **TLS parmak izi taklidi** + çerez kullanıyor. Yani Rust/reqwest için tek pratik yol kimlikli oturum veya proxy.
+  2. `.env`'de `INSTAGRAM_SESSIONID` tanımlıysa bot gönderiyi Instagram **uygulama API'sinden** (`/api/v1/media/{pk}/info/`, iOS app-id + mobil UA + çerez; iki uç ve iki çerez biçimi denenir) **paralel** çeker: **reel/video kartın içinde oynar**, carousel'in **tüm** görselleri galeriye girer, metrikler (beğeni/yorum/**görüntülenme**) ile görünen ad/doğrulama kesinleşir. Çerez yoksa veya süresi dolmuşsa davranış değişmez (kapak karesi + `Reel` etiketi) — akış hiçbir durumda bozulmaz.
+  3. Kısa kod → medya kimliği (pk) dönüşümü gerçek Instagram `data-media-id` değerleriyle birebir doğrulandı; çerez **sır** olarak yalnızca `.env`'den okunur (`Config::Debug` redakte eder, `settings.json`/WebUI'a yazılmaz). **204 test** geçiyor (yeni: pk dönüşümü, oturum JSON ayrıştırma + carousel, video yerleştirme, geçersiz çerez ve geçerli çerez canlı testleri).
+  4. **Canlı Discord doğrulaması:** reel kartı API'den okundu — galeri öğesi `type=video/mp4, 720x1280` (Instagram CDN mp4), `-# Instagram • Reel • … • [Link]` ve `:metric: 170.4M` görüntülenme ile birlikte. Log: `Instagram oturum verisi alındı … 1 medya, video: true`.
+- **Etkilenen:** `src/converters/builtin/instagram.rs`, `src/converters/builtin/mod.rs`, `src/config.rs`, `src/handler.rs`, `src/settings.rs`, `src/converters/parser.rs`, `src/web/mod.rs`, `.env.example`, `README.md`
 ### [2026-10-09 15:46] zoltrons — Instagram için native (Components V2) kart motoru: SSR embed + OpenGraph
 - **Commit:** `39f24bd`
 - **Yapılan:**
