@@ -501,6 +501,20 @@ mod tests {
         let called = capture(APP_JS, r#"'(/api/[a-z/]*[a-z])'"#);
         assert!(!called.is_empty(), "panel API uçlarını çağırmalı");
         let unrouted: Vec<&String> = called.difference(&routed).collect();
+
+        // 5) **Tek çözümleme kaynağı:** panel, sunucu ayarını bölüm bazlı sparse çözümlemeli
+        //    (Rust `resolve_settings` ile aynı semantik) ve sunucuya yalnızca sabitlenen
+        //    bölümleri göndermelidir. Aksi hâlde sunucu kaydı yeniden tam kopyaya dönerdi.
+        for marker in [
+            "function resolveSettings",
+            "function buildGuildsPayload",
+            "function resetBlockToGlobal",
+        ] {
+            assert!(
+                APP_JS.contains(marker),
+                "panelde bölüm bazlı sparse çözümleme izi bulunamadı: {marker}"
+            );
+        }
         assert!(unrouted.is_empty(), "rotası olmayan API yolları: {unrouted:?}");
     }
 

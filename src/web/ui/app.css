@@ -320,6 +320,8 @@ body {
     border: 1px dashed var(--rule-strong);
     white-space: nowrap;
 }
+/* Bölüm başlığında kapsam: sunucu kapsamında "miras/özel" rozeti + "genele sıfırla". */
+.sheet-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ── 01 · modül listesi ──────────────────────────────────────────────────── */
 .mod-list { border: 1px solid var(--rule); background: var(--paper-2); }
@@ -630,6 +632,7 @@ body {
     /* Dar ekranda kaydetme işi alt çubuktadır; künyedeki düğmeler tekrar olurdu. */
     .rail-block--actions .btn-row { display: none; }
     .sheet-head { grid-template-columns: 46px minmax(0, 1fr); gap: 14px; }
+    .sheet-scope { grid-column: 2; justify-self: start; justify-content: flex-start; }
     .sheet-meta { grid-column: 2; justify-self: start; }
     .sheet-num { font-size: 30px; }
     .studio { grid-template-columns: minmax(0, 1fr); }

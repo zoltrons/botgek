@@ -90,7 +90,11 @@
             <h2 class="sheet-h" id="h-modules">Modüller</h2>
             <p class="sheet-lede">Bağlantı dönüştürmeyi platform bazında açıp kapatın. Kapalı bir modül linke hiç dokunmaz.</p>
         </div>
-        <p class="sheet-meta mono" id="active-modules-count">—</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="active-modules-count">—</p>
+            <span class="chip mono" data-block-badge="modules">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="modules" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <div class="mod-list">
@@ -211,7 +215,11 @@
             <h2 class="sheet-h" id="h-roles">Rol filtresi</h2>
             <p class="sheet-lede">Kara liste: seçili roller modülü kullanamaz. Beyaz liste: yalnızca seçili roller kullanabilir. Filtre yoksa modül herkese açıktır.</p>
         </div>
-        <p class="sheet-meta mono" id="filter-mode-badge">devre dışı</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="filter-mode-badge">devre dışı</p>
+            <span class="chip mono" data-block-badge="role_filters">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="role_filters" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <div class="studio">
@@ -296,7 +304,11 @@
             <h2 class="sheet-h" id="h-ai">AI persona</h2>
             <p class="sheet-lede">Bot etiketlendiğinde ya da mesajına yanıt verildiğinde OpenRouter üzerinden yanıt üretir.</p>
         </div>
-        <p class="sheet-meta mono" id="ai-state">—</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="ai-state">—</p>
+            <span class="chip mono" data-block-badge="ai">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="ai" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <div class="field">
@@ -331,7 +343,11 @@
             <h2 class="sheet-h" id="h-engine">Dönüştürme motoru</h2>
             <p class="sheet-lede">Proxy: link harici önizleme servisine gider, görünümü o servis belirler. Native embed: bot gönderiyi kendisi çözer ve Discord kartını kendisi üretir. <b>Twitter/X, Instagram ve Reddit yalnızca native embed ile çalışır</b> (proxy modu ve proxy yedeği bu platformlarda kaldırılmıştır).</p>
         </div>
-        <p class="sheet-meta mono" id="engine-summary">—</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="engine-summary">—</p>
+            <span class="chip mono" data-block-badge="engine">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="engine" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <p class="micro">motor seçimi</p>

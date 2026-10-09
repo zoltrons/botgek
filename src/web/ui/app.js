@@ -8,9 +8,12 @@
      GET  /api/discord/roles  → [{ guild_id, guild_name, roles[] }]
      GET  /api/health         → "OK"
 
-   Kapsam (scope): 'global' genel varsayılanlardır; bir sunucu kimliği seçilirse
-   o sunucuya özel ayarlar düzenlenir. Sunucu ayarı yokken genel ayarlar miras
-   alınır ve ilk düzenlemede kopyası oluşturulur (eski davranış korunur).
+   Kapsam (scope): 'global' genel varsayılanlardır; bir sunucu kimliği seçilirse o
+   sunucuya özel ayarlar düzenlenir. Sunucu ayarı **bölüm bazlı sparse**'tır: yalnızca
+   kullanıcının o sunucuda bilerek değiştirdiği bölümler (modules / role_filters / ai /
+   engine) saklanır, diğer bölümler genelden miras alır. Etkin ayar `resolveSettings`
+   ile üretilir — Rust tarafındaki `resolve_settings` ile aynı semantik (tek kaynak,
+   kopya mantık yok).
 
    Kural: panelde satır içi olay yöneticisi (onclick=) ve satır içi stil yoktur;
    CSP script-src 'self' bu yüzden gevşetilmedi.
@@ -25,6 +28,11 @@ const MODULE_LABELS = {
     bluesky: 'Bluesky', spotify: 'Spotify', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
 };
 const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
+
+/* Sunucuya özel ayar **bölümleri** (sparse override). Bir bölüm sabitlendiğinde bütün
+   olarak geneli ezer; sabitlenmeyen bölüm genelden miras alır (alan bazlı kısmi miras yok). */
+const BLOCK_KEYS = ['modules', 'role_filters', 'ai', 'engine'];
+const BLOCK_LABELS = { modules: 'Modüller', role_filters: 'Rol filtresi', ai: 'AI persona', engine: 'Dönüştürme motoru' };
 
 /* `nativeOnly: true` platformlar proxy motorunu **hiç** kullanmaz: motor modu ve yedek alan
    adı alanı yoktur (Rust tarafında da proxy modu + proxy yedeği kaldırılmıştır). */
@@ -107,6 +115,10 @@ let appSettings = {
     guilds: {}
 };
 let activeServer = 'global';
+/* İstemci tarafı **sparse ayna**: sunucu kimliği → sabitlenmiş bölümler
+   (`{ engine: true, modules: true }`). Sunucuya gönderilmez; kaydederken
+   `buildGuildsPayload` gövdeyi bu aynadan üretir. */
+let rawOverrides = {};
 let currentModule = 'twitter';
 let rawGuildsList = [];
 let discordRoles = [];
@@ -182,31 +194,79 @@ function getEngineConfig(cfg) {
     return engine;
 }
 
+function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+/* **Tek çözümleme (Rust `resolve_settings` ile aynı semantik):** bölüm override'da varsa
+   onu **bütün olarak**, yoksa geneli alır. AI bloğu istisnası: boş model/kişilik alanları
+   genelden doldurulur (eski davranış korunur). */
+function resolveSettings(global, override) {
+    const over = override || {};
+    const pickBlock = (key) => clone(over[key] !== undefined && over[key] !== null ? over[key] : global[key]);
+    const resolved = {
+        modules: pickBlock('modules'),
+        role_filters: pickBlock('role_filters'),
+        ai: pickBlock('ai'),
+        engine: pickBlock('engine')
+    };
+    if (!resolved.ai.system_prompt || !resolved.ai.system_prompt.trim()) resolved.ai.system_prompt = global.ai.system_prompt;
+    if (!resolved.ai.model || !resolved.ai.model.trim()) resolved.ai.model = global.ai.model;
+    return resolved;
+}
+
+/* Sunucunun **sabitlenmiş bölümleri** (istemci tarafı sparse ayna). Genel kapsamda null. */
+function overrideOf(guildId) {
+    return (guildId !== 'global' && rawOverrides[guildId]) ? rawOverrides[guildId] : null;
+}
+
+/* Kapsamın çalışma kopyası. Genel kapsamda genelin kendisi; sunucu kapsamında
+   genel+override çözümlemesinin **bağımsız** kopyası. Sunucuda kayıt yoksa genel ayarlar
+   mutasyona uğramasın diye kopya açılır (miras görünür, kaydedilene kadar yazılmaz). */
 function getActiveConfig() {
     if (activeServer === 'global') return ensureConfigShape(appSettings);
-    const guild = appSettings.guilds ? appSettings.guilds[activeServer] : null;
-    return ensureConfigShape(guild || appSettings);
-}
-
-function isServerCustomized(guildId) {
-    return !!(appSettings.guilds && appSettings.guilds[guildId]);
-}
-
-/* Sunucuya özel ayarı, genel ayarların kopyasıyla oluşturur (miras → özel). */
-function ensureActiveConfigCustomized() {
-    if (activeServer === 'global') return;
-    ensureConfigShape(appSettings);
     if (!appSettings.guilds) appSettings.guilds = {};
     if (!appSettings.guilds[activeServer]) {
-        appSettings.guilds[activeServer] = {
-            modules: JSON.parse(JSON.stringify(appSettings.modules)),
-            role_filters: JSON.parse(JSON.stringify(appSettings.role_filters)),
-            ai: JSON.parse(JSON.stringify(appSettings.ai)),
-            engine: JSON.parse(JSON.stringify(appSettings.engine))
-        };
-    } else {
-        ensureConfigShape(appSettings.guilds[activeServer]);
+        appSettings.guilds[activeServer] = resolveSettings(ensureConfigShape(appSettings), null);
     }
+    return ensureConfigShape(appSettings.guilds[activeServer]);
+}
+
+/* Bu bölüm o sunucuda **bilerek** değiştirildi mi? */
+function isBlockOverridden(blockKey) {
+    const override = overrideOf(activeServer);
+    return !!(override && override[blockKey]);
+}
+
+/* En az bir bölümü sabitlenmiş sunucu "özel" sayılır (kaydı varsa değil). */
+function isServerCustomized(guildId) {
+    const override = overrideOf(guildId);
+    return !!override && Object.keys(override).length > 0;
+}
+
+/* İlk düzenlemede o bölümü sabitler (miras → özel). Değer çalışma kopyasından okunur ve
+   blok **tam** yazılır (`GuildOverride` sözleşmesi: eksik alt anahtar kod varsayılanına
+   düşer, genelin o anki değerine değil). */
+function ensureBlockOverridden(blockKey) {
+    if (activeServer === 'global') return;
+    getActiveConfig();
+    if (!rawOverrides[activeServer]) rawOverrides[activeServer] = {};
+    if (!rawOverrides[activeServer][blockKey]) rawOverrides[activeServer][blockKey] = true;
+}
+
+/* Bir bölümü genele sıfırlar: değerler genelden tazelenir, sabitleme kaldırılır. */
+function resetBlockToGlobal(blockKey) {
+    if (activeServer === 'global') return;
+    const cfg = getActiveConfig();
+    cfg[blockKey] = clone(ensureConfigShape(appSettings)[blockKey]);
+    if (rawOverrides[activeServer]) {
+        delete rawOverrides[activeServer][blockKey];
+        if (!Object.keys(rawOverrides[activeServer]).length) delete rawOverrides[activeServer];
+    }
+    markDirty();
+    refreshScope();
+    renderUI();
+    showToast(BLOCK_LABELS[blockKey] + ' · genele sıfırlandı');
 }
 
 function getCurFilter() {
@@ -216,19 +276,69 @@ function getCurFilter() {
     return cfg.role_filters[currentModule];
 }
 
-/* Sunucudan gelen gövdeyi (eksik alanlar olabilir) tam şemaya çevirir. */
+/* Sunucudan gelen gövdeyi çalışma modeline çevirir: genel ayarlar tam şemaya,
+   sunucu kayıtları **sparse ayna + çözümlenmiş tam kopya** olarak açılır. */
 function normalizeFromServer(data) {
-    const next = {
+    const global = ensureConfigShape({
         modules: Object.assign({}, MODULE_DEFAULTS, (data && data.modules) || {}),
         role_filters: (data && data.role_filters) || {},
         ai: Object.assign({}, AI_DEFAULTS, (data && data.ai) || {}),
-        engine: (data && data.engine) || {},
-        guilds: (data && data.guilds) || {}
-    };
-    MODULE_KEYS.forEach(m => {
-        if (!next.role_filters[m]) next.role_filters[m] = { mode: 'disabled', roles: [] };
+        engine: (data && data.engine) || {}
     });
-    return ensureConfigShape(next);
+    MODULE_KEYS.forEach(m => {
+        if (!global.role_filters[m]) global.role_filters[m] = { mode: 'disabled', roles: [] };
+    });
+
+    rawOverrides = {};
+    const guilds = {};
+    const rawGuilds = (data && data.guilds) || {};
+    Object.keys(rawGuilds).forEach(guildId => {
+        const sparse = rawGuilds[guildId] || {};
+        const pinned = {};
+        BLOCK_KEYS.forEach(block => {
+            if (sparse[block] !== undefined && sparse[block] !== null) pinned[block] = true;
+        });
+        // Hiçbir bölümü sabitlenmemiş kayıt "miras" sayılır: çalışma kopyası açılmaz.
+        if (!Object.keys(pinned).length) return;
+        rawOverrides[guildId] = pinned;
+        guilds[guildId] = resolveSettings(global, sparse);
+    });
+
+    return {
+        modules: global.modules,
+        role_filters: global.role_filters,
+        ai: global.ai,
+        engine: global.engine,
+        guilds
+    };
+}
+
+/* Sunucu kayıtlarının **sparse** gövdesi: yalnızca sabitlenmiş bölümler yazılır. */
+function buildGuildsPayload() {
+    const out = {};
+    Object.keys(appSettings.guilds || {}).forEach(guildId => {
+        const pinned = rawOverrides[guildId];
+        if (!pinned) return;
+        const full = appSettings.guilds[guildId];
+        const sparse = {};
+        BLOCK_KEYS.forEach(block => {
+            if (pinned[block]) sparse[block] = full[block];
+        });
+        if (Object.keys(sparse).length) out[guildId] = sparse;
+    });
+    return out;
+}
+
+/* Panelin sunucuya göndereceği gövde — kaydedilen tek gerçek; dirty karşılaştırması da
+   bunun üzerinden yapılır (böylece bir bölümü sabitlemek gerçek bir değişiklik sayılır). */
+function buildPayload() {
+    return {
+        modules: appSettings.modules,
+        role_filters: appSettings.role_filters,
+        ai: appSettings.ai,
+        engine: appSettings.engine,
+        guilds: buildGuildsPayload()
+    };
 }
 
 /* ══ DEĞİŞİKLİK TAKİBİ ══════════════════════════════════════════════════════
@@ -251,7 +361,7 @@ function flatten(value, prefix, out) {
 function changedFields() {
     if (!savedSnapshot) return [];
     const before = flatten(JSON.parse(savedSnapshot), '', {});
-    const now = flatten(appSettings, '', {});
+    const now = flatten(buildPayload(), '', {});
     const keys = {};
     Object.keys(before).forEach(k => { keys[k] = true; });
     Object.keys(now).forEach(k => { keys[k] = true; });
@@ -302,12 +412,16 @@ function updateDirtyUI() {
     dock.hidden = !dirty;
 }
 
-function onConfigModified() {
-    markDirty();
-    if (activeServer !== 'global' && !isServerCustomized(activeServer)) {
-        ensureActiveConfigCustomized();
+/* Bir alan değişti: ilgili **bölümü** o sunucuda sabitler (miras → özel), dirty işaretler.
+   `blockKey` çağrı yerinde verilir (her bölüm kendi denetimlerini bildirir). */
+function onConfigModified(blockKey) {
+    if (blockKey && activeServer !== 'global' && !isBlockOverridden(blockKey)) {
+        ensureBlockOverridden(blockKey);
+        // Yalnızca sabitleme anında kapsam göstergeleri tazelenir (her tuş vuruşunda
+        // sunucu listesini yeniden kurmamak için).
         refreshScope();
     }
+    markDirty();
     updateDirtyUI();
 }
 
@@ -565,7 +679,7 @@ function selectStudioModule(key) {
 }
 
 function setModelPreset(model) {
-    onConfigModified();
+    onConfigModified('ai');
     if ($('ai-model-box')) $('ai-model-box').value = model;
     updatePresetChips();
     updateNavCounts();
@@ -623,7 +737,7 @@ function renderRoleChips() {
 }
 
 function toggleRole(roleId) {
-    onConfigModified();
+    onConfigModified('role_filters');
     const roles = getCurFilter().roles;
     const index = roles.indexOf(roleId);
     if (index > -1) roles.splice(index, 1);
@@ -635,7 +749,7 @@ function toggleRole(roleId) {
 }
 
 function removeRole(index) {
-    onConfigModified();
+    onConfigModified('role_filters');
     getCurFilter().roles.splice(index, 1);
     updateModuleBadges();
     updateNavCounts();
@@ -663,7 +777,7 @@ function addRoleFromInput() {
         showToast('eklenecek geçerli rol kimliği bulunamadı', true);
         return;
     }
-    onConfigModified();
+    onConfigModified('role_filters');
     updateModuleBadges();
     updateNavCounts();
     renderRoleChips();
@@ -833,23 +947,48 @@ function updateScopeUI() {
         if (button) button.hidden = true;
         if (notice) notice.hidden = true;
         if (echo) echo.textContent = 'genel varsayılan · tüm sunucular';
+        updateBlockBadges();
         return;
     }
 
-    const customized = isServerCustomized(activeServer);
+    const pinnedCount = Object.keys(overrideOf(activeServer) || {}).length;
+    const customized = pinnedCount > 0;
     if (badge) {
-        badge.textContent = customized ? 'sunucuya özel' : 'miras alıyor';
+        badge.textContent = customized ? pinnedCount + '/' + BLOCK_KEYS.length + ' bölüm özel' : 'miras alıyor';
         badge.dataset.tone = customized ? 'custom' : 'inherit';
     }
     if (button) {
-        button.hidden = false;
-        button.textContent = customized ? 'Varsayılana sıfırla' : 'Bu sunucuya özelleştir';
+        // Bölüm bazlı sıfırlama bölüm başlıklarındaki "genele sıfırla" ile yapılır; bu düğme
+        // yalnızca **tüm** sunucu kaydını silmek için görünür.
+        button.hidden = !customized;
+        button.textContent = 'Varsayılana sıfırla';
     }
     if (notice) notice.hidden = customized;
     if (echo) {
         echo.textContent = (guild ? guild.guild_name : 'sunucu ' + activeServer) +
-            (customized ? ' · özel ayarlar' : ' · genel varsayılanlar');
+            (customized ? ' · ' + pinnedCount + '/' + BLOCK_KEYS.length + ' bölüm özel' : ' · genel varsayılanlar');
     }
+    updateBlockBadges();
+}
+
+/* Bölüm başlıklarındaki "miras / özel" rozeti ve "genele sıfırla" düğmesi.
+   Genel kapsamda bölüm override'ı anlamsızdır; rozet ve düğme gizlenir. */
+function updateBlockBadges() {
+    const guildScope = activeServer !== 'global';
+    qsa('[data-block-badge]').forEach(el => {
+        if (!guildScope) {
+            el.hidden = true;
+            delete el.dataset.tone;
+            return;
+        }
+        const overridden = isBlockOverridden(el.dataset.blockBadge);
+        el.hidden = false;
+        el.textContent = overridden ? 'özel' : 'miras';
+        el.dataset.tone = overridden ? 'custom' : 'inherit';
+    });
+    qsa('[data-block-reset]').forEach(el => {
+        el.hidden = !(guildScope && isBlockOverridden(el.dataset.blockReset));
+    });
 }
 
 function refreshScope() {
@@ -867,28 +1006,21 @@ function onServerChange() {
 }
 
 function toggleServerCustomSettings() {
-    if (activeServer === 'global') return;
-    if (isServerCustomized(activeServer)) {
-        openModal({
-            kicker: 'kapsam',
-            title: 'Sunucu ayarlarını sıfırla',
-            body: 'Bu sunucuya özel ayarlar silinecek ve sunucu genel varsayılanları miras alacak. Kaydettiğinizde kalıcı olur.',
-            confirmLabel: 'Varsayılana sıfırla',
-            onConfirm: () => {
-                delete appSettings.guilds[activeServer];
-                markDirty();
-                refreshScope();
-                renderUI();
-                showToast('sunucu ayarları varsayılana sıfırlandı');
-            }
-        });
-        return;
-    }
-    ensureActiveConfigCustomized();
-    markDirty();
-    refreshScope();
-    renderUI();
-    showToast('bu sunucu için özel ayarlar oluşturuldu');
+    if (activeServer === 'global' || !isServerCustomized(activeServer)) return;
+    openModal({
+        kicker: 'kapsam',
+        title: 'Sunucu ayarlarını sıfırla',
+        body: 'Bu sunucuda sabitlenmiş tüm bölümler silinecek ve sunucu genel varsayılanları miras alacak. Kaydettiğinizde kalıcı olur.',
+        confirmLabel: 'Varsayılana sıfırla',
+        onConfirm: () => {
+            delete appSettings.guilds[activeServer];
+            delete rawOverrides[activeServer];
+            markDirty();
+            refreshScope();
+            renderUI();
+            showToast('sunucu ayarları varsayılana sıfırlandı');
+        }
+    });
 }
 
 /* ══ AĞ ════════════════════════════════════════════════════════════════════ */
@@ -912,7 +1044,7 @@ async function fetchSettings() {
     try {
         const res = await fetch('/api/settings');
         appSettings = normalizeFromServer(await res.json());
-        savedSnapshot = JSON.stringify(appSettings);
+        savedSnapshot = JSON.stringify(buildPayload());
         dirty = false;
         refreshScope();
         renderUI();
@@ -976,10 +1108,10 @@ async function saveSettingsToServer() {
         const res = await fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(appSettings)
+            body: JSON.stringify(buildPayload())
         });
         if (res.ok) {
-            savedSnapshot = JSON.stringify(appSettings);
+            savedSnapshot = JSON.stringify(buildPayload());
             dirty = false;
             updateDirtyUI();
             refreshScope();
@@ -1114,7 +1246,7 @@ function bind() {
         const box = $('mod-' + key);
         if (!box) return;
         box.addEventListener('change', () => {
-            onConfigModified();
+            onConfigModified('modules');
             updateModuleUI();
             updatePlatformHosts();
         });
@@ -1130,12 +1262,12 @@ function bind() {
 
     // AI persona
     if ($('ai-model-box')) $('ai-model-box').addEventListener('input', () => {
-        onConfigModified();
+        onConfigModified('ai');
         updateNavCounts();
         updatePresetChips();
     });
     if ($('ai-prompt-box')) $('ai-prompt-box').addEventListener('input', () => {
-        onConfigModified();
+        onConfigModified('ai');
         updateCharCount();
     });
     qsa('[data-model-preset]').forEach(button => button.addEventListener('click', () => setModelPreset(button.dataset.modelPreset)));
@@ -1143,28 +1275,28 @@ function bind() {
     // Motor
     ENGINE_PLATFORMS.forEach(platform => {
         qsa('input[name="engine-mode-' + platform.key + '"]').forEach(radio => radio.addEventListener('change', () => {
-            onConfigModified();
+            onConfigModified('engine');
             updateEngineNote(platform.key);
             updateEngineSummary();
             updatePlatformHosts();
         }));
         const domain = document.querySelector('[data-domain-key="' + platform.key + '"]');
         if (domain) domain.addEventListener('input', () => {
-            onConfigModified();
+            onConfigModified('engine');
             updatePlatformHosts();
         });
     });
     qsa('[data-engine-switch]').forEach(el => el.addEventListener('change', () => {
-        onConfigModified();
+        onConfigModified('engine');
         updateEngineSummary();
     }));
     qsa('[data-engine-range]').forEach(el => el.addEventListener('input', () => {
-        onConfigModified();
+        onConfigModified('engine');
         updateEngineSummary();
     }));
-    qsa('[data-emoji-key]').forEach(el => el.addEventListener('input', onConfigModified));
+    qsa('[data-emoji-key]').forEach(el => el.addEventListener('input', () => onConfigModified('engine')));
     if ($('engine-twitter-source')) $('engine-twitter-source').addEventListener('change', () => {
-        onConfigModified();
+        onConfigModified('engine');
         updateEngineSummary();
     });
 
@@ -1174,7 +1306,7 @@ function bind() {
     qsa('[data-studio-module]').forEach(button => button.addEventListener('click', () => selectStudioModule(button.dataset.studioModule)));
 
     qsa('input[name="filter-mode"]').forEach(radio => radio.addEventListener('change', () => {
-        onConfigModified();
+        onConfigModified('role_filters');
         const filter = getCurFilter();
         filter.mode = radio.value;
         updateFilterModeUI(radio.value);
@@ -1201,6 +1333,9 @@ function bind() {
     // Kapsam
     if ($('server-select')) $('server-select').addEventListener('change', onServerChange);
     if ($('btn-toggle-custom')) $('btn-toggle-custom').addEventListener('click', toggleServerCustomSettings);
+
+    // Bölüm bazlı "genele sıfırla" (yalnızca sunucu kapsamında, sabitlenmiş bölümde görünür)
+    qsa('[data-block-reset]').forEach(button => button.addEventListener('click', () => resetBlockToGlobal(button.dataset.blockReset)));
 
     // Kaydet / geri yükle / vazgeç
     ['btn-save', 'btn-save-dock'].forEach(id => {
