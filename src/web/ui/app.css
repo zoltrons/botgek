@@ -98,8 +98,8 @@ body {
 .micro {
     font-family: var(--font-mono);
     font-size: 10px;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
+    /* Sentence case: büyük harf dönüşümü kaldırıldı, aralık buna göre daraltıldı. */
+    letter-spacing: 0.06em;
     color: var(--ink-faint);
 }
 
@@ -167,8 +167,7 @@ body {
     align-items: center;
     font-family: var(--font-mono);
     font-size: 9.5px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    letter-spacing: 0.04em;
     padding: 3px 7px;
     border: 1px solid var(--rule);
     color: var(--ink-dim);
@@ -289,7 +288,7 @@ body {
     border-top: 1px solid var(--rule);
     border-bottom: 1px solid var(--rule);
 }
-.telemetry .mono { text-transform: uppercase; letter-spacing: 0.06em; }
+.telemetry .mono { letter-spacing: 0.03em; }
 
 /* ── ray: bölüm indeksi (kaydırma konumunu izler) ────────────────────────── */
 .rail-nav { display: flex; flex-direction: column; gap: 1px; }
@@ -316,7 +315,7 @@ body {
 .rail-block { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--rule); }
 .rail-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-.dirty-line { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-dim); }
+.dirty-line { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.03em; color: var(--ink-dim); }
 #dirty-indicator.is-dirty { color: var(--signal); }
 
 /* ── bölüm (sheet) çerçevesi ─────────────────────────────────────────────── */
@@ -341,8 +340,7 @@ body {
     align-self: start;
     padding: 5px 9px;
     font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--ink-dim);
     border: 1px dashed var(--rule-strong);
     white-space: nowrap;
@@ -367,7 +365,7 @@ body {
 .mod-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mod-name { font-size: 13.5px; font-weight: 600; }
 .mod-host { font-size: 10.5px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mod-state { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); }
+.mod-state { font-size: 10px; letter-spacing: 0.04em; color: var(--ink-faint); }
 .mod-state.is-on { color: var(--live); }
 .mod-jump { justify-self: end; }
 
@@ -403,7 +401,7 @@ body {
 .studio-item:hover { background: var(--paper-3); color: var(--ink); }
 .studio-item.is-active { background: var(--paper-3); color: var(--ink); box-shadow: inset 3px 0 0 var(--signal); }
 .studio-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.studio-badge { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 5px; color: var(--ink-faint); border: 1px solid var(--rule); }
+.studio-badge { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.03em; padding: 2px 5px; color: var(--ink-faint); border: 1px solid var(--rule); }
 .studio-badge[data-tone="blacklist"] { color: var(--alert); border-color: var(--alert-dim); }
 .studio-badge[data-tone="allowlist"] { color: var(--live); border-color: var(--live-dim); }
 .studio-panel { display: flex; flex-direction: column; gap: 9px; min-width: 0; padding: 16px 18px 20px; }
@@ -417,8 +415,7 @@ body {
     padding: 6px 11px;
     font-family: var(--font-mono);
     font-size: 10.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    letter-spacing: 0.03em;
     color: var(--ink-dim);
     transition: background 0.15s, color 0.15s;
 }
@@ -473,7 +470,7 @@ body {
 /* ── alanlar: girdi, seçim, metin alanı, kaydırıcı ──────────────────────── */
 .field { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; }
 .field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.field-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); }
+.field-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; color: var(--ink-faint); }
 
 .input, .select, .textarea {
     width: 100%;
@@ -527,12 +524,12 @@ body {
 .engine-table { margin-top: 10px; background: var(--paper-2); border: 1px solid var(--rule); }
 .engine-head,
 .engine-row { display: grid; grid-template-columns: minmax(140px, 1fr) 190px minmax(170px, 1fr); gap: 12px; align-items: center; }
-.engine-head { padding: 8px 14px; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); border-bottom: 1px solid var(--rule); }
+.engine-head { padding: 8px 14px; font-size: 9.5px; letter-spacing: 0.05em; color: var(--ink-faint); border-bottom: 1px solid var(--rule); }
 .engine-row { padding: 11px 14px; border-bottom: 1px solid var(--rule); }
 .engine-row:last-child { border-bottom: 0; }
 .engine-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .engine-name { font-size: 13px; font-weight: 600; }
-.engine-note { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); }
+.engine-note { font-size: 9.5px; letter-spacing: 0.05em; color: var(--ink-faint); }
 .engine-note[data-on="true"] { color: var(--live); }
 /* Native-only platformlar (Twitter/X, Instagram, Reddit): proxy modu ve yedek alan adı yoktur. */
 .engine-fixed { grid-column: 2 / -1; margin: 0; font-size: 10.5px; letter-spacing: 0.06em; color: var(--ink-faint); }
@@ -553,18 +550,18 @@ body {
 
 /* ── teknik notlar (katlanır) ───────────────────────────────────────────── */
 .manual { margin-top: 28px; border: 1px dashed var(--rule-strong); }
-.manual-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-dim); cursor: pointer; list-style: none; }
+.manual-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; font-size: 11px; letter-spacing: 0.05em; color: var(--ink-dim); cursor: pointer; list-style: none; }
 .manual-head::-webkit-details-marker { display: none; }
 .manual-head:hover { color: var(--ink); background: var(--paper-2); }
 .manual[open] .manual-head { color: var(--ink); border-bottom: 1px dashed var(--rule-strong); }
 .manual[open] .caret { transform: rotate(180deg); }
 .manual-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
 .manual-item { padding: 14px; border-top: 1px dashed var(--rule); border-right: 1px dashed var(--rule); }
-.manual-item dt { margin-bottom: 5px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--signal); }
+.manual-item dt { margin-bottom: 5px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.05em; color: var(--signal); }
 .manual-item dd { font-size: 12.5px; line-height: 1.55; color: var(--ink-dim); }
 
 /* ── sayfa altı ─────────────────────────────────────────────────────────── */
-.foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding-top: 18px; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); border-top: 1px solid var(--rule); }
+.foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding-top: 18px; font-size: 10px; letter-spacing: 0.04em; color: var(--ink-faint); border-top: 1px solid var(--rule); }
 
 /* ── kaydedilmemiş değişiklik çubuğu ───────────────────────────────────── */
 .dock {
