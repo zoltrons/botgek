@@ -43,6 +43,24 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 17:44] zoltrons — Kart/kullanıcı adı: `_` kaçışı kaldırıldı (görünen ters bölü) + GitHub'a push
+- **Commit:** `0e703ea`
+- **Yapılan:**
+  1. **Kök neden:** `render::escape_markdown` `_` karakterini de kaçırıyordu; Discord (CommonMark) **kelime içi** alt çizgileri vurgu başlatıcı saymadığı için kaçış gereksizdi ve kart kullanıcı adında olmayan bir `\` gösteriyordu (`world\_record\_egg`).
+  2. **Düzeltme:** `_` kaçışı kaldırıldı; biçimi gerçekten bozabilecek yıldız, tilde, ters tırnak, dikey çizgi, büyüktür, köşeli parantez ve ters bölü kaçışları korunuyor. Regresyon testleri: `escape_markdown` (underscore temiz, diğerleri hâlâ kaçırılır) + `underscored_usernames_stay_clean_in_the_author_line` (V2 yazar satırı).
+  3. **217 test geçti**; test botu düzeltmeyle yeniden derlenip başlatıldı ve tüm yerel commit'ler GitHub `zoltrons/botgek` `main` dalına push edildi.
+- **Etkilenen:** `src/converters/builtin/{render,v2}.rs`, `agent.md`
+
+### [2026-10-09 17:41] zoltrons — Reddit: `direct` modda da **sesli video** (kritik hata) + Reddit emojisi + V2 "Videoyu aç" kaldırıldı
+- **Commit:** `af402cc`
+- **Yapılan:**
+  1. **Kritik hata ("ses yok"):** `render::resolve_media` ışık hızı modunda `direct_media(plan)` ile **erken dönüyordu**; `attach_videos`/`video_requires_download` hiç değerlendirilmediği için Reddit videosu indirilmiyor ve kart sessiz kalıyordu (log: "medya 0 ms"). `RenderOptions::skips_all_downloads()` eklendi: yalnızca platform videosu zorunlu olan Reddit video indirme yoluna giriyor, **görseller bağlantı olarak kalıyor**. Yeni canlı test: `direct` modda gerçek `v.redd.it` videosu indirilip sesiyle birleştirildi, ekte `ftyp` + `mp4a` + `soun` doğrulandı.
+  2. **Reddit emojisi:** `EmojiSettings.reddit` (varsayılan `<:reddit:1558112156195495956>`), `reddit()` erişimcisi, `v2::meta_line` Reddit dalı, WebUI "Reddit logosu" kutusu, `app.js` varsayılanları ve kök `settings.json` değeri.
+  3. **"Videoyu aç" kaldırıldı:** V2 kartın son satırından ve klasik mesaj gövdesinden çıkarıldı (video galeride/kart içinde oynar; gönderi bağlantısı yeterli).
+  4. **Eski `settings.json` uyumluluğu — migration gerekmez:** kaldırılan `twitter/instagram/reddit` motor modu ve yedek alan adları ile `emojis.reddit` yokken eski dosya hatasız yükleniyor (bilinmeyen anahtarlar yok sayılır, eksik yeni alan varsayılanını alır); kanıt testi: `legacy_settings_with_removed_engine_keys_load_without_migration`.
+- **Etkilenen:** `src/converters/builtin/{render,v2,mod}.rs`, `src/settings.rs`, `src/web/ui/{index.html,app.js}`, `settings.json`
+
+
 ### [2026-10-09 17:31] zoltrons — Twitter/X, Instagram ve Reddit **native-only**; Reddit videosu her modda sesli birleşir (proxy kaldırıldı)
 - **Commit:** `11813a6`
 - **Yapılan:**
