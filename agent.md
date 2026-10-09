@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 22:30] zoltrons — Mikro etiketlerde all caps kaldırıldı (sentence case) — kullanıcı kararı: orta yol
+- **Commit:** `ba81aae` (bu dal)
+- **Karar:** Arc'ın "sentence case, all caps yok" satırı için **orta yol** seçildi: yalnızca mikro etiketler sentence case oldu; **display başlıklar** (`.sheet-h`, `.modal-title`), **display ağırlıkları** (700/800) ve **dekoratif ızgara/gren** korundu (panel kimliği).
+- **Yapılan:** 14 kuraldan `text-transform: uppercase` kaldırıldı (`.micro`, `.chip`, `.telemetry .mono`, `.dirty-line`, `.sheet-meta`, `.mod-state`, `.studio-badge`, `.pill span`, `.field-label`, `.engine-head`, `.engine-note`, `.manual-head`, `.manual-item dt`, `.foot`). Büyük harf için ayarlanmış harf aralıkları sentence case'e göre daraltıldı (`.micro` 0.16→0.06em, `.field-label` 0.16→0.06em, `.engine-head`/`.manual-item dt`/`.manual-head`/`.engine-note` 0.14→0.05em, `.chip` 0.1→0.04em, `.pill span` 0.08→0.03em, `.foot` 0.12→0.04em): geniş aralık küçük harfte dağılmış görünüyordu. HTML'deki literal `AKTİF` (8 modül durumu) → `Aktif`; JS zaten `Aktif`/`Devre dışı` yazıyor.
+- **Denetim:** Etiket metin kaynaklarının tamamı (`.micro`, `.field-label`, `.pill span`, `.engine-head`, `.manual-item dt`, `.foot`, `.chip`, `.studio-badge`, `.sheet-meta`) HTML ve JS'te zaten sentence case idi; tek düzeltme `AKTİF` oldu. Kalan `text-transform: uppercase` yalnızca 2 display başlıkta.
+- **Test:** `cargo test` → **223 geçti**; `app.css` süslü parantez dengesi 269/269; `AKTİF` kalıntısı 0.
+- **Etkilenen:** `src/web/ui/app.css`, `src/web/ui/index.html`
+
 ### [2026-10-09 22:00] zoltrons — Arc MCP kuralları panele uygulandı (erişilebilirlik, dokunmatik hedefler, token hijyeni)
 - **Commit:** `9430dd4` (bu dal)
 - **Yapılan:**
