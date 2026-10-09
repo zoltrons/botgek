@@ -1427,7 +1427,7 @@ mod tests {
         let render_opts =
             crate::converters::builtin::render::RenderOptions::from_engine(&engine, "twitter");
         let plan = crate::converters::builtin::render::plan_media(&post, &render_opts);
-        assert!(!plan.images.is_empty() || !plan.remote_images.is_empty(), "plan görsel içermeli");
+        assert!(!plan.remote_images.is_empty(), "plan görsel içermeli");
 
         let resolved = crate::converters::builtin::render::resolve_media(&client, &post, &plan, &render_opts).await;
         let emojis = crate::settings::EmojiSettings::default();

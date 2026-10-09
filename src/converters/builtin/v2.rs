@@ -1372,7 +1372,6 @@ mod tests {
         }];
 
         let options = RenderOptions {
-            media_delivery: crate::settings::MediaDelivery::Direct,
             ..options()
         };
         let plan = crate::converters::builtin::render::plan_media(&post, &options);

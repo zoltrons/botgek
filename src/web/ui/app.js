@@ -41,9 +41,6 @@ const ENGINE_DEFAULTS = {
     modes: { tiktok: 'proxy', bluesky: 'builtin', spotify: 'builtin' },
     domains: { tiktok: '', bluesky: '', spotify: '' },
     twitter_source: 'syndication',
-    media_delivery: 'direct',
-    attach_images: true,
-    attach_videos: true,
     max_images: 4,
     max_video_mb: 8,
     show_metrics: true,
@@ -87,10 +84,7 @@ const DIFF_LABELS = {
     'ai.model': 'AI modeli',
     'ai.system_prompt': 'AI kişiliği',
     'engine.twitter_source': 'X veri kaynağı',
-    'engine.media_delivery': 'Medya yöntemi',
     'engine.card_style': 'Kart stili',
-    'engine.attach_images': 'Görsel yükleme',
-    'engine.attach_videos': 'Video yükleme',
     'engine.max_images': 'Maks. görsel sayısı',
     'engine.max_video_mb': 'Maks. video boyutu',
     'engine.show_metrics': 'Etkileşim metrikleri',
@@ -179,9 +173,9 @@ function getEngineConfig(cfg) {
             engine.emojis[field.key] = ENGINE_DEFAULTS.emojis[field.key];
         }
     });
-    ['twitter_source', 'attach_images', 'attach_videos', 'max_images', 'max_video_mb', 'show_metrics',
+    ['twitter_source', 'max_images', 'max_video_mb', 'show_metrics',
      'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
-     'impersonate_user', 'impersonate_skip_replies', 'media_delivery'].forEach(field => {
+     'impersonate_user', 'impersonate_skip_replies'].forEach(field => {
         if (engine[field] === undefined || engine[field] === null) engine[field] = ENGINE_DEFAULTS[field];
     });
     delete engine.components_v2;
@@ -365,8 +359,6 @@ function readEngineDom(engine) {
     qsa('[data-emoji-key]').forEach(el => { engine.emojis[el.dataset.emojiKey] = el.value.trim(); });
     const source = $('engine-twitter-source');
     if (source) engine.twitter_source = source.value;
-    const media = $('engine-media-delivery');
-    if (media) engine.media_delivery = media.value;
 }
 
 function writeEngineDom(engine) {
@@ -392,8 +384,6 @@ function writeEngineDom(engine) {
     });
     const source = $('engine-twitter-source');
     if (source) source.value = engine.twitter_source || 'syndication';
-    const media = $('engine-media-delivery');
-    if (media) media.value = engine.media_delivery || 'direct';
 }
 
 /* Panelden sunucuya gönderilecek gövdeyi DOM'dan toplar. */
@@ -496,7 +486,6 @@ function updateEngineSummary() {
 
     const parts = [nativeCount + '/' + ENGINE_PLATFORMS.length + ' native'];
     parts.push('V2 kart');
-    parts.push(engine.media_delivery === 'direct' ? 'ışık hızı' : (engine.media_delivery === 'attach' ? 'dosya eki' : 'otomatik medya'));
     if (engine.impersonate_user) parts.push('taklit');
     if (engine.auto_translate) parts.push('otomatik çeviri');
     if ($('engine-summary')) $('engine-summary').textContent = parts.join(' · ');
@@ -1175,10 +1164,6 @@ function bind() {
     }));
     qsa('[data-emoji-key]').forEach(el => el.addEventListener('input', onConfigModified));
     if ($('engine-twitter-source')) $('engine-twitter-source').addEventListener('change', () => {
-        onConfigModified();
-        updateEngineSummary();
-    });
-    if ($('engine-media-delivery')) $('engine-media-delivery').addEventListener('change', () => {
         onConfigModified();
         updateEngineSummary();
     });

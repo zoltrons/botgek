@@ -59,9 +59,6 @@
       "spotify": ""
     },
     "twitter_source": "syndication",
-    "media_delivery": "direct",
-    "attach_images": true,
-    "attach_videos": true,
     "max_images": 4,
     "max_video_mb": 8,
     "show_metrics": true,

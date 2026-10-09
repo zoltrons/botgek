@@ -98,42 +98,6 @@ impl TwitterSource {
     }
 }
 
-
-/// Medyanın karta nasıl taşınacağı (**kart hızını belirleyen ayar**).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum MediaDelivery {
-    /// **Işık hızı (varsayılan):** hiçbir dosya indirilmez ve Discord'a yüklenmez. Görsel,
-    /// video ve GIF kartın içinde **FxEmbed / CDN bağlantılarıyla** gösterilir: video kartın
-    /// içinde oynar, GIF FxEmbed'in GIF servisinden (`gif.fxtwitter.com`) gelir, görsel
-    /// CDN'in hafif `large` varyantından gelir. Medya fazı ~0 ms'dir, kart veri gelir
-    /// gelmez gider (beklenen süre yok).
-    #[default]
-    Direct,
-    /// Medya **süre bütçesi** içinde inerse dosya olarak eklenir (tam çözünürlük), bütçe
-    /// aşılırsa bağlantıya düşülür. Hız ile CDN bağımsızlığı arasında denge kurar.
-    Auto,
-    /// Medya her zaman indirilip dosya olarak eklenir (tam çözünürlük + kaynak CDN'e
-    /// bağımlı olmama); yalnızca geniş bütçe aşılırsa bağlantıya düşülür. En yavaş seçenek.
-    Attach,
-}
-
-impl MediaDelivery {
-    /// WebUI ve log'larda kullanılan anahtar.
-    pub fn key(&self) -> &'static str {
-        match self {
-            MediaDelivery::Direct => "direct",
-            MediaDelivery::Auto => "auto",
-            MediaDelivery::Attach => "attach",
-        }
-    }
-
-    /// Medya dosya olarak mı eklenecek? (`direct` modunda hiç indirme yapılmaz.)
-    pub fn downloads_media(&self) -> bool {
-        matches!(self, MediaDelivery::Auto | MediaDelivery::Attach)
-    }
-}
-
 /// Proxy motorunu kullanabilen platformların motor seçimi.
 ///
 /// **Twitter/X, Instagram ve Reddit burada yer almaz:** native kartları eksiksiz çalıştığı
@@ -466,12 +430,6 @@ pub struct EngineSettings {
     pub domains: ProxyDomains,
     /// Twitter/X için veri kaynağı.
     pub twitter_source: TwitterSource,
-    /// Medyanın karta nasıl taşınacağı: ışık hızı (bağlantı) / süre bütçeli / her zaman dosya.
-    pub media_delivery: MediaDelivery,
-    /// Görselleri indirip mesaja dosya olarak ekle (tam çözünürlük + CDN bağımsızlığı).
-    pub attach_images: bool,
-    /// Videoları indirip mesaja dosya olarak ekle (limit altındaysa).
-    pub attach_videos: bool,
     /// Tek mesajda ek olarak yüklenecek maksimum görsel sayısı.
     pub max_images: u8,
     /// Eklenecek maksimum video boyutu (MB).
@@ -505,9 +463,6 @@ impl Default for EngineSettings {
             modes: PlatformEngineModes::default(),
             domains: ProxyDomains::default(),
             twitter_source: TwitterSource::default(),
-            media_delivery: MediaDelivery::default(),
-            attach_images: true,
-            attach_videos: true,
             max_images: 4,
             max_video_mb: 8,
             show_metrics: true,
@@ -961,9 +916,6 @@ mod tests {
                     "spotify": ""
                 },
                 "twitter_source": "syndication",
-                "media_delivery": "direct",
-                "attach_images": true,
-                "attach_videos": true,
                 "max_images": 4,
                 "max_video_mb": 8,
                 "show_metrics": true,
@@ -1050,9 +1002,7 @@ mod tests {
         );
         assert!(!settings.engine.allows_proxy_fallback("twitter"));
         assert!(settings.engine.allows_proxy_fallback("bluesky"));
-        assert!(!settings.engine.attach_videos);
         // Eksik alanlar varsayılan kalmalı
-        assert!(settings.engine.attach_images);
         assert_eq!(settings.engine.twitter_source, TwitterSource::Syndication);
         assert_eq!(settings.engine.max_images, 4);
         assert!(settings.engine.auto_translate);
@@ -1122,8 +1072,6 @@ mod tests {
                     "bluesky": ""
                 },
                 "twitter_source": "hybrid",
-                "attach_images": true,
-                "attach_videos": false,
                 "max_images": 7,
                 "max_video_mb": 99,
                 "show_metrics": true,
@@ -1145,7 +1093,6 @@ mod tests {
             "Instagram native-only: proxy modu yok"
         );
         assert_eq!(settings.engine.twitter_source, TwitterSource::Hybrid);
-        assert!(!settings.engine.attach_videos);
         assert!(!settings.engine.show_timestamp);
         assert!(!settings.engine.show_quote);
         assert!(!settings.engine.auto_translate);
@@ -1245,28 +1192,6 @@ mod tests {
         assert_eq!(unknown.twitter.trim(), ":botgek_emoji:");
     }
 
-    #[test]
-    fn media_delivery_defaults_to_light_speed_and_round_trips() {
-        assert_eq!(
-            AppSettings::default().engine.media_delivery,
-            MediaDelivery::Direct,
-            "varsayılan medya yöntemi ışık hızı olmalı"
-        );
-
-        let mut settings = AppSettings::default();
-        settings.engine.media_delivery = MediaDelivery::Attach;
-        let json = serde_json::to_string(&settings).unwrap();
-        assert!(
-            json.contains("\"media_delivery\":\"attach\""),
-            "serde adı WebUI değeriyle aynı olmalı: {json}"
-        );
-
-        let parsed: AppSettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.engine.media_delivery, MediaDelivery::Attach);
-        assert_eq!(parsed.engine.media_delivery.key(), "attach");
-        assert!(parsed.engine.media_delivery.downloads_media());
-        assert!(!MediaDelivery::Direct.downloads_media(), "ışık hızı indirme yapmaz");
-    }
 
     #[test]
     fn emoji_sanitize_rejects_invalid_values() {
@@ -1306,7 +1231,6 @@ mod tests {
         let parsed: AppSettings = serde_json::from_str(&json).unwrap();
 
         assert!(!parsed.engine.impersonate_user);
-        assert!(parsed.engine.attach_videos);
     }
 
     #[test]

@@ -1075,10 +1075,8 @@ pub async fn handle(
     let platform = platform_key(parsed.platform);
     let options = render::RenderOptions::from_engine(engine, platform);
     debug!(
-        "Medya yöntemi: {} (görsel indirme: {}, video indirme: {}) — {}",
-        options.media_delivery.key(),
-        options.attach_images,
-        options.attach_videos,
+        "Kart: V2 (tek mod: doğrudan; video indirme: {}) — {}",
+        options.video_requires_download,
         parsed.original_url
     );
     let plan = render::plan_media(&post, &options);

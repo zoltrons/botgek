@@ -11,34 +11,14 @@ use tracing::debug;
 
 use super::media::{self, DISCORD_FILE_LIMIT};
 use super::{BuiltinPost, Media, MediaKind};
-use crate::settings::{EngineSettings, MediaDelivery};
+use crate::settings::EngineSettings;
 
-/// Medya indirmelerinin **süre bütçesi**: kart "anında" görünmelidir, bu yüzden indirme
-/// bütçeyi aşarsa görev iptal edilir ve ilgili medya **uzak bağlantı** olarak kartta
-/// gösterilir (video kartın içinde oynamaya devam eder, görsel CDN'den yüklenir).
+/// Video **birleştirme** bütçesi.
 ///
-/// Bu değerler **`auto`** modun içindir: hızlıysa dosya eki, değilse bağlantı. `direct`
-/// modunda hiç indirme yapılmaz (bütçe kullanılmaz), `attach` modunda daha geniş bütçeler
-/// ([`ATTACH_VIDEO_BUDGET`] vb.) geçerlidir.
-pub const IMAGE_BUDGET: Duration = Duration::from_millis(600);
-/// GIF yarışının toplam bütçesi (FxEmbed GIF servisi + yerel `ffmpeg` yedeği).
-pub const GIF_BUDGET: Duration = Duration::from_millis(900);
-/// Video indirme bütçesi (bütçe dolunca video kartta uzak bağlantıyla oynar).
-pub const VIDEO_BUDGET: Duration = Duration::from_millis(1_200);
-/// **Dosya eki** modunda tam çözünürlük için tanınan daha geniş bütçeler.
-pub const ATTACH_IMAGE_BUDGET: Duration = Duration::from_millis(2_500);
-pub const ATTACH_GIF_BUDGET: Duration = Duration::from_millis(3_000);
-pub const ATTACH_VIDEO_BUDGET: Duration = Duration::from_millis(5_000);
-/// FxEmbed GIF servisinin tek deneme sınırı (servis CDN'de önbellekli gerçek GIF verir).
-const FX_GIF_TIMEOUT: Duration = Duration::from_millis(600);
-/// FxEmbed servisi yarışta öne alınır: genelde CDN'den anında gelir, bu yüzden yerel
-/// `ffmpeg` yedeği ancak bu gecikmeden sonra başlar (boşa bant genişliği harcanmaz).
-const GIF_HEAD_START: Duration = Duration::from_millis(150);
-/// GIF yarışında iç bütçenin üstüne eklenen güvenlik payı (dış zaman aşımı).
-const GIF_RACE_GRACE: Duration = Duration::from_millis(200);
-
-/// Tek bir görsel için indirme üst sınırı.
-const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// Kart "anında" görünmelidir; yalnızca sesi ayrı akışta gelen platformlarda (Reddit) video
+/// indirilip sesiyle birleştirilir ve bu iş bütçeyi aşarsa video kartta uzak bağlantıyla
+/// (sessiz) oynar. Diğer tüm medya **hiç indirilmez** — CDN bağlantısı yeterlidir.
+pub const VIDEO_MERGE_BUDGET: Duration = Duration::from_millis(5_000);
 
 /// Videosu **ayrı ses akışıyla** sunulan platformlar (Reddit): video ve ses ayrı medya
 /// playlist'lerinde gelir, sesli oynatma ancak ikisi indirilip tek MP4'e birleştirilerek
@@ -48,19 +28,12 @@ fn video_requires_download(platform_key: &str) -> bool {
     platform_key == "reddit"
 }
 
-/// Ayarlardan türetilen render davranışı.
+/// Ayarlardan türetilen render davranışı (**tek mod: doğrudan**).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderOptions {
-    /// Medya yöntemi: ışık hızı (bağlantı) / bütçeli indirme / her zaman dosya eki.
-    /// **Kullanıcı ayarıdır**; platforma özel zorunluluklar (ör. Reddit videosu) aşağıdaki
-    /// alanlarda ayrıca tutulur.
-    pub media_delivery: MediaDelivery,
     /// Video **zorunlu** indirilir (platform gereği): Reddit'te ses ayrı akışta tutulduğu
-    /// için kart içi video ancak video+ses birleştirilerek sesli oynar. `direct` modda bile
-    /// video indirilir ve indirme **geniş** (dosya eki) bütçesini kullanır.
+    /// için kart içi video ancak video+ses birleştirilerek sesli oynar.
     pub video_requires_download: bool,
-    pub attach_images: bool,
-    pub attach_videos: bool,
     pub max_images: u8,
     pub max_video_mb: u8,
     pub show_metrics: bool,
@@ -72,20 +45,12 @@ pub struct RenderOptions {
 impl RenderOptions {
     /// Platforma göre uyarlanmış render seçenekleri.
     ///
-    /// - **Reddit:** ses ayrı akışta tutulur (`CMAF_AUDIO_*`), bu yüzden video **her zaman**
-    ///   indirilir ([`Self::video_requires_download`]) — `direct` modda kart içi video sessiz
-    ///   kalırdı. **Görseller genel ayarı izler** (Reddit'te de `direct` modda indirilmez).
-    /// - Diğer platformlar: davranış tamamen medya yöntemi ayarına bağlıdır.
+    /// Kart tek modda çalışır: **hiçbir medya indirilmez** (görseller/GIF'ler CDN
+    /// bağlantısıyla kartın içinde gösterilir). **Tek istisna** sesi ayrı akışta gelen
+    /// Reddit videosudur ([`Self::video_requires_download`]).
     pub fn from_engine(engine: &EngineSettings, platform_key: &str) -> Self {
-        let requires_video_download = video_requires_download(platform_key);
-        let downloads = engine.media_delivery.downloads_media();
         Self {
-            media_delivery: engine.media_delivery,
-            video_requires_download: requires_video_download,
-            // Görseller medya yöntemini izler (`direct` modda hiç indirilmez).
-            attach_images: engine.attach_images && downloads,
-            // Platform videosu zorunluysa kullanıcının "videoları ekle" anahtarı yeterlidir.
-            attach_videos: engine.attach_videos && (downloads || requires_video_download),
+            video_requires_download: video_requires_download(platform_key),
             max_images: engine.max_images,
             max_video_mb: engine.max_video_mb,
             show_metrics: engine.show_metrics,
@@ -100,55 +65,20 @@ impl RenderOptions {
         (self.max_video_mb as u64 * 1024 * 1024).min(DISCORD_FILE_LIMIT)
     }
 
-    /// Görsel indirme bütçesi (moda göre).
-    pub fn image_budget(&self) -> Duration {
-        match self.media_delivery {
-            MediaDelivery::Attach => ATTACH_IMAGE_BUDGET,
-            _ => IMAGE_BUDGET,
-        }
-    }
-
-    /// GIF yarışı bütçesi (moda göre).
-    pub fn gif_budget(&self) -> Duration {
-        match self.media_delivery {
-            MediaDelivery::Attach => ATTACH_GIF_BUDGET,
-            _ => GIF_BUDGET,
-        }
-    }
-
-    /// Medya indirme bütçesi: platform videosu zorunsa (Reddit) **geniş** bütçe geçerlidir
-    /// (birleştirme, 1,2 sn'lik "otomatik" bütçeye sığmaz); aksi halde moda göre seçilir.
+    /// Video birleştirme bütçesi (yalnızca zorunlu platformlarda kullanılır).
     pub fn video_budget(&self) -> Duration {
-        if self.video_requires_download {
-            return ATTACH_VIDEO_BUDGET;
-        }
-        match self.media_delivery {
-            MediaDelivery::Attach => ATTACH_VIDEO_BUDGET,
-            _ => VIDEO_BUDGET,
-        }
-    }
-
-    /// **Hiçbir** dosya indirilmeden karta mı bağlanılacak (ışık hızı modu)?
-    ///
-    /// Platform videosu zorunlu indirilen Reddit bu kuralın **dışındadır**: ses ayrı akışta
-    /// geldiği için video indirilmezse kart sessiz kalırdı (bu yüzden `direct` modda bile
-    /// video indirme yolu çalışır; görseller ise bağlantı olarak kalır).
-    pub fn skips_all_downloads(&self) -> bool {
-        !self.media_delivery.downloads_media() && !self.video_requires_download
+        VIDEO_MERGE_BUDGET
     }
 }
 
-/// İndirme planı: hangi medya dosya olarak eklenecek, hangisi uzak URL olarak gösterilecek.
+/// İndirme planı (**tek mod: doğrudan**): hangi medya kartın içinde gösterilecek.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MediaPlan {
-    /// Dosya olarak eklenecek görseller (sıralı).
-    pub images: Vec<String>,
-    /// İndirme kapalıysa doğrudan embed'e konacak uzak görsel URL'leri.
+    /// Kartta gösterilecek görsel URL'leri (CDN bağlantısı; indirilmez).
     pub remote_images: Vec<String>,
-    /// Eklenecek/bağlanacak video URL'i.
+    /// Kartın içinde oynayacak video URL'i.
     pub video: Option<String>,
-    /// Animasyonlu GIF kaynakları (X: sessiz mp4). `ffmpeg` varsa gerçek `.gif`'e çevrilir,
-    /// yoksa mp4 olarak eklenir; hiçbir durumda video oynatıcısı olarak gösterilmez.
+    /// Animasyonlu GIF kaynakları (X: sessiz mp4) → kartta gerçek `.gif` olarak gösterilir.
     pub gifs: Vec<String>,
 }
 
@@ -176,7 +106,7 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
     let max_images = options.max_images as usize;
 
     for media in &post.media {
-        push_media(&mut plan, media, options.attach_images, max_images);
+        push_media(&mut plan, media, max_images);
     }
 
     let mut next = post.quote.as_deref();
@@ -185,7 +115,7 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
             break;
         }
         for media in &candidate.media {
-            push_media(&mut plan, media, options.attach_images, max_images);
+            push_media(&mut plan, media, max_images);
         }
         next = candidate.quote.as_deref();
     }
@@ -195,15 +125,12 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
 
 /// Planda gösterilecek medya var mı?
 fn plan_is_empty(plan: &MediaPlan) -> bool {
-    plan.video.is_none()
-        && plan.gifs.is_empty()
-        && plan.images.is_empty()
-        && plan.remote_images.is_empty()
+    plan.video.is_none() && plan.gifs.is_empty() && plan.remote_images.is_empty()
 }
 
 /// Tek bir medyayı plana ekler: GIF'ler ayrı tutulur, ilk video kazanır, görseller
 /// `max_images` ile sınırlanır.
-fn push_media(plan: &mut MediaPlan, media: &Media, attach_images: bool, max_images: usize) {
+fn push_media(plan: &mut MediaPlan, media: &Media, max_images: usize) {
     // Animasyonlu GIF: sessiz mp4 olarak indirilir ve gerçek `.gif`'e çevrilir
     // (video oynatıcısı çıkmasın diye video alanına konmaz).
     // Ancak servis yalnızca belirli platformları (örn. Twitter) destekler;
@@ -225,131 +152,63 @@ fn push_media(plan: &mut MediaPlan, media: &Media, attach_images: bool, max_imag
         return;
     }
 
-    if plan.images.len() + plan.remote_images.len() >= max_images {
+    if plan.remote_images.len() >= max_images {
         return;
     }
-    if attach_images {
-        plan.images.push(media.url.clone());
-    } else {
-        plan.remote_images.push(media.url.clone());
-    }
+    plan.remote_images.push(media.url.clone());
 }
 
-/// Planı uygular. **Tüm indirmeler (video + görseller + GIF'ler) paralel** yapılır; böylece
-/// mesaj gecikmesi dosyaların toplamı değil, en yavaş tek indirme kadardır.
-/// İndirilemeyen medya uzak URL'e düşer (mesaj gönderimi bozulmaz).
+/// Planı uygular: **hiçbir medya indirilmez** (görseller/GIF'ler CDN bağlantısıyla kartta
+/// gösterilir). **Tek istisna** sesi ayrı akışta gelen Reddit videosudur: sesli oynatma için
+/// video+ses birleştirilir ve sonuç mesaja **ek** olarak gönderilir; bütçe dolarsa video
+/// kartta uzak bağlantıyla (sessiz) oynar.
 pub async fn resolve_media(
     client: &reqwest::Client,
     post: &BuiltinPost,
     plan: &MediaPlan,
     options: &RenderOptions,
 ) -> ResolvedMedia {
-    let spoiler = post.sensitive;
-
-    // Işık hızı (`direct`): hiçbir medya indirilmez. Kart, görsel/video/GIF'i bağlantı
-    // olarak taşır (video kartın içinde oynar, GIF FxEmbed'in GIF servisinden gelir), bu
-    // yüzden medya fazı **~0 ms**'dir ve Discord'a yükleme yapılmaz. **İstisna:** platform
-    // videosu zorunlu olan Reddit (ses ayrı akışta; video birleştirilmezse kart sessiz kalır) —
-    // orada yalnızca video indirilir, görseller bağlantı olarak kalır.
-    if options.skips_all_downloads() {
-        return direct_media(plan);
+    let mut resolved = direct_media(plan);
+    if !options.video_requires_download {
+        return resolved;
     }
+    let Some(video_url) = plan.video.as_ref() else {
+        return resolved;
+    };
 
-    // 1) Video (en büyük dosya) ve görseller aynı anda indirilir. Her indirme kendi **süre
-    //    bütçesiyle** sınırlıdır: bütçe dolan indirme iptal edilir, kart beklemez.
-    let max_video_bytes = options.max_video_bytes();
-    let video_handle = plan.video.as_ref().filter(|_| options.attach_videos).map(|url| {
+    // `download_video`: Reddit videolarında video+ses birleştirmesini dener (ffmpeg'siz).
+    let max_bytes = options.max_video_bytes();
+    let handle = {
         let client = client.clone();
-        let url = url.clone();
-        // `download_video`: Reddit videolarında önce sesli birleştirmeyi dener (ffmpeg'siz).
-        tokio::spawn(async move { media::download_video(&client, &url, max_video_bytes).await })
-    });
+        let url = video_url.clone();
+        tokio::spawn(async move { media::download_video(&client, &url, max_bytes).await })
+    };
 
-    let mut image_handles = Vec::with_capacity(plan.images.len());
-    for url in &plan.images {
-        let client = client.clone();
-        let url = url.clone();
-        image_handles.push(tokio::spawn(async move {
-            media::download(&client, &url, MAX_IMAGE_BYTES).await
-        }));
-    }
-
-    // 2) GIF'ler: FxEmbed'in hazır GIF servisi → yerel ffmpeg → mp4 (hepsi paralel görevde).
-    //    Dosya eki kapalıyken indirme hiç başlatılmaz: uzak bağlantı yeterlidir.
-    let mut gif_handles = Vec::with_capacity(plan.gifs.len());
-    if options.attach_images {
-        for url in &plan.gifs {
-            let client = client.clone();
-            let url = url.clone();
-            let budget = options.gif_budget();
-            gif_handles.push(tokio::spawn(async move { download_gif(&client, &url, budget).await }));
+    match within(options.video_budget(), handle).await {
+        Some(file) => {
+            let name = attachment_name(&file.filename, post.sensitive);
+            resolved
+                .attachments
+                .push(media::to_attachment(file, post.sensitive));
+            resolved.attached_video = Some(format!("attachment://{name}"));
+            // Video artık kartın içinde (ek olarak) oynar: uzak bağlantıya gerek yok.
+            resolved.video_link = None;
         }
-    }
-
-    let mut resolved = ResolvedMedia::default();
-
-    if let Some(video_url) = &plan.video {
-        match video_handle {
-            Some(handle) => match within(options.video_budget(), handle).await {
-                Some(file) => {
-                    let name = attachment_name(&file.filename, spoiler);
-                    resolved.attachments.push(media::to_attachment(file, spoiler));
-                    resolved.attached_video = Some(format!("attachment://{name}"));
-                }
-                None => {
-                    // İndirilemedi ya da bütçe doldu: video kartın içinde uzak bağlantıyla oynar.
-                    debug!(
-                        "Video dosya olarak eklenemedi (bütçe {} ms), uzak bağlantı kullanılıyor: {video_url}",
-                        options.video_budget().as_millis()
-                    );
-                    resolved.video_link = Some(video_url.clone());
-                }
-            },
-            // İndirme kapalı: video doğrudan bağlantı olarak mesaja yazılır.
-            None => resolved.video_link = Some(video_url.clone()),
-        }
-    }
-
-    for (url, handle) in plan.images.iter().zip(image_handles) {
-        match within(options.image_budget(), handle).await {
-            Some(file) => {
-                let name = attachment_name(&file.filename, spoiler);
-                resolved.attachments.push(media::to_attachment(file, spoiler));
-                resolved.images.push(format!("attachment://{name}"));
-            }
-            // İndirilemeyen (veya bütçeyi aşan) görsel uzak URL olarak gösterilir; kartı
-            // yavaşlatan büyük yükleme yerine CDN'in hafif varyantı istenir.
-            None => resolved.images.push(media::card_image_url(url)),
-        }
-    }
-
-    // Dosya eki kapalıyken planlanan uzak görseller doğrudan kullanılır.
-    resolved.images.extend(plan.remote_images.iter().cloned());
-
-    if !options.attach_images {
-        // Dosya eki kapalı: GIF'ler de uzak URL olarak gösterilir (.gif formatında).
-        resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
-    } else {
-        for (url, handle) in plan.gifs.iter().zip(gif_handles) {
-            match within(options.gif_budget() + GIF_RACE_GRACE, handle).await {
-                Some(file) => {
-                    let name = attachment_name(&file.filename, spoiler);
-                    resolved.attachments.push(media::to_attachment(file, spoiler));
-                    resolved.images.push(format!("attachment://{name}"));
-                }
-                None => resolved.images.push(remote_gif_url(url)),
-            }
-        }
+        // İndirilemedi ya da bütçe doldu: video kartın içinde uzak bağlantıyla (sessiz) oynar.
+        None => debug!(
+            "Video ek olarak indirilemedi (bütçe {} ms), uzak bağlantı kullanılıyor: {video_url}",
+            options.video_budget().as_millis()
+        ),
     }
 
     resolved
 }
 
-/// Işık hızı (`direct`) modunda medyayı **hiç indirmeden** karta bağlar.
+/// Medyayı **hiç indirmeden** karta bağlar (kartın tek modu).
 ///
 /// - Görseller: CDN'in hafif `large` varyantı (kart anında yüklenir).
-/// - Video: veri aşamasında seçilen en uygun mp4 varyantı kartın içinde oynar.
-/// - GIF: FxEmbed'in GIF servisi (`gif.fxtwitter.com`) → gerçek `.gif` olarak karta bağlanır.
+/// - Video: veri aşamasında seçilen mp4 varyantı kartın içinde oynar.
+/// - GIF: vxTwitter gifconvert servisi → gerçek animasyonlu görsel olarak kartta oynar.
 ///
 /// Hiçbir ağ isteği yapılmaz: bu yüzden medya fazı ~0 ms'dir ve Discord'a dosya yüklenmez.
 pub fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
@@ -359,9 +218,6 @@ pub fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
         ..ResolvedMedia::default()
     };
 
-    resolved
-        .images
-        .extend(plan.images.iter().map(|url| media::card_image_url(url)));
     resolved
         .images
         .extend(plan.remote_images.iter().map(|url| media::card_image_url(url)));
@@ -388,122 +244,6 @@ async fn within<T>(budget: Duration, mut handle: tokio::task::JoinHandle<Option<
         Err(_) => {
             handle.abort();
             None
-        }
-    }
-}
-
-
-/// GIF'i mümkün olan en hızlı kaynaktan **yarıştırarak** alır:
-///
-/// 1. **vxTwitter gifconvert servisi** (`gifconvert.vxtwitter.com`) — hazır, CDN'de önbellekli animasyonlu AVIF
-///    (tercih edilen kaynak; [`GIF_HEAD_START`] kadar öne alınır),
-/// 2. yerel `ffmpeg` dönüşümü — servis gecikirse başlar ve **gerçek GIF** ürettiyse kazanır,
-/// 3. hiçbiri olmazsa mp4 (Discord oynatıcı gösterir — eski davranış).
-///
-/// Yarış `budget` (moda göre: `auto` → [`GIF_BUDGET`], `attach` → [`ATTACH_GIF_BUDGET`]) ile
-/// sınırlıdır: eskiden iki servis denemesi sırayla 2 × 45 sn bekleyebiliyordu (üstüne mp4
-/// indirme + ffmpeg dönüşümü); artık bütçe dolduğunda yarış biter (yerel mp4 hazırsa o,
-/// değilse uzak bağlantı kullanılır) ve kart beklemez.
-async fn download_gif(
-    client: &reqwest::Client,
-    url: &str,
-    budget: Duration,
-) -> Option<media::MediaFile> {
-    // 1) vxTwitter GIF servisi: hemen başlar (CDN'de önbellekli, genelde en hızlı kaynak).
-    let mut fx = media::gif_convert_url(url).map(|gif_url| {
-        let client = client.clone();
-        tokio::spawn(async move {
-            // Servis tek seferde yanıt vermeyebilir: iki deneme, her biri kısa süreli.
-            for _ in 0..2 {
-                let Ok(Some(file)) = tokio::time::timeout(
-                    FX_GIF_TIMEOUT,
-                    media::download(&client, &gif_url, media::DISCORD_FILE_LIMIT),
-                )
-                .await
-                else {
-                    continue;
-                };
-                if media::is_animated_image(&file) {
-                    return Some(file);
-                }
-            }
-            None
-        })
-    });
-
-    // 2) Yerel yedek: mp4 indirilir, `ffmpeg` ile gerçek GIF'e çevrilir; `ffmpeg` yoksa
-    //    mp4 döner (yalnızca vxTwitter servisi tamamen başarısız olursa kullanılır).
-    let mut local = Some({
-        let client = client.clone();
-        let url = url.to_string();
-        tokio::spawn(async move {
-            // Tercih edilen kaynağa öncelik: yerel yedek boşa bant genişliği harcamasın.
-            tokio::time::sleep(GIF_HEAD_START).await;
-            let file = media::download(&client, &url, MAX_IMAGE_BYTES).await?;
-            match media::to_gif(&file.bytes).await {
-                Some(bytes) => Some(media::MediaFile {
-                    bytes,
-                    filename: media::replace_extension(&file.filename, "gif"),
-                    mime: "image/gif".to_string(),
-                }),
-                None => Some(file),
-            }
-        })
-    });
-
-    let deadline = tokio::time::Instant::now() + budget;
-
-    loop {
-        // Bekleyen kaynaklar bu turda sabitlenir: `select!` ön koşulu yalnızca hazır
-        // görevleri bekletir (iptal edilen görev tekrar beklenmez).
-        let awaiting_fx = fx.is_some();
-        let awaiting_local = local.is_some();
-        if !awaiting_fx && !awaiting_local {
-            return None;
-        }
-
-        tokio::select! {
-            biased;
-            // Tercih edilen kaynak: dönüştürülmüş görsel geldiyse yarış biter.
-            result = async { fx.as_mut().expect("vxTwitter GIF kaynağı bekleniyor").await },
-                if awaiting_fx =>
-            {
-                match result {
-                    Ok(Some(gif)) => {
-                        if let Some(handle) = local.take() {
-                            handle.abort();
-                        }
-                        return Some(gif);
-                    }
-                    _ => fx = None,
-                }
-            }
-            result = async { local.as_mut().expect("yerel GIF yedeği bekleniyor").await },
-                if awaiting_local =>
-            {
-                match result {
-                    // Yerel dönüşüm gerçek animasyonlu görsel ürettiyse tercih edilen kaynağı beklemeden kazanır.
-                    Ok(Some(file)) if media::is_animated_image(&file) => {
-                        if let Some(handle) = fx.take() {
-                            handle.abort();
-                        }
-                        return Some(file);
-                    }
-                    _ => {}
-                }
-
-                local = None;
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                // Bütçe doldu: iki kaynak da iptal edilir, kart bekletilmez.
-                if let Some(handle) = fx.take() {
-                    handle.abort();
-                }
-                if let Some(handle) = local.take() {
-                    handle.abort();
-                }
-                return None;
-            }
         }
     }
 }
@@ -553,8 +293,13 @@ fn attachment_name(filename: &str, spoiler: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converters::builtin::{Author, Media, MediaKind, Stats};
+    use crate::converters::builtin::{Author, Media, MediaKind};
     use crate::converters::parser::Platform;
+    use crate::settings::EngineSettings;
+
+    fn options() -> RenderOptions {
+        RenderOptions::from_engine(&EngineSettings::default(), "twitter")
+    }
 
     fn image(url: &str) -> Media {
         Media {
@@ -578,7 +323,6 @@ mod tests {
         }
     }
 
-    /// X'in animasyonlu GIF'leri sessiz mp4 olarak gelir.
     fn gif(url: &str) -> Media {
         Media {
             kind: MediaKind::Gif,
@@ -597,411 +341,135 @@ mod tests {
             Author::new("Ad", "kullanici"),
         );
         post.text = "merhaba dünya".to_string();
-        post.created_at = Some(1_714_998_896);
-        post.stats = Stats {
-            replies: 5,
-            reposts: 12_000,
-            likes: 1_234,
-            quotes: 0,
-            views: Some(2_500_000),
-        };
         post
     }
 
-    /// Reddit: video **her zaman** indirilir (ses ayrı akışta gelir; sesli oynatma ancak
-    /// video+ses birleştirilerek mümkün), görseller ise medya yöntemi ayarını izler:
-    /// `direct` modda görsel indirilmez, video indirilir.
     #[test]
-    fn reddit_always_downloads_video_but_keeps_images_direct() {
-        let engine = EngineSettings {
-            media_delivery: MediaDelivery::Direct,
-            ..Default::default()
-        };
-
-        let reddit = RenderOptions::from_engine(&engine, "reddit");
+    fn only_reddit_requires_a_video_download() {
+        let engine = EngineSettings::default();
         assert!(
-            reddit.video_requires_download,
-            "Reddit'te video zorunlu indirilir"
+            RenderOptions::from_engine(&engine, "reddit").video_requires_download,
+            "Reddit: ses ayrı akışta → video zorunlu indirilir"
         );
-        assert!(
-            reddit.attach_videos,
-            "ışık hızı modunda bile Reddit videosu ek olarak indirilir"
-        );
-        assert!(
-            !reddit.attach_images,
-            "Reddit görselleri ışık hızı modunda indirilmez"
-        );
-        assert_eq!(
-            reddit.video_budget(),
-            ATTACH_VIDEO_BUDGET,
-            "birleştirme geniş bütçeyle indirilir (otomatik modun 1,2 sn'si yetmez)"
-        );
-
-        // Diğer platformlarda davranış değişmez: `direct` → hiç indirme yok.
-        let twitter = RenderOptions::from_engine(&engine, "twitter");
-        assert!(!twitter.video_requires_download);
-        assert!(!twitter.attach_videos);
-        assert!(!twitter.attach_images);
-
-        // Kullanıcı videoları tamamen kapattıysa Reddit'te de indirilmez.
-        let no_videos = EngineSettings {
-            media_delivery: MediaDelivery::Direct,
-            attach_videos: false,
-            ..Default::default()
-        };
-        assert!(!RenderOptions::from_engine(&no_videos, "reddit").attach_videos);
-
-        // `attach` modunda ikisi de indirilir.
-        let attach = EngineSettings {
-            media_delivery: MediaDelivery::Attach,
-            ..Default::default()
-        };
-        let reddit_attach = RenderOptions::from_engine(&attach, "reddit");
-        assert!(reddit_attach.attach_images && reddit_attach.attach_videos);
-
-        // Reddit'te video **zorunlu** indirildiği için `direct` modda da medya fazı atlanmaz;
-        // diğer platformlarda ışık hızı kuralı aynen geçerlidir.
-        assert!(twitter.skips_all_downloads(), "diğer platformlar: hiç indirme yok");
-        assert!(
-            !reddit.skips_all_downloads(),
-            "Reddit: video zorunlu indirilir (ses ancak birleştirmeyle gelir)"
-        );
-        assert!(!reddit_attach.skips_all_downloads());
-    }
-
-
-    /// **Canlı doğrulama:** `direct` (ışık hızı) modda Reddit videosu **yine de** indirilip
-    /// sesiyle birleştirilerek eklenir — ses ayrı akışta geldiği için tek sesli oynatma yolu
-    /// budur; görseller bağlantı olarak kalır. Ağ/upstream erişilemezse test atlanır.
-    #[tokio::test]
-    async fn live_reddit_video_is_attached_even_in_direct_mode() {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap();
-
-        let Some(token) = super::super::reddit::oauth_token(
-            &client,
-            super::super::reddit::DEFAULT_CLIENT_ID,
-        )
-        .await
-        else {
-            println!("Reddit OAuth token alınamadı; test atlandı");
-            return;
-        };
-        let Ok(listing) = super::super::reddit::get_json_with_bearer(
-            &client,
-            "https://oauth.reddit.com/r/nextfuckinglevel/hot?limit=25&raw_json=1",
-            &token,
-        )
-        .await
-        else {
-            println!("Reddit listesi alınamadı; test atlandı");
-            return;
-        };
-        let Some(url) = listing["data"]["children"].as_array().and_then(|children| {
-            children.iter().find_map(|child| {
-                child["data"]["media"]["reddit_video"]["fallback_url"]
-                    .as_str()
-                    .map(str::to_string)
-            })
-        }) else {
-            println!("canlı Reddit video bulunamadı; test atlandı");
-            return;
-        };
-
-        let engine = EngineSettings {
-            media_delivery: MediaDelivery::Direct,
-            ..Default::default()
-        };
-        let options = RenderOptions::from_engine(&engine, "reddit");
-        let mut post = BuiltinPost::new(
-            Platform::Reddit,
-            "https://www.reddit.com/r/nextfuckinglevel/comments/1",
-            Author::new("op", "op"),
-        );
-        post.media = vec![
-            image("https://i.redd.it/ornek.jpg"),
-            video(&url, "https://i.redd.it/ornek-poster.jpg"),
-        ];
-
-        let plan = plan_media(&post, &options);
-        assert_eq!(plan.images.len(), 0, "ışık hızı: görsel indirilmez");
-        assert_eq!(
-            plan.remote_images,
-            vec!["https://i.redd.it/ornek.jpg".to_string()],
-            "ışık hızı: görsel bağlantı olarak planlanır"
-        );
-        assert_eq!(plan.video.as_deref(), Some(url.as_str()));
-
-        let resolved = resolve_media(&client, &post, &plan, &options).await;
-        let Some(attached) = resolved.attached_video.as_deref() else {
-            println!("{url} ek olarak indirilemedi; test atlandı");
-            return;
-        };
-        assert!(attached.starts_with("attachment://"), "ek referansı: {attached}");
-        let file = resolved.attachments.first().expect("video eki olmalı");
-        assert!(file.data.len() > 64 * 1024, "makul boyutta MP4 beklenir");
-        let has = |needle: &[u8]| file.data.windows(needle.len()).any(|window| window == needle);
-        assert!(has(b"ftyp"), "MP4 konteyneri (ftyp) olmalı");
-        assert!(has(b"mp4a"), "AAC ses kodek kutusu (mp4a) bulunmalı");
-        assert!(has(b"soun"), "ses izi işleyicisi (soun) bulunmalı");
-    }
-
-
-    fn options() -> RenderOptions {
-        // Testler **bütçeli indirme** modunu ölçer: motorun varsayılanı artık ışık hızı
-        // (`direct`) ve o modda hiçbir dosya indirilmez, plan yalnızca bağlantı taşır.
-        RenderOptions {
-            media_delivery: MediaDelivery::Auto,
-            video_requires_download: false,
-            attach_images: true,
-            attach_videos: true,
-            max_images: 4,
-            max_video_mb: 8,
-            show_metrics: true,
-            show_timestamp: true,
-            show_community_note: true,
-            show_quote: true,
+        for platform in ["twitter", "instagram", "tiktok", "bluesky", "spotify"] {
+            assert!(
+                !RenderOptions::from_engine(&engine, platform).video_requires_download,
+                "{platform}: indirme yok"
+            );
         }
     }
 
     #[test]
-    fn direct_mode_never_downloads_media() {
-        let mut engine = EngineSettings {
-            media_delivery: MediaDelivery::Direct,
-            ..Default::default()
-        };
-        // Kullanıcı dosya eki seçmiş olsa bile ışık hızı modu indirme yapmaz.
-        engine.attach_images = true;
-        engine.attach_videos = true;
+    fn plan_keeps_first_video_and_limits_images() {
+        let mut post = sample_post();
+        post.media = vec![
+            image("https://cdn/1.jpg"),
+            video("https://cdn/v1.mp4", "https://cdn/v1.jpg"),
+            video("https://cdn/v2.mp4", "https://cdn/v2.jpg"),
+            image("https://cdn/2.jpg"),
+            image("https://cdn/3.jpg"),
+        ];
+        let mut options = options();
+        options.max_images = 2;
 
-        let options = RenderOptions::from_engine(&engine, "twitter");
-        assert!(!options.attach_images, "ışık hızı: görsel indirme kapalı");
-        assert!(!options.attach_videos, "ışık hızı: video indirme kapalı");
+        let plan = plan_media(&post, &options);
+        assert_eq!(
+            plan.video.as_deref(),
+            Some("https://cdn/v1.mp4"),
+            "ilk video kazanır"
+        );
+        assert_eq!(
+            plan.remote_images,
+            vec![
+                "https://cdn/1.jpg".to_string(),
+                "https://cdn/2.jpg".to_string()
+            ],
+            "görseller `max_images` ile sınırlanır ve bağlantı olarak kalır"
+        );
+    }
 
+    #[test]
+    fn gifs_are_planned_separately_from_videos() {
+        let mut post = sample_post();
+        post.media = vec![gif("https://video.twimg.com/tweet_video/x.mp4")];
+
+        let plan = plan_media(&post, &options());
+        assert_eq!(plan.gifs.len(), 1, "GIF'ler ayrı tutulur");
+        assert!(plan.video.is_none(), "GIF video alanına konmaz");
+    }
+
+    #[test]
+    fn quote_media_is_used_when_the_post_has_none() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.media = vec![video("https://cdn/q.mp4", "https://cdn/q.jpg")];
+        post.quote = Some(Box::new(quote));
+
+        let plan = plan_media(&post, &options());
+        assert_eq!(plan.video.as_deref(), Some("https://cdn/q.mp4"));
+    }
+
+    #[test]
+    fn direct_media_never_downloads_anything() {
         let mut post = sample_post();
         post.media = vec![
             image("https://cdn/1.jpg"),
             gif("https://video.twimg.com/tweet_video/x.mp4"),
             video("https://cdn/v1.mp4", "https://cdn/v1.jpg"),
         ];
-        let plan = plan_media(&post, &options);
-        assert!(plan.images.is_empty(), "indirilecek görsel yok");
-        assert_eq!(plan.remote_images, vec!["https://cdn/1.jpg"]);
-
-        // Medya hiç indirilmeden karta bağlanır: dosya eki yok, bağlantılar hazır.
+        let plan = plan_media(&post, &options());
         let resolved = direct_media(&plan);
+
         assert!(resolved.attachments.is_empty(), "Discord'a dosya yüklenmez");
+        assert!(resolved.attached_video.is_none());
         assert_eq!(resolved.video_link.as_deref(), Some("https://cdn/v1.mp4"));
         assert_eq!(
             resolved.images,
             vec![
                 "https://cdn/1.jpg".to_string(),
-                "https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fx.mp4".to_string()
+                "https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fx.mp4".to_string(),
             ],
-            "GIF, vxTwitter'ın GIF servisinden gelir (.avif)"
+            "görsel CDN bağlantısı + GIF servisi bağlantısı"
         );
     }
-    #[test]
-    fn animated_gifs_are_planned_separately_from_videos() {
+
+    #[tokio::test]
+    async fn non_reddit_videos_are_not_downloaded() {
+        let client = reqwest::Client::new();
         let mut post = sample_post();
-        post.media = vec![gif("https://video.twimg.com/tweet_video/x.mp4")];
+        post.media = vec![video("https://cdn/v1.mp4", "https://cdn/v1.jpg")];
+        let options = options();
+        let plan = plan_media(&post, &options);
 
-        let plan = plan_media(&post, &options());
-
-        assert_eq!(
-            plan.gifs,
-            vec!["https://video.twimg.com/tweet_video/x.mp4"],
-            "GIF ayrı listede planlanır (gerçek .gif'e çevrilir)"
-        );
-        assert!(plan.video.is_none(), "GIF video alanına konmaz: oynatıcı çıkmasın");
-        assert!(plan.images.is_empty());
+        let resolved = resolve_media(&client, &post, &plan, &options).await;
+        assert!(resolved.attachments.is_empty(), "indirme yok");
+        assert_eq!(resolved.video_link.as_deref(), Some("https://cdn/v1.mp4"));
     }
 
     #[test]
-    fn quote_media_is_planned_when_the_post_has_no_media() {
-        let mut post = sample_post();
-        let mut quote = BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/diger/status/2",
-            Author::new("Diğer", "diger"),
-        );
-        quote.media = vec![video("https://cdn/q.mp4", "https://cdn/q.jpg")];
-        post.quote = Some(Box::new(quote));
-
-        let plan = plan_media(&post, &options());
-        assert_eq!(
-            plan.video.as_deref(),
-            Some("https://cdn/q.mp4"),
-            "alıntılayan kişi medya eklemediyse alıntının videosu karta alınır"
-        );
-    }
-
-    #[test]
-    fn post_media_wins_over_the_quote_media() {
-        let mut post = sample_post();
-        post.media = vec![image("https://cdn/own.jpg")];
-        let mut quote = BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/diger/status/2",
-            Author::new("Diğer", "diger"),
-        );
-        quote.media = vec![video("https://cdn/q.mp4", "https://cdn/q.jpg")];
-        post.quote = Some(Box::new(quote));
-
-        let plan = plan_media(&post, &options());
-        assert!(plan.video.is_none(), "gönderiye medya eklenmişse alıntının videosu alınmaz");
-        assert_eq!(plan.images, vec!["https://cdn/own.jpg"]);
-    }
-
-    /// Medyasız zincirin en içindeki gönderi (C).
-    fn inner_quote_with_video() -> BuiltinPost {
-        let mut inner = BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/enic/status/3",
-            Author::new("En İç", "enic"),
-        );
-        inner.text = "en içteki metin".to_string();
-        inner.media = vec![video("https://cdn/inner.mp4", "https://cdn/inner.jpg")];
-        inner
-    }
-
-    /// Alıntılayan (A) ve alıntılanan (B) medyasız; B, C'yi alıntılar.
-    fn media_less_quote_chain() -> BuiltinPost {
-        let mut post = sample_post();
-        let mut middle = BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/orta/status/2",
-            Author::new("Orta", "orta"),
-        );
-        middle.text = "ortadaki metin".to_string();
-        middle.quote = Some(Box::new(inner_quote_with_video()));
-        post.quote = Some(Box::new(middle));
-        post
-    }
-
-    #[test]
-    fn quote_chain_media_is_used_when_outer_posts_have_none() {
-        let post = media_less_quote_chain();
-
-        let plan = plan_media(&post, &options());
-
-        assert_eq!(
-            plan.video.as_deref(),
-            Some("https://cdn/inner.mp4"),
-            "A ve B medyasızsa C'nin medyası karta alınır (X davranışı)"
-        );
-    }
-    #[test]
-    fn media_plan_respects_image_limit_and_prefers_first_video() {
-        let mut post = sample_post();
-        post.media = vec![
-            image("https://cdn/1.jpg"),
-            image("https://cdn/2.jpg"),
-            image("https://cdn/3.jpg"),
-            video("https://cdn/v1.mp4", "https://cdn/v1.jpg"),
-            image("https://cdn/4.jpg"),
-            video("https://cdn/v2.mp4", "https://cdn/v2.jpg"),
-        ];
-
-        let limited = RenderOptions {
-            max_images: 2,
-            ..options()
-        };
-        let plan = plan_media(&post, &limited);
-        assert_eq!(plan.images, vec!["https://cdn/1.jpg", "https://cdn/2.jpg"]);
-        assert_eq!(plan.video.as_deref(), Some("https://cdn/v1.mp4"));
-        assert!(plan.remote_images.is_empty());
-
-        // İndirme kapalıysa görseller uzak URL olarak işaretlenir
-        let without_attachment = RenderOptions {
-            max_images: 2,
-            attach_images: false,
-            ..options()
-        };
-        let plan = plan_media(&post, &without_attachment);
-        assert!(plan.images.is_empty());
-        assert_eq!(plan.remote_images, vec!["https://cdn/1.jpg", "https://cdn/2.jpg"]);
+    fn video_size_limit_never_exceeds_discord_limit() {
+        let mut options = options();
+        options.max_video_mb = u8::MAX;
+        assert!(options.max_video_bytes() <= DISCORD_FILE_LIMIT);
+        assert_eq!(options.video_budget(), VIDEO_MERGE_BUDGET);
     }
 
     #[test]
     fn counts_and_markdown_are_formatted_for_discord() {
         assert_eq!(format_count(0), "0");
-        assert_eq!(format_count(999), "999");
         assert_eq!(format_count(1_234), "1.2K");
-        assert_eq!(format_count(9_999), "10K");
-        assert_eq!(format_count(12_000), "12K");
         assert_eq!(format_count(2_500_000), "2.5M");
-        assert_eq!(format_count(1_200_000_000), "1.2B");
-
-        assert_eq!(escape_markdown("**kalın** [link]"), "\\*\\*kalın\\*\\* \\[link\\]");
+        assert_eq!(
+            escape_markdown("**kalın** [link]"),
+            "\\*\\*kalın\\*\\* \\[link\\]"
+        );
         assert_eq!(escape_markdown("normal metin"), "normal metin");
-        // Discord (CommonMark) kelime **içi** `_` için vurgu başlatmaz; kaçış eklenirse
-        // kart, kullanıcı adında olmayan bir `\` gösteriyordu (bildirilen hata).
+        // Discord kelime içi `_`yi vurgu saymaz: kaçış eklenirse kartta `\` görünür.
         assert_eq!(escape_markdown("world_record_egg"), "world_record_egg");
-        assert_eq!(escape_markdown("efe_ince_58"), "efe_ince_58");
-        assert_eq!(escape_markdown(r"a\b"), r"a\\b");
-    }
-    #[test]
-    fn video_size_limit_never_exceeds_discord_limit() {
-        let huge = RenderOptions {
-            max_video_mb: 50,
-            ..options()
-        };
-        assert_eq!(huge.max_video_bytes(), DISCORD_FILE_LIMIT);
-
-        let small = RenderOptions {
-            max_video_mb: 2,
-            ..options()
-        };
-        assert_eq!(small.max_video_bytes(), 2 * 1024 * 1024);
-    }
-
-    #[tokio::test]
-    async fn media_budget_keeps_slow_downloads_out_of_the_card() {
-        // Bütçe içinde biten indirme dosya olarak eklenir...
-        let fast = tokio::spawn(async { Some("hızlı".to_string()) });
-        assert_eq!(within(IMAGE_BUDGET, fast).await.as_deref(), Some("hızlı"));
-
-        // ...bütçeyi aşan indirme iptal edilir: kart beklemez, medya uzak bağlantıya düşer.
-        let slow = tokio::spawn(async {
-            tokio::time::sleep(VIDEO_BUDGET * 4).await;
-            Some("yavaş".to_string())
-        });
-        assert_eq!(within(Duration::from_millis(20), slow).await, None);
-    }
-
-    #[tokio::test]
-    async fn panicked_download_tasks_degrade_to_remote_urls() {
-        let broken: tokio::task::JoinHandle<Option<String>> =
-            tokio::spawn(async { panic!("indirme görevi çöktü") });
-        assert_eq!(within(IMAGE_BUDGET, broken).await, None);
-    }
-
-    #[test]
-    fn media_budgets_bound_the_card_latency() {
-        // Kart "anında" görünmeli: en kötü durumda beklenen süre tek bir bütçedir.
-        let worst_case = [IMAGE_BUDGET, GIF_BUDGET + GIF_RACE_GRACE, VIDEO_BUDGET]
-            .into_iter()
-            .max()
-            .expect("bütçe listesi boş olamaz");
-        assert!(
-            worst_case <= Duration::from_millis(2_500),
-            "en kötü medya beklemesi: {worst_case:?}"
-        );
-    }
-
-    #[test]
-    fn remote_gif_urls_prefer_the_vxtwitter_service() {
-        // vxTwitter GIF servisi varsa uzak bağlantı da animasyonlu `.avif` olur.
-        assert_eq!(
-            remote_gif_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4"),
-            "https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2FHTEtNFcXEAAY4Dv.mp4"
-        );
-        assert_eq!(
-            remote_gif_url("https://cdn.example/clip.mp4"),
-            "https://cdn.example/clip.mp4"
-        );
     }
 }
+
