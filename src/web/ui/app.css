@@ -320,6 +320,8 @@ body {
     border: 1px dashed var(--rule-strong);
     white-space: nowrap;
 }
+/* Bölüm başlığında kapsam: sunucu kapsamında "miras/özel" rozeti + "genele sıfırla". */
+.sheet-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ── 01 · modül listesi ──────────────────────────────────────────────────── */
 .mod-list { border: 1px solid var(--rule); background: var(--paper-2); }
@@ -513,6 +515,8 @@ body {
 .tile { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 12px 13px; background: var(--paper-2); border: 1px solid var(--rule); cursor: pointer; transition: background 0.15s, border-color 0.15s; }
 .tile:hover { background: var(--paper-3); border-color: var(--rule-strong); }
 .tile--static { cursor: default; align-items: center; }
+/* Bağımlılığı olmayan alan (ör. "Yanıtlarda yanıtı koru" taklit kapalıyken): devre dışı. */
+.tile.is-disabled { opacity: 0.5; cursor: not-allowed; }
 .tile-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .tile-name { font-size: 12.5px; font-weight: 600; }
 .tile-hint { font-size: 11px; line-height: 1.45; color: var(--ink-faint); }
@@ -630,6 +634,7 @@ body {
     /* Dar ekranda kaydetme işi alt çubuktadır; künyedeki düğmeler tekrar olurdu. */
     .rail-block--actions .btn-row { display: none; }
     .sheet-head { grid-template-columns: 46px minmax(0, 1fr); gap: 14px; }
+    .sheet-scope { grid-column: 2; justify-self: start; justify-content: flex-start; }
     .sheet-meta { grid-column: 2; justify-self: start; }
     .sheet-num { font-size: 30px; }
     .studio { grid-template-columns: minmax(0, 1fr); }

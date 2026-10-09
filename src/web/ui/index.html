@@ -90,7 +90,11 @@
             <h2 class="sheet-h" id="h-modules">Modüller</h2>
             <p class="sheet-lede">Bağlantı dönüştürmeyi platform bazında açıp kapatın. Kapalı bir modül linke hiç dokunmaz.</p>
         </div>
-        <p class="sheet-meta mono" id="active-modules-count">—</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="active-modules-count">—</p>
+            <span class="chip mono" data-block-badge="modules">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="modules" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <div class="mod-list">
@@ -211,7 +215,11 @@
             <h2 class="sheet-h" id="h-roles">Rol filtresi</h2>
             <p class="sheet-lede">Kara liste: seçili roller modülü kullanamaz. Beyaz liste: yalnızca seçili roller kullanabilir. Filtre yoksa modül herkese açıktır.</p>
         </div>
-        <p class="sheet-meta mono" id="filter-mode-badge">devre dışı</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="filter-mode-badge">devre dışı</p>
+            <span class="chip mono" data-block-badge="role_filters">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="role_filters" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <div class="studio">
@@ -271,7 +279,7 @@
             <div class="role-actions">
                 <div class="picker">
                     <button class="btn" type="button" id="btn-toggle-picker" aria-expanded="false" aria-haspopup="listbox" aria-controls="role-picker-dropdown">
-                        Sunucudan rol seç <span class="caret" aria-hidden="true"></span>
+                        <span id="picker-scope-label">Sunucudan rol seç</span> <span class="caret" aria-hidden="true"></span>
                     </button>
                     <div class="picker-pop" id="role-picker-dropdown" hidden>
                         <div class="picker-head">
@@ -296,7 +304,11 @@
             <h2 class="sheet-h" id="h-ai">AI persona</h2>
             <p class="sheet-lede">Bot etiketlendiğinde ya da mesajına yanıt verildiğinde OpenRouter üzerinden yanıt üretir.</p>
         </div>
-        <p class="sheet-meta mono" id="ai-state">—</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="ai-state">—</p>
+            <span class="chip mono" data-block-badge="ai">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="ai" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <div class="field">
@@ -331,7 +343,11 @@
             <h2 class="sheet-h" id="h-engine">Dönüştürme motoru</h2>
             <p class="sheet-lede">Proxy: link harici önizleme servisine gider, görünümü o servis belirler. Native embed: bot gönderiyi kendisi çözer ve Discord kartını kendisi üretir. <b>Twitter/X, Instagram ve Reddit yalnızca native embed ile çalışır</b> (proxy modu ve proxy yedeği bu platformlarda kaldırılmıştır).</p>
         </div>
-        <p class="sheet-meta mono" id="engine-summary">—</p>
+        <div class="sheet-scope">
+            <p class="sheet-meta mono" id="engine-summary">—</p>
+            <span class="chip mono" data-block-badge="engine">—</span>
+            <button class="btn btn-quiet btn-xs" type="button" data-block-reset="engine" hidden>genele sıfırla</button>
+        </div>
     </header>
 
     <p class="micro">motor seçimi</p>
@@ -419,14 +435,14 @@
     <p class="micro">gönderim</p>
     <div class="tile-grid">
         <label class="tile"><span class="tile-body"><span class="tile-name">Kullanıcıyı taklit et</span><span class="tile-hint">Mesaj kullanıcının adı ve avatarıyla webhook olarak gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_user" role="switch" aria-label="Kullanıcıyı taklit et"><span class="switch-track" aria-hidden="true"></span></span></label>
-        <label class="tile"><span class="tile-body"><span class="tile-name">Yanıtlarda yanıtı koru</span><span class="tile-hint">Webhook mesajı yanıt olamadığı için yanıt olarak atılan linkler bot adına gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_skip_replies" role="switch" aria-label="Yanıtlarda yanıtı koru"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Yanıtlarda yanıtı koru</span><span class="tile-hint">Yalnızca Kullanıcıyı taklit et açıkken geçerlidir; webhook mesajı yanıt olamadığı için yanıt olarak atılan linkler bot adına gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_skip_replies" role="switch" aria-label="Yanıtlarda yanıtı koru"><span class="switch-track" aria-hidden="true"></span></span></label>
     </div>
 
     <p class="micro">medya</p>
     <div class="tile-grid">
         <div class="tile tile--static">
             <div class="tile-body">
-        <label class="tile"><span class="tile-body"><span class="tile-name">Proxy yedeği</span><span class="tile-hint">Native embed üretilemezse proxy linkine düş (TikTok / Bluesky / Spotify)</span></span><span class="switch"><input type="checkbox" data-engine-switch="fallback_to_proxy" role="switch" aria-label="Proxy yedeği"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Proxy yedeği</span><span class="tile-hint">Native embed üretilemezse proxy linkine düş. Yalnızca proxy kullanılabilen platformlarda geçerlidir (TikTok / Bluesky / Spotify); Twitter/X, Instagram ve Reddit daima native'dir</span></span><span class="switch"><input type="checkbox" data-engine-switch="fallback_to_proxy" role="switch" aria-label="Proxy yedeği"><span class="switch-track" aria-hidden="true"></span></span></label>
     </div>
 
     <div class="range-grid">
@@ -468,11 +484,11 @@
             <div class="manual-item"><dt>Native embed</dt><dd>Bot gönderiyi kendisi çözer: yazar adı, doğrulama işareti, gönderi metni, metrikler, tarih, alıntı ve medya galerisi. Video ve görseller kartın içinde oynar. <b>Twitter/X, Instagram ve Reddit her zaman bu motorla çalışır</b> (proxy modu ve proxy yedeği kaldırıldı).</dd></div>
             <div class="manual-item"><dt>Yedek alan adı</dt><dd>Yalnızca proxy modu kullanılabilen platformlarda (TikTok, Bluesky, Spotify) görünür; native embed üretilemezse bu alan adına düşülür. Boş bırakılan alan <span class="mono">.env</span> değerini kullanır (ipucu gerçek değeri yazar).</dd></div>
             <div class="manual-item"><dt>Kart stili</dt><dd>Kart **her zaman** tek parça <span class="mono">Components V2</span> kartıdır; klasik (fxembed tarzı) embed yedeği kaldırılmıştır. Video ve görseller kartın içindeki galeride oynar, metrik/tarih/etiketler alt satırda durur.</dd></div>
-            <div class="manual-item"><dt>Medya yöntemi</dt><dd><span class="mono">doğrudan</span> (varsayılan) <b>ışık hızı</b>dır: hiçbir dosya indirilmez/yüklenmez, görsel CDN'in <span class="mono">large</span> varyantından, video kart içinde oynayan en uygun mp4'ten, GIF ise FxEmbed'in GIF servisinden gelir — kart veri gelir gelmez gönderilir. <span class="mono">otomatik</span> medyayı kısa bir süre bütçesi içinde indirip dosya olarak ekler (yetişmezse bağlantıya düşer). <span class="mono">dosya eki</span> her zaman indirir (tam çözünürlük + kaynak CDN'e bağımlı olmama). <b>Reddit istisnası:</b> Reddit videosu ses ayrı akışta geldiği için <b>her modda indirilip sesiyle birleştirilir</b> (görseller yine bu ayarı izler).</dd></div>
-            <div class="manual-item"><dt>Medya yükleme</dt><dd>Görseller (ve limit altındaki videolar) mesaja dosya olarak eklenir; indirilemeyen medya otomatik olarak uzak URL'e düşer. Video indirilemezse kartta yalnızca video gösterilir, kapak ayrı öğe olarak eklenmez.</dd></div>
+            <div class="manual-item"><dt>Medya</dt><dd><b>Işık hızı:</b> hiçbir medya indirilmez/yüklenmez — görseller CDN'in hafif (<span class="mono">large</span>) varyantından, video kart içinde oynayan en uygun mp4'ten, GIF ise FxEmbed'in GIF servisinden gelir; kart veri gelir gelmez gönderilir. Tek istisna <b>Reddit videosudur</b>: ses ayrı akışta geldiği için video+ses kısa bir bütçe içinde birleştirilip mesaja <b>dosya olarak</b> eklenir; bütçe dolarsa video kartta sessiz oynar. Medya yöntemi diye bir ayar yoktur.</dd></div>
+            <div class="manual-item"><dt>Medya eki</dt><dd>Yalnızca yukarıdaki istisna — birleştirilen <b>Reddit videosu</b> — mesaja dosya olarak eklenir. Diğer görseller ve videolar kart içinde uzak bağlantıyla gösterilir/oynar; hiçbiri indirilmez.</dd></div>
             <div class="manual-item"><dt>Taklit</dt><dd>Mesaj kullanıcının adı ve avatarıyla webhook üzerinden gider, link ve etiket hilesi gerekmez (Manage Webhooks izni şart). Discord webhook mesajları yanıt olamadığı için yanıtlarda yanıt bağlantısı yalnızca "yanıtlarda yanıtı koru" açıkken korunur.</dd></div>
             <div class="manual-item"><dt>Profil resmi</dt><dd>Kartta avatar gösterilmez: Discord bileşenleri küçük resmi yalnızca sağa koyabildiği için modelin solundaki avatar taklit edilemez. Ad ve doğrulama işareti gösterilir.</dd></div>
-            <div class="manual-item"><dt>Kullanıcı metni</dt><dd>Kullanıcının linkle yazdığı metin modern kartta kartın üstünde, kullanıcı mesajı gibi durur; kart içine alınmaz. Discord bileşenleri reddederse otomatik olarak klasik embed'e düşülür.</dd></div>
+            <div class="manual-item"><dt>Kullanıcı metni</dt><dd>Kullanıcının linkle yazdığı metin modern kartta kartın üstünde, kullanıcı mesajı gibi durur; kart içine alınmaz. Kart üretilemezse <b>klasik embed yedeği yoktur</b>: hata log'lanır ve dönülür.</dd></div>
         </dl>
     </details>
 </section>

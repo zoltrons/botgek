@@ -43,6 +43,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 19:45] zoltrons — Sunucu ayarları bölüm bazlı sparse override'a geçti (tek çözümleme + göç + miras/özel UI)
+- **Commit:** `8fc2692..255deec`
+- **Yapılan:**
+  1. **Tek çözümleme:** saf `resolve_settings(global, override)` fonksiyonu; `get_guild_settings` yalnızca onu çağırır (bot/converters tarafı **hiç değişmedi**), panelde aynı semantik `resolveSettings`. Sunucu kaydı artık **bölüm bazlı sparse** (`GuildOverride`: modules / role_filters / ai / engine): yalnızca bilerek değiştirilen bölümler saklanır, diğerleri genelden miras alır — genel ayar sonradan değişince miras alan bölümler otomatik güncellenir (eski davranış: tek alan değişince tüm ayarların tam kopyası yazılıyordu ve genel değişimi sunucuya yansımıyordu).
+  2. **Göç + yedek:** eski tam kopya kayıtlar yükleme anında **bir kez** indirgenir (`migrate_legacy_guild_overrides`); öncesinde `settings.json.bak-<zaman>` yedeği alınır ve `schema_version` damgalanır (damgalanmasa göç her açılışta tekrarlar ve bilerek sabitlenen bir bölüm, o an genelle aynı olduğu için sessizce mirasa dönebilirdi). Elle yedek için `backup-settings.sh` / `backup-settings.ps1` (göç öncesi durum fotoğrafı da basar).
+  3. **UI:** her bölüm başlığında `miras/özel` rozeti + "genele sıfırla", rayda `N/4 bölüm özel` rozeti; kaydetme sunucuya **yalnızca sabitlenen bölümleri** gönderir. Ayrıca 5 panel tutarsızlığı düzeltildi: native-only satır etiketi (proxy değil native), ölü medya/kart stili notları, "yanıtlarda yanıtı koru" bağımlılığı (taklit kapalıyken devre dışı), "proxy yedeği" kapsam metni, rol seçici etiketi.
+- **Test:** **206 test geçti** (12 yeni: resolve + göç + sparse serialize; 194 → 206); `node --check app.js` temiz; panel sözleşme testi sparse çözümleme izini de doğrular.
+- **Etkilenen:** `src/settings.rs`, `src/web/mod.rs`, `src/web/ui/{app.js,index.html,app.css}`, `README.md`, `settings.json`, `backup-settings.sh`, `backup-settings.ps1`
+
+
 ### [2026-10-09 18:45] zoltrons — "Gönderen: @kullanıcı" etiketi kartın **meta satırına** taşındı
 - **Commit:** `cd4929a`
 - **Yapılan:**

@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{error, info};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -594,8 +595,98 @@ impl GuildSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Ayar dosyası şema sürümü.
+///
+/// - `0..=1`: sunucu kayıtları **tam kopyaydı** (`GuildSettings`) — her sunucu, ilk
+///   düzenlemede genelin tüm ayarlarının kopyasını tutuyordu.
+/// - `2`: sunucu kayıtları **sparse** (`GuildOverride`) — yalnızca bilerek değiştirilen
+///   bölümler saklanır. Göç (`migrate_legacy_guild_overrides`) **bir kez** çalışır ve
+///   sürüm damgalanır; böylece sonraki açılışlarda kullanıcının bilerek sabitlediği bir
+///   bölüm, genelle geçici olarak aynı olduğu için sessizce mirasa dönmez.
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+
+/// Sunucuya özel ayarların **sparse (bölüm bazlı) override** biçimi.
+///
+/// Eski model, sunucu kaydını ilk düzenlemede genelin **tam kopyası** olarak yazıyordu; bu
+/// yüzden sunucuda tek bir alan değiştirildiğinde bile tüm ayarlar genelden kopuyordu
+/// (genel ayar sonradan değişse de sunucu eski değeri ezmeye devam ediyordu).
+///
+/// Yeni modelde yalnızca **kullanıcının o sunucuda bilerek değiştirdiği bölümler** yazılır:
+/// `modules`, `role_filters`, `ai`, `engine`. `None` = **miras** (genel geçerlidir),
+/// `Some(blok)` = o bölüm geneli **bütün olarak** ezer.
+///
+/// Granülarite **bölüm** düzeyindedir: bir bölüm override edildiğinde içindeki tüm
+/// anahtarlar sabitlenir (alan düzeyinde kısmi miras yoktur). Bu yüzden override bloğu
+/// daima **tam** yazılır — serde eksik alt anahtarı kod varsayılanıyla doldurur, genelin
+/// o anki değeriyle değil.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GuildOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modules: Option<PlatformModules>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_filters: Option<ModuleRoleFilters>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineSettings>,
+}
+
+impl GuildOverride {
+    /// Hiçbir bölüm override edilmemişse kayıt **"miras"** sayılır ve saklanmaz.
+    pub fn is_empty(&self) -> bool {
+        self.modules.is_none()
+            && self.role_filters.is_none()
+            && self.ai.is_none()
+            && self.engine.is_none()
+    }
+}
+
+/// Bir bölüm için override varsa onu (bütün olarak), yoksa geneli döndürür.
+fn pick<T: Clone>(global: &T, over: Option<&T>) -> T {
+    over.cloned().unwrap_or_else(|| global.clone())
+}
+
+/// AI bloğunun **tek** çözümlemesi: override varsa o, yoksa genel; ancak override içindeki
+/// **boş** model/kişilik alanları genelden doldurulur (eski davranışın devamı).
+fn merge_ai(global: &AiSettings, over: Option<&AiSettings>) -> AiSettings {
+    let mut ai = pick(global, over);
+    if ai.system_prompt.trim().is_empty() {
+        ai.system_prompt = global.system_prompt.clone();
+    }
+    if ai.model.trim().is_empty() {
+        ai.model = global.model.clone();
+    }
+    ai
+}
+
+/// **Etkin ayar (tek kaynak):** genel ayarlar ile sunucu override'ı çözümlenir.
+///
+/// Blok bazlı (sparse) çözümleme: `guild` içinde **bulunan** bölüm geneli bütün olarak
+/// ezer, bulunmayan bölüm genelden miras alınır. `guild == None` → sunucuya özel kayıt yok
+/// (DM veya hiç özelleştirilmemiş sunucu): genel ayarlar geçerlidir.
+///
+/// **Saf fonksiyondur:** I/O yapmaz, girdileri değiştirmez. Bot çalışma zamanı
+/// (`AppSettings::get_guild_settings`) ve WebUI aynı sonucu buradan alır — kopya
+/// çözümleme mantığı yoktur.
+pub fn resolve_settings(global: &AppSettings, guild: Option<&GuildOverride>) -> GuildSettings {
+    GuildSettings {
+        modules: pick(&global.modules, guild.and_then(|g| g.modules.as_ref())),
+        role_filters: pick(
+            &global.role_filters,
+            guild.and_then(|g| g.role_filters.as_ref()),
+        ),
+        ai: merge_ai(&global.ai, guild.and_then(|g| g.ai.as_ref())),
+        engine: pick(&global.engine, guild.and_then(|g| g.engine.as_ref())),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    /// Ayar dosyası şema sürümü (bkz. [`SETTINGS_SCHEMA_VERSION`]); taze dosya güncel sürümle
+    /// doğar, eski dosyalar `0` okunur ve göç bir kez çalışır.
+    #[serde(default)]
+    pub schema_version: u32,
     #[serde(default)]
     pub modules: PlatformModules,
     #[serde(default)]
@@ -610,34 +701,102 @@ pub struct AppSettings {
     /// Link dönüştürme motoru (proxy / built-in embed) ayarları
     #[serde(default)]
     pub engine: EngineSettings,
-    /// Sunucuya özel ayarlar (Guild ID -> GuildSettings)
+    /// Sunucuya özel **sparse** ayarlar (Guild ID -> yalnızca bilerek değiştirilen bölümler).
+    /// Boş bölümler yazılmaz; kaydın kendisi yoksa sunucu genel ayarları **miras alır**.
     #[serde(default)]
-    pub guilds: HashMap<String, GuildSettings>,
+    pub guilds: HashMap<String, GuildOverride>,
+}
+
+impl Default for AppSettings {
+    /// Taze ayarlar **güncel** şema sürümüyle doğar; böylece yeni kurulumda göç çalışmaz.
+    fn default() -> Self {
+        Self {
+            schema_version: SETTINGS_SCHEMA_VERSION,
+            modules: PlatformModules::default(),
+            role_filters: ModuleRoleFilters::default(),
+            role_filter: None,
+            ai: AiSettings::default(),
+            engine: EngineSettings::default(),
+            guilds: HashMap::new(),
+        }
+    }
 }
 
 impl AppSettings {
-    pub fn default_guild_settings(&self) -> GuildSettings {
-        GuildSettings {
-            modules: self.modules.clone(),
-            role_filters: self.role_filters.clone(),
-            ai: self.ai.clone(),
-            engine: self.engine.clone(),
-        }
+    /// Sunucunun **etkin** ayarları: genel + sunucu override çözümlemesi.
+    ///
+    /// Tek çözümleme noktasıdır (bkz. [`resolve_settings`]); bot çalışma zamanındaki tüm
+    /// ayar okumaları buradan geçer.
+    pub fn get_guild_settings(&self, guild_id: Option<serenity::all::GuildId>) -> GuildSettings {
+        let over = guild_id.and_then(|gid| self.guilds.get(&gid.to_string()));
+        resolve_settings(self, over)
     }
 
-    pub fn get_guild_settings(&self, guild_id: Option<serenity::all::GuildId>) -> GuildSettings {
-        if let Some(gid) = guild_id
-            && let Some(custom) = self.guilds.get(&gid.to_string()) {
-                let mut resolved = custom.clone();
-                if resolved.ai.system_prompt.trim().is_empty() {
-                    resolved.ai.system_prompt = self.ai.system_prompt.clone();
-                }
-                if resolved.ai.model.trim().is_empty() {
-                    resolved.ai.model = self.ai.model.clone();
-                }
-                return resolved;
+    /// **Göç (bir kez):** eski **tam kopya** sunucu kayıtlarını sparse override'a indirger.
+    ///
+    /// Eski model sunucu kaydını ilk düzenlemede genelin tam kopyası olarak yazıyordu. Bu
+    /// fonksiyon genel ile **birebir aynı** (veya AI için: aynı çözülen) bölümleri düşürür —
+    /// gereksiz sabitlemeyi kaldırır, mirasa döndürür — ve farklı bölümleri korur. Override'ı
+    /// boşalan sunucu kaydı **silinir** (o sunucu artık "özel" değildir).
+    ///
+    /// Ayırt edilemez durum ("bilerek genelle aynı bırakılmış" ↔ "kopyalanmış") **kayıp kabul
+    /// edilir**: eşit bölüm un-pin edilir. Göç verisi kaybı riskini taşıdığı için çağıran
+    /// taraf öncesinde tarih damgalı **yedek** alır (`backup_settings_file`).
+    ///
+    /// Yalnızca `schema_version < SETTINGS_SCHEMA_VERSION` iken çağrılmalıdır: aksi hâlde
+    /// kullanıcının bilerek sabitlediği bir bölüm, o an genelle aynı olduğu için sessizce
+    /// mirasa dönebilir.
+    ///
+    /// Döndürülen değer: bölümü indirgenen veya kaydı silinen sunucu sayısı.
+    pub fn migrate_legacy_guild_overrides(&mut self) -> usize {
+        // Genel bölümler klonlanır: `self.guilds` üzerinde mutable gezinirken `self`'i
+        // ödünç alamayız (borrow checker), ayrıca karşılaştırma referansı sabit kalmalı.
+        let global_modules = self.modules.clone();
+        let global_role_filters = self.role_filters.clone();
+        let global_ai = self.ai.clone();
+        let global_engine = self.engine.clone();
+
+        let before = self.guilds.clone();
+
+        for over in self.guilds.values_mut() {
+            if over
+                .modules
+                .as_ref()
+                .is_none_or(|block| block == &global_modules)
+            {
+                over.modules = None;
             }
-        self.default_guild_settings()
+            if over
+                .role_filters
+                .as_ref()
+                .is_none_or(|block| block == &global_role_filters)
+            {
+                over.role_filters = None;
+            }
+            // AI bloğu için karşılaştırma **çözülmüş** değer üzerinden yapılır: boş
+            // model/kişilik alanları zaten genelden dolduruluyor, bu yüzden pin gereksizdir.
+            if over.ai.is_some() && merge_ai(&global_ai, over.ai.as_ref()) == global_ai {
+                over.ai = None;
+            }
+            if over
+                .engine
+                .as_ref()
+                .is_none_or(|block| block == &global_engine)
+            {
+                over.engine = None;
+            }
+        }
+
+        self.guilds.retain(|_, over| !over.is_empty());
+
+        // Silinen ve indirgenen kayıtların toplamı (idempotent: ikinci çağrı 0 döner).
+        let mut changed = 0;
+        for (gid, previous) in before.iter() {
+            if self.guilds.get(gid) != Some(previous) {
+                changed += 1;
+            }
+        }
+        changed
     }
 
     /// Eski tek `role_filter` alanını modül bazlı filtrelere taşır (bir kez, yükleme anında).
@@ -670,6 +829,21 @@ fn resolve_settings_path() -> PathBuf {
     }
 }
 
+/// Göç öncesi ayar dosyasını, dosyanın **yanına** zaman damgalı kopya olarak yedekler.
+///
+/// `settings.json.bak-<unix-saniye>` biçimindedir. Yedek alınamazsa (izin/yol hatası)
+/// `Err` döner; çağıran göçü yine de sürdürür ama durumu **log'lar** — göç veri kaybı
+/// riski taşıdığı için yedek, geri alma yöntemidir (bkz. README).
+fn backup_settings_file(path: &Path) -> Result<PathBuf, std::io::Error> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let backup = PathBuf::from(format!("{}.bak-{stamp}", path.display()));
+    fs::copy(path, &backup)?;
+    Ok(backup)
+}
+
 impl AppSettings {
     pub fn load() -> Self {
         let path = resolve_settings_path();
@@ -688,11 +862,46 @@ impl AppSettings {
                     // alan adları ve aralık dışı değerler güvenli sınıra çekilir.
                     settings.engine.sanitize();
                     for guild in settings.guilds.values_mut() {
-                        guild.engine.sanitize();
+                        if let Some(engine) = guild.engine.as_mut() {
+                            engine.sanitize();
+                        }
                     }
 
                     // Eski tek `role_filter` alanı modül filtresine taşınır (bir kez).
                     settings.migrate_legacy_role_filter();
+
+                    // Göç (bir kez): eski **tam kopya** sunucu kayıtları sparse override'a
+                    // indirgenir. Öncesinde tarih damgalı yedek alınır, sonuç diske yazılır;
+                    // yazma izni yoksa bot bellekteki (göç edilmiş) ayarlarla devam eder.
+                    // `schema_version` damgalanmasa göç her açılışta yeniden çalışır ve
+                    // kullanıcının bilerek sabitlediği bir bölüm, genelle geçici olarak aynı
+                    // olduğu için sessizce mirasa dönebilirdi.
+                    if settings.schema_version < SETTINGS_SCHEMA_VERSION {
+                        let reduced = settings.migrate_legacy_guild_overrides();
+                        settings.schema_version = SETTINGS_SCHEMA_VERSION;
+                        match backup_settings_file(&path) {
+                            Ok(backup) => info!(
+                                "Göç öncesi ayar yedeği alındı: {}",
+                                backup.display()
+                            ),
+                            Err(err) => warn!(
+                                "Göç öncesi ayar yedeği alınamadı ('{}'): {} — geri alma yedeği YOK",
+                                path.display(),
+                                err
+                            ),
+                        }
+                        match settings.save() {
+                            Ok(()) => info!(
+                                "Sunucu ayarları sparse override modeline göç etti: {} kayıt indirgendi/sadeleşti.",
+                                reduced
+                            ),
+                            Err(err) => warn!(
+                                "Göç sonucu '{}' dosyasına yazılamadı: {} — bellekteki ayarlarla devam ediliyor.",
+                                path.display(),
+                                err
+                            ),
+                        }
+                    }
 
                     info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", path.display());
                     return settings;
@@ -1238,22 +1447,33 @@ mod tests {
         let mut settings = AppSettings::default();
         let guild_id = serenity::all::GuildId::new(4242);
 
-        // Genel varsayılan
+        // Genel varsayılan: sunucu kaydı yok → miras.
         settings.engine.modes.set("bluesky", ConversionMode::Proxy);
         assert_eq!(
             settings.get_guild_settings(Some(guild_id)).engine.modes.bluesky,
             ConversionMode::Proxy
         );
 
-        // Sunucuya özel override
-        let mut custom = settings.default_guild_settings();
-        custom.engine.modes.set("bluesky", ConversionMode::Builtin);
-        settings.guilds.insert(guild_id.to_string(), custom);
+        // Sunucuya özel override: yalnızca `engine` bölümü sabitlenir.
+        settings.guilds.insert(
+            guild_id.to_string(),
+            GuildOverride {
+                engine: Some(EngineSettings {
+                    modes: PlatformEngineModes {
+                        bluesky: ConversionMode::Builtin,
+                        ..PlatformEngineModes::default()
+                    },
+                    ..EngineSettings::default()
+                }),
+                ..GuildOverride::default()
+            },
+        );
 
         assert_eq!(
             settings.get_guild_settings(Some(guild_id)).engine.modes.bluesky,
             ConversionMode::Builtin
         );
+        // Bilinmeyen sunucu geneli miras alır.
         assert_eq!(
             settings.get_guild_settings(Some(serenity::all::GuildId::new(7))).engine.modes.bluesky,
             ConversionMode::Proxy
@@ -1270,16 +1490,27 @@ mod tests {
         assert!(settings.get_guild_settings(Some(guild_1)).modules.twitter);
         assert!(settings.get_guild_settings(None).modules.twitter);
 
-        // guild_1 için özel ayar: twitter kapalı, model farklı
-        let mut custom = settings.default_guild_settings();
-        custom.modules.twitter = false;
-        custom.ai.model = "custom/model".to_string();
-        settings.guilds.insert(guild_1.to_string(), custom);
+        // guild_1 yalnızca `modules` ve `ai` bölümlerini sabitler.
+        settings.guilds.insert(
+            guild_1.to_string(),
+            GuildOverride {
+                modules: Some(PlatformModules {
+                    twitter: false,
+                    ..PlatformModules::default()
+                }),
+                ai: Some(AiSettings {
+                    model: "custom/model".to_string(),
+                    system_prompt: String::new(),
+                }),
+                ..GuildOverride::default()
+            },
+        );
 
-        // guild_1 özel ayarı almalı
+        // guild_1 özel ayarı almalı; **boş** AI kişiliği genelden miras alınır.
         let g1_settings = settings.get_guild_settings(Some(guild_1));
         assert!(!g1_settings.modules.twitter);
         assert_eq!(g1_settings.ai.model, "custom/model");
+        assert_eq!(g1_settings.ai.system_prompt, settings.ai.system_prompt);
 
         // guild_2 ve None (DM) varsayılan ayarları korumalı
         let g2_settings = settings.get_guild_settings(Some(guild_2));
@@ -1288,6 +1519,308 @@ mod tests {
 
         let dm_settings = settings.get_guild_settings(None);
         assert!(dm_settings.modules.twitter);
+    }
+
+    // ── `resolve_settings` (saf çözümleme) birim testleri ───────────────────────────
+
+    /// Boş override → tüm bölümler genelden miras alınır.
+    #[test]
+    fn resolve_empty_override_returns_global() {
+        let mut global = AppSettings::default();
+        global.modules.twitter = false;
+        global.engine.max_images = 9;
+
+        let resolved = resolve_settings(&global, Some(&GuildOverride::default()));
+
+        assert!(!resolved.modules.twitter);
+        assert_eq!(resolved.engine.max_images, 9);
+        assert_eq!(resolved.ai, global.ai);
+        assert_eq!(resolved.role_filters, global.role_filters);
+    }
+
+    /// Sunucu kaydı hiç yoksa (DM / özelleştirilmemiş sunucu) genel geçerlidir.
+    #[test]
+    fn resolve_missing_override_returns_global() {
+        let mut global = AppSettings::default();
+        global.modules.reddit = false;
+
+        assert_eq!(
+            resolve_settings(&global, None),
+            resolve_settings(&global, Some(&GuildOverride::default())),
+            "kayıt yokluğu ile boş override aynı sonucu vermeli"
+        );
+        assert!(!resolve_settings(&global, None).modules.reddit);
+    }
+
+    /// Kısmi override: yalnızca sabitlenen bölüm ezilir; genel değişince **miras alan**
+    /// bölüm yeni değeri alır, sabitlenen değişmez.
+    #[test]
+    fn resolve_partial_override_and_global_change_propagation() {
+        let mut global = AppSettings::default();
+        global.engine.max_images = 3;
+        global.ai.model = "global/model".to_string();
+
+        let over = GuildOverride {
+            modules: Some(PlatformModules {
+                tiktok: false,
+                ..PlatformModules::default()
+            }),
+            ..GuildOverride::default()
+        };
+
+        let resolved = resolve_settings(&global, Some(&over));
+        assert!(!resolved.modules.tiktok);
+        assert_eq!(resolved.engine.max_images, 3);
+        assert_eq!(resolved.ai.model, "global/model");
+
+        // Genel değişti: miras alan bölüm yeni değeri alır, sabitlenen bölüm etkilenmez.
+        global.engine.max_images = 7;
+        global.modules.tiktok = true;
+        let resolved = resolve_settings(&global, Some(&over));
+        assert_eq!(
+            resolved.engine.max_images, 7,
+            "override'ı olmayan bölüm genel değişimini izlemeli"
+        );
+        assert!(
+            !resolved.modules.tiktok,
+            "sabitlenen bölüm genel değişiminden etkilenmemeli"
+        );
+    }
+
+    /// İç içe anahtar: bölüm sabitlendiğinde **içindeki tüm anahtarlar** ezilir (global'den
+    /// değil, override bloğundan/kod varsayılanından gelir).
+    #[test]
+    fn resolve_pinned_block_overrides_nested_keys_wholesale() {
+        let mut global = AppSettings::default();
+        global.engine.emojis.likes = "<:global_like:1>".to_string();
+        global.engine.emojis.replies = "<:global_reply:2>".to_string();
+
+        let over = GuildOverride {
+            engine: Some(EngineSettings {
+                emojis: EmojiSettings {
+                    likes: "<:guild_like:3>".to_string(),
+                    ..EmojiSettings::default()
+                },
+                ..EngineSettings::default()
+            }),
+            ..GuildOverride::default()
+        };
+
+        let resolved = resolve_settings(&global, Some(&over));
+        assert_eq!(resolved.engine.emojis.likes, "<:guild_like:3>");
+        assert_eq!(
+            resolved.engine.emojis.replies,
+            EmojiSettings::default().replies,
+            "sabitlenen bölümün diğer iç anahtarları global'den değil blok/kod varsayılanından gelir"
+        );
+    }
+
+    /// Dizi alanları (rol listeleri) **birleşmez**, bütün olarak ezilir.
+    #[test]
+    fn resolve_role_lists_replace_wholesale() {
+        let mut global = AppSettings::default();
+        global.role_filters.twitter.mode = FilterMode::Blacklist;
+        global.role_filters.twitter.roles = vec!["1".to_string(), "2".to_string(), "3".to_string()];
+
+        let over = GuildOverride {
+            role_filters: Some(ModuleRoleFilters {
+                twitter: RoleFilterSettings {
+                    mode: FilterMode::Allowlist,
+                    roles: vec!["9".to_string()],
+                },
+                ..ModuleRoleFilters::default()
+            }),
+            ..GuildOverride::default()
+        };
+
+        let resolved = resolve_settings(&global, Some(&over));
+        assert_eq!(resolved.role_filters.twitter.mode, FilterMode::Allowlist);
+        assert_eq!(
+            resolved.role_filters.twitter.roles,
+            vec!["9".to_string()],
+            "rol listesi birleşmez: override dizisi bütün olarak geçerlidir"
+        );
+        assert_eq!(
+            resolved.role_filters.tiktok, global.role_filters.tiktok,
+            "sabitlenmeyen modüller genelden miras alır"
+        );
+    }
+
+    /// Bölüm override'ı kaldırılınca mirasa dönülür.
+    #[test]
+    fn resolve_removing_override_returns_to_inheritance() {
+        let mut global = AppSettings::default();
+        global.engine.max_images = 5;
+
+        let mut over = GuildOverride {
+            engine: Some(EngineSettings {
+                max_images: 2,
+                ..EngineSettings::default()
+            }),
+            ..GuildOverride::default()
+        };
+        assert_eq!(resolve_settings(&global, Some(&over)).engine.max_images, 2);
+
+        over.engine = None;
+        assert!(over.is_empty(), "hiç bölüm kalmayınca kayıt miras sayılır");
+        assert_eq!(
+            resolve_settings(&global, Some(&over)).engine.max_images,
+            5,
+            "override kaldırılınca genel geçerli olur"
+        );
+    }
+
+    /// Sparse kayıt, JSON'a yalnızca sabitlenen bölümleri yazar (`skip_serializing_if`).
+    #[test]
+    fn guild_override_serializes_sparse() {
+        let settings = AppSettings {
+            guilds: HashMap::from([(
+                "42".to_string(),
+                GuildOverride {
+                    ai: Some(AiSettings {
+                        model: "m".to_string(),
+                        system_prompt: "p".to_string(),
+                    }),
+                    ..GuildOverride::default()
+                },
+            )]),
+            ..AppSettings::default()
+        };
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let guilds_json = &json[json.find("\"guilds\"").expect("guilds alanı yazılmalı")..];
+
+        assert!(guilds_json.contains("\"ai\""));
+        for block in ["\"modules\"", "\"role_filters\"", "\"engine\""] {
+            assert!(
+                !guilds_json.contains(block),
+                "sabitlenmeyen bölüm kaydedilmemeli: {guilds_json}"
+            );
+        }
+    }
+
+    // ── Göç (`migrate_legacy_guild_overrides`) birim testleri ───────────────────────
+
+    /// Göç: genelle birebir aynı bölümler un-pin edilir, farklı bölüm korunur.
+    #[test]
+    fn migrate_reduces_identical_blocks_and_keeps_different_ones() {
+        let mut settings = AppSettings::default();
+        settings.engine.max_images = 5;
+
+        // Eski "tam kopya": modules/role_filters/ai genelle aynı, engine farklı.
+        settings.guilds.insert(
+            "1".to_string(),
+            GuildOverride {
+                modules: Some(settings.modules.clone()),
+                role_filters: Some(settings.role_filters.clone()),
+                ai: Some(settings.ai.clone()),
+                engine: Some(EngineSettings {
+                    max_images: 2,
+                    ..settings.engine.clone()
+                }),
+            },
+        );
+
+        assert_eq!(settings.migrate_legacy_guild_overrides(), 1);
+
+        let over = &settings.guilds["1"];
+        assert!(over.modules.is_none());
+        assert!(over.role_filters.is_none());
+        assert!(over.ai.is_none());
+        assert_eq!(over.engine.as_ref().unwrap().max_images, 2);
+    }
+
+    /// Göç: tamamen genelle aynı olan sunucu kaydı silinir (artık "özel" değildir).
+    #[test]
+    fn migrate_drops_guild_record_identical_to_global() {
+        let mut settings = AppSettings::default();
+        settings.guilds.insert(
+            "7".to_string(),
+            GuildOverride {
+                modules: Some(settings.modules.clone()),
+                role_filters: Some(settings.role_filters.clone()),
+                ai: Some(settings.ai.clone()),
+                engine: Some(settings.engine.clone()),
+            },
+        );
+
+        assert_eq!(settings.migrate_legacy_guild_overrides(), 1);
+        assert!(
+            settings.guilds.is_empty(),
+            "tam kopya kayıt mirasa dönüp silinmeli"
+        );
+    }
+
+    /// Göç: boş model/kişilik alanlı AI bloğu genelle aynı **çözülüyorsa** pin gereksizdir.
+    #[test]
+    fn migrate_reduces_ai_block_with_empty_fields() {
+        let mut settings = AppSettings::default();
+        settings.guilds.insert(
+            "3".to_string(),
+            GuildOverride {
+                ai: Some(AiSettings {
+                    model: String::new(),
+                    system_prompt: "  ".to_string(),
+                }),
+                ..GuildOverride::default()
+            },
+        );
+
+        assert_eq!(settings.migrate_legacy_guild_overrides(), 1);
+        assert!(settings.guilds.is_empty());
+    }
+
+    /// Göç idempotenttir: ikinci çalıştırma çıktıyı değiştirmez.
+    #[test]
+    fn migrate_is_idempotent() {
+        let mut settings = AppSettings::default();
+        settings.engine.max_images = 5;
+        settings.guilds.insert(
+            "1".to_string(),
+            GuildOverride {
+                modules: Some(settings.modules.clone()),
+                engine: Some(EngineSettings {
+                    max_images: 2,
+                    ..settings.engine.clone()
+                }),
+                ..GuildOverride::default()
+            },
+        );
+
+        assert_eq!(settings.migrate_legacy_guild_overrides(), 1);
+        let after_migration = settings.clone();
+
+        assert_eq!(
+            settings.migrate_legacy_guild_overrides(),
+            0,
+            "ikinci çalıştırma değişiklik üretmemeli"
+        );
+        assert_eq!(
+            serde_json::to_string(&settings).unwrap(),
+            serde_json::to_string(&after_migration).unwrap()
+        );
+    }
+
+    /// Şema sürümü: taze ayarlar güncel sürümle doğar, eski dosya `0` okunur (göç tetiklenir).
+    #[test]
+    fn schema_version_marks_fresh_and_legacy_files() {
+        assert_eq!(
+            AppSettings::default().schema_version,
+            SETTINGS_SCHEMA_VERSION,
+            "taze ayar dosyası güncel sürümü taşımalı"
+        );
+
+        let legacy: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            legacy.schema_version, 0,
+            "eski dosyada alan yok → 0 → göç bir kez çalışır"
+        );
+
+        let json = serde_json::to_string(&AppSettings::default()).unwrap();
+        assert!(
+            json.contains(&format!("\"schema_version\":{SETTINGS_SCHEMA_VERSION}")),
+            "sürüm kalıcı olmalı: {json}"
+        );
     }
 }
 
