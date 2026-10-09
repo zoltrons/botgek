@@ -729,6 +729,27 @@ mod tests {
     }
 
     #[test]
+    fn underscored_usernames_stay_clean_in_the_author_line() {
+        // Regresyon: `_` kaçırıldığında kart `world\_record\_egg` yazıyordu (kullanıcı adında
+        // olmayan `\`). Discord kelime içi `_`yi vurgu saymadığı için kaçış gerekmez.
+        let mut post = sample_post();
+        post.author.name = "Just An Egg".to_string();
+        post.author.handle = "world_record_egg".to_string();
+        post.author.profile_url = Some("https://x.com/world_record_egg".to_string());
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let author = texts(&payload)[0].to_string();
+
+        assert!(author.contains("world_record_egg"), "kullanıcı adı: {author}");
+        assert!(
+            !author.contains('\\'),
+            "kullanıcı adında kaçış karakteri görünmemeli: {author}"
+        );
+    }
+
+    #[test]
     fn author_line_omits_verified_marker_and_link_when_missing() {
         let mut post = sample_post();
         post.author.verified = false;

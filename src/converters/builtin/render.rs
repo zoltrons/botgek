@@ -750,10 +750,15 @@ pub fn format_count(value: u64) -> String {
 }
 
 /// Kullanıcı kaynaklı metinlerde Discord markdown'ını etkisiz hâle getirir.
+///
+/// **`_` kaçırılmaz:** Discord (CommonMark) **kelime içindeki** alt çizgileri vurgu
+/// başlatıcı saymaz; `world_record_egg` gibi kullanıcı adları olduğu gibi görünür.
+/// Kaçırıldığında kart, kullanıcı adında olmayan bir `\` gösteriyordu
+/// (`world\_record\_egg`).
 pub fn escape_markdown(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
-        if matches!(ch, '\\' | '*' | '_' | '~' | '`' | '|' | '>' | '[' | ']') {
+        if matches!(ch, '\\' | '*' | '~' | '`' | '|' | '>' | '[' | ']') {
             out.push('\\');
         }
         out.push(ch);
@@ -1308,6 +1313,11 @@ mod tests {
 
         assert_eq!(escape_markdown("**kalın** [link]"), "\\*\\*kalın\\*\\* \\[link\\]");
         assert_eq!(escape_markdown("normal metin"), "normal metin");
+        // Discord (CommonMark) kelime **içi** `_` için vurgu başlatmaz; kaçış eklenirse
+        // kart, kullanıcı adında olmayan bir `\` gösteriyordu (bildirilen hata).
+        assert_eq!(escape_markdown("world_record_egg"), "world_record_egg");
+        assert_eq!(escape_markdown("efe_ince_58"), "efe_ince_58");
+        assert_eq!(escape_markdown(r"a\b"), r"a\\b");
     }
 
     #[test]
