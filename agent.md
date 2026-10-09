@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 16:52] zoltrons — Reddit native: `installed_client` OAuth ile 403 çözümü + `secure_media` (ffmpeg yok)
+- **Commit:** `654c466`
+- **Yapılan:**
+  1. **Araştırma:** Reddit, kimliksiz `.json` isteklerini **403** (JS meydan okuması) ile engelliyor; HTML sayfası da meydan okuma dönüyor. `redlib` (Rust) bu engeli **`installed_client` OAuth** (public client id + `Basic <id>:`) ve `wreq` TLS taklidiyle, `fxreddit` ise Cloudflare IP'sinden düz `.json` ile aşıyor. Video tarafı: `media.reddit_video.fallback_url` **video-only**'dir (indirilen `CMAF_720.mp4` içinde `moov`/`soun`/`mp4a` yok), ses ayrı akışta ve doğrudan **403**; fxreddit sesli sürümü yalnızca HTML sayfasındaki `packaged-media-json`'dan alıyor (o da tarayıcı gerektiriyor).
+  2. Native motor artık **`installed_client`** akışıyla bearer token alıp **`oauth.reddit.com`** üzerinden okuyor: kullanıcı izni/parola gerekmez, istemci kimliği public (`REDDIT_CLIENT_ID` ile değiştirilebilir), token bellekte önbelleklenir ve süresi dolmadan yenilenir. Başarısızlıkta kimliksiz `www.reddit.com` yolu, o da olmazsa proxy yedeği devreye girer.
+  3. **ffmpeg kullanılmaz:** video Reddit'in `fallback_url` mp4'üyle kartta oynar (sessiz — ses ayrı akışta) ve sesli izleme için gönderi bağlantısı verilir. Ayrıca `secure_media.reddit_video` desteği (bazı gönderilerde medya yalnızca orada), paylaşılan gövde okuyucu (`MAX_BODY_BYTES`) ve UTF-8 hata mesajı düzeltmesi. **207 test** geçiyor (yeni: base64 vektörleri, `secure_media` fallback, **canlı OAuth** testi `live_oauth_fetch_returns_post`).
+- **Etkilenen:** `src/converters/builtin/reddit.rs`, `src/converters/builtin/mod.rs` (`fetch` artık `config` alır), `src/config.rs`, `src/settings.rs`, `src/converters/parser.rs`, `src/web/mod.rs`, `.env.example`, `README.md`
 ### [2026-10-09 16:25] zoltrons — Instagram platform göstergesi özel emoji + `INSTAGRAM_SESSIONID` Docker env
 - **Commit:** `09b7b8e`
 - **Yapılan:**
