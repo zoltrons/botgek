@@ -75,7 +75,7 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
   - Kayıt dosyası **hiçbir kaydı unutmaz**: bot kapansa, çökse veya güncellense bile veriler diskte kalır (eski davranış: bellekteki `HashMap` yeniden başlatmada siliniyordu). Yalnızca 200.000 kaydı aşan en eski satırlar budanır, kart silinince (🗑️) kaydı da silinir.
   - Yol: `BOTGEK_DB_PATH` → yoksa çalışma dizinindeki `botgek.db` (systemd: `/var/lib/botgek/botgek.db`, Docker: `/app/data/botgek.db` — `botgek-data` kalıcı volume'u). Dosya açılamazsa bot durmaz, bellek içi veritabanına düşüp uyarı log'lar.
 - 🎛️ **Cyber-Ops Minimal WebUI (`http://localhost:3000`):**
-  - Tüm modülleri (5 platform + bayrak çevirisi + AI sohbet) tek tıkla açıp kapatma; başlıkta gerçek sürüm ve **gerçek WebUI portu** gösterilir (`/api/info`).
+  - Tüm modülleri (5 platform + bayrak çevirisi + AI sohbet) tek tıkla açıp kapatma; başlıkta **gerçek sürüm** (`v0.2.0` yayın · `v0.2.0+5` geliştirme; künye `title`'da) ve **gerçek WebUI portu** gösterilir (`/api/info`).
   - **Tek sayfa düzeni:** solda ray (sürüm/port, telemetri LED'i, bölüm indeksi ve canlı sayaçlar, kapsam seçici, kayıt durumu), sağda dört bölüm — **Modüller**, **Rol filtresi**, **AI persona**, **Dönüştürme motoru**; kaydedilmemiş değişiklikler alt komut çubuğunda ve rayda işaretlenir.
   - 🔐 **Varlıklar ayrı servis edilir:** panel artık tek dev HTML yerine gömülü üç dosyadan oluşur — `ui/index.html` + `/app.css` + `/app.js` (üçü de `include_str!` ile ikiliye derlenir; çalışma anında `src/web/ui` dizini gerekmez). Panelde satır içi script/olay yöneticisi ve satır içi stil bulunmadığı için CSP **`script-src 'self'`** ile sıkı tutulur, tüm yanıtlarda `nosniff` / `X-Frame-Options: DENY` / `no-store` başlıkları döner; `/api/health` canlılık kontrolü içindir. Bu sözleşme (HTML kimlikleri ↔ istemci erişimleri, panel anahtarları ↔ ayar şeması, API yolları ↔ rotalar) testlerle doğrulanır.
   - **Sunucu seçici (bölüm bazlı override):** Ayarlar önce **Genel Varsayılan** olarak düzenlenir; bir sunucu seçildiğinde yalnızca **bilerek değiştirilen bölümler** (`modules` / `role_filters` / `ai` / `engine`) o sunucu için sabitlenir — diğer bölümler genel ayarları **miras alır** ve genel değişince otomatik güncellenir. Her bölüm başlığında `miras` / `özel` rozeti ve o bölümü genel değerlere döndüren **"genele sıfırla"** bulunur; raydaki **"Varsayılana Sıfırla"** ise sunucunun tüm sabitlemelerini siler. Etkin ayar tek bir çözümleme fonksiyonuyla üretilir (`resolve_settings`) — hem bot çalışma zamanı hem panel aynı sonucu alır. Kaydedilmemiş değişiklik varken komut çubuğunda uyarı çıkar.
@@ -86,17 +86,74 @@ Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RA
 
 ---
 
+## 🏷️ Sürümleme
+
+Sürüm **git etiketlerinden** türetilir ve **derleme zamanında ikiliye gömülür** (`build.rs`,
+`cargo:rustc-env`); böylece "bot hep v0.1.0" durumu kalmaz — her commit künyeyi değiştirir.
+
+| Girdi | Rol |
+| ----- | --- |
+| `Cargo.toml` `[package] version` | Sürümün **taban**ı (release script'i günceller) |
+| `vX.Y.Z` etiketi | Etiketin tam üstünde olmak = **yayın sürümü** |
+| `BOTGEK_BUILD_VERSION` | Açık override (CI tag derlemesi / Docker `--build-arg BOTGEK_VERSION`) |
+| `BOTGEK_GIT_SHA`, `SOURCE_DATE_EPOCH` | Künyedeki commit ve **tekrarlanabilir** derleme damgası |
+
+Türetilen biçim (semver build metadata):
+
+| Durum | Sürüm | `is_release` |
+| ----- | ----- | ------------ |
+| Etiketin tam üstünde, ağaç temiz | `0.2.0` | ✅ |
+| Etiketten 5 commit sonra | `0.2.0+5.g8fc2692` | — |
+| Hiç etiket yok (geliştirme) | `0.2.0+dev.g8fc2692` | — |
+| Kirli çalışma ağacı | `0.2.0+5.g8fc2692.dirty` | — |
+| Git yok (Docker/tarball) | `0.2.0+local` | — |
+
+Görünürlük:
+- **`botgek --version`** — tek satır künye: sürüm · yayın/geliştirme · commit · etiket · derleme
+  tarihi · hedef üçlü (`.env` gerekmez; systemd/CI/Docker teşhisi). `botgek --help` kullanımı basar.
+- **Panel rayı** — `v0.2.0` (yayın, yeşil) veya `v0.2.0+5` / `+dev` (geliştirme, turuncu);
+  fare üstüne gelince sha, tarih, hedef ve etiket görünür. Kirli ağaçta `*`.
+- **`GET /api/info`** — `version`, `full_version`, `display_version`, `is_release`, `is_dirty`,
+  `git_sha`, `git_tag`, `commits_since_tag`, `build_date`, `target`.
+- **Log** — açılışta `Sürüm: v0.2.0+5.g8fc2692 · geliştirme · …`.
+- **Docker imaj etiketleri** (`:0.2.0`, `:latest`) ve **paket dosya adları** sürümü taşır.
+
+Yayınlama (mantığın tek kaynağı `release.sh`):
+```bash
+./release.sh patch         # 0.1.0 → 0.1.1 (testler çalışır, commit + annotated etiket atılır)
+./release.sh minor --push  # push'lar → CI paket + GitHub Release + Docker yayınını başlatır
+./release.sh 1.0.0         # açık sürüm
+```
+Windows: `powershell -File release.ps1 minor --push` (Git for Windows bash'ine devreder).
+
+Kurallar: çalışma ağacı temiz olmalı; `Cargo.toml` + `Cargo.lock` + etiket **birlikte** güncellenir;
+etiket ile `Cargo.toml` ayrışırsa derleme **uyarı** verir (sessiz sapma olmaz); aynı etiket iki kez
+atılamaz. Kaynak Docker derlemesinde `.git` bağlamda olmadığı için künyeyi elle verin:
+`docker build --build-arg BOTGEK_VERSION=v0.2.0 --build-arg BOTGEK_SHA=$(git rev-parse --short HEAD) .`
+
+---
+
 ## 🚀 GitHub Actions ile Raspberry Pi Debian Derlemesi (CI/CD)
 
-Projede iki ayrı GitHub Actions iş akışı (Worker) tanımlıdır:
+Projede iki GitHub Actions iş akışı tanımlıdır:
 
-1. **`build-release.yml` (Native Binary & Debian `.deb` Paketi):**
-   - Kod her `push` edildiğinde veya `PR` açıldığında testleri (`cargo test`) çalıştırır.
-   - `cross` aracıyla **Raspberry Pi 64-bit (`aarch64-unknown-linux-gnu`)** ve **Raspberry Pi 32-bit (`armv7-unknown-linux-gnueabihf`)** mimarilerine doğrudan Debian glibc uyumlu derleme yapar.
-   - Her derleme için `.deb` Debian paketi ve `.tar.gz` arşivi üreterek GitHub Actions Artifacts sekmesine yükler.
-   - Bir git etiketi (`v*`) basıldığında GitHub Releases sayfasına paketleri otomatik iliştirir.
-2. **`docker.yml` (Çoklu Mimari Docker İmajı):**
-   - `linux/amd64`, `linux/arm64` ve `linux/arm/v7` için Docker imajı derleyip GitHub Container Registry'ye (`ghcr.io`) yükler.
+1. **`build-release.yml` (test → paket → yayın → Docker):** dört iş (job) hâlinde çalışır:
+   - **test:** `cargo test --locked` çalıştırır ve **sürüm künyesini derlenmiş ikiliden** okur
+     (`botgek --version`) — paket adları ve doğrulama bu tek kaynaktan beslenir.
+   - **build-and-package:** `cross` ile **Raspberry Pi 64-bit (`aarch64-unknown-linux-gnu`)**,
+     **32-bit (`armv7-unknown-linux-gnueabihf`)** ve **Linux x86_64** için derler; **sürümü taşıyan**
+     `.deb` (`botgek_<sürüm>_arm64.deb`) ve `.tar.gz` (`botgek-<sürüm>-…tar.gz`) paketlerini
+     Actions Artifacts'a yükler. x86_64 derlemesinde `--version` çıktısı etiketle karşılaştırılır.
+   - **release:** yalnızca `v*` etiketinde çalışır; paketleri GitHub Releases'e iliştirir
+     (sürüm notları commit'lerden üretilir).
+   - **docker-publish:** `linux/amd64`, `linux/arm64`, `linux/arm/v7` için çok mimarili imaj üretip
+     GitHub Container Registry'ye (`ghcr.io`) yükler; imaj etiketleri **etiketten semver** ile
+     üretilir (`:0.2.0`, ve varsayılan dalda `:latest`).
+2. **`release.yml` (elle sürüm yayını):** Actions → *Release (sürüm bump + etiket)* →
+   **Run workflow**; `patch` / `minor` / `major` (veya açık sürüm) seçilir. Sürümü bump'lar,
+   `Cargo.toml` + `Cargo.lock`'u günceller, testleri çalıştırır, `chore(release): vX.Y.Z`
+   commit'i + **annotated tag** atar ve push'lar. Etiket push'u yukarıdaki zinciri tetikler —
+   yayın mantığının tek kaynağı `release.sh`'tir (yerelde de aynı script kullanılır).
 
 ---
 
@@ -104,11 +161,14 @@ Projede iki ayrı GitHub Actions iş akışı (Worker) tanımlıdır:
 
 ### Seçenek 1: Debian Paketi ile Kurulum (`.deb`) — *En Kolay Yol*
 
-GitHub Actions sayfasından veya Releases sekmesinden mimarinize uygun `.deb` paketini indirin (`botgek_arm64.deb` veya `botgek_armhf.deb`):
+GitHub Actions sayfasından veya Releases sekmesinden mimarinize uygun `.deb` paketini indirin (dosya adı sürümü taşır: `botgek_0.2.0_arm64.deb` veya `botgek_0.2.0_armhf.deb`):
 
 ```bash
-# Paketi kurun
-sudo dpkg -i botgek_arm64.deb
+# Paketi kurun (dosya adını indirdiğiniz sürümle değiştirin)
+sudo dpkg -i botgek_0.2.0_arm64.deb
+
+# Kurulu sürümü doğrulayın (sürüm, commit, derleme tarihi ve hedef makine)
+botgek --version
 
 # Yapılandırma dosyanızı oluşturun ve düzenleyin
 sudo cp /etc/botgek/botgek.env.example /etc/botgek/botgek.env
@@ -192,7 +252,9 @@ git remote add origin https://github.com/KULLANICI_ADI/REPO_ADI.git
 git branch -M main
 git push -u origin main
 
-# 3. Yeni bir sürüm oluşturup Raspberry Pi derlemelerini GitHub Releases'e göndermek için:
-git tag v0.1.0
-git push origin v0.1.0
+# 3. Yeni bir sürüm oluşturup Raspberry Pi derlemelerini ve Docker imajını yayınlamak için:
+./release.sh patch --push        # 0.1.0 → 0.1.1 (test + commit + etiket + push)
+#   → etiket push'u CI'yı tetikler: .deb/.tar.gz → GitHub Release → ghcr.io imajı (semver + latest)
+#
+# Alternatif: GitHub → Actions → "Release (sürüm bump + etiket)" → Run workflow (patch/minor/major)
 ```

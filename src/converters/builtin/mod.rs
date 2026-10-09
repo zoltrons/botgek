@@ -47,13 +47,10 @@ pub const MEDIA_TIMEOUT: Duration = Duration::from_secs(12);
 /// Tek bir JSON/metin yanıtı için okunacak maksimum gövde boyutu (2 MB).
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Tanımlayıcı User-Agent: fxtwitter gibi servisler uygulamanın kendini tanıtmasını ister.
-pub const USER_AGENT: &str = concat!("Botgek/", env!("CARGO_PKG_VERSION"), " (Discord link converter)");
+/// Sürüm bilgisi derleme zamanında gömülür (bkz. [`crate::version`]).
+pub const USER_AGENT: &str = crate::version::USER_AGENT;
 /// Discord REST API için resmi standartta User-Agent (Discord Developer Docs: `DiscordBot ($url, $versionNumber)`).
-pub const DISCORD_USER_AGENT: &str = concat!(
-    "DiscordBot (https://github.com/zoltrons/botgek, ",
-    env!("CARGO_PKG_VERSION"),
-    ")"
-);
+pub const DISCORD_USER_AGENT: &str = crate::version::DISCORD_USER_AGENT;
 
 /// Platform anahtarı (`twitter`, `reddit` ...) — ayarlarda ve loglarda kullanılır.
 pub fn platform_key(platform: Platform) -> &'static str {

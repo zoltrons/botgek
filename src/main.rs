@@ -5,6 +5,7 @@ mod handler;
 mod settings;
 mod store;
 mod utils;
+mod version;
 mod web;
 
 use std::sync::Arc;
@@ -13,8 +14,43 @@ use tokio::sync::RwLock;
 use config::Config;
 use handler::Handler;
 use serenity::all::{Client, GatewayIntents};
-use tracing::{error, info};
+use tracing::error;
+use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+/// Komut satırı kullanımı (`botgek --help`).
+const USAGE: &str = "\
+botgek — Discord link dönüştürücü + AI bot
+
+Kullanım:
+  botgek            botu başlatır (.env + settings.json)
+  botgek --version  sürüm künyesini basar (sürüm, sha, tarih, hedef, etiket)
+  botgek --help     bu metni basar
+
+Yapılandırma: .env (bkz. .env.example) ve settings.json (WebUI /api/settings).";
+
+/// Komut satırı bayrağının yorumu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CliAction {
+    /// Botu normal başlat.
+    Run,
+    /// `--version` / `-V`: sürüm künyesini bas.
+    Version,
+    /// `--help` / `-h`: kullanımı bas.
+    Help,
+    /// Tanınmayan bayrak (kullanım hatası → çıkış kodu 2).
+    Unknown(String),
+}
+
+/// İlk argümanı yorumlar. Saf fonksiyondur: yan etkisi yoktur, testler doğrudan çağırır.
+fn parse_cli_arg(arg: Option<&str>) -> CliAction {
+    match arg {
+        None => CliAction::Run,
+        Some("--version") | Some("-V") => CliAction::Version,
+        Some("--help") | Some("-h") => CliAction::Help,
+        Some(other) => CliAction::Unknown(other.to_string()),
+    }
+}
 
 /// İlk dönüşümde DNS çözümlemesi + TLS el sıkışması beklenmesin diye ilgili uçlara
 /// **arka planda** ısıtma isteği yapar. Bot her açılışta bir kez çalışır; ilk kartın
@@ -44,6 +80,25 @@ fn prewarm_connections(client: &reqwest::Client) {
 
 #[tokio::main]
 async fn main() {
+    // CLI: sürüm/kullanım bayrakları bot yapılandırmasından **önce** işlenir; böylece
+    // `botgek --version` .env olmadan da çalışır (systemd/CI/Docker teşhisi).
+    match parse_cli_arg(std::env::args().nth(1).as_deref()) {
+        CliAction::Run => {}
+        CliAction::Version => {
+            println!("botgek {}", version::summary());
+            return;
+        }
+        CliAction::Help => {
+            println!("{USAGE}");
+            return;
+        }
+        CliAction::Unknown(flag) => {
+            eprintln!("bilinmeyen argüman: {flag}\n");
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        }
+    }
+
     // .env dosyasını yükle
     dotenvy::dotenv().ok();
 
@@ -57,6 +112,9 @@ async fn main() {
         .init();
 
     info!("Botgek başlatılıyor...");
+    // Sürüm, derleme zamanında git etiketlerinden gömülür (`build.rs`): hangi ikilinin
+    // çalıştığı, hangi commit'ten ve hangi hedeften geldiği tek satırda görünür.
+    info!("Sürüm: {}", version::summary());
 
     // Konfigürasyonu oku
     let config = match Config::from_env() {
@@ -158,5 +216,32 @@ async fn main() {
 
     if let Err(err) = client.start().await {
         error!("Bot çalışırken kritik hata oluştu: {:?}", err);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CLI bayrakları: bayrak yoksa bot çalışır; sürüm/kullanım bayrakları çıkışa yol açar.
+    #[test]
+    fn cli_flags_are_parsed() {
+        assert_eq!(parse_cli_arg(None), CliAction::Run);
+        assert_eq!(parse_cli_arg(Some("--version")), CliAction::Version);
+        assert_eq!(parse_cli_arg(Some("-V")), CliAction::Version);
+        assert_eq!(parse_cli_arg(Some("--help")), CliAction::Help);
+        assert_eq!(parse_cli_arg(Some("-h")), CliAction::Help);
+        assert_eq!(
+            parse_cli_arg(Some("--yanlis")),
+            CliAction::Unknown("--yanlis".to_string())
+        );
+    }
+
+    /// Kullanım metni bayrakları ve yapılandırma kaynaklarını belgelemeli.
+    #[test]
+    fn usage_text_documents_flags() {
+        assert!(USAGE.contains("--version"));
+        assert!(USAGE.contains("--help"));
+        assert!(USAGE.contains(".env"));
     }
 }

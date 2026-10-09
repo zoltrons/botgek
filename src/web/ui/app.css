@@ -251,6 +251,9 @@ body {
 .brand-name { font-family: var(--font-display); font-size: 17px; font-weight: 800; letter-spacing: 0.04em; }
 .brand-sub { font-size: 10.5px; color: var(--ink-faint); }
 .brand-version { margin-left: auto; font-size: 10.5px; color: var(--ink-dim); border: 1px solid var(--rule); padding: 2px 6px; }
+/* Sürüm rozeti: yayın sürümü (etiketin tam üstü) parlak, geliştirme derlemesi uyarı renginde. */
+.brand-version[data-tone="release"] { color: var(--live); border-color: #2c3a22; }
+.brand-version[data-tone="dev"] { color: var(--signal); border-color: var(--signal-dim); }
 
 .telemetry {
     display: flex;

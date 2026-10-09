@@ -43,6 +43,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 20:08] zoltrons — Sürüm sistemi: git etiketinden türetilen künye + `release.sh` + sürümlü paketler
+- **Commit:** `cbe8a94..5ac1bdb`
+- **Yapılan:**
+  1. **Sürüm artık sabit değil:** "bot hep v0.1.0'de" durumu bitti. Sürüm **git etiketlerinden** türetilip **derleme zamanında ikiliye gömülür** (`build.rs` → `cargo:rustc-env`; dış bağımlılık yok, UTC tarih için `civil_from_days`, `SOURCE_DATE_EPOCH` ile tekrarlanabilir). Biçim: etiketin tam üstünde `0.2.0` (`is_release`), sonrasında `0.2.0+5.g8fc2692`, etiketsiz `0.2.0+dev.g8fc2692`, kirli ağaçta `.dirty`, git yoksa `+local`. Türetme mantığı `build-support/version-parse.rs` içinde **tek kaynak**: aynı dosyayı `build.rs` ve `src/version.rs` `include!` eder, "gömülen sürüm == çalışma zamanı sürümü" testi bunu kilitler.
+  2. **Görünürlük + doğrulama:** yeni `botgek --version` (ve `--help`) — bot yapılandırmasından önce çalışır, saf `parse_cli_arg` fonksiyonu testlidir. Açılış logunda künye, `/api/info`'da `full_version/display_version/is_release/is_dirty/git_sha/git_tag/commits_since_tag/build_date/target`, panel rayında `v0.2.0` (yayın, yeşil) / `v0.2.0+5` (geliştirme, turuncu) + `title` içinde sha/tarih/hedef. Sürüm, `User-Agent` ve Discord UA'ları da buradan besleniyor.
+  3. **Yayın akışı:** `release.sh` (tek kaynak) sürümü bump'lar, `Cargo.lock`'u senkronlar, testleri çalıştırır, `chore(release): vX.Y.Z` commit'i + **annotated tag** atar (`--push` ile yayın); `release.ps1` yalnızca Git-for-Windows bash'ine devreder. Yeni `release.yml` (elle tetiklenen workflow) aynı script'i çağırır; `build-release.yml` artık **sürüm künyesini derlenmiş ikiliden** okur (test job'ı çıktısı), `fetch-depth: 0` + `BOTGEK_BUILD_VERSION`/`BOTGEK_GIT_SHA` gömülür, x86_64 derlemesinde `--version` etiketle doğrulanır ve `.deb`/`.tar.gz` adları sürümü taşır. Kaynak Docker derlemesi için `BOTGEK_VERSION`/`BOTGEK_SHA` build arg'ları eklendi.
+- **Test:** **222 test geçti** (206 → 222: 14 sürüm türetme/tutarlılık + 2 CLI testi); `cargo check --release` temiz; `node --check` temiz; `app.js` sürüm rozeti Node+`vm` harness'ıyla 11/11 doğrulandı. `release.sh` gerçek bir klonda uçtan uca denendi: `patch`/`minor` bump + `Cargo.toml`/`Cargo.lock` senkronu + commit + annotated tag + `--push` (izole bare repo) ✓ — ayrıca `awk -v next=…` gawk rezerve kelime hatası bu testte yakalanıp `newver` olarak düzeltildi.
+- **Etkilenen:** `build.rs`, `build-support/version-parse.rs`, `src/version.rs`, `src/main.rs`, `src/converters/builtin/mod.rs`, `src/web/mod.rs`, `src/web/ui/{app.js,app.css}`, `release.sh`, `release.ps1`, `.github/workflows/{build-release,release}.yml`, `Dockerfile`, `docker-compose.yml`, `README.md`, `backup-settings.sh` (exec bit)
+
+
 ### [2026-10-09 19:45] zoltrons — Sunucu ayarları bölüm bazlı sparse override'a geçti (tek çözümleme + göç + miras/özel UI)
 - **Commit:** `8fc2692..255deec`
 - **Yapılan:**

@@ -18,15 +18,23 @@ permissions:
   contents: read
 
 jobs:
-  # 1. Test Aşaması
+  # 1. Test Aşaması — aynı zamanda **sürüm künyesinin kaynağı**: paket dosya adları ve
+  # doğrulama, derlenmiş ikilinin kendi `--version` çıktısından beslenir (kopya mantık yok).
   test:
     name: Run Tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_file: ${{ steps.version.outputs.version_file }}
+      summary: ${{ steps.version.outputs.summary }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Sürüm git etiketlerinden türetilir (`build.rs`): etiketler + tam geçmiş gerekir.
+          fetch-depth: 0
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -37,9 +45,26 @@ jobs:
       - name: Run Cargo Test
         run: cargo test --verbose --locked
 
-  # 2. Raspberry Pi (Debian) ve Linux Derleme (Paralel Çalışır, test ile eşzamanlı)
+      - name: Sürüm künyesi (derlenmiş ikiliden)
+        id: version
+        env:
+          BOTGEK_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BOTGEK_GIT_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          summary="$(cargo run --quiet -- --version)"
+          echo "$summary"
+          version="$(printf '%s' "$summary" | awk '{print $2}')"
+          version="${version#v}"
+          echo "summary=$summary" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version_file=$(printf '%s' "$version" | tr '+' '_')" >> "$GITHUB_OUTPUT"
+          echo "sürüm: $version"
+
+  # 2. Raspberry Pi (Debian) ve Linux Derleme (üç hedef paralel; testler geçtikten sonra)
   build-and-package:
     name: Build for ${{ matrix.name }}
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -66,6 +91,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Sürüm etiketten türetilir: etiketler + tam geçmiş gerekir.
+          fetch-depth: 0
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -83,6 +111,10 @@ jobs:
           tool: cross, cargo-deb
 
       - name: Compile Release Binary
+        env:
+          # Sürüm künyesi ikiliye gömülür: tag'de etiket adı, dalda tam geçmişten `git describe`.
+          BOTGEK_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BOTGEK_GIT_SHA: ${{ github.sha }}
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }}
@@ -90,15 +122,30 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
+      - name: Doğrula — sürüm ikiliye gömülmüş (yalnızca ana makine hedefi)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          set -eu
+          BIN="target/${{ matrix.target }}/release/botgek"
+          "$BIN" --version
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            "$BIN" --version | grep -q "v${{ needs.test.outputs.version }}" \
+              || { echo "hata: etiket sürümü (${{ needs.test.outputs.version }}) ikiliye gömülmemiş" >&2; exit 1; }
+          fi
+
       - name: Package Debian (.deb)
         run: |
-          cargo deb --target ${{ matrix.target }} --no-build --no-strip -o target/botgek_${{ matrix.deb_arch }}.deb
+          cargo deb --target ${{ matrix.target }} --no-build --no-strip \
+            -o "target/botgek_${{ needs.test.outputs.version_file }}_${{ matrix.deb_arch }}.deb"
 
       - name: Create Tarball Archive (.tar.gz)
         run: |
+          set -eu
           mkdir -p dist
           BIN_PATH="target/${{ matrix.target }}/release/botgek"
-          
+
+          # Paket dizini sürümden **bağımsız** kalır (docker işi bu adı kullanır);
+          # arşiv/deb dosya adları sürümü taşır.
           PKG_DIR="botgek-${{ matrix.name }}"
           mkdir -p "$PKG_DIR"
           cp "$BIN_PATH" "$PKG_DIR/"
@@ -110,9 +157,9 @@ jobs:
             cp deploy-rpi.sh "$PKG_DIR/"
             chmod +x "$PKG_DIR/deploy-rpi.sh"
           fi
-          
-          tar -czvf "dist/botgek-${{ matrix.name }}.tar.gz" "$PKG_DIR"
-          cp target/botgek_${{ matrix.deb_arch }}.deb dist/
+
+          tar -czvf "dist/botgek-${{ needs.test.outputs.version_file }}-${{ matrix.name }}.tar.gz" "$PKG_DIR"
+          cp "target/botgek_${{ needs.test.outputs.version_file }}_${{ matrix.deb_arch }}.deb" dist/
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -159,6 +206,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # `docker/metadata-action` semver etiketini buradan okur.
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -169,15 +219,17 @@ jobs:
 
       - name: Organize binaries for Buildx
         run: |
+          set -eu
+          VERSION="${{ needs.test.outputs.version_file }}"
           mkdir -p bin/amd64 bin/arm64 bin/armv7
-          
-          tar -xzvf dist/botgek-linux-x86_64-amd64.tar.gz
+
+          tar -xzvf "dist/botgek-${VERSION}-linux-x86_64-amd64.tar.gz"
           cp botgek-linux-x86_64-amd64/botgek bin/amd64/
 
-          tar -xzvf dist/botgek-raspberry-pi-64bit-arm64.tar.gz
+          tar -xzvf "dist/botgek-${VERSION}-raspberry-pi-64bit-arm64.tar.gz"
           cp botgek-raspberry-pi-64bit-arm64/botgek bin/arm64/
 
-          tar -xzvf dist/botgek-raspberry-pi-32bit-armhf.tar.gz
+          tar -xzvf "dist/botgek-${VERSION}-raspberry-pi-32bit-armhf.tar.gz"
           cp botgek-raspberry-pi-32bit-armhf/botgek bin/armv7/
 
           chmod +x bin/amd64/botgek bin/arm64/botgek bin/armv7/botgek
