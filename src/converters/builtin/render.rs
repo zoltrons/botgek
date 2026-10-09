@@ -253,7 +253,8 @@ pub async fn resolve_media(
     let video_handle = plan.video.as_ref().filter(|_| options.attach_videos).map(|url| {
         let client = client.clone();
         let url = url.clone();
-        tokio::spawn(async move { media::download(&client, &url, max_video_bytes).await })
+        // `download_video`: Reddit videolarında önce sesli birleştirmeyi dener (ffmpeg'siz).
+        tokio::spawn(async move { media::download_video(&client, &url, max_video_bytes).await })
     });
 
     let mut image_handles = Vec::with_capacity(plan.images.len());

@@ -95,7 +95,7 @@ fn base64_ascii(input: &str) -> String {
 /// `installed_client` akışıyla bearer token döner (önbellekten tazeyse ağ isteği yapılmaz).
 ///
 /// Herhangi bir hata `None` döner; çağıran taraf kimliksiz yola düşer, akış bozulmaz.
-async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
+pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
     {
         let guard = TOKEN.lock().await;
         if let Some(entry) = guard.as_ref()
@@ -273,7 +273,7 @@ async fn get_reddit_json(
 }
 
 /// OAuth API isteği (`Authorization: bearer`).
-async fn get_json_with_bearer(
+pub(super) async fn get_json_with_bearer(
     client: &reqwest::Client,
     url: &str,
     token: &str,

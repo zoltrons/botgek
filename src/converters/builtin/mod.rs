@@ -12,6 +12,7 @@ pub mod cache;
 pub mod instagram;
 pub mod raw;
 pub mod reddit;
+pub mod reddit_video;
 pub mod render;
 pub mod spotify;
 pub mod tiktok;

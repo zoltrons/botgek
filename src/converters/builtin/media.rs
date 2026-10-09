@@ -190,6 +190,24 @@ pub fn replace_extension(filename: &str, ext: &str) -> String {
     format!("{stem}.{ext}")
 }
 
+/// Videoyu indirir. **Reddit (v.redd.it)** gönderilerinde önce video ve sesi **sesli tek MP4**'e
+/// birleştirmeyi dener (`reddit_video::merge`; proje ffmpeg kullanmaz, birleştirme saf Rust
+/// transmux ile yapılır). Birleştirme başarısız olursa Reddit'in video-only mp4'ü indirilir
+/// (kart sessiz oynar) — akış hiçbir durumda bozulmaz.
+pub async fn download_video(
+    client: &reqwest::Client,
+    url: &str,
+    max_bytes: u64,
+) -> Option<MediaFile> {
+    if url.contains("v.redd.it/")
+        && let Some(merged) = super::reddit_video::merge(client, url, max_bytes).await
+    {
+        return Some(merged);
+    }
+
+    download(client, url, max_bytes).await
+}
+
 /// URL'deki medyayı indirir. Boyut `max_bytes`'ı aşarsa ya da içerik medya değilse
 /// (HTML hata sayfası vb.) `None` döner; böylece mesaj gönderimi bozulmaz.
 pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Option<MediaFile> {
