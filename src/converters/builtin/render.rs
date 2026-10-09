@@ -1,17 +1,17 @@
-//! Native Discord embed üretimi.
+//! Medya planlama ve indirme katmanı (kart **yalnızca** Components V2 olarak gönderilir).
 //!
-//! `CreateEmbed` alanları Discord'un karakter sınırlarına göre kesilir; medya ekleri
-//! `attachment://` referansıyla embed içinde gösterilir.
+//! Gönderinin medyası (video/görsel/GIF) bütçelerle paralel indirilir; indirilen dosyalar
+//! `attachment://` referansıyla kartın **Media Gallery** bileşenine bağlanır. Klasik
+//! `CreateEmbed` düzeni kaldırılmıştır.
 
 use std::time::Duration;
 
-use serenity::all::{CreateAttachment, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, Timestamp};
+use serenity::all::CreateAttachment;
 use tracing::debug;
 
 use super::media::{self, DISCORD_FILE_LIMIT};
-use super::{platform_color, BuiltinPost, Media, MediaKind, Stats};
+use super::{BuiltinPost, Media, MediaKind};
 use crate::settings::{EngineSettings, MediaDelivery};
-use crate::utils::truncate_chars;
 
 /// Medya indirmelerinin **süre bütçesi**: kart "anında" görünmelidir, bu yüzden indirme
 /// bütçeyi aşarsa görev iptal edilir ve ilgili medya **uzak bağlantı** olarak kartta
@@ -37,14 +37,6 @@ const GIF_HEAD_START: Duration = Duration::from_millis(150);
 /// GIF yarışında iç bütçenin üstüne eklenen güvenlik payı (dış zaman aşımı).
 const GIF_RACE_GRACE: Duration = Duration::from_millis(200);
 
-/// Embed toplamı 6000 karakteri geçemez: başlık/yazar/footer/alanlar için pay bırakılır.
-const EMBED_DESCRIPTION_LIMIT: usize = 3500;
-const EMBED_FIELD_VALUE_LIMIT: usize = 480;
-const EMBED_TITLE_LIMIT: usize = 256;
-const EMBED_AUTHOR_LIMIT: usize = 200;
-const EMBED_FOOTER_LIMIT: usize = 1024;
-/// Ana embed dışında galeri olarak eklenecek ek görsel embed'i sayısı.
-const MAX_EXTRA_IMAGE_EMBEDS: usize = 3;
 /// Tek bir görsel için indirme üst sınırı.
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -158,8 +150,6 @@ pub struct MediaPlan {
     /// Animasyonlu GIF kaynakları (X: sessiz mp4). `ffmpeg` varsa gerçek `.gif`'e çevrilir,
     /// yoksa mp4 olarak eklenir; hiçbir durumda video oynatıcısı olarak gösterilmez.
     pub gifs: Vec<String>,
-    /// Medya alıntılanan gönderiden alındı (gönderiye medya eklenmemişse).
-    pub quote_media: bool,
 }
 
 /// Medya indirme sonucu.
@@ -173,8 +163,6 @@ pub struct ResolvedMedia {
     pub attached_video: Option<String>,
     /// Video eklenemediyse doğrudan bağlantı (mesaj metnine yazılır).
     pub video_link: Option<String>,
-    /// Medya alıntılanan gönderiden alındı (gönderiye medya eklenmemişse).
-    pub quote_media: bool,
 }
 
 /// Gönderi medyasını indirme planına çevirir.
@@ -198,9 +186,6 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
         }
         for media in &candidate.media {
             push_media(&mut plan, media, options.attach_images, max_images);
-        }
-        if !plan_is_empty(&plan) {
-            plan.quote_media = true;
         }
         next = candidate.quote.as_deref();
     }
@@ -248,19 +233,6 @@ fn push_media(plan: &mut MediaPlan, media: &Media, attach_images: bool, max_imag
     } else {
         plan.remote_images.push(media.url.clone());
     }
-}
-
-/// Kartta gösterilecek video kapağı: gönderinin kapağı, yoksa alıntı zincirindeki ilk kapak
-/// (video alıntıdan — veya alıntının alıntısından — geldiğinde kapak da oradan alınır).
-pub fn video_poster(post: &BuiltinPost) -> Option<String> {
-    let mut current = Some(post);
-    while let Some(candidate) = current {
-        if let Some(poster) = candidate.poster_url() {
-            return Some(poster);
-        }
-        current = candidate.quote.as_deref();
-    }
-    None
 }
 
 /// Planı uygular. **Tüm indirmeler (video + görseller + GIF'ler) paralel** yapılır; böylece
@@ -314,10 +286,7 @@ pub async fn resolve_media(
         }
     }
 
-    let mut resolved = ResolvedMedia {
-        quote_media: plan.quote_media,
-        ..ResolvedMedia::default()
-    };
+    let mut resolved = ResolvedMedia::default();
 
     if let Some(video_url) = &plan.video {
         match video_handle {
@@ -385,7 +354,6 @@ pub async fn resolve_media(
 /// Hiçbir ağ isteği yapılmaz: bu yüzden medya fazı ~0 ms'dir ve Discord'a dosya yüklenmez.
 pub fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
     let mut resolved = ResolvedMedia {
-        quote_media: plan.quote_media,
         // Video kartın içinde oynar (medya galerisinin ilk öğesi).
         video_link: plan.video.clone(),
         ..ResolvedMedia::default()
@@ -540,199 +508,6 @@ async fn download_gif(
     }
 }
 
-/// Embed listesini üretir: ana embed + (varsa) galeri görselleri + alıntı embed'i.
-pub fn build_embeds(post: &BuiltinPost, options: &RenderOptions, resolved: &ResolvedMedia) -> Vec<CreateEmbed> {
-    let mut embeds = vec![build_main_embed(post, options, resolved)];
-
-    for url in resolved.images.iter().skip(1).take(MAX_EXTRA_IMAGE_EMBEDS) {
-        embeds.push(
-            CreateEmbed::new()
-                .color(platform_color(post.platform))
-                .url(post.url.clone())
-                .image(url.clone()),
-        );
-    }
-
-    if options.show_quote
-        && let Some(quote) = post.quote.as_deref() {
-            // Alıntının medyası ana embed'e alındıysa (gönderinin kendi medyası yokken)
-            // alıntı embed'inde tekrar gösterilmez.
-            if let Some(embed) = build_quote_embed(quote, !resolved.quote_media) {
-                embeds.push(embed);
-            }
-
-            // Gönderiye **medya eklenmemişse** alıntının alıntısı da gösterilir (X'in kendi
-            // kartı medyasız zincirlerde üç gönderiyi birlikte gösterir).
-            if post.media.is_empty()
-                && let Some(nested) = quote.quote.as_deref()
-                    && let Some(embed) = build_quote_embed(nested, !resolved.quote_media) {
-                        embeds.push(embed);
-                    }
-        }
-
-    embeds
-}
-
-fn build_main_embed(post: &BuiltinPost, options: &RenderOptions, resolved: &ResolvedMedia) -> CreateEmbed {
-    let mut embed = CreateEmbed::new().color(platform_color(post.platform)).url(post.url.clone());
-
-    if let Some(title) = &post.title {
-        let title = truncate_chars(&escape_markdown(title), EMBED_TITLE_LIMIT);
-        if !title.is_empty() {
-            embed = embed.title(title);
-        }
-    }
-
-    let mut author_label = escape_markdown(&post.author.label());
-    if post.author.verified {
-        author_label.push_str(" ☑");
-    }
-    if !author_label.is_empty() {
-        let mut author = CreateEmbedAuthor::new(truncate_chars(&author_label, EMBED_AUTHOR_LIMIT));
-        // Profil resmi (author icon) kullanılmaz: kartta avatar gösterilmez.
-        if let Some(profile) = &post.author.profile_url {
-            author = author.url(profile.clone());
-        }
-        embed = embed.author(author);
-    }
-
-    let mut description = post.text.trim().to_string();
-    if post.sensitive && !description.is_empty() {
-        description = format!("||{description}||");
-    }
-    if !description.is_empty() {
-        embed = embed.description(truncate_chars(&description, EMBED_DESCRIPTION_LIMIT));
-    }
-
-    if options.show_community_note
-        && let Some(note) = &post.community_note {
-            let value = truncate_chars(note, EMBED_FIELD_VALUE_LIMIT);
-            if !value.is_empty() {
-                embed = embed.field("🔎 Topluluk Notu", value, false);
-            }
-        }
-
-    // Kapak görseli: eklenen ilk görsel, yoksa videonun kapağı
-    if let Some(first) = resolved.images.first() {
-        embed = match first.strip_prefix("attachment://") {
-            Some(filename) => embed.attachment(filename),
-            None => embed.image(first.clone()),
-        };
-    } else if resolved.attached_video.is_some() || resolved.video_link.is_some() {
-        // Kapak: gönderinin kapağı, video alıntıdan geldiyse alıntının kapağı.
-        if let Some(poster) = video_poster(post) {
-            embed = embed.image(poster);
-        }
-    }
-
-
-    if options.show_timestamp
-        && let Some(created_at) = post.created_at
-            && let Ok(timestamp) = Timestamp::from_unix_timestamp(created_at) {
-                embed = embed.timestamp(timestamp);
-            }
-
-    embed.footer(CreateEmbedFooter::new(truncate_chars(
-        &footer_text(post, options),
-        EMBED_FOOTER_LIMIT,
-    )))
-}
-
-/// Klasik embed alt bilgisindeki marka imzası. Kart tanıma (🗑️ silme izni ve
-/// "kartlara verilen yanıt AI'yı tetiklemesin" kuralı) bu metinle yapılır.
-pub const CARD_SIGNATURE: &str = "Botgek";
-
-/// Alt bilgi: platform + ek bilgi + çeviri notu + etkileşim metrikleri.
-fn footer_text(post: &BuiltinPost, options: &RenderOptions) -> String {
-    let mut parts = vec![format!("{} • {}", post.platform.display_name(), CARD_SIGNATURE)];
-    if let Some(extra) = &post.extra_label
-        && !extra.trim().is_empty() {
-            parts.push(extra.trim().to_string());
-        }
-    if let Some(translation) = &post.translation {
-        parts.push(match translation.source.as_deref() {
-            Some(source) => format!("🌐 {source} → tr"),
-            None => "🌐 Türkçeye çevrildi".to_string(),
-        });
-    }
-    if options.show_metrics && !post.stats.is_empty() {
-        parts.push(stats_line(&post.stats));
-    }
-    parts.join("  •  ")
-}
-
-/// `❤️ 1.2K  •  🔁 300  •  💬 42` biçiminde metrik satırı.
-pub fn stats_line(stats: &Stats) -> String {
-    let mut parts = Vec::new();
-    if stats.likes > 0 {
-        parts.push(format!("❤️ {}", format_count(stats.likes)));
-    }
-    if stats.reposts > 0 {
-        parts.push(format!("🔁 {}", format_count(stats.reposts)));
-    }
-    if stats.replies > 0 {
-        parts.push(format!("💬 {}", format_count(stats.replies)));
-    }
-    if stats.quotes > 0 {
-        parts.push(format!("❝ {}", format_count(stats.quotes)));
-    }
-    if let Some(views) = stats.views
-        && views > 0 {
-            parts.push(format!("👁️ {}", format_count(views)));
-        }
-    parts.join("  •  ")
-}
-
-fn build_quote_embed(quote: &BuiltinPost, include_media: bool) -> Option<CreateEmbed> {
-    let text = quote.text.trim().to_string();
-    // Medya ana embed'de gösteriliyorsa (gönderiye medya eklenmemişse) burada tekrarlanmaz.
-    let image = if include_media {
-        quote
-            .media
-            .iter()
-            .find(|m| m.is_image())
-            .map(|m| m.url.clone())
-            .or_else(|| quote.poster_url())
-    } else {
-        None
-    };
-    if text.is_empty() && image.is_none() {
-        return None;
-    }
-
-    let mut author_label = format!("↪ {}", escape_markdown(&quote.author.label()));
-    if quote.author.verified {
-        author_label.push_str(" ☑");
-    }
-
-    let author = CreateEmbedAuthor::new(truncate_chars(&author_label, EMBED_AUTHOR_LIMIT));
-    // Alıntı embed'inde de profil resmi kullanılmaz.
-
-    let mut embed = CreateEmbed::new()
-        .color(dim_colour(platform_color(quote.platform)))
-        .url(quote.url.clone())
-        .author(author);
-
-    let mut description = text;
-    if quote.sensitive && !description.is_empty() {
-        description = format!("||{description}||");
-    }
-    if !description.is_empty() {
-        embed = embed.description(truncate_chars(&description, EMBED_DESCRIPTION_LIMIT));
-    }
-    if let Some(image) = image {
-        embed = embed.image(image);
-    }
-
-    Some(embed)
-}
-
-/// Alıntı embed'i için rengi koyulaştırır.
-fn dim_colour(colour: u32) -> u32 {
-    let dim = |channel: u32| (channel * 3) / 5;
-    (dim((colour >> 16) & 0xFF) << 16) | (dim((colour >> 8) & 0xFF) << 8) | dim(colour & 0xFF)
-}
-
 /// 999 → `999`, 1_234 → `1.2K`, 12_000 → `12K`, 1_500_000 → `1.5M`
 pub fn format_count(value: u64) -> String {
     fn scaled(value: u64, divisor: f64, suffix: &str) -> String {
@@ -778,7 +553,7 @@ fn attachment_name(filename: &str, spoiler: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converters::builtin::{Author, Media, MediaKind};
+    use crate::converters::builtin::{Author, Media, MediaKind, Stats};
     use crate::converters::parser::Platform;
 
     fn image(url: &str) -> Media {
@@ -1028,45 +803,6 @@ mod tests {
             "GIF, vxTwitter'ın GIF servisinden gelir (.avif)"
         );
     }
-
-    #[test]
-    fn main_embed_carries_text_metrics_and_timestamp() {
-        let embeds = build_embeds(&sample_post(), &options(), &ResolvedMedia::default());
-        assert_eq!(embeds.len(), 1);
-
-        let value = serde_json::to_value(&embeds[0]).expect("embed serileşmeli");
-        assert_eq!(value["type"], "rich");
-        assert_eq!(value["description"], "merhaba dünya");
-        assert_eq!(value["author"]["name"], "Ad (@kullanici)");
-        assert_eq!(value["color"], 0x1D9BF0);
-
-        let footer = value["footer"]["text"].as_str().unwrap();
-        assert!(footer.contains("Twitter • Botgek"), "footer: {footer}");
-        assert!(footer.contains("❤️ 1.2K"), "footer: {footer}");
-        assert!(footer.contains("👁️ 2.5M"), "footer: {footer}");
-        assert!(value["timestamp"].is_string());
-    }
-
-    #[test]
-    fn author_section_shows_no_profile_picture() {
-        let mut post = sample_post();
-        post.author.avatar = Some("https://pbs.twimg.com/profile_images/1/kucuk.jpg".to_string());
-        post.author.profile_url = Some("https://x.com/kullanici".to_string());
-        post.author.verified = true;
-
-        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
-        let value = serde_json::to_value(&embeds[0]).expect("embed serileşmeli");
-
-        // Profil resmi kartta gösterilmez; yalnızca ad + profil linki kalır.
-        assert!(value["author"]["icon_url"].is_null(), "avatar ikonu eklenmemeli");
-        assert_eq!(value["author"]["url"], "https://x.com/kullanici");
-        assert_eq!(value["author"]["name"], "Ad (@kullanici) ☑");
-
-        let footer = value["footer"]["text"].as_str().unwrap();
-        assert!(footer.contains("🔁 12K"), "footer: {footer}");
-        assert!(footer.contains("👁️ 2.5M"), "footer: {footer}");
-    }
-
     #[test]
     fn animated_gifs_are_planned_separately_from_videos() {
         let mut post = sample_post();
@@ -1100,12 +836,6 @@ mod tests {
             Some("https://cdn/q.mp4"),
             "alıntılayan kişi medya eklemediyse alıntının videosu karta alınır"
         );
-        assert!(plan.quote_media, "medyanın alıntıdan geldiği işaretlenir");
-        assert_eq!(
-            video_poster(&post).as_deref(),
-            Some("https://cdn/q.jpg"),
-            "kapak görseli de alıntıdan alınır"
-        );
     }
 
     #[test]
@@ -1123,7 +853,6 @@ mod tests {
         let plan = plan_media(&post, &options());
         assert!(plan.video.is_none(), "gönderiye medya eklenmişse alıntının videosu alınmaz");
         assert_eq!(plan.images, vec!["https://cdn/own.jpg"]);
-        assert!(!plan.quote_media);
     }
 
     /// Medyasız zincirin en içindeki gönderi (C).
@@ -1163,58 +892,7 @@ mod tests {
             Some("https://cdn/inner.mp4"),
             "A ve B medyasızsa C'nin medyası karta alınır (X davranışı)"
         );
-        assert!(plan.quote_media, "medyanın alıntı zincirinden geldiği işaretlenir");
-        assert_eq!(
-            video_poster(&post).as_deref(),
-            Some("https://cdn/inner.jpg"),
-            "kapak görseli de zincirdeki gönderiden alınır"
-        );
     }
-
-    #[test]
-    fn classic_embeds_show_three_posts_in_a_media_less_quote_chain() {
-        let post = media_less_quote_chain();
-
-        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
-        assert_eq!(embeds.len(), 3, "ana + alıntı + alıntının alıntısı");
-
-        let nested = serde_json::to_value(&embeds[2]).expect("embed serileşmeli");
-        assert_eq!(nested["description"], "en içteki metin");
-        assert_eq!(nested["author"]["name"], "↪ En İç (@enic)");
-    }
-
-    #[test]
-    fn quote_chain_stays_two_levels_when_the_post_has_media() {
-        let mut post = media_less_quote_chain();
-        post.media = vec![image("https://cdn/own.jpg")];
-
-        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
-        assert_eq!(embeds.len(), 2, "gönderide medya varsa zincir iki seviyede kalır");
-    }
-
-    #[test]
-    fn attached_images_are_referenced_and_extra_images_become_gallery() {
-        let resolved = ResolvedMedia {
-            images: vec![
-                "attachment://photo.jpg".to_string(),
-                "https://cdn.example/second.jpg".to_string(),
-            ],
-            attachments: Vec::new(),
-            attached_video: None,
-            video_link: None,
-            quote_media: false,
-        };
-
-        let embeds = build_embeds(&sample_post(), &options(), &resolved);
-        assert_eq!(embeds.len(), 2);
-
-        let main = serde_json::to_value(&embeds[0]).unwrap();
-        assert_eq!(main["image"]["url"], "attachment://photo.jpg");
-
-        let gallery = serde_json::to_value(&embeds[1]).unwrap();
-        assert_eq!(gallery["image"]["url"], "https://cdn.example/second.jpg");
-    }
-
     #[test]
     fn media_plan_respects_image_limit_and_prefers_first_video() {
         let mut post = sample_post();
@@ -1248,60 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn video_poster_is_used_when_video_is_linked_instead_of_attached() {
-        let mut post = sample_post();
-        post.media = vec![video("https://cdn/v1.mp4", "https://cdn/v1.jpg")];
-
-        let resolved = ResolvedMedia {
-            video_link: Some("https://cdn/v1.mp4".to_string()),
-            ..ResolvedMedia::default()
-        };
-        let embeds = build_embeds(&post, &options(), &resolved);
-        let value = serde_json::to_value(&embeds[0]).unwrap();
-        assert_eq!(value["image"]["url"], "https://cdn/v1.jpg");
-    }
-
-    #[test]
-    fn sensitive_posts_are_wrapped_and_files_prefixed() {
-        let mut post = sample_post();
-        post.sensitive = true;
-
-        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
-        let value = serde_json::to_value(&embeds[0]).unwrap();
-        assert_eq!(value["description"], "||merhaba dünya||");
-        assert_eq!(attachment_name("photo.jpg", true), "SPOILER_photo.jpg");
-        assert_eq!(attachment_name("photo.jpg", false), "photo.jpg");
-    }
-
-    #[test]
-    fn quote_post_gets_its_own_embed() {
-        let mut post = sample_post();
-        let mut quote = BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/diger/status/2",
-            Author::new("Diğer", "diger"),
-        );
-        quote.text = "alıntılanan metin".to_string();
-        quote.media = vec![image("https://cdn/q.jpg")];
-        post.quote = Some(Box::new(quote));
-
-        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
-        assert_eq!(embeds.len(), 2);
-
-        let quote_value = serde_json::to_value(&embeds[1]).unwrap();
-        assert_eq!(quote_value["description"], "alıntılanan metin");
-        assert_eq!(quote_value["author"]["name"], "↪ Diğer (@diger)");
-        assert_eq!(quote_value["image"]["url"], "https://cdn/q.jpg");
-
-        // Alıntı ayarı kapalıysa ikinci embed üretilmez
-        let without_quote = RenderOptions {
-            show_quote: false,
-            ..options()
-        };
-        assert_eq!(build_embeds(&post, &without_quote, &ResolvedMedia::default()).len(), 1);
-    }
-
-    #[test]
     fn counts_and_markdown_are_formatted_for_discord() {
         assert_eq!(format_count(0), "0");
         assert_eq!(format_count(999), "999");
@@ -1319,29 +943,6 @@ mod tests {
         assert_eq!(escape_markdown("efe_ince_58"), "efe_ince_58");
         assert_eq!(escape_markdown(r"a\b"), r"a\\b");
     }
-
-    #[test]
-    fn translated_post_is_marked_in_footer() {
-        let mut post = sample_post();
-        post.translation = Some(crate::converters::builtin::Translation {
-            source: Some("de".to_string()),
-        });
-
-        let embeds = build_embeds(&post, &options(), &ResolvedMedia::default());
-        let value = serde_json::to_value(&embeds[0]).unwrap();
-        let footer = value["footer"]["text"].as_str().unwrap();
-        assert!(footer.contains("🌐 de → tr"), "footer: {footer}");
-
-        let unknown_source = {
-            let mut post = sample_post();
-            post.translation = Some(crate::converters::builtin::Translation { source: None });
-            build_embeds(&post, &options(), &ResolvedMedia::default())
-        };
-        let value = serde_json::to_value(&unknown_source[0]).unwrap();
-        let footer = value["footer"]["text"].as_str().unwrap();
-        assert!(footer.contains("🌐 Türkçeye çevrildi"), "footer: {footer}");
-    }
-
     #[test]
     fn video_size_limit_never_exceeds_discord_limit() {
         let huge = RenderOptions {

@@ -418,18 +418,6 @@
 
     <p class="micro">gönderim</p>
     <div class="tile-grid">
-        <div class="tile tile--static">
-            <div class="tile-body">
-                <span class="tile-name">Kart stili</span>
-                <span class="tile-hint">modern: tek parça V2 kartı · otomatik: video varsa modern · fxembed: klasik embed</span>
-            </div>
-            <label class="sr-only" for="engine-card-style">Kart stili</label>
-            <select class="select select--sm" id="engine-card-style">
-                <option value="modern">modern (V2)</option>
-                <option value="auto">otomatik</option>
-                <option value="fxembed">fxembed</option>
-            </select>
-        </div>
         <label class="tile"><span class="tile-body"><span class="tile-name">Kullanıcıyı taklit et</span><span class="tile-hint">Mesaj kullanıcının adı ve avatarıyla webhook olarak gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_user" role="switch" aria-label="Kullanıcıyı taklit et"><span class="switch-track" aria-hidden="true"></span></span></label>
         <label class="tile"><span class="tile-body"><span class="tile-name">Yanıtlarda yanıtı koru</span><span class="tile-hint">Webhook mesajı yanıt olamadığı için yanıt olarak atılan linkler bot adına gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_skip_replies" role="switch" aria-label="Yanıtlarda yanıtı koru"><span class="switch-track" aria-hidden="true"></span></span></label>
     </div>
@@ -491,7 +479,7 @@
             <div class="manual-item"><dt>Proxy modu</dt><dd>Link harici önizleme servisine çevrilir (webui alanı boşsa <span class="mono">.env</span> değeri geçerlidir). Görünümü tamamen o servis belirler; kartın içeriği ve emoji ayarları devreye girmez. <b>Yalnızca TikTok, Bluesky ve Spotify için geçerlidir.</b></dd></div>
             <div class="manual-item"><dt>Native embed</dt><dd>Bot gönderiyi kendisi çözer: yazar adı, doğrulama işareti, gönderi metni, metrikler, tarih, alıntı ve medya galerisi. Video ve görseller kartın içinde oynar. <b>Twitter/X, Instagram ve Reddit her zaman bu motorla çalışır</b> (proxy modu ve proxy yedeği kaldırıldı).</dd></div>
             <div class="manual-item"><dt>Yedek alan adı</dt><dd>Yalnızca proxy modu kullanılabilen platformlarda (TikTok, Bluesky, Spotify) görünür; native embed üretilemezse bu alan adına düşülür. Boş bırakılan alan <span class="mono">.env</span> değerini kullanır (ipucu gerçek değeri yazar).</dd></div>
-            <div class="manual-item"><dt>Kart stili</dt><dd><span class="mono">modern</span> tek parça Components V2 kartıdır. <span class="mono">otomatik</span> video içeren gönderilerde kartı, diğerlerinde klasik embed'i kullanır. <span class="mono">fxembed</span> her zaman klasik embed gönderir.</dd></div>
+            <div class="manual-item"><dt>Kart stili</dt><dd>Kart **her zaman** tek parça <span class="mono">Components V2</span> kartıdır; klasik (fxembed tarzı) embed yedeği kaldırılmıştır. Video ve görseller kartın içindeki galeride oynar, metrik/tarih/etiketler alt satırda durur.</dd></div>
             <div class="manual-item"><dt>Medya yöntemi</dt><dd><span class="mono">doğrudan</span> (varsayılan) <b>ışık hızı</b>dır: hiçbir dosya indirilmez/yüklenmez, görsel CDN'in <span class="mono">large</span> varyantından, video kart içinde oynayan en uygun mp4'ten, GIF ise FxEmbed'in GIF servisinden gelir — kart veri gelir gelmez gönderilir. <span class="mono">otomatik</span> medyayı kısa bir süre bütçesi içinde indirip dosya olarak ekler (yetişmezse bağlantıya düşer). <span class="mono">dosya eki</span> her zaman indirir (tam çözünürlük + kaynak CDN'e bağımlı olmama). <b>Reddit istisnası:</b> Reddit videosu ses ayrı akışta geldiği için <b>her modda indirilip sesiyle birleştirilir</b> (görseller yine bu ayarı izler).</dd></div>
             <div class="manual-item"><dt>Medya yükleme</dt><dd>Görseller (ve limit altındaki videolar) mesaja dosya olarak eklenir; indirilemeyen medya otomatik olarak uzak URL'e düşer. Video indirilemezse kartta yalnızca video gösterilir, kapak ayrı öğe olarak eklenmez.</dd></div>
             <div class="manual-item"><dt>Taklit</dt><dd>Mesaj kullanıcının adı ve avatarıyla webhook üzerinden gider, link ve etiket hilesi gerekmez (Manage Webhooks izni şart). Discord webhook mesajları yanıt olamadığı için yanıtlarda yanıt bağlantısı yalnızca "yanıtlarda yanıtı koru" açıkken korunur.</dd></div>

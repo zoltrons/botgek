@@ -619,7 +619,6 @@ mod tests {
             .await
             .expect("ayar gövdesi");
         assert!(settings.get("role_filter").is_none(), "eski çift alan API'de görünmemeli");
-        assert_eq!(settings["engine"]["card_style"], "modern");
         assert_eq!(settings["modules"]["ai_chat"], true);
 
         // 6) Güvenlik başlıkları varlıklarda da geçerli; sertleştirilmiş CSP satır içi

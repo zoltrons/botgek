@@ -98,31 +98,6 @@ impl TwitterSource {
     }
 }
 
-/// Kart gösterim stili.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum CardStyle {
-    /// Klasik embed: metin/medya embed'in içinde, metrikler alt bilgide. Video kartın
-    /// içinde oynayamaz (ayrı oynatıcı olarak belirir).
-    FxEmbed,
-    /// Video içeren gönderilerde modern kart (video kartın içinde oynar), diğerlerinde
-    /// fxembed tarzı klasik embed.
-    Auto,
-    /// Modern kart (Components V2): video/görseller kartın içinde oynar.
-    #[default]
-    Modern,
-}
-
-impl CardStyle {
-    /// WebUI ve log'larda kullanılan anahtar.
-    pub fn key(&self) -> &'static str {
-        match self {
-            CardStyle::FxEmbed => "fxembed",
-            CardStyle::Auto => "auto",
-            CardStyle::Modern => "modern",
-        }
-    }
-}
 
 /// Medyanın karta nasıl taşınacağı (**kart hızını belirleyen ayar**).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -520,10 +495,6 @@ pub struct EngineSettings {
     /// Discord webhook mesajları yanıt olamadığı için bu ayar yanıt bağlantısını korur.
     pub impersonate_skip_replies: bool,
     /// Kart gösterim stili: fxembed tarzı klasik embed / otomatik / her zaman modern kart.
-    /// Modern kartta video kartın içinde oynar, ancak profil resmi Discord'un V2 kuralı
-    /// gereği sağda durur; **avatarın kullanıcı adının solunda küçük görünmesi için**
-    /// fxembed (klasik embed) stili kullanılır.
-    pub card_style: CardStyle,
     /// Modern kartta kullanılan özel emoji seti (boş alan → Unicode varsayılan).
     pub emojis: EmojiSettings,
 }
@@ -547,7 +518,6 @@ impl Default for EngineSettings {
             fallback_to_proxy: true,
             impersonate_user: true,
             impersonate_skip_replies: true,
-            card_style: CardStyle::default(),
             emojis: EmojiSettings::default(),
         }
     }
@@ -1004,7 +974,6 @@ mod tests {
                 "fallback_to_proxy": true,
                 "impersonate_user": true,
                 "impersonate_skip_replies": true,
-                "card_style": "modern",
                 "emojis": {
                     "verified": "<:verified:1553709836859084841>",
                     "replies": "",
@@ -1190,7 +1159,6 @@ mod tests {
             settings.engine.impersonate_skip_replies,
             "yanıt olarak atılan linklerde yanıt bağlantısı varsayılan olarak korunur"
         );
-        assert_eq!(settings.engine.card_style, CardStyle::Modern, "kart stili JSON'da yoksa modern kart");
         assert_eq!(
             settings.engine.emojis.verified(),
             "<:verified:1553709836859084841>",
@@ -1301,18 +1269,6 @@ mod tests {
     }
 
     #[test]
-    fn card_style_round_trips_through_json() {
-        let mut settings = AppSettings::default();
-        settings.engine.card_style = CardStyle::FxEmbed;
-        let json = serde_json::to_string(&settings).unwrap();
-        assert!(json.contains("\"card_style\":\"fxembed\""), "serde adı WebUI değeriyle aynı olmalı: {json}");
-
-        let parsed: AppSettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.engine.card_style, CardStyle::FxEmbed);
-        assert_eq!(parsed.engine.card_style.key(), "fxembed");
-    }
-
-    #[test]
     fn emoji_sanitize_rejects_invalid_values() {
         let mut emojis = EmojiSettings {
             // ID çok kısa
@@ -1345,13 +1301,11 @@ mod tests {
     fn engine_submission_flags_round_trip_through_json() {
         let mut settings = AppSettings::default();
         settings.engine.impersonate_user = false;
-        settings.engine.card_style = CardStyle::Modern;
 
         let json = serde_json::to_string(&settings).unwrap();
         let parsed: AppSettings = serde_json::from_str(&json).unwrap();
 
         assert!(!parsed.engine.impersonate_user);
-        assert_eq!(parsed.engine.card_style, CardStyle::Modern);
         assert!(parsed.engine.attach_videos);
     }
 

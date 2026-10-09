@@ -52,7 +52,6 @@ const ENGINE_DEFAULTS = {
     show_quote: true,
     auto_translate: true,
     fallback_to_proxy: true,
-    impersonate_user: true,
     impersonate_skip_replies: true,
     card_style: 'modern',
     emojis: {
@@ -182,11 +181,9 @@ function getEngineConfig(cfg) {
     });
     ['twitter_source', 'attach_images', 'attach_videos', 'max_images', 'max_video_mb', 'show_metrics',
      'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
-     'impersonate_user', 'impersonate_skip_replies', 'card_style', 'media_delivery'].forEach(field => {
+     'impersonate_user', 'impersonate_skip_replies', 'media_delivery'].forEach(field => {
         if (engine[field] === undefined || engine[field] === null) engine[field] = ENGINE_DEFAULTS[field];
     });
-    // Eski kayıtlardaki `components_v2` boolean'ı kart stiline dönüştürülür.
-    if (engine.components_v2 === false) engine.card_style = 'fxembed';
     delete engine.components_v2;
     return engine;
 }
@@ -370,8 +367,6 @@ function readEngineDom(engine) {
     if (source) engine.twitter_source = source.value;
     const media = $('engine-media-delivery');
     if (media) engine.media_delivery = media.value;
-    const style = $('engine-card-style');
-    if (style) engine.card_style = style.value;
 }
 
 function writeEngineDom(engine) {
@@ -399,8 +394,6 @@ function writeEngineDom(engine) {
     if (source) source.value = engine.twitter_source || 'syndication';
     const media = $('engine-media-delivery');
     if (media) media.value = engine.media_delivery || 'direct';
-    const style = $('engine-card-style');
-    if (style) style.value = engine.card_style || 'modern';
 }
 
 /* Panelden sunucuya gönderilecek gövdeyi DOM'dan toplar. */
@@ -502,7 +495,7 @@ function updateEngineSummary() {
     if (video && $('engine-max-video-value')) $('engine-max-video-value').textContent = video.value + ' MB';
 
     const parts = [nativeCount + '/' + ENGINE_PLATFORMS.length + ' native'];
-    parts.push(engine.card_style === 'auto' ? 'V2 · video' : (engine.card_style === 'fxembed' ? 'fxembed' : 'V2 kart'));
+    parts.push('V2 kart');
     parts.push(engine.media_delivery === 'direct' ? 'ışık hızı' : (engine.media_delivery === 'attach' ? 'dosya eki' : 'otomatik medya'));
     if (engine.impersonate_user) parts.push('taklit');
     if (engine.auto_translate) parts.push('otomatik çeviri');
@@ -1182,10 +1175,6 @@ function bind() {
     }));
     qsa('[data-emoji-key]').forEach(el => el.addEventListener('input', onConfigModified));
     if ($('engine-twitter-source')) $('engine-twitter-source').addEventListener('change', () => {
-        onConfigModified();
-        updateEngineSummary();
-    });
-    if ($('engine-card-style')) $('engine-card-style').addEventListener('change', () => {
         onConfigModified();
         updateEngineSummary();
     });

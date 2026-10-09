@@ -21,22 +21,20 @@ pub mod twitter;
 pub mod v2;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use std::sync::LazyLock;
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, CreateMessage, Embed, Message, MessageId,
-    ReactionType, UserId, WebhookId,
+    Channel, ChannelId, ChannelType, Context, Embed, Message, MessageId, ReactionType, UserId,
+    WebhookId,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use super::parser::{ParsedPost, Platform};
 use crate::config::Config;
-use crate::settings::{CardStyle, EmojiSettings, EngineSettings};
+use crate::settings::{EmojiSettings, EngineSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
-use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
 
 
 /// Dış servis istekleri için zaman aşımı (ışık hızı: askıda kalan istek kartı bekletmez).
@@ -69,18 +67,6 @@ pub fn platform_key(platform: Platform) -> &'static str {
     }
 }
 
-/// Embed'in sol kenar rengi (platform marka rengi).
-pub fn platform_color(platform: Platform) -> u32 {
-    match platform {
-        Platform::Twitter => 0x1D9BF0,
-        Platform::TikTok => 0xFE2C55,
-        Platform::Instagram => 0xE1306C,
-        Platform::Reddit => 0xFF4500,
-        Platform::Bluesky => 0x1185FE,
-        Platform::Spotify => 0x1DB954,
-    }
-}
-
 /// Gönderi sahibi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Author {
@@ -103,7 +89,9 @@ impl Author {
         }
     }
 
-    /// `Ad (@kullanici)` biçiminde etiket üretir.
+    /// `Ad (@kullanici)` biçiminde etiket üretir. Kart V2'ye geçtiği için üretim kodunda
+    /// kullanılmaz; dönüştürücü testleri yazar bilgisini bu biçimde doğrular.
+    #[cfg(test)]
     pub fn label(&self) -> String {
         if self.handle.is_empty() {
             self.name.clone()
@@ -156,6 +144,9 @@ impl Media {
         matches!(self.kind, MediaKind::Video | MediaKind::Gif)
     }
 
+    /// Görsel mi? Kart V2'ye geçtiği için üretim kodunda kullanılmaz; dönüştürücü testleri
+    /// medya listesinin görsel içerdiğini bu yardımcıyla doğrular.
+    #[cfg(test)]
     pub fn is_image(&self) -> bool {
         matches!(self.kind, MediaKind::Image)
     }
@@ -234,13 +225,6 @@ impl BuiltinPost {
         }
     }
 
-    /// Kapak olarak kullanılabilecek ilk görsel (video poster'ı dahil).
-    pub fn poster_url(&self) -> Option<String> {
-        self.media
-            .iter()
-            .find_map(|m| m.poster.clone())
-            .or_else(|| self.media.iter().find(|m| m.is_image()).map(|m| m.url.clone()))
-    }
 }
 
 // =====================================================================================
@@ -684,8 +668,6 @@ async fn webhook_target(ctx: &Context, msg: &Message) -> WebhookTarget {
 /// her mesajda yeniden denenmez.
 static CHANNEL_WEBHOOKS: LazyLock<Mutex<HashMap<ChannelId, Option<NamedWebhook>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-/// Components V2 gönderimi Discord tarafından reddedilirse (ör. eski API) bir daha denenmez.
-static V2_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// Mesajı paylaşan kullanıcının görünen adı ve avatarı (webhook taklidi).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -795,25 +777,11 @@ pub fn is_native_message(message_id: MessageId) -> bool {
     crate::store::is_card(message_id)
 }
 
-/// Klasik embed kartı mı? Kartın alt bilgisi `Platform • Botgek` imzasını taşır.
-fn embed_has_card_signature(embed: &Embed) -> bool {
-    embed
-        .footer
-        .as_ref()
-        .map(|footer| footer.text.contains(render::CARD_SIGNATURE))
-        .unwrap_or(false)
-}
-
 /// Kayıttan bağımsız **yapısal kart imzası** (test edilebilir çekirdek).
 ///
-/// ```text
-/// 1) Klasik embed kartı : alt bilgide `Platform • Botgek` imzası
-/// 2) Modern kart (V2)   : içerik ve embed yok (bileşenler serenity 0.12'de çözümlenmez)
-/// ```
-///
-/// Modern kart Components V2 bayrağıyla gönderildiği için `content` alanı boştur ve
-/// bileşenler bu crate'te tip olarak yoktur; bu yüzden kart, **gönderen kimliği**
-/// (bot ya da bir webhook) ile birlikte "içeriksiz + embedsiz mesaj" olarak tanınır.
+/// Kartlar **yalnızca** Components V2 olarak gönderilir: `content` alanı boştur ve bileşenler
+/// bu crate'te tip olarak yoktur; bu yüzden kart, **gönderen kimliği** (bot ya da bir webhook)
+/// ile birlikte "içeriksiz + embedsiz mesaj" olarak tanınır.
 pub fn has_card_signature(
     author_id: UserId,
     from_webhook: bool,
@@ -821,10 +789,6 @@ pub fn has_card_signature(
     embeds: &[Embed],
     bot_id: UserId,
 ) -> bool {
-    if embeds.iter().any(embed_has_card_signature) {
-        return true;
-    }
-
     let from_bot_or_webhook = author_id == bot_id || from_webhook;
     from_bot_or_webhook && content.trim().is_empty() && embeds.is_empty()
 }
@@ -835,8 +799,7 @@ pub fn has_card_signature(
 /// ilki bellekteki kayıttan bağımsızdır, çünkü kart kimliği kaydı bot yeniden
 /// başladığında boşalır ve o durumda eski kartlara gelen yanıtlar AI'yı tetikliyordu:
 ///
-/// 1. Yapısal imza ([`has_card_signature`]) — klasik embed alt bilgisi veya içeriksiz
-///    modern kart.
+/// 1. Yapısal imza ([`has_card_signature`]) — içeriksiz, embedsiz kart mesajı.
 /// 2. Bu oturumda gönderilen kartların kimlik kaydı (taklit webhook'unda yazar bot
 ///    olmadığı için kesin sonucu bu kayıt verir). Kayıt kalıcıdır (SQLite).
 pub fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
@@ -975,24 +938,6 @@ async fn send_via_webhook(
 // -------------------------------------------------------------------------------------
 // GÖNDERİM
 // -------------------------------------------------------------------------------------
-
-/// Kart stili modern (Components V2) kartı gerektiriyor mu?
-///
-/// `Auto` stilinde yalnızca **video içeren** gönderilerde modern kart kullanılır (video
-/// kartın içinde oynar); diğer gönderiler fxembed tarzı klasik embed ile gönderilir ve
-/// profil resmi kullanıcı adının solunda küçük durur.
-fn use_modern_card(style: CardStyle, post: &BuiltinPost) -> bool {
-    // Platforma özel hazır kart (ör. Spotify) yalnızca Components V2 ile çizilebilir
-    // (bölüm + thumbnail + buton); kart stili ne olursa olsun modern yol zorunludur.
-    if post.custom_card.is_some() {
-        return true;
-    }
-    match style {
-        CardStyle::Modern => true,
-        CardStyle::FxEmbed => false,
-        CardStyle::Auto => post.media.iter().any(|media| media.is_video()),
-    }
-}
 
 /// Taklit (webhook) kullanılmalı mı?
 ///
@@ -1147,63 +1092,24 @@ pub async fn handle(
         parsed.original_url
     );
 
-    // 1) Modern bileşen düzeni: yalnızca seçilen kart stili izin veriyorsa.
-    let modern_card = use_modern_card(engine.card_style, &post);
-    debug!(
-        "Kart stili: {} (modern kart: {}) — {}",
-        engine.card_style.key(),
-        modern_card,
-        parsed.original_url
-    );
-
-    if modern_card && !V2_UNAVAILABLE.load(Ordering::Relaxed) {
-        let attempt = send_components_v2(
-            ctx,
-            msg,
-            client,
-            config,
-            parsed,
-            &post,
-            &options,
-            &resolved,
-            &engine.emojis,
-            identity.as_ref(),
-        )
-        .await;
-
-        match attempt {
-            Ok((message_id, impersonated)) => {
-                info!(
-                    "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}): {}",
-                    parsed.platform, impersonated, parsed.original_url
-                );
-                finish(ctx, msg, config, message_id);
-                return true;
-            }
-            Err(err) => {
-                if is_discord_rejection(&err) {
-                    // Kalıcı ret (ör. API sürümü Components V2'yi desteklemiyor): tekrar denenmez.
-                    V2_UNAVAILABLE.store(true, Ordering::Relaxed);
-                }
-                warn!(
-                    "Components V2 gönderilemedi ({}): {} — klasik embed'e düşülüyor",
-                    parsed.original_url, err
-                );
-            }
-        }
-    }
-
-    // 2) Klasik embed (+ istenirse taklit webhook'u)
-    let embeds = render::build_embeds(&post, &options, &resolved);
-    if embeds.is_empty() {
-        warn!("Native embed üretilemedi ({}): gösterilecek içerik yok", parsed.original_url);
-        return false;
-    }
-
-    match send_classic(ctx, msg, client, config, parsed, &post, &resolved, &embeds, identity.as_ref()).await {
+    // Kart **yalnızca** Components V2 olarak gönderilir (klasik embed yedeği yoktur).
+    match send_components_v2(
+        ctx,
+        msg,
+        client,
+        config,
+        parsed,
+        &post,
+        &options,
+        &resolved,
+        &engine.emojis,
+        identity.as_ref(),
+    )
+    .await
+    {
         Ok((message_id, impersonated)) => {
             info!(
-                "Mesaj native embed ile dönüştürüldü ({:?}, taklit: {}, toplam {} ms): {}",
+                "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}, toplam {} ms): {}",
                 parsed.platform,
                 impersonated,
                 started.elapsed().as_millis(),
@@ -1213,7 +1119,7 @@ pub async fn handle(
             true
         }
         Err(err) => {
-            error!("Native embed mesajı gönderilemedi: {}", err);
+            error!("Components V2 kartı gönderilemedi: {err}");
             false
         }
     }
@@ -1315,119 +1221,6 @@ async fn send_components_v2(
             .await?;
     Ok((message_id, false))
 }
-
-/// Klasik embed mesajını gönderir. Taklit istenmişse webhook üzerinden (kullanıcı adı ve
-/// avatarı ile) gönderilir; webhook kullanılamıyorsa bot mesajına düşer.
-#[allow(clippy::too_many_arguments)]
-async fn send_classic(
-    ctx: &Context,
-    msg: &Message,
-    client: &reqwest::Client,
-    config: &Config,
-    parsed: &ParsedPost,
-    post: &BuiltinPost,
-    resolved: &render::ResolvedMedia,
-    embeds: &[serenity::all::CreateEmbed],
-    identity: Option<&Impersonation>,
-) -> Result<(MessageId, bool), String> {
-    if let Some(identity) = identity {
-        let allowed_mentions = serde_json::to_value(build_selective_allowed_mentions(msg)).unwrap_or_default();
-        let payload = classic_payload(
-            msg.author.id,
-            parsed,
-            post,
-            resolved,
-            embeds,
-            identity,
-            allowed_mentions,
-            reply_reference(msg),
-        )?;
-        match send_via_webhook(ctx, client, config, msg, &payload, &resolved.attachments).await {
-            Ok(message_id) => return Ok((message_id, true)),
-            Err(err) => warn!("Taklit mesaj gönderilemedi ({}): {} — bot adına gönderiliyor", msg.id, err),
-        }
-    }
-
-    // Bot mesajı: kullanıcı etiketi korunur (🗑️ silme izni bu etiketten okunur).
-    let content = build_content(msg.author.id, parsed, post, resolved, true);
-    let mut builder = CreateMessage::new()
-        .content(content)
-        .allowed_mentions(build_selective_allowed_mentions(msg))
-        .embeds(embeds.to_vec());
-
-    if !resolved.attachments.is_empty() {
-        builder = builder.add_files(resolved.attachments.clone());
-    }
-    if let Some(existing) = msg.message_reference.as_ref() {
-        // Referans mesaj silinmişse gönderim başarısız olmasın (`fail_if_not_exists: false`).
-        let mut reference =
-            serenity::all::MessageReference::new(existing.kind, existing.channel_id);
-        reference.message_id = existing.message_id;
-        reference.guild_id = existing.guild_id;
-        reference.fail_if_not_exists = Some(false);
-        builder = builder.reference_message(reference);
-    }
-
-    let sent = msg
-        .channel_id
-        .send_message(&ctx.http, builder)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    Ok((sent.id, false))
-}
-
-/// Klasik embed gövdesini ham webhook isteği için JSON'a çevirir.
-/// `SUPPRESS_EMBEDS` sayesinde metindeki link için Discord kendi önizlemesini üretmez;
-/// bu yüzden link `< >` ile sarılmaz.
-#[allow(clippy::too_many_arguments)]
-fn classic_payload(
-    author_id: UserId,
-    parsed: &ParsedPost,
-    post: &BuiltinPost,
-    resolved: &render::ResolvedMedia,
-    embeds: &[serenity::all::CreateEmbed],
-    identity: &Impersonation,
-    allowed_mentions: serde_json::Value,
-    reference: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    let embeds: Vec<serde_json::Value> = embeds
-        .iter()
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Embed serileştirilemedi: {e}"))?;
-
-    let attachments: Vec<serde_json::Value> = resolved
-        .attachments
-        .iter()
-        .enumerate()
-        .map(|(id, file)| serde_json::json!({"id": id, "filename": file.filename}))
-        .collect();
-
-    let mut payload = serde_json::json!({
-        "content": build_content(author_id, parsed, post, resolved, false),
-        "embeds": embeds,
-        "attachments": attachments,
-        "username": identity.username,
-        "allowed_mentions": allowed_mentions,
-    });
-
-    // Webhook mesajları yanıt olamaz: alan gönderilir (yok sayılırsa zarar vermez) ve webhook
-    // başarısız olursa `send_classic` bot mesajına düşerek yanıtı korur.
-    if let Some(reference) = reference {
-        payload["message_reference"] = reference;
-    }
-
-    if let Some(avatar) = &identity.avatar_url {
-        payload["avatar_url"] = serde_json::json!(avatar);
-    }
-
-    Ok(payload)
-}
-
-
-/// Mesaj gönderildikten sonraki ortak adımlar: yazar kaydı, 🗑️ reaksiyonu, orijinali silme.
-///
-/// Yazar kaydı sayesinde taklit edilen (veya Components V2 ile gönderilen) mesajlarda
 /// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
 ///
 /// Reaksiyon ve silme **arka planda** yapılır: kart kullanıcıya çoktan görünmüştür, bu iki
@@ -1466,120 +1259,14 @@ fn is_discord_rejection(error: &str) -> bool {
     error.starts_with("Discord 4")
 }
 
-/// Klasik akışın mesaj gövdesi: `[Twitter](gönderi linki)`.
-///
-/// Link artık `< >` ile sarılmaz; Discord'un kendi önizlemesini üretmemesi için mesaja
-/// `SUPPRESS_EMBEDS` bayrağı eklenir. Kullanıcı etiketi yalnızca mesaj bot adına
-/// gönderilirken eklenir (taklit modunda mesaj zaten kullanıcının kendisi gibi görünür).
-fn build_content(
-    author_id: UserId,
-    parsed: &ParsedPost,
-    post: &BuiltinPost,
-    _resolved: &render::ResolvedMedia,
-    mention_author: bool,
-) -> String {
-    let link = format!("[{}](<{}>)", parsed.platform.display_name(), post.url);
-    let link = if parsed.is_spoiler { format!("||{link}||") } else { link };
-
-    let base_content = if mention_author {
-        format!("<@{author_id}> {link}")
-    } else {
-        link
-    };
-
-    let quoted_comment = parsed.user_comment.as_ref().map(|comment| {
-        let quoted: Vec<String> = comment.lines().map(|line| format!("> {line}")).collect();
-        format!("\n{}", quoted.join("\n"))
-    });
-
-    let mut content = match &quoted_comment {
-        Some(comment) => format!("{base_content}{comment}"),
-        None => base_content.clone(),
-    };
-
-    // Discord 2000 karakteri aşan içeriği reddeder: önce alıntıyı düşür, sonra kırp.
-    // (Kart dışına ayrıca "🎬 Videoyu aç" bağlantısı **eklenmez**: gönderi bağlantısı ve
-    // mesaja eklenen video yeterlidir; video zaten kartın içinde oynar.)
-    if content.chars().count() > DISCORD_CONTENT_LIMIT {
-        content = base_content;
-    }
-
-    truncate_chars(&content, DISCORD_CONTENT_LIMIT)
-}
-
-
 #[cfg(test)]
 mod message_tests {
     use super::*;
-    use crate::converters::builtin::{Author, BuiltinPost};
-
-    fn parsed() -> ParsedPost {
-        ParsedPost {
-            platform: Platform::Twitter,
-            is_spoiler: false,
-            user_comment: None,
-            original_url: "https://x.com/kullanici/status/1".to_string(),
-            fixed_url: "https://fixupx.com/kullanici/status/1".to_string(),
-        }
-    }
-
-    fn post() -> BuiltinPost {
-        BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/kullanici/status/1",
-            Author::new("Ad", "kullanici"),
-        )
-    }
-
-    #[test]
-    fn content_shows_the_link_as_a_masked_platform_link() {
-        let content = build_content(
-            UserId::new(123),
-            &parsed(),
-            &post(),
-            &render::ResolvedMedia::default(),
-            false,
-        );
-        // Discord Markdown: <URL> otomatik önizlemeyi bastırır, botun zengin embed'ini engellemez.
-        assert_eq!(content, "[Twitter](<https://x.com/kullanici/status/1>)");
-        assert!(!content.contains("[:]("), "eski işaret kalmamalı: {content}");
-    }
-
-    #[test]
-    fn content_mentions_the_author_only_for_bot_messages() {
-        let with_mention = build_content(
-            UserId::new(123),
-            &parsed(),
-            &post(),
-            &render::ResolvedMedia::default(),
-            true,
-        );
-        assert!(with_mention.starts_with("<@123> [Twitter](<"), "içerik: {with_mention}");
-    }
-
-    #[test]
-    fn content_keeps_comment_and_spoiler_without_video_button() {
-        let mut parsed = parsed();
-        parsed.user_comment = Some("şuna bak".to_string());
-        parsed.is_spoiler = true;
-
-        let resolved = render::ResolvedMedia {
-            video_link: Some("https://cdn/v1.mp4".to_string()),
-            ..render::ResolvedMedia::default()
-        };
-        let content = build_content(UserId::new(9), &parsed, &post(), &resolved, false);
-
-        assert!(content.starts_with("||[Twitter](<https://x.com/kullanici/status/1>)||"), "içerik: {content}");
-        assert!(content.contains("\n> şuna bak"), "içerik: {content}");
-        assert!(
-            !content.contains("Videoyu aç"),
-            "kart dışına ayrı video açma bağlantısı eklenmez: {content}"
-        );
-    }
 
     #[test]
     fn is_discord_rejection_treats_transient_rates_and_timeouts_as_non_rejections() {
         assert!(is_discord_rejection("Discord 400 döndü: Bad Request"));
+
         assert!(is_discord_rejection("Discord 403 döndü: Missing Permissions"));
         assert!(is_discord_rejection("Discord 404 döndü: Unknown Webhook"));
         assert!(!is_discord_rejection("Discord 429 döndü: Too Many Requests"));
@@ -1587,39 +1274,12 @@ mod message_tests {
         assert!(!is_discord_rejection("Discord 500 döndü: Internal Server Error"));
     }
 
-    /// Embed'i JSON'dan üretir: `serenity::all::Embed` `#[non_exhaustive]` olduğu için
-    /// testlerde doğrudan kurulamaz (Discord'dan gelen gövdeyi taklit eder).
-    fn embed_with_footer(footer: &str) -> Embed {
-        serde_json::from_value(serde_json::json!({
-            "type": "rich",
-            "footer": { "text": footer }
-        }))
-        .expect("embed çözümlenmeli")
-    }
-
     #[test]
-    fn card_signature_recognises_classic_and_modern_cards() {
+    fn card_signature_recognises_modern_cards() {
         let bot_id = UserId::new(1);
         let user_id = UserId::new(2);
 
-        // 1) Klasik embed kartı: alt bilgideki `Platform • Botgek` imzası
-        //    (bot adına ya da taklit webhook'u ile gönderilmiş olabilir).
-        assert!(has_card_signature(
-            bot_id,
-            false,
-            "[Twitter](https://x.com/u/1)",
-            &[embed_with_footer("Twitter • Botgek")],
-            bot_id
-        ));
-        assert!(has_card_signature(
-            user_id,
-            true,
-            "[Twitter](https://x.com/u/1)",
-            &[embed_with_footer("TikTok  •  Botgek  •  ❤️ 12")],
-            bot_id
-        ));
-
-        // 2) Modern kart (Components V2): içerik ve embed yok → gönderen kimliğiyle tanınır.
+        // Modern kart (Components V2): içerik ve embed yok → gönderen kimliğiyle tanınır.
         assert!(
             has_card_signature(bot_id, false, "", &[], bot_id),
             "botun gönderdiği içeriksiz modern kart tanınmalı"
@@ -1639,10 +1299,6 @@ mod message_tests {
             !has_card_signature(user_id, true, "duyuru", &[], bot_id),
             "başka bir botun içerikli webhook mesajı kart değildir"
         );
-        assert!(
-            !has_card_signature(user_id, true, "", &[embed_with_footer("Başka bot")], bot_id),
-            "imzasız embed kart sayılmaz"
-        );
     }
 
     #[test]
@@ -1661,16 +1317,6 @@ mod message_tests {
         // Taklit webhook'unun modern kartı: yazar bot değil, webhook kimliği kart sayılır.
         let impersonated = message_fixture(MessageId::new(9_002), user_id, "", vec![], Some(webhook_id));
         assert!(is_card_message(&impersonated, bot_id));
-
-        // Klasik embed kartı: alt bilgideki imza ile tanınır (kayıt olmadan).
-        let classic = message_fixture(
-            MessageId::new(9_003),
-            user_id,
-            "[Twitter](https://x.com/u/1)",
-            vec![embed_with_footer("Twitter • Botgek")],
-            Some(webhook_id),
-        );
-        assert!(is_card_message(&classic, bot_id));
 
         // Kalıcı kayıt da tanımayı sağlar (kart kaydı kalıcıdır, yeniden başlatmada kaybolmaz).
         let recorded_id = MessageId::new(9_004);
@@ -1797,36 +1443,6 @@ mod message_tests {
     }
 
     #[test]
-    fn classic_webhook_payload_suppresses_discord_previews() {
-        let identity = Impersonation {
-            username: "Eray".to_string(),
-            avatar_url: Some("https://cdn.example/a.png".to_string()),
-        };
-        let embeds = vec![serenity::all::CreateEmbed::new().title("başlık")];
-        let payload = classic_payload(
-            UserId::new(5),
-            &parsed(),
-            &post(),
-            &render::ResolvedMedia::default(),
-            &embeds,
-            &identity,
-            serde_json::json!({"parse": []}),
-            Some(serde_json::json!({
-                "message_id": "42",
-                "fail_if_not_exists": false,
-            })),
-        )
-        .unwrap();
-
-        assert_eq!(payload["username"], "Eray");
-        assert_eq!(payload["avatar_url"], "https://cdn.example/a.png");
-        assert!(payload.get("flags").is_none());
-        assert_eq!(payload["content"], "[Twitter](<https://x.com/kullanici/status/1>)");
-        assert_eq!(payload["embeds"][0]["title"], "başlık");
-        assert_eq!(payload["attachments"], serde_json::json!([]));
-    }
-
-    #[test]
     fn bot_cards_do_not_ping_the_sender() {
         let mut message = message_fixture(MessageId::new(1), UserId::new(42), "link", vec![], None);
         // Discord kullanıcının kendini etiketlediği mesajlarda yazar `mentions` içinde gelir.
@@ -1879,33 +1495,6 @@ mod message_tests {
         engine.impersonate_user = false;
         assert!(!should_impersonate(&engine, false));
         assert!(!should_impersonate(&engine, true));
-    }
-
-    #[test]
-    fn card_style_decides_whether_the_modern_card_is_used() {
-        let mut video_post = post();
-        video_post.media = vec![Media {
-            kind: MediaKind::Video,
-            url: "https://cdn/v1.mp4".to_string(),
-            poster: None,
-            width: None,
-            height: None,
-            duration: None,
-        }];
-
-        assert!(use_modern_card(CardStyle::Modern, &post()));
-        assert!(
-            !use_modern_card(CardStyle::FxEmbed, &video_post),
-            "fxembed stilinde hep klasik embed kullanılır"
-        );
-        assert!(
-            use_modern_card(CardStyle::Auto, &video_post),
-            "otomatikte video kartın içinde oynar"
-        );
-        assert!(
-            !use_modern_card(CardStyle::Auto, &post()),
-            "otomatikte metin/görsel gönderiler fxembed düzeninde gönderilir"
-        );
     }
 }
 

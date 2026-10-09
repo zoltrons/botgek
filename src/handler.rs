@@ -640,20 +640,6 @@ mod tests {
     fn replies_to_native_cards_do_not_trigger_the_ai() {
         let bot_id = UserId::new(100);
 
-        // Klasik kart: içerik + `Twitter • Botgek` imzalı embed (taklit webhook'u göndermiş gibi)
-        let classic_embed = embed_with_footer("Twitter • Botgek");
-        let classic = crate::converters::builtin::has_card_signature(
-            bot_id,
-            true,
-            "[Twitter](https://x.com/u/123)",
-            &[classic_embed],
-            bot_id,
-        );
-        assert!(classic, "klasik kart imzası tanınmalı");
-        assert!(
-            !should_trigger_ai_chat(true, Some(bot_id), Some("[Twitter](https://x.com/u/123)"), classic, bot_id),
-            "klasik karta verilen yanıt AI'yı tetiklememeli"
-        );
 
         // Modern kart (Components V2): içerik ve embed yok → yapısal imza ile tanınır
         let modern = crate::converters::builtin::has_card_signature(bot_id, false, "", &[], bot_id);
@@ -670,15 +656,6 @@ mod tests {
             should_trigger_ai_chat(true, Some(bot_id), Some("Evet, haklısın."), ai_reply, bot_id),
             "AI yanıtına verilen yanıt AI'yı tetiklemeli"
         );
-    }
-
-    /// Embed'i JSON'dan üretir (`#[non_exhaustive]` yapı testlerde kurulamaz).
-    fn embed_with_footer(footer: &str) -> serenity::all::Embed {
-        serde_json::from_value(serde_json::json!({
-            "type": "rich",
-            "footer": { "text": footer }
-        }))
-        .expect("embed çözümlenmeli")
     }
 }
 

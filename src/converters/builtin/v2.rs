@@ -1271,7 +1271,6 @@ mod tests {
         let emojis = emojis();
         let resolved = ResolvedMedia {
             images: vec!["https://cdn/bottom.jpg".to_string()],
-            quote_media: true,
             ..ResolvedMedia::default()
         };
         let payload = build_payload(&card(&post, &options, &resolved, &emojis));
@@ -1342,7 +1341,6 @@ mod tests {
         // İndirilemeyen (alıntıdan gelen) video kartın içinde tek öğe olarak gösterilir.
         let resolved = ResolvedMedia {
             video_link: Some("https://cdn/q.mp4".to_string()),
-            quote_media: true,
             ..ResolvedMedia::default()
         };
         let options = options();
