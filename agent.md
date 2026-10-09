@@ -43,6 +43,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 18:03] zoltrons — Kartlar **yalnızca Components V2**: klasik embed ve fallback'leri koddan kaldırıldı
+- **Commit:** `7479768`
+- **Yapılan:**
+  1. **Kart stili ayarı kaldırıldı** (`CardStyle`): kart **her zaman** modern V2 kartıdır. WebUI'daki "Kart stili" seçimi, `settings.json` alanı, istemci varsayılanları ve `use_modern_card` mantığı silindi.
+  2. **Klasik embed üretimi silindi:** `render::build_embeds`/`build_main_embed`/`build_quote_embed`/`footer_text`/`stats_line`/`EMBED_*` limitleri/`CARD_SIGNATURE`/`platform_color` ve ilgili testler. **V2 gönderimi başarısız olursa klasik embed'e düşme yok** (`V2_UNAVAILABLE` kaldırıldı): hata loglanır ve dönülür. Klasik gönderim yolları (`send_classic`/`classic_payload`/`build_content`) ve testleri silindi.
+  3. **Kart imzası** artık yalnızca yapısal kontrol ("içeriksiz + embedsiz mesaj"); eski embed alt bilgisi (`Platform • Botgek`) tanıması kaldırıldı. Ölü kod temizliği: `ResolvedMedia.quote_media`, `video_poster`/`poster_url`, kullanılmayan importlar; `Author::label` ve `Media::is_image` test-only yardımcılara dönüştü.
+  4. **202 test geçti** (uyarı yok); test botu yeni sürümle yeniden başlatıldı ve GitHub'a push edildi.
+- **Etkilenen:** `src/converters/builtin/{mod,render,v2}.rs`, `src/settings.rs`, `src/handler.rs`, `src/web/mod.rs`, `src/web/ui/{index.html,app.js}`, `settings.json`
+
+
 ### [2026-10-09 17:44] zoltrons — Kart/kullanıcı adı: `_` kaçışı kaldırıldı (görünen ters bölü) + GitHub'a push
 - **Commit:** `0e703ea`
 - **Yapılan:**
