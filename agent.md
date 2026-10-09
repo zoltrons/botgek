@@ -43,6 +43,17 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-09 19:20] zoltrons — X "link kartı": medyasız gönderide harici bağlantı önizlemesi karta eklendi
+- **Commit:** `5a35305`
+- **Sorun:** X, metninde harici bağlantı olan **medyasız** gönderilerde hedef sayfanın önizleme kartını (başlık + açıklama + görsel + site adı) gösterir; botun kartı bunu göstermiyordu.
+- **Yapılan:**
+  1. **Model:** `BuiltinPost.link_preview: Option<LinkPreview>` (`mod.rs`); `LinkPreview` = `url`, `title`, `description`, `image`, `site_name` + `is_empty()` (üç alan da boşsa karta hiç eklenmez).
+  2. **Twitter (`twitter.rs`):** `attach_link_preview()` — yalnızca **medyasız ve alıntısız** gönderilerde çalışır; metindeki ilk **harici** adres seçilir (X/x.com/t.co/pic.twitter.com/twimg.com atlanır) ve sayfa `get_text` ile çekilip mevcut `opengraph::parse_open_graph` ile çözümlenir. `LINK_PREVIEW_TIMEOUT = 2.5 sn`: sayfa yanıt vermezse/hata verirse kart önizlemesiz gönderilir (kart asla bekletilmez). `site_name` yoksa alan adına düşülür (`www.` atılır). Başlık 180, açıklama 400 karaktere kesilir.
+  3. **Kart:** başlık bağlantılı satır (`**🔗 [Başlık](url)**`), açıklama alıntı bloğu (`> satır`), site adı alt bilgi (`-# example.com`); **önizleme görseli medya galerisinde büyük olarak** gösterilir (indirilmez — `og:image` adresi doğrudan bağlanır, `max_images` ve spoiler kuralları geçerli). Gönderi kendi medyasını taşıyorsa önizleme görseli plana alınmaz.
+  4. **Testler:** `external_link` (X adreslerini atlar), `host_label`, `meta_value`; `plan_media` (yalnızca medyasız gönderide görsel) ve kart bloğu/boş önizleme testleri — **7 yeni test, 230 test geçiyor** (uyarısız). Test botu yeni sürümle yeniden başlatıldı.
+- **Etkilenen:** `src/converters/builtin/{mod,twitter,render,v2}.rs`
+
+
 ### [2026-10-09 22:30] zoltrons — Mikro etiketlerde all caps kaldırıldı (sentence case) — kullanıcı kararı: orta yol
 - **Commit:** `ba81aae` (bu dal)
 - **Karar:** Arc'ın "sentence case, all caps yok" satırı için **orta yol** seçildi: yalnızca mikro etiketler sentence case oldu; **display başlıklar** (`.sheet-h`, `.modal-title`), **display ağırlıkları** (700/800) ve **dekoratif ızgara/gren** korundu (panel kimliği).
