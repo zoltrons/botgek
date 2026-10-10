@@ -6,28 +6,31 @@
 //! metin, metrikler, alıntı ve medyayı kendisi indirip `CreateEmbed` olarak gönderir.
 
 pub mod bluesky;
+pub mod cache;
+mod coordination;
+pub mod instagram;
 pub mod media;
 pub mod opengraph;
-pub mod cache;
-pub mod instagram;
 pub mod raw;
 pub mod reddit;
 pub mod reddit_video;
 pub mod render;
+mod safe_http;
 pub mod spotify;
 pub mod tiktok;
 pub mod translate;
+mod transport;
 pub mod twitter;
 pub mod v2;
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use std::sync::LazyLock;
 use serenity::all::{
     Channel, ChannelId, ChannelType, Context, Embed, Message, MessageId, ReactionType, UserId,
     WebhookId,
 };
+use std::sync::LazyLock;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -35,7 +38,6 @@ use super::parser::{ParsedPost, Platform};
 use crate::config::Config;
 use crate::settings::{EmojiSettings, EngineSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
-
 
 /// Dış servis istekleri için zaman aşımı (ışık hızı: askıda kalan istek kartı bekletmez).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
@@ -64,195 +66,10 @@ pub fn platform_key(platform: Platform) -> &'static str {
     }
 }
 
-/// Gönderi sahibi.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Author {
-    pub name: String,
-    /// `@` işareti olmadan kullanıcı adı (Twitter: screen_name, Bluesky: handle).
-    pub handle: String,
-    pub avatar: Option<String>,
-    pub verified: bool,
-    pub profile_url: Option<String>,
-}
-
-impl Author {
-    pub fn new(name: impl Into<String>, handle: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            handle: handle.into(),
-            avatar: None,
-            verified: false,
-            profile_url: None,
-        }
-    }
-
-    /// `Ad (@kullanici)` biçiminde etiket üretir. Kart V2'ye geçtiği için üretim kodunda
-    /// kullanılmaz; dönüştürücü testleri yazar bilgisini bu biçimde doğrular.
-    #[cfg(test)]
-    pub fn label(&self) -> String {
-        if self.handle.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{} (@{})", self.name, self.handle)
-        }
-    }
-}
-
-/// Etkileşim metrikleri (0 / `None` olanlar gösterilmez).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Stats {
-    pub replies: u64,
-    pub reposts: u64,
-    pub likes: u64,
-    pub quotes: u64,
-    pub views: Option<u64>,
-}
-
-impl Stats {
-    pub fn is_empty(&self) -> bool {
-        self.replies == 0 && self.reposts == 0 && self.likes == 0 && self.quotes == 0 && self.views.is_none()
-    }
-}
-
-/// Medya türü.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaKind {
-    Image,
-    Video,
-    Gif,
-}
-
-/// Gönderiye ait tek bir medya öğesi.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Media {
-    pub kind: MediaKind,
-    /// Doğrudan medya URL'i (görsel veya mp4/HLS).
-    pub url: String,
-    /// Videonun kapak görseli.
-    pub poster: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    /// Video süresi (saniye).
-    pub duration: Option<u64>,
-}
-
-impl Media {
-    pub fn is_video(&self) -> bool {
-        matches!(self.kind, MediaKind::Video | MediaKind::Gif)
-    }
-
-    /// Görsel mi? Kart V2'ye geçtiği için üretim kodunda kullanılmaz; dönüştürücü testleri
-    /// medya listesinin görsel içerdiğini bu yardımcıyla doğrular.
-    #[cfg(test)]
-    pub fn is_image(&self) -> bool {
-        matches!(self.kind, MediaKind::Image)
-    }
-}
-
-/// Otomatik çeviri sonucu (embed alt bilgisinde gösterilir).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Translation {
-    /// Kaynak dil kodu (platform bildirmediyse `None`).
-    pub source: Option<String>,
-}
-
-/// Gönderinin içindeki **harici bağlantının** önizlemesi (X'in kendi arayüzünde gösterdiği
-/// "link kartı").
-///
-/// Gönderi medyasız olduğunda hedef sayfanın HTML'i çekilip `og:`/`twitter:` etiketleri
-/// okunur ([`opengraph`]); resim galeride büyük olarak, başlık/açıklama/site adı ise
-/// kartın içinde metin bloğu olarak gösterilir. Hiçbir medya indirilmez.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LinkPreview {
-    /// Bağlantının hedef adresi (sayfa `og:url` bildirdiyse kanonik adres).
-    pub url: String,
-    pub title: Option<String>,
-    pub description: Option<String>,
-    /// Sayfanın önizleme görseli (`og:image` / `twitter:image`); kartta CDN bağlantısıyla
-    /// gösterilir.
-    pub image: Option<String>,
-    /// Site adı (`og:site_name`) veya alan adı (`example.com`).
-    pub site_name: Option<String>,
-}
-
-impl LinkPreview {
-    /// Kartta gösterilecek veri yok mu? Başlık, açıklama ve görselin **tümü** boşsa
-    /// önizleme karta hiç eklenmez (boş bir link satırı kartı kirletir).
-    pub fn is_empty(&self) -> bool {
-        self.title.is_none() && self.description.is_none() && self.image.is_none()
-    }
-}
-
-/// Platforma özel hazır kart (Components V2).
-///
-/// Bazı platformlar (ör. Spotify) genel kart düzeninden farklı bir görünüm ister:
-/// bölüm + küçük resim (thumbnail) + buton satırı. Platform modülü kartın çocuk
-/// bileşenlerini hazır JSON olarak üretip `BuiltinPost::custom_card`'a koyar; V2
-/// katmanı genel kart yerine bu bileşenleri **tek bir `Container`** içinde (verilen
-/// `accent_color` ile) gönderir.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomCard {
-    /// `Container` içine yerleştirilecek Components V2 çocuk bileşenleri.
-    pub components: Vec<serde_json::Value>,
-    /// Sol kenar renk çubuğu (`accent_color`); `None` ise çubuk çizilmez.
-    pub accent_color: Option<u32>,
-}
-
-/// Motorun ürettiği platformdan bağımsız gönderi modeli (render katmanının girdisi).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuiltinPost {
-    pub platform: Platform,
-    /// Kullanıcının paylaştığı (orijinal) gönderi bağlantısı.
-    pub url: String,
-    pub author: Author,
-    /// Reddit başlığı gibi opsiyonel başlık.
-    pub title: Option<String>,
-    pub text: String,
-    /// Unix zaman damgası (Discord göreli zaman gösterimi için).
-    pub created_at: Option<i64>,
-    pub stats: Stats,
-    pub media: Vec<Media>,
-    /// Alıntılanan/yanıtlanan gönderi (tek seviye).
-    pub quote: Option<Box<BuiltinPost>>,
-    pub community_note: Option<String>,
-    /// Hassas içerik (spoiler ile gösterilir).
-    pub sensitive: bool,
-    /// `r/rust • 128 yorum` gibi ek bilgi satırı.
-    pub extra_label: Option<String>,
-    /// Platformun bildirdiği gönderi dili (ISO 639-1, ör. `de`). Bilinmiyorsa `None`.
-    pub language: Option<String>,
-    /// Otomatik çeviri yapıldıysa çeviri bilgisi.
-    pub translation: Option<Translation>,
-    /// Platforma özel hazır kart (Components V2); doluysa genel kart düzeni yerine bu
-    /// bileşenler gönderilir (ör. Spotify'ın bölüm + thumbnail + buton düzeni).
-    pub custom_card: Option<CustomCard>,
-    /// Gönderinin içindeki harici bağlantının önizlemesi (X'in "link kartı"); yalnızca
-    /// medyasız gönderilerde doldurulur.
-    pub link_preview: Option<LinkPreview>,
-}
-
-impl BuiltinPost {
-    pub fn new(platform: Platform, url: impl Into<String>, author: Author) -> Self {
-        Self {
-            platform,
-            url: url.into(),
-            author,
-            title: None,
-            text: String::new(),
-            created_at: None,
-            stats: Stats::default(),
-            media: Vec::new(),
-            quote: None,
-            community_note: None,
-            sensitive: false,
-            extra_label: None,
-            language: None,
-            translation: None,
-            custom_card: None,
-            link_preview: None,
-        }
-    }
-}
+mod model;
+pub use model::{
+    Author, BuiltinPost, CustomCard, LinkPreview, Media, MediaKind, Stats, Translation,
+};
 
 // =====================================================================================
 // HTTP YARDIMCILARI
@@ -276,12 +93,16 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
         .map_err(|e| format!("İstek başarısız ({url}): {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("Beklenmeyen durum kodu ({url}): {}", response.status()));
+        return Err(format!(
+            "Beklenmeyen durum kodu ({url}): {}",
+            response.status()
+        ));
     }
     if let Some(len) = response.content_length()
-        && len > MAX_BODY_BYTES as u64 {
-            return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
-        }
+        && len > MAX_BODY_BYTES as u64
+    {
+        return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
+    }
 
     let mut response = response;
     let mut body: Vec<u8> = Vec::new();
@@ -311,18 +132,23 @@ pub async fn fetch(
     parsed: &ParsedPost,
     engine: &EngineSettings,
     config: &Config,
-) -> Result<BuiltinPost, String> {
+) -> Result<std::sync::Arc<BuiltinPost>, String> {
     // Sonucu etkileyen ayarlar anahtara dahil edilir (kaynak + çeviri).
     let key = format!(
-        "{}|{}|{}",
+        "post:{}|{}|{}|{}|{}",
         parsed.original_url,
         engine.twitter_source.key(),
-        engine.auto_translate
+        engine.auto_translate,
+        engine.show_quote,
+        engine.max_video_mb
     );
 
+    let _single_flight = coordination::lock(key.clone()).await;
+
     if let Some(cached) = cache::get(&key).await {
+        crate::telemetry::CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         debug!("Gönderi önbellekten alındı: {}", parsed.original_url);
-        return Ok((*cached).clone());
+        return Ok(cached);
     }
 
     let post = match parsed.platform {
@@ -330,11 +156,14 @@ pub async fn fetch(
         Platform::Bluesky => bluesky::fetch(client, parsed).await,
         Platform::Reddit => reddit::fetch(client, parsed, &config.reddit_client_id).await,
         Platform::TikTok => tiktok::fetch(client, parsed).await,
-        Platform::Instagram => instagram::fetch(client, parsed, config.instagram_sessionid.as_deref()).await,
+        Platform::Instagram => {
+            instagram::fetch(client, parsed, config.instagram_sessionid.as_deref()).await
+        }
         Platform::Spotify => spotify::fetch(client, parsed).await,
     }?;
 
-    cache::put(key, &post).await;
+    let post = std::sync::Arc::new(post);
+    cache::put(key, post.clone()).await;
     Ok(post)
 }
 
@@ -372,7 +201,10 @@ pub fn parse_timestamp(raw: &str) -> Option<i64> {
         return None;
     }
 
-    if raw.len() >= 19 && raw.as_bytes().get(4) == Some(&b'-') && raw.as_bytes().get(10) == Some(&b'T') {
+    if raw.len() >= 19
+        && raw.as_bytes().get(4) == Some(&b'-')
+        && raw.as_bytes().get(10) == Some(&b'T')
+    {
         let year: i64 = raw.get(0..4)?.parse().ok()?;
         let month: i64 = raw.get(5..7)?.parse().ok()?;
         let day: i64 = raw.get(8..10)?.parse().ok()?;
@@ -380,7 +212,10 @@ pub fn parse_timestamp(raw: &str) -> Option<i64> {
         let minute: i64 = raw.get(14..16)?.parse().ok()?;
         let second: i64 = raw.get(17..19)?.parse().ok()?;
         let offset = parse_offset(&raw[19..]).unwrap_or(0);
-        return Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second - offset);
+        return Some(
+            days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second
+                - offset,
+        );
     }
 
     // "Wed Oct 10 20:19:24 +0000 2018"
@@ -394,7 +229,10 @@ pub fn parse_timestamp(raw: &str) -> Option<i64> {
         let minute: i64 = time.next()?.parse().ok()?;
         let second: i64 = time.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         let offset = parse_offset(parts[4]).unwrap_or(0);
-        return Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second - offset);
+        return Some(
+            days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second
+                - offset,
+        );
     }
 
     None
@@ -454,7 +292,9 @@ pub fn encode_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -554,16 +394,28 @@ mod tests {
     fn timestamps_parse_in_both_formats() {
         assert_eq!(parse_timestamp("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_timestamp("2024-05-06T12:34:56Z"), Some(1714998896));
-        assert_eq!(parse_timestamp("2024-05-06T15:34:56+03:00"), Some(1714998896));
-        assert_eq!(parse_timestamp("Wed Oct 10 20:19:24 +0000 2018"), Some(1539202764));
-        assert_eq!(parse_timestamp("Thu Mar 21 20:50:14 +0000 2019"), Some(1553201414));
+        assert_eq!(
+            parse_timestamp("2024-05-06T15:34:56+03:00"),
+            Some(1714998896)
+        );
+        assert_eq!(
+            parse_timestamp("Wed Oct 10 20:19:24 +0000 2018"),
+            Some(1539202764)
+        );
+        assert_eq!(
+            parse_timestamp("Thu Mar 21 20:50:14 +0000 2019"),
+            Some(1553201414)
+        );
     }
 
     #[test]
     fn invalid_timestamps_are_rejected() {
         assert_eq!(parse_timestamp(""), None);
         assert_eq!(parse_timestamp("bugün"), None);
-        assert!(parse_timestamp("2024-13-99T99:99:99Z").is_some(), "bozuk tarih panik yapmadan çözülmeli");
+        assert!(
+            parse_timestamp("2024-13-99T99:99:99Z").is_some(),
+            "bozuk tarih panik yapmadan çözülmeli"
+        );
     }
 
     /// Verilen UNIX-milisaniye anına denk gelen bir snowflake `MessageId` üretir
@@ -591,7 +443,6 @@ mod tests {
         assert!(delete_wait(snowflake_at(now_ms - 60_000)).is_none());
     }
 }
-
 
 // =====================================================================================
 // MESAJ AKIŞI
@@ -673,7 +524,9 @@ async fn webhook_target(ctx: &Context, msg: &Message) -> WebhookTarget {
     }
 
     match ctx.http.get_channel(channel_id).await {
-        Ok(Channel::Guild(channel)) => WebhookTarget::new(channel_id, channel.kind, channel.parent_id),
+        Ok(Channel::Guild(channel)) => {
+            WebhookTarget::new(channel_id, channel.kind, channel.parent_id)
+        }
         Ok(_) => WebhookTarget {
             channel_id,
             thread_id: None,
@@ -693,7 +546,8 @@ async fn webhook_target(ctx: &Context, msg: &Message) -> WebhookTarget {
 
 /// Kanal → webhook önbelleği. `None`: kanalda webhook kullanılamıyor (yetki yok veya DM);
 /// her mesajda yeniden denenmez.
-static CHANNEL_WEBHOOKS: LazyLock<Mutex<HashMap<ChannelId, Option<NamedWebhook>>>> =
+type WebhookCache = HashMap<ChannelId, (std::time::Instant, Option<NamedWebhook>)>;
+static CHANNEL_WEBHOOKS: LazyLock<Mutex<WebhookCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Mesajı paylaşan kullanıcının görünen adı ve avatarı (webhook taklidi).
@@ -713,7 +567,12 @@ impl Impersonation {
             .as_ref()
             .and_then(|member| member.nick.clone())
             .filter(|nick| !nick.trim().is_empty())
-            .or_else(|| author.global_name.clone().filter(|name| !name.trim().is_empty()))
+            .or_else(|| {
+                author
+                    .global_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+            })
             .unwrap_or_else(|| author.name.clone());
 
         let avatar = author
@@ -785,23 +644,24 @@ fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> 
 /// emojisiyle çeviri ayrımı için kullanılır. Bot yeniden başlasa, çökse veya güncellense
 /// de kayıt kaybolmaz (eskiden bellekteki bir `HashMap` içindeydi ve yeniden başlatmada
 /// siliniyordu).
-pub fn remember_author(message_id: MessageId, channel_id: ChannelId, author: UserId) {
-    crate::store::remember_card(message_id, channel_id, author);
+pub async fn remember_author(message_id: MessageId, channel_id: ChannelId, author: UserId) {
+    crate::store::blocking(move || crate::store::remember_card(message_id, channel_id, author))
+        .await;
 }
 
 /// Kart kaydını siler (kart Discord'dan silindiğinde).
-pub fn forget_author(message_id: MessageId) {
-    crate::store::forget_card(message_id);
+pub async fn forget_author(message_id: MessageId) {
+    crate::store::blocking(move || crate::store::forget_card(message_id)).await;
 }
 
 /// Taklit edilen mesajın orijinal yazarı (🗑️ silme izni bu bilgiyle verilir).
-pub fn original_author(message_id: MessageId) -> Option<UserId> {
-    crate::store::card_author(message_id)
+pub async fn original_author(message_id: MessageId) -> Option<UserId> {
+    crate::store::blocking(move || crate::store::card_author(message_id)).await
 }
 
 /// Bu mesaj Botgek'in dönüştürdüğü bir kart mı? (native embed → AI tetiklenmez)
-pub fn is_native_message(message_id: MessageId) -> bool {
-    crate::store::is_card(message_id)
+pub async fn is_native_message(message_id: MessageId) -> bool {
+    crate::store::blocking(move || crate::store::is_card(message_id)).await
 }
 
 /// Kayıttan bağımsız **yapısal kart imzası** (test edilebilir çekirdek).
@@ -829,15 +689,20 @@ pub fn has_card_signature(
 /// 1. Yapısal imza ([`has_card_signature`]) — içeriksiz, embedsiz kart mesajı.
 /// 2. Bu oturumda gönderilen kartların kimlik kaydı (taklit webhook'unda yazar bot
 ///    olmadığı için kesin sonucu bu kayıt verir). Kayıt kalıcıdır (SQLite).
-pub fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
-    if is_native_message(msg.id) {
+pub async fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
+    if msg.author.id != bot_id && msg.webhook_id.is_none() {
+        return false;
+    }
+    if is_native_message(msg.id).await {
         return true;
     }
 
     if let Some(flags) = msg.flags
-        && (flags.bits() & (1 << 15) != 0) && (msg.author.id == bot_id || msg.webhook_id.is_some()) {
-            return true;
-        }
+        && (flags.bits() & (1 << 15) != 0)
+        && (msg.author.id == bot_id || msg.webhook_id.is_some())
+    {
+        return true;
+    }
 
     has_card_signature(
         msg.author.id,
@@ -864,23 +729,29 @@ async fn channel_webhook(
     channel_id: ChannelId,
     refresh: bool,
 ) -> Option<NamedWebhook> {
+    let _single_flight = coordination::lock(format!("webhook:{channel_id}")).await;
     {
-        let cache = CHANNEL_WEBHOOKS.lock().await;
-        if !refresh
-            && let Some(entry) = cache.get(&channel_id) {
-                return entry.clone();
-            }
+        let mut cache = CHANNEL_WEBHOOKS.lock().await;
+        cache.retain(|_, (created, hook)| {
+            created.elapsed() < Duration::from_secs(if hook.is_some() { 600 } else { 60 })
+        });
+        if !refresh && let Some(entry) = cache.get(&channel_id) {
+            return entry.1.clone();
+        }
     }
     CHANNEL_WEBHOOKS.lock().await.remove(&channel_id);
 
     match resolve_webhook(ctx, client, config, channel_id).await {
         Ok(Some(webhook)) => {
-            CHANNEL_WEBHOOKS.lock().await.insert(channel_id, Some(webhook.clone()));
+            cache_webhook(channel_id, Some(webhook.clone())).await;
             Some(webhook)
         }
         Ok(None) => {
-            warn!("Taklit webhook'u için token alınamadı ({}): mesaj bot adına gönderilecek", channel_id);
-            CHANNEL_WEBHOOKS.lock().await.insert(channel_id, None);
+            warn!(
+                "Taklit webhook'u için token alınamadı ({}): mesaj bot adına gönderilecek",
+                channel_id
+            );
+            cache_webhook(channel_id, None).await;
             None
         }
         Err(err) => {
@@ -890,8 +761,8 @@ async fn channel_webhook(
             );
             // Kalıcı ret (yetki yok veya DM kanalı) önbelleğe yazılır; geçici ağ hatalarında
             // bir sonraki mesajda yeniden denenir.
-            if is_discord_rejection(&err) {
-                CHANNEL_WEBHOOKS.lock().await.insert(channel_id, None);
+            if matches!(err, raw::DiscordError::Rejected(_)) {
+                cache_webhook(channel_id, None).await;
             }
             None
         }
@@ -899,19 +770,35 @@ async fn channel_webhook(
 }
 
 /// Kanaldaki bot webhook'unu bulur; yoksa `WEBHOOK_NAME` adıyla oluşturur.
+async fn cache_webhook(channel: ChannelId, hook: Option<NamedWebhook>) {
+    let mut cache = CHANNEL_WEBHOOKS.lock().await;
+    if cache.len() >= 1024
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, value)| value.0)
+            .map(|(id, _)| *id)
+    {
+        cache.remove(&oldest);
+    }
+    cache.insert(channel, (std::time::Instant::now(), hook));
+}
+
 async fn resolve_webhook(
     ctx: &Context,
     client: &reqwest::Client,
     config: &Config,
     channel_id: ChannelId,
-) -> Result<Option<NamedWebhook>, String> {
+) -> Result<Option<NamedWebhook>, raw::DiscordError> {
     let hooks = raw::list_channel_webhooks(client, &config.discord_token, channel_id).await?;
     let bot_id = ctx.cache.current_user().id.get();
 
     // Yalnızca bu botun oluşturduğu, token'ı olan gelen (incoming) webhook'lar yeniden kullanılır.
     let existing = hooks.iter().find(|hook| {
         hook.get("type").and_then(|kind| kind.as_u64()) == Some(1)
-            && hook.get("user").and_then(|user| user.get("id")).and_then(|id| id.as_str())
+            && hook
+                .get("user")
+                .and_then(|user| user.get("id"))
+                .and_then(|id| id.as_str())
                 == Some(bot_id.to_string().as_str())
     });
 
@@ -919,14 +806,20 @@ async fn resolve_webhook(
     let value = match existing {
         Some(hook) => hook,
         None => {
-            created = raw::create_channel_webhook(client, &config.discord_token, channel_id, WEBHOOK_NAME).await?;
+            created = raw::create_channel_webhook(
+                client,
+                &config.discord_token,
+                channel_id,
+                WEBHOOK_NAME,
+            )
+            .await?;
             &created
         }
     };
 
     match raw::webhook_credentials(value) {
         Some((id, token)) => Ok(Some(NamedWebhook { id, token })),
-        None => Err("Webhook kimliği/token'ı okunamadı".to_string()),
+        None => Err(raw::DiscordError::Unavailable),
     }
 }
 
@@ -941,19 +834,31 @@ async fn send_via_webhook(
     msg: &Message,
     payload: &serde_json::Value,
     files: &[serenity::all::CreateAttachment],
-) -> Result<MessageId, String> {
-    let mut last_error = "Webhook kullanılamıyor".to_string();
+) -> Result<MessageId, raw::DiscordError> {
+    let mut last_error = raw::DiscordError::Unavailable;
     let target = webhook_target(ctx, msg).await;
 
     for attempt in 0..2 {
-        let Some(webhook) = channel_webhook(ctx, client, config, target.channel_id, attempt > 0).await else {
+        let Some(webhook) =
+            channel_webhook(ctx, client, config, target.channel_id, attempt > 0).await
+        else {
             return Err(last_error);
         };
 
-        match raw::execute_webhook(client, webhook.id, &webhook.token, target.thread_id, payload, files).await {
+        match raw::execute_webhook(
+            client,
+            webhook.id,
+            &webhook.token,
+            target.thread_id,
+            payload,
+            files,
+        )
+        .await
+        {
             Ok(Some(message_id)) => return Ok(message_id),
-            Ok(None) => last_error = "Webhook yanıtında mesaj kimliği yok".to_string(),
-            Err(err) => last_error = err,
+            Ok(None) => return Err(raw::DiscordError::Ambiguous),
+            Err(err) if err.expired_webhook() => last_error = err,
+            Err(err) => return Err(err),
         }
     }
 
@@ -1076,6 +981,13 @@ pub async fn handle(
     engine: &EngineSettings,
 ) -> bool {
     // Süre ölçümü: dönüşüm gecikmesi veri / medya / gönderim olarak log'lanır.
+    static SLOTS: LazyLock<tokio::sync::Semaphore> =
+        LazyLock::new(|| tokio::sync::Semaphore::new(16));
+    let Ok(_slot) = SLOTS.try_acquire() else {
+        crate::telemetry::OVERLOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        warn!("Native conversion capacity reached; original message preserved");
+        return true;
+    };
     let started = std::time::Instant::now();
 
     // Taklit (webhook) kimliğinin çözümlenmesi **veri çekmeyle paralel** yürür: ikisi de REST
@@ -1093,7 +1005,11 @@ pub async fn handle(
     let post = match fetch(client, parsed, engine, config).await {
         Ok(post) => post,
         Err(err) => {
-            warn!("Native embed verisi alınamadı ({}): {}", parsed.original_url, err);
+            warn!(
+                "Native embed verisi alınamadı ({}): {}",
+                parsed.original_url, err
+            );
+            crate::telemetry::record(platform_key(parsed.platform), false, started.elapsed());
             return false;
         }
     };
@@ -1103,8 +1019,7 @@ pub async fn handle(
     let options = render::RenderOptions::from_engine(engine, platform);
     debug!(
         "Kart: V2 (tek mod: doğrudan; video indirme: {}) — {}",
-        options.video_requires_download,
-        parsed.original_url
+        options.video_requires_download, parsed.original_url
     );
     let plan = render::plan_media(&post, &options);
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
@@ -1133,6 +1048,7 @@ pub async fn handle(
     .await
     {
         Ok((message_id, impersonated)) => {
+            crate::telemetry::record(platform_key(parsed.platform), true, started.elapsed());
             info!(
                 "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}, toplam {} ms): {}",
                 parsed.platform,
@@ -1140,12 +1056,14 @@ pub async fn handle(
                 started.elapsed().as_millis(),
                 parsed.original_url
             );
-            finish(ctx, msg, config, message_id);
+            finish(ctx, msg, config, message_id).await;
             true
         }
         Err(err) => {
             error!("Components V2 kartı gönderilemedi: {err}");
-            false
+            crate::telemetry::record(platform_key(parsed.platform), false, started.elapsed());
+            // A lost POST response may already have created a message. Do not proxy-resend.
+            !err.safe_fallback()
         }
     }
 }
@@ -1162,7 +1080,10 @@ fn card_allowed_mentions(msg: &Message, tag_sender: bool) -> Option<serde_json::
     }
 
     let author = msg.author.id.to_string();
-    if let Some(users) = value.get_mut("users").and_then(serde_json::Value::as_array_mut) {
+    if let Some(users) = value
+        .get_mut("users")
+        .and_then(serde_json::Value::as_array_mut)
+    {
         users.retain(|entry| entry.as_str() != Some(author.as_str()));
     }
 
@@ -1218,14 +1139,27 @@ async fn send_components_v2(
     resolved: &render::ResolvedMedia,
     emojis: &EmojiSettings,
     identity: Option<&Impersonation>,
-) -> Result<(MessageId, bool), String> {
+) -> Result<(MessageId, bool), raw::DiscordError> {
     if let Some(identity) = identity {
         // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
         // bu yüzden webhook denenir; başarısız olursa mesaj bot adına (yanıtla) gönderilir.
-        let payload = v2_payload(msg, parsed, post, options, resolved, emojis, Some(identity), None);
+        let payload = v2_payload(
+            msg,
+            parsed,
+            post,
+            options,
+            resolved,
+            emojis,
+            Some(identity),
+            None,
+        );
         match send_via_webhook(ctx, client, config, msg, &payload, &resolved.attachments).await {
             Ok(message_id) => return Ok((message_id, true)),
-            Err(err) => warn!("Components V2 taklit gönderimi başarısız ({}): {}", msg.id, err),
+            Err(err) if err.safe_fallback() => warn!(
+                "Components V2 taklit gönderimi başarısız ({}): {}",
+                msg.id, err
+            ),
+            Err(err) => return Err(err),
         }
     }
 
@@ -1241,9 +1175,14 @@ async fn send_components_v2(
         None,
         Some(msg.author.id),
     );
-    let message_id =
-        raw::send_channel_message(client, &config.discord_token, msg.channel_id, &payload, &resolved.attachments)
-            .await?;
+    let message_id = raw::send_channel_message(
+        client,
+        &config.discord_token,
+        msg.channel_id,
+        &payload,
+        &resolved.attachments,
+    )
+    .await?;
     Ok((message_id, false))
 }
 /// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
@@ -1252,8 +1191,8 @@ async fn send_components_v2(
 /// REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest kalır). Silme,
 /// kart gönderildikten **sonra** ve [`DELETE_MIN_AGE`] kadar gecikmeyle yapılır (hayalet
 /// mesaj önlemi).
-fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
-    remember_author(message_id, msg.channel_id, msg.author.id);
+async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
+    remember_author(message_id, msg.channel_id, msg.author.id).await;
 
     let ctx = ctx.clone();
     let msg = msg.clone();
@@ -1261,7 +1200,11 @@ fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) 
     tokio::spawn(async move {
         if let Err(e) = msg
             .channel_id
-            .create_reaction(&ctx.http, message_id, ReactionType::Unicode("🗑️".to_string()))
+            .create_reaction(
+                &ctx.http,
+                message_id,
+                ReactionType::Unicode("🗑️".to_string()),
+            )
             .await
         {
             error!("Silme reaksiyonu eklenemedi: {:?}", e);
@@ -1277,6 +1220,7 @@ fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) 
 
 /// Discord'un 4xx yanıtı kalıcı bir ret anlamına gelir (ağ hatasından farklı olarak
 /// tekrar denemek anlamsızdır).
+#[cfg(test)]
 fn is_discord_rejection(error: &str) -> bool {
     if error.starts_with("Discord 429") || error.starts_with("Discord 408") {
         return false;
@@ -1292,11 +1236,17 @@ mod message_tests {
     fn is_discord_rejection_treats_transient_rates_and_timeouts_as_non_rejections() {
         assert!(is_discord_rejection("Discord 400 döndü: Bad Request"));
 
-        assert!(is_discord_rejection("Discord 403 döndü: Missing Permissions"));
+        assert!(is_discord_rejection(
+            "Discord 403 döndü: Missing Permissions"
+        ));
         assert!(is_discord_rejection("Discord 404 döndü: Unknown Webhook"));
-        assert!(!is_discord_rejection("Discord 429 döndü: Too Many Requests"));
+        assert!(!is_discord_rejection(
+            "Discord 429 döndü: Too Many Requests"
+        ));
         assert!(!is_discord_rejection("Discord 408 döndü: Request Timeout"));
-        assert!(!is_discord_rejection("Discord 500 döndü: Internal Server Error"));
+        assert!(!is_discord_rejection(
+            "Discord 500 döndü: Internal Server Error"
+        ));
     }
 
     #[test]
@@ -1326,8 +1276,8 @@ mod message_tests {
         );
     }
 
-    #[test]
-    fn card_messages_are_recognised_without_any_registry_entry() {
+    #[tokio::test]
+    async fn card_messages_are_recognised_without_any_registry_entry() {
         let bot_id = UserId::new(1);
         let user_id = UserId::new(2);
         let webhook_id = WebhookId::new(77);
@@ -1336,25 +1286,39 @@ mod message_tests {
         // tanınmalı (AI tetiklenmemesi bu sayede garanti).
         let card_id = MessageId::new(9_001);
         let card = message_fixture(card_id, bot_id, "", vec![], None);
-        assert!(!is_native_message(card_id), "bu kimlik için kayıt yok");
-        assert!(is_card_message(&card, bot_id), "içeriksiz modern kart tanınmalı");
+        assert!(
+            !is_native_message(card_id).await,
+            "bu kimlik için kayıt yok"
+        );
+        assert!(
+            is_card_message(&card, bot_id).await,
+            "içeriksiz modern kart tanınmalı"
+        );
 
         // Taklit webhook'unun modern kartı: yazar bot değil, webhook kimliği kart sayılır.
-        let impersonated = message_fixture(MessageId::new(9_002), user_id, "", vec![], Some(webhook_id));
-        assert!(is_card_message(&impersonated, bot_id));
+        let impersonated =
+            message_fixture(MessageId::new(9_002), user_id, "", vec![], Some(webhook_id));
+        assert!(is_card_message(&impersonated, bot_id).await);
 
         // Kalıcı kayıt da tanımayı sağlar (kart kaydı kalıcıdır, yeniden başlatmada kaybolmaz).
         let recorded_id = MessageId::new(9_004);
-        let recorded = message_fixture(recorded_id, user_id, "eski biçim", vec![], Some(webhook_id));
-        assert!(!is_card_message(&recorded, bot_id));
-        remember_author(recorded_id, ChannelId::new(5), user_id);
-        assert!(is_card_message(&recorded, bot_id));
+        let recorded =
+            message_fixture(recorded_id, user_id, "eski biçim", vec![], Some(webhook_id));
+        assert!(!is_card_message(&recorded, bot_id).await);
+        remember_author(recorded_id, ChannelId::new(5), user_id).await;
+        assert!(is_card_message(&recorded, bot_id).await);
 
         // Botun AI yanıtı ve kullanıcı mesajı kart değildir (AI tetiklenebilmeli).
-        let ai_reply = message_fixture(MessageId::new(9_005), bot_id, "Evet, haklısın.", vec![], None);
-        assert!(!is_card_message(&ai_reply, bot_id));
+        let ai_reply = message_fixture(
+            MessageId::new(9_005),
+            bot_id,
+            "Evet, haklısın.",
+            vec![],
+            None,
+        );
+        assert!(!is_card_message(&ai_reply, bot_id).await);
         let user_message = message_fixture(MessageId::new(9_006), user_id, "merhaba", vec![], None);
-        assert!(!is_card_message(&user_message, bot_id));
+        assert!(!is_card_message(&user_message, bot_id).await);
     }
 
     /// Alt başlıklarda (thread) ve forum gönderilerinde taklit webhook'u **üst kanalda**
@@ -1471,42 +1435,51 @@ mod message_tests {
     fn bot_cards_do_not_ping_the_sender() {
         let mut message = message_fixture(MessageId::new(1), UserId::new(42), "link", vec![], None);
         // Discord kullanıcının kendini etiketlediği mesajlarda yazar `mentions` içinde gelir.
-        message.mentions = vec![serde_json::from_value(serde_json::json!({
-            "id": "42",
-            "username": "eray",
-            "discriminator": "0001",
-            "avatar": null
-        }))
-        .expect("kullanıcı çözümlenmeli")];
+        message.mentions = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "42",
+                "username": "eray",
+                "discriminator": "0001",
+                "avatar": null
+            }))
+            .expect("kullanıcı çözümlenmeli"),
+        ];
 
         // Kart bot adına gidiyorsa etiket ping atmaz (yalnızca düz `@kullanıcı` görünür).
         let tagged = card_allowed_mentions(&message, true).unwrap();
-        assert_eq!(tagged["users"], serde_json::json!([]), "paylaşan pinglenmemeli");
+        assert_eq!(
+            tagged["users"],
+            serde_json::json!([]),
+            "paylaşan pinglenmemeli"
+        );
 
         // Taklit (webhook) akışında kartın üstünde etiket yok → liste değişmez.
         let plain = card_allowed_mentions(&message, false).unwrap();
         assert_eq!(plain["users"], serde_json::json!(["42"]));
     }
 
-    #[test]
-    fn remembered_authors_can_be_queried() {
+    #[tokio::test]
+    async fn remembered_authors_can_be_queried() {
         let message_id = MessageId::new(777);
-        assert_eq!(original_author(message_id), None);
-        remember_author(message_id, ChannelId::new(5), UserId::new(42));
-        assert_eq!(original_author(message_id), Some(UserId::new(42)));
-        assert!(is_native_message(message_id));
+        assert_eq!(original_author(message_id).await, None);
+        remember_author(message_id, ChannelId::new(5), UserId::new(42)).await;
+        assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
+        assert!(is_native_message(message_id).await);
 
         // Kayıt silinince kart tanıma da düşer (🗑️ ile kart silindiğinde kullanılır).
-        forget_author(message_id);
-        assert_eq!(original_author(message_id), None);
-        assert!(!is_native_message(message_id));
+        forget_author(message_id).await;
+        assert_eq!(original_author(message_id).await, None);
+        assert!(!is_native_message(message_id).await);
     }
 
     #[test]
     fn replies_keep_the_reply_context_instead_of_impersonating() {
         let mut engine = EngineSettings::default();
 
-        assert!(should_impersonate(&engine, false), "yanıt değilse taklit kullanılır");
+        assert!(
+            should_impersonate(&engine, false),
+            "yanıt değilse taklit kullanılır"
+        );
         assert!(
             !should_impersonate(&engine, true),
             "yanıt olarak atılan link bot adına gönderilir (webhook yanıt veremez)"
@@ -1522,4 +1495,3 @@ mod message_tests {
         assert!(!should_impersonate(&engine, true));
     }
 }
-

@@ -59,6 +59,17 @@
     --gap: 22px;
 }
 
+.login-page { display: grid; place-items: center; padding: 24px; }
+.login-card { width: min(100%, 460px); border: 1px solid var(--rule-strong); border-top: 3px solid var(--signal); background: var(--paper-2); padding: clamp(24px, 5vw, 48px); }
+.login-eyebrow { color: var(--signal); margin-bottom: 28px; }
+.login-card h1 { font-family: var(--font-display); font-size: clamp(30px, 6vw, 44px); line-height: 1.1; }
+.login-description { color: var(--ink-dim); margin: 20px 0 28px; }
+.login-card form { display: grid; gap: 12px; margin-bottom: 24px; }
+.login-card input { width: 100%; min-height: 48px; padding: 12px; color: var(--ink); background: var(--paper); border: 1px solid var(--rule-strong); font: inherit; }
+.login-card input:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+.login-card .btn { min-height: 48px; justify-content: center; }
+#login-status { min-height: 3em; color: var(--ink-dim); }
+
 *, *::before, *::after { box-sizing: border-box; }
 * { margin: 0; }
 [hidden] { display: none !important; }

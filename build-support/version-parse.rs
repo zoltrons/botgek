@@ -128,10 +128,9 @@ fn is_semver(value: &str) -> bool {
         Some((core, pre)) => (core, Some(pre)),
         None => (value, None),
     };
-    if let Some(pre) = pre {
-        if pre.is_empty() || !pre.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')) {
-            return false;
-        }
+    if let Some(pre) = pre
+        && (pre.is_empty() || !pre.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))) {
+        return false;
     }
     let mut parts = core.split('.');
     let (major, minor, patch) = (parts.next(), parts.next(), parts.next());

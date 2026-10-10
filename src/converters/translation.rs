@@ -1,6 +1,6 @@
-use std::sync::LazyLock;
 use regex::Regex;
 use serenity::all::ReactionType;
+use std::sync::LazyLock;
 
 static TRANSLATE_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\[:\]\((https?://[^/\s]+/(?:[^/\s]+/)?(?:[^/\s]+)/(?:status|post)/[a-zA-Z0-9]+)(?:/([a-z]{2}))?\)")
@@ -33,7 +33,9 @@ pub fn emoji_to_lang_code(emoji: &ReactionType) -> Option<&'static str> {
             "🇮🇳" => Some("hi"),
             _ => None,
         },
-        ReactionType::Custom { name: Some(name), .. } => match name.as_str() {
+        ReactionType::Custom {
+            name: Some(name), ..
+        } => match name.as_str() {
             "flag_tr" | "tr" => Some("tr"),
             "flag_us" | "flag_gb" | "en" => Some("en"),
             "flag_de" => Some("de"),
@@ -132,4 +134,3 @@ mod tests {
         );
     }
 }
-

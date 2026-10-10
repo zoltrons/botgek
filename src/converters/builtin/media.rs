@@ -92,12 +92,26 @@ pub fn filename_for(url: &str, fallback_ext: &str) -> String {
             .chars()
             .take(40)
             .collect();
-        let stem = if stem.is_empty() { "media".to_string() } else { stem };
+        let stem = if stem.is_empty() {
+            "media".to_string()
+        } else {
+            stem
+        };
         return format!("{stem}.{ext}");
     }
 
-    let stem: String = cleaned.split('.').next().unwrap_or("").chars().take(40).collect();
-    let stem = if stem.is_empty() { "media".to_string() } else { stem };
+    let stem: String = cleaned
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(40)
+        .collect();
+    let stem = if stem.is_empty() {
+        "media".to_string()
+    } else {
+        stem
+    };
     format!("{stem}.{fallback_ext}")
 }
 
@@ -131,7 +145,6 @@ pub fn extension_from_mime(mime: &str) -> Option<&'static str> {
     }
 }
 
-
 /// X'in animasyonlu GIF'leri için vxTwitter'ın GIF dönüştürme servisi.
 ///
 /// X GIF'leri yalnızca sessiz mp4 olarak sunar; vxTwitter (BetterTwitFix) bunları
@@ -154,22 +167,25 @@ pub fn gif_convert_url(url: &str) -> Option<String> {
         return None;
     }
     let encoded = urlencoding::encode(clean);
-    Some(format!("https://gifconvert.vxtwitter.com/convert.avif?url={encoded}"))
+    Some(format!(
+        "https://gifconvert.vxtwitter.com/convert.avif?url={encoded}"
+    ))
 }
 
 /// Videoyu indirir. **Reddit (v.redd.it)** gönderilerinde önce video ve sesi **sesli tek MP4**'e
 /// birleştirmeyi dener (`reddit_video::merge`; proje ffmpeg kullanmaz, birleştirme saf Rust
-/// transmux ile yapılır). Birleştirme başarısız olursa Reddit'in video-only mp4'ü indirilir
-/// (kart sessiz oynar) — akış hiçbir durumda bozulmaz.
+/// transmux ile yapılır). Birleştirme başarısız/doluysa None döner: renderer uzak videoyu
+/// korur; sessiz MP4'ü yeniden indirip yüklemek gereksiz trafik ve bellek tüketirdi.
 pub async fn download_video(
     client: &reqwest::Client,
     url: &str,
     max_bytes: u64,
 ) -> Option<MediaFile> {
-    if url.contains("v.redd.it/")
-        && let Some(merged) = super::reddit_video::merge(client, url, max_bytes).await
+    if url::Url::parse(url)
+        .ok()
+        .is_some_and(|url| url.host_str() == Some("v.redd.it"))
     {
-        return Some(merged);
+        return super::reddit_video::merge(client, url, max_bytes).await;
     }
 
     download(client, url, max_bytes).await
@@ -194,9 +210,10 @@ pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Op
         return None;
     }
     if let Some(len) = response.content_length()
-        && len > max_bytes {
-            return None;
-        }
+        && len > max_bytes
+    {
+        return None;
+    }
 
     let mime = response
         .headers()
@@ -302,7 +319,10 @@ mod tests {
             "ABC123.jpg"
         );
         assert_eq!(
-            filename_for("https://video.twimg.com/amplify_video/1/vid/720x1280/xyz.mp4", "mp4"),
+            filename_for(
+                "https://video.twimg.com/amplify_video/1/vid/720x1280/xyz.mp4",
+                "mp4"
+            ),
             "xyz.mp4"
         );
         // Uzantı bilinmiyorsa fallback kullanılır
@@ -322,12 +342,16 @@ mod tests {
     fn vxtwitter_gif_convert_urls_are_derived_from_tweet_videos() {
         assert_eq!(
             gif_convert_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4").as_deref(),
-            Some("https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2FHTEtNFcXEAAY4Dv.mp4")
+            Some(
+                "https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2FHTEtNFcXEAAY4Dv.mp4"
+            )
         );
         // Sorgu parametreli varyantlar da desteklenir (parametreler temizlenir)
         assert_eq!(
             gif_convert_url("https://video.twimg.com/tweet_video/abc.mp4?tag=12").as_deref(),
-            Some("https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fabc.mp4")
+            Some(
+                "https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fabc.mp4"
+            )
         );
         // Doğrudan gifconvert.vxtwitter.com adresi idempotent olarak döner
         assert_eq!(
@@ -335,7 +359,9 @@ mod tests {
             Some("https://gifconvert.vxtwitter.com/convert.avif?url=https%3A%2F%2Fvideo.twimg.com%2Ftweet_video%2Fx.mp4")
         );
         // Gerçek videolar (amplify/ext_tw_video) GIF servisine gönderilmez
-        assert!(gif_convert_url("https://video.twimg.com/amplify_video/123/vid/720/x.mp4").is_none());
+        assert!(
+            gif_convert_url("https://video.twimg.com/amplify_video/123/vid/720/x.mp4").is_none()
+        );
         assert!(gif_convert_url("https://cdn.example/video.mp4").is_none());
     }
 }

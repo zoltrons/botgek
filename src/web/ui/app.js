@@ -22,6 +22,18 @@
    ========================================================================= */
 'use strict';
 
+async function apiFetch(path, options = {}) {
+    const response = await fetch(path, {
+        ...options, credentials: 'same-origin',
+        headers: { ...options.headers, 'X-Botgek-Request': '1' }
+    });
+    if (response.status === 401) {
+        window.location.replace('/login');
+        throw new Error('Oturum süresi doldu');
+    }
+    return response;
+}
+
 /* ── sabitler: Rust varsayılanlarıyla birebir aynı ───────────────────────── */
 const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'translation', 'ai_chat'];
 const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, translation: true, ai_chat: true };
@@ -60,7 +72,7 @@ const ENGINE_DEFAULTS = {
     auto_translate: true,
     fallback_to_proxy: true,
     impersonate_skip_replies: true,
-    card_style: 'modern',
+    impersonate_user: true,
     emojis: {
         verified: '<:verified:1553709836859084841>',
         replies: '<:comment:1553712370302451782>',
@@ -94,7 +106,6 @@ const DIFF_LABELS = {
     'ai.model': 'AI modeli',
     'ai.system_prompt': 'AI kişiliği',
     'engine.twitter_source': 'X veri kaynağı',
-    'engine.card_style': 'Kart stili',
     'engine.max_images': 'Maks. görsel sayısı',
     'engine.max_video_mb': 'Maks. video boyutu',
     'engine.show_metrics': 'Etkileşim metrikleri',
@@ -1134,7 +1145,7 @@ function updateVersionBadge() {
 /* Sürüm, gerçek WebUI portu ve .env kaynaklı yedek alan adları. */
 async function fetchInfo() {
     try {
-        const res = await fetch('/api/info');
+        const res = await apiFetch('/api/info');
         if (res.ok) BOTGEK_INFO = await res.json();
     } catch (err) {
         console.warn('api/info okunamadı', err);
@@ -1148,7 +1159,8 @@ async function fetchInfo() {
 
 async function fetchSettings() {
     try {
-        const res = await fetch('/api/settings');
+        const res = await apiFetch('/api/settings');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         appSettings = normalizeFromServer(await res.json());
         savedSnapshot = JSON.stringify(buildPayload());
         dirty = false;
@@ -1163,7 +1175,7 @@ async function fetchSettings() {
 
 async function fetchDiscordRoles() {
     try {
-        const res = await fetch('/api/discord/roles');
+        const res = await apiFetch('/api/discord/roles');
         if (!res.ok) return;
         rawGuildsList = await res.json();
         rolesLoaded = true;
@@ -1179,14 +1191,15 @@ async function checkHealth() {
     const led = $('led');
     const status = $('system-status');
     try {
-        const res = await fetch('/api/health');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const res = await apiFetch('/api/ready');
+        const readiness = await res.json();
+        if (!res.ok) throw new Error(!readiness.discord ? 'Discord bağlantısı hazır değil' : 'Kalıcı veritabanı hazır değil');
         if (led) led.dataset.state = 'live';
         if (status) status.textContent = 'sistem canlı · port ' + (BOTGEK_INFO.port || '—');
         if ($('foot-api')) $('foot-api').textContent = 'api · sağlıklı · port ' + (BOTGEK_INFO.port || '—');
     } catch (err) {
         if (led) led.dataset.state = 'down';
-        if (status) status.textContent = 'sunucu yanıt vermiyor';
+        if (status) status.textContent = err.message || 'sunucu yanıt vermiyor';
         if ($('foot-api')) $('foot-api').textContent = 'api · yanıt yok';
     }
 }
@@ -1215,17 +1228,24 @@ function setSaving(busy) {
 
 async function saveSettingsToServer() {
     commitDomToActiveConfig();
+    const submitted = JSON.stringify(buildPayload());
     setSaving(true);
     let saved = false;
     try {
-        const res = await fetch('/api/settings', {
+        const res = await apiFetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(buildPayload())
+            body: submitted
         });
         if (res.ok) {
-            savedSnapshot = JSON.stringify(buildPayload());
-            dirty = false;
+            const result = await res.json();
+            const unchanged = JSON.stringify(buildPayload()) === submitted;
+            if (unchanged && result.settings) {
+                appSettings = normalizeFromServer(result.settings);
+                renderUI();
+            }
+            savedSnapshot = unchanged ? JSON.stringify(buildPayload()) : submitted;
+            dirty = JSON.stringify(buildPayload()) !== savedSnapshot;
             saved = true;
             updateDirtyUI();
             refreshScope();
@@ -1597,6 +1617,14 @@ function onGlobalKeydown(e) {
 /* ══ AÇILIŞ ═══════════════════════════════════════════════════════════════ */
 
 async function boot() {
+    $('btn-logout').addEventListener('click', async () => {
+        if (dirty && !window.confirm('Kaydedilmemiş değişiklikler var. Çıkış yapılsın mı?')) return;
+        try {
+            const response = await apiFetch('/api/auth/logout', { method: 'POST' });
+            if (!response.ok) throw new Error('Çıkış yapılamadı');
+            window.location.replace('/login');
+        } catch (error) { showToast(error.message, true); }
+    });
     bind();
     initScrollspy();
     refreshScope();

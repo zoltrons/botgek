@@ -1,260 +1,172 @@
-# 🤖 Botgek - Modern Discord Sosyal Medya Bağlantı Dönüştürücüsü & AI Asistanı (Rust)
+# Botgek
 
-Discord sunucularında paylaşılan sosyal medya bağlantılarını (Twitter/X, TikTok, Instagram, Reddit, Bluesky) Discord'da kusursuz video, görsel ve metin önizlemesi sunan servislerle dönüştüren, **Rust (Serenity 0.12)** ile yazılmış yüksek performanslı Discord botu.
+Rust ile yazılmış Discord sosyal medya bağlantı dönüştürücüsü ve isteğe bağlı OpenRouter sohbet botu.
+Twitter/X, Instagram, Reddit, Bluesky, TikTok ve Spotify desteklenir.
 
-Ayrıca **Cyber-Ops WebUI Kontrol Paneli**, **Rol Tabanlı Filtreleme (Allowlist/Blacklist)**, **Bayrak Reaksiyonuyla Çeviri** ve **OpenRouter AI ile Sarcastic Sohbet Asistanı** içerir.
+## Güncel davranış
 
-Raspberry Pi (Debian ARM64 / ARMv7) üzerinde çok düşük kaynak (~15-25 MB RAM) tüketerek 7/24 stabil çalışacak şekilde tasarlanmıştır.
+- Twitter/X, Instagram ve Reddit **native-only**; TikTok, Bluesky ve Spotify için native/proxy seçilebilir.
+- Native kartlar **yalnızca Discord Components V2** kullanır; klasik embed fallback'i veya kart stili seçimi yoktur.
+- Görseller ve GIF'ler doğrudan CDN bağlantılarıdır; X görsellerinde `name=orig` kullanılır.
+- X GIF'leri vxTwitter gifconvert üzerinden animasyonlu AVIF bağlantısına dönüştürülür; yerel ffmpeg yolu yoktur.
+- Reddit videosunda video/ses saf Rust ile MP4'e birleştirilir. Aynı anda en fazla **iki** birleştirme;
+  **5 saniye** bütçe ve çağırandan iptal sinyali vardır. Başarısızlıkta uzak, sessiz video korunur.
+- Native dönüşümler süreç başına **16** eşzamanlı işle sınırlıdır; kapasite dolduğunda orijinal mesaj korunur.
+- Gönderi önbelleği **600 saniye / 512 girdi** ile sınırlıdır; kaynak, çeviri, alıntı ve video bütçesi anahtara dâhildir.
+  Aynı anahtara gelen istekler birleştirilir. Metrikler önbellek ömrü boyunca eski olabilir.
+- X bağlantı önizlemesi yalnızca public HTTP(S), 80/443 portları ve doğrulanan DNS adreslerine gider.
+  Yönlendirmeler yeniden doğrulanır; toplam bütçe **500 ms**. İstek ortam proxy'sini kullanmaz.
+- Orijinal mesaj yalnızca başarılı gönderimden sonra silinir. Sonucu belirsiz Discord POST'u otomatik yeniden
+  gönderilmez; bu durumda orijinal mesaj korunur ve hata loglanır. 429 bekleme süresi kısaltılmaz.
+- Rol filtreleri, AI ve çeviri reaksiyonu ekleme/kaldırma aynı politikayı kullanır. Boş allowlist erişim vermez;
+  rol sorgusu başarısız olursa etkin filtre erişimi reddeder.
 
----
+Bu bütçeler yapılandırılmış sınırlardır; **ölçülmüş p95 veya RAM garantisi değildir**.
 
-## ✨ Temel Özellikler
+## Yerel kurulum
 
-- 🔗 **6 Sosyal Medya Platformu:** Twitter/X, TikTok, Instagram, Reddit, Bluesky ve Spotify. Twitter/X, Instagram, Reddit **yalnızca native embed** ile çalışır; TikTok, Bluesky ve Spotify için `Proxy` / `Native Embed` seçilebilir (proxy modelinde kullanılan yedek önizleme servisleri: `tnktok.com`, `fxbsky.app`, `open.fixspotify.com`).
-- 🧩 **Built-in (Native) Embed Motoru — Proxy'ye Alternatif:**
-  - Bot bağlantıyı harici bir önizleme servisine yönlendirmek yerine gönderiyi **kendisi çözer**, Discord embed'ini kendisi üretir: yazar/ad/avatar, doğrulama işareti, gönderi metni, etkileşim metrikleri, gönderi tarihi, alıntılanan gönderi (ikinci embed), topluluk notu ve medya galerisi.
-  - 🖼️ **Medya (tek mod: doğrudan):** Hiçbir medya indirilmez/yüklenmez: görseller X CDN'in hafif `large` varyantından, video kartın içinde oynayan en uygun mp4'ten, GIF ise vxTwitter gifconvert servisinden gelir — kart veri gelir gelmez (~0 ms medya fazı) gönderilir. **Tek istisna:** sesi ayrı akışta tutan **Reddit** videosudur; o `hls-transmux` ile video+ses birleştirilip mesaja **ek** olarak gönderilir (bütçe dolarsa video sessiz uzak bağlantıya düşer).
-  - 🧱 **Kart stilleri:** WebUI'dan seçilir — `modern` (tek parça Components V2 kartı; varsayılan), `otomatik` (video içeren gönderilerde modern kart, diğerlerinde klasik embed) veya `fxembed` (her zaman klasik embed).
-  - 🚫 **Profil resmi yok:** Kart, X'in aksine **avatar göstermez** (Discord Components V2 küçük resmi yalnızca sağa koyabildiği için modelin solunda küçük avatar mümkün değil); yalnızca ad, doğrulama işareti ve (varsa) profil linki yer alır.
-  - 🧱 **Modern kart (Components V2):** Gönderi, Discord'un yeni bileşen düzeniyle (`Container` + `Text Display` + `Media Gallery`) **tek kart** olarak, X'in kendi embed'ine benzer şekilde gönderilir:
-    - Kullanıcının linkle birlikte yazdığı metin kartın **dışında**, kartın üstünde düz mesaj metni olarak gönderilir (Components V2 bayrağı `content` alanını yasakladığı için mesaj metninin yerini üst düzey `Text Display` alır; taklit açıkken mesaj kullanıcının kendi adıyla gittiğinden tam olarak kullanıcı yazmış gibi görünür, `>` alıntı bloğuna çevrilmez).
-    - **Taklit kapalıyken** (ör. yanıtta) kart bot adına gittiği için kartın üstüne paylaşanın etiketi eklenir: kimin attığı görünür, ama ping atmaz (izinli etiket listesinden çıkarıldığı için düz `@kullanıcı` metni olarak çizilir — proxy/klasik embed akışındaki davranış).
-    - `||link||` ile atılan **spoiler** gönderilerde kart içeriği gizli kalır: gönderi metni `||...||` içine alınır, karttaki `[Link](...)` spoiler olur ve galeri öğeleri `spoiler` olarak işaretlenir (klasik embed akışındaki gizleme davranışının modern kart karşılığı).
-    - `**Ad <:verified:...> ([@kullanici](profil))**`
-    - gönderi metni (+ varsa alıntı: alıntı bloğu **ince bir ayraç çizgisiyle** gövdeden ayrılır ve **tamamı blok alıntı** (`> `, sol şerit) içinde gösterilir — başlık satırı ile alıntılanan metin **aynı hizada** ve **arada boş satır olmadan** alt alta durur; X/fxembed düzeni)
-    - `-# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K`
-    - `-# <:twitter:...> • <t:...:R> • [Link](gönderi)`
-    - Video ve görseller **kartın içinde** oynar/görünür (klasik embed'lerde Discord bot mesajlarında `video` alanını göstermez); sol kenarda renkli çubuk kullanılmaz. Video indirilemediyse galeride **yalnızca video** gösterilir — kapak görseli ayrıca eklenmez (kapak + video yan yana iki öğe olarak çiziliyordu), oynatma bağlantısı kartın son satırında kalır.
-    - Kullanılan emojiler WebUI'dan (`<:ad:id>` biçiminde) değiştirilebilir — kartın son satırındaki **X** ve **Instagram** göstergeleri ile metrikler (`comment`/`rt`/`like`/`metric`), çeviri notu ve alıntı işareti bu setten gelir; **kimlik yazılmayı unutulursa** (`:instagram:` gibi) alan botun kendi emojisine bağlanır, boş bırakılan alan Unicode emojiye düşer — böylece kart hiçbir durumda bozuk emoji göstermez. Discord bileşenleri reddederse otomatik olarak klasik embed'e düşülür.
-  - 💬 **Yanıt desteği:** Kullanıcı linki bir mesaja **yanıt olarak** attıysa bot da **aynı mesaja yanıt verir** (proxy motoruyla aynı davranış). Discord webhook mesajları yanıt olamadığı için taklit açıkken bile yanıtlarda mesaj **bot adına** gönderilir (WebUI: *“Yanıtlarda yanıtı koru”*; kapatılırsa taklit korunur, yanıt bağlantısı düşer).
-  - 🧹 **Zamanlı silme (hayalet mesaj yok):** `DELETE_ORIGINAL` açıkken orijinal mesaj **kart gönderildikten sonra**, arka planda silinir. Silme, mesaj en az **~1,2 sn** yaşına gelene kadar ertelenir; bu, gönderenin istemcisinin optimistic (`nonce`'lu) mesajını sunucu kopyasıyla eşleştirmesine zaman tanır ve mesajın **yalnızca gönderenin ekranında "hayalet" olarak kalmasını** (Discord istemci desync — discord-api-docs #850) engeller. Dönüşüm genelde zaten >1 sn sürdüğü için pratikte ek gecikme hissedilmez.
-  - 🎭 **Kullanıcıyı taklit etme (webhook):** Mesaj, paylaşan kullanıcının **adı ve avatarıyla** gönderilir (`Manage Webhooks` izni gerekir). Böylece `<@kullanıcı>` etiketi ve `<link>` sarma hilesi gibi workaround'lara ihtiyaç kalmaz; mesaj sanki kullanıcı linki kendisi paylaşmış gibi görünür. Webhook kullanılamıyorsa (veya yanıt olarak atılan linklerde) mesaj bot adına gönderilir. **Alt başlıklar ve forum gönderileri de desteklenir:** Discord alt başlık kanallarında webhook oluşturmayı desteklemediği için webhook **üst kanalda** (metin/duyuru/forum) tutulur ve mesaj `thread_id` ile alt başlığa gönderilir (forum gönderileri de Discord'da birer alt başlıktır).
-  - 🔁 **Alıntı medyası ve zincir:** Gönderiye medya eklenmemişse **alıntı zincirindeki ilk medya** karta alınır (X'in kendi kartına benzer: alıntının videosu kartın içinde oynar, değilse kapak + oynatma bağlantısı). Zincir 3 seviyeye kadar takip edilir: gönderi (A) ve alıntıladığı gönderi (B) medyasızsa B'nin alıntıladığı (C) medyası kullanılır. Gönderiye medya eklenmemişse **C de kartta gösterilir** (A + B + C birlikte; X'in yeni davranışı): modern kartta ikinci bir alıntı bloğu, klasik embed akışında üçüncü bir embed olarak. Alıntı başlığı `qutoe` emojisiyle ve **fxembed düzeni**yle, alıntı bloğunun **ilk satırı** olarak yazılır: `> <:qutoe:...> [Quote](alıntı linki) from **Ad** ([**@kullanici**](profil))`; alıntılanan metin aynı blok alıntının içinde, başlığın hemen ardından gelir.
-  - 🎞️ **GIF desteği (FxEmbed'den):** X'in `animated_gif` medyası yalnızca **sessiz mp4** olarak sunulur; Discord mp4'leri oynatıcı olarak gösterdiği için GIF'ler video gibi görünürdü. Bot artık GIF'i doğrudan **FxEmbed'in GIF servisinden** çeker (`https://video.twimg.com/tweet_video/<ad>.mp4` → `https://gif.fxtwitter.com/tweet_video/<ad>.gif`; CDN'de önbellekli, `image/gif`) ve **kartın içinde GIF gibi** (döngülü, oynatıcısız) oynatır. Servis yanıt vermezse yerel `ffmpeg` dönüşümüne, o da yoksa mp4'e düşülür.
-  - 🪶 **İmaj boyutu:** Docker imajlarında **`ffmpeg` kurulu değildir** (Debian'da tam paket ~75-95 MB bağımlılık çekiyor); GIF'ler zaten FxEmbed servisinden geldiği için buna gerek yok. Yerel yedeği de isterseniz: `docker build --build-arg WITH_FFMPEG=1 ...`. Sistem (deb) kurulumunda `ffmpeg` yalnızca **önerilir** (`Suggests`), zorunlu değildir.
-  - 🔀 **Platform bazlı motor seçimi:** TikTok, Bluesky ve Spotify için `Proxy` veya `Native Embed` seçilebilir; native embed başarısız olursa isteğe bağlı olarak proxy linkine düşülür (`fallback_to_proxy`). **Twitter/X, Instagram ve Reddit yalnızca native embed ile çalışır:** bu platformlarda proxy modu ve proxy yedeği **kaldırılmıştır** (çalışan native kartlar üretir; yedek alan adı ayarı da yoktur).
-  - 🌐 **Veri kaynakları:** X için `X Syndication` (üçüncü taraf/API anahtarı yok), `FxTwitter` (görüntülenme, repost, topluluk notu) veya `Hibrit`; Reddit için **OAuth API** (`installed_client` akışı: kullanıcı izni/parola gerekmez, kimliksiz JSON yedeği), Bluesky için XRPC, TikTok için oEmbed, Instagram için Instagram'ın sunucu taraflı (SSR) embed sayfası + OpenGraph (native; proxy yedeği).
-  - 🤖 **Reddit native kart:** Başlık, selftext, skor/yorum, `r/sub • flair` etiketi, crosspost içeriği ve galeri (çoklu görsel) gelir; `over_18`/spoiler gönderiler kartta gizlenir. Medya `media` **veya** `secure_media` altından okunur. **Sesli video (ffmpeg'siz):** Reddit sesi ayrı akışta tutar (`CMAF_{h}` video-only, `CMAF_AUDIO_*` ses-only). Reddit **her zaman indirmeli çalışır**: video ve ses playlist'leri **saf Rust `hls-transmux`** ile tek MP4'e **yeniden kodlamadan** birleştirilir (yalnızca konteyner yeniden yazılır; Docker imajında ffmpeg yoktur) ve mesaja **ek** olarak gönderilir — video Discord'da **sesli** oynar. Bu, `doğrudan` (varsayılan) modda bile geçerlidir; yalnızca **görseller** medya yöntemi ayarını izler (`doğrudan` modda galeri görselleri bağlantı olarak gösterilir, indirilmez). Birleştirme başarısız olursa ya da sonuç `max_video_mb` sınırını aşarsa video-only mp4'e düşülür. Karttaki gönderi bağlantısı her durumda korunur.
-  - 📷 **Instagram native kart:** Yazar kullanıcı adı, görünen ad, doğrulama işareti, açıklama (caption), beğeni/yorum/görüntülenme ve gönderi tarihi gelir; `/p/`, `/reel/`, `/reels/` ve `/tv/` bağlantıları desteklenir (Instagram **yalnızca native embed** ile çalışır). Instagram mp4'ü girişsiz istemcilere vermediği için **reel/video** gönderileri varsayılan olarak videonun **kapak karesini** + `Reel`/`Video` etiketini ve gönderi bağlantısını gösterir. `.env`'de `INSTAGRAM_SESSIONID` tanımlanırsa bot gönderiyi Instagram'ın uygulama API'sinden (`/api/v1/media/{pk}/info/`) çeker: **reel kartın içinde oynar**, carousel'in tüm görselleri galeriye girer ve metrikler (beğeni/yorum/görüntülenme) kesinleşir. Çerez yoksa veya süresi dolmuşsa davranış değişmez (kapak + etiket).
-  - 📊 **Eksik metrikler tamamlanır:** Syndication uç noktası repost ve görüntülenme vermez; eksik alanlar FxTwitter yanıtından doldurulur (mevcut değerler korunur).
-  - ⚡ **Hızlandırılmış akış (milisaniye seviyesi / ışık hızı):**
-    - **Sıfır medya indirmesi:** Varsayılan `doğrudan` modunda hiçbir dosya indirilmez veya Discord'a yüklenmez; kart yalnızca veri isteği + gönderimden oluşur (tipik **~0,3-0,7 sn**). Dosya yüklemek (8 MB'a kadar) en büyük gecikme kaynağıydı, artık kritik yolda değil.
-    - **Bağlantı ön ısıtma:** Bot açılışında FxEmbed/FxTwitter API'sine, Discord REST'e ve medya CDN'ine **arka planda** ısıtma isteği yapılır; ilk kartta DNS + TLS el sıkışması beklenmez (~200-400 ms kazanç).
-    - **Tek istek:** Çeviri açıkken (varsayılan) metin, X'in çevirisi, metrikler, topluluk notu ve medya bilgisi **tek FxTwitter yanıtında** gelir — ek istek yok.
-    - **Gecikme sigortası (hedge):** FxTwitter **0,5 sn** içinde yanıt vermezse X syndication ucu **paralel** başlatılır ve ilk gelen veri kartı üretir; X ucu kazanırsa çeviri/metrikler için FxTwitter'a 0,3 sn ek süre tanınır. Askıda kalan bir uç kartı 6 sn'ye kadar (istek zaman aşımı) geciktiremez.
-    - **Yedek istek tekrarı yok:** Hızlı yol hata verirse aynı istek yavaş yolda **ikinci kez** atılmaz (eskiden FxTwitter iki kez isteniyordu).
-    - **Paralel istek:** Kaynak `syndication` iken X ucu ile FxTwitter **aynı anda** istenir; toplam gecikme tek istek kadardır.
-    - **Ağırlıklı video varyantı (kalite ÷ boyut):** FxTwitter'ın `formats` listesinden (mp4 + bit hızı + boyut) **oynatıcıyı kilitlemeyen en iyi kalite** seçilir: 1 dakikalık gönderide 1080p (~80 MB) yerine sığan en yüksek kalite (~6 MB) kullanılır, video kartta **anında** oynamaya başlar. Hiçbiri bütçeye sığmazsa en küçük varyant (en hızlı oynatma) seçilir.
-    - **Hafif görseller:** Kart görselleri `?name=orig`/`?name=large` (180 KB - birkaç MB) yerine **`?name=medium`** (1200 px, ~%35-40 daha az veri) ile gösterilir — Discord kartı görseli en fazla ~550 px çizdiği için gözle görülür kalite kaybı olmaz, görsel daha erken belirir. Dosya eki modunda indirme yolu yine **tam çözünürlük** ister (`name=orig`).
-    - **Süre bütçesi (dosya eki modları):** `otomatik` modda görsel **0,6 sn**, GIF **0,9 sn**, video **1,2 sn**; `dosya eki` modunda 2,5 / 3 / 5 sn. Bütçe dolan indirme iptal edilir (yarıda kalan trafik de tükenmez) ve ilgili medya bağlantıya düşer (video kartın içinde oynamaya devam eder).
-    - **Ağırlıklı GIF yarışı:** FxEmbed GIF servisi (CDN'de önbellekli) yarışta 150 ms öne alınır; servis gecikirse yerel `ffmpeg` yedeği başlar ve **gerçek GIF** ürettiyse yarışı kazanır. Hiçbiri olmazsa hazır mp4, o da yoksa uzak bağlantı kullanılır.
-    - **Paralel yan işler:** Orijinal mesajı silme ve taklit webhook'unun çözümlenmesi (soğuk kanalda 1-2 REST çağrısı) **veri çekmeyle paralel** yürür; 🗑️ reaksiyonu ve gecikmiş silme mesaj gönderildikten sonra arka planda eklenir.
-    - **Önbellek:** Aynı link 10 dakika içinde tekrar paylaşılırsa ağ isteği hiç yapılmaz (anında yanıt).
-    - **HTTP/2 + bağlantı havuzu:** Paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması tekrarlanmaz.
-    - Her dönüşümde süre log'lanır: `Hazırlık: veri X ms, medya Y ms` ve `toplam Z ms` (RUST_LOG=debug).
-    - **Ağırlıklı video varyantı (kalite ÷ tahmini boyut):** X birden fazla mp4 sunuyorsa **indirilebilecek en yüksek kaliteli** varyant seçilir; bütçeyi aşan dev varyant hiç seçilmez (eskiden en yüksek bit hızlı varyant seçilip indirilemediği için kart videoyu kaybediyordu). Hiçbiri bütçeye sığmıyorsa en küçük dosya seçilir — indirme en hızlı biçimde tamamlanır.
-    - **Paralel yan işler:** Orijinal mesajı silme ve taklit webhook'unun çözümlenmesi (soğuk kanalda 1-2 REST çağrısı) **veri çekmeyle paralel** yürür; 🗑️ reaksiyonu ve gecikmiş silme mesaj gönderildikten sonra arka planda eklenir.
-    - **Önbellek:** Aynı link 10 dakika içinde tekrar paylaşılırsa ağ isteği hiç yapılmaz (anında yanıt).
-    - **HTTP/2 + bağlantı havuzu:** Paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması tekrarlanmaz.
-    - Her dönüşümde süre log'lanır: `Hazırlık: veri X ms, medya Y ms` ve `toplam Z ms` (RUST_LOG=debug).
-  - 🇹🇷 **Otomatik Türkçe çeviri (yalnızca Grok):** Türkçe ve İngilizce **dışındaki** X gönderileri, dil ekli uçtan gelen **X'in kendi (Grok) çevirisiyle** otomatik Türkçeye çevrilir. Çeviri **Grok'tan gelmiyorsa kullanılmaz** (FxEmbed, X çevirisi yoksa kendi yedek servisine — ör. DeepL — düşer; o çeviri karta yazılmaz, gönderi orijinal metniyle kalır). Çevrilen gönderinin alt bilgisine `🌐 de → tr` notu eklenir; Türkçe/İngilizce gönderiler olduğu gibi bırakılır. Hangi sağlayıcıdan geldiği `RUST_LOG=debug` ile görülebilir.
-- 🎯 **Kusursuz ve Sade Görünüm:**
-  - Native embed mesajlarında görünür metin sadece `[Twitter](gönderi linki)` (+ varsa kullanıcı notu alıntısı `> not`) olur; linkler `< >` ile sarılmaz, mesaja `SUPPRESS_EMBEDS` bayrağı eklendiği için Discord ayrıca önizleme üretmez.
-  - Proxy motorunda ise klasik `[:]({link}) [Platform](<orijinal>)` biçimi kullanılır.
-  - 🙈 **Spoiler Desteği:** `||link||` olarak atılan mesajlar dönüştürüldüğünde de gizliliğini korur.
-- 🇹🇷 **Bayrak Emojisiyle Anında Çeviri:**
-  - Botun dönüştürdüğü mesaja bayrak emojisi (örn: 🇹🇷, 🇬🇧, 🇩🇪, 🇫🇷, 🇯🇵) bırakıldığında link otomatik olarak `/tr`, `/en` gibi dil parametrelerini alarak içeriği çevirir. Reaksiyon kaldırıldığında orijinal haline döner.
-- 🗑️ **Reaksiyonla Temizleme:**
-  - Mesaja eklenen `🗑️` emojisine orijinal mesaj sahibi veya sunucu yöneticisi/moderatörü bastığında mesaj anında silinir.
-- 💬 **Sarcastic OpenRouter AI Asistanı:**
-  - Bot etiketlendiğinde (`@botgekv2`) veya bota yanıt (Reply) verildiğinde akıllı, hazırcevap, hafif alaycı ve kısa (1-2 cümle) Türkçe cevaplar üretir.
-  - 🛡️ **Dönüştürme kartları AI'yı tetiklemez:** Kartlara verilen yanıtlarda (etiketli yanıtlarda bile) AI çalışmaz; botun **kendi kartları** ayrıca gelen mesaj olarak hiç işlenmez. Kart tanıma mesaj metnine ek olarak **yapısal imzayla** yapılır: klasik embed'lerin alt bilgisindeki `Platform • Botgek` imzası ve modern (Components V2) kartların **içeriksiz/embedsiz** yapısı. Böylece bot yeniden başladığında (bellekteki mesaj kimliği kaydı boşaldığında) eski kartlara gelen yanıtlar da AI'yı tetiklemez.
-- 💾 **Kalıcı Kayıtlar (SQLite):** Bot dönüştürdüğü her kart için *hangi mesajı hangi kullanıcının paylaştığını* **`botgek.db`** dosyasına yazar (WAL modu, tek tablo, birincil anahtar sorguları):
-  - 🗑️ **Silme izni:** kartı paylaşan kullanıcı bu kayıtla bulunur; taklit webhook mesajlarında mesajın yazarı bot olmadığı için kayıt tek yoldur. Yeniden başlatma/güncelleme sonrası da çalışır.
-  - 🛡️ **AI koruması** ve 🇹🇷 **çeviri reaksiyonu** ayrımı aynı kaydı kullanır (proxy mesajlarında gövdedeki `<@id>` etiketi yeterlidir).
-  - Kayıt dosyası **hiçbir kaydı unutmaz**: bot kapansa, çökse veya güncellense bile veriler diskte kalır (eski davranış: bellekteki `HashMap` yeniden başlatmada siliniyordu). Yalnızca 200.000 kaydı aşan en eski satırlar budanır, kart silinince (🗑️) kaydı da silinir.
-  - Yol: `BOTGEK_DB_PATH` → yoksa çalışma dizinindeki `botgek.db` (systemd: `/var/lib/botgek/botgek.db`, Docker: `/app/data/botgek.db` — `botgek-data` kalıcı volume'u). Dosya açılamazsa bot durmaz, bellek içi veritabanına düşüp uyarı log'lar.
-- 🎛️ **Cyber-Ops Minimal WebUI (`http://localhost:3000`):**
-  - Tüm modülleri (5 platform + bayrak çevirisi + AI sohbet) tek tıkla açıp kapatma; başlıkta **gerçek sürüm** (`v0.2.0` yayın · `v0.2.0+5` geliştirme; künye `title`'da) ve **gerçek WebUI portu** gösterilir (`/api/info`).
-  - **Tek sayfa düzeni:** solda ray (sürüm/port, telemetri LED'i, bölüm indeksi ve canlı sayaçlar, kapsam seçici, kayıt durumu), sağda dört bölüm — **Modüller**, **Rol filtresi**, **AI persona**, **Dönüştürme motoru**; kaydedilmemiş değişiklikler alt komut çubuğunda ve rayda işaretlenir.
-  - 🔐 **Varlıklar ayrı servis edilir:** panel artık tek dev HTML yerine gömülü üç dosyadan oluşur — `ui/index.html` + `/app.css` + `/app.js` (üçü de `include_str!` ile ikiliye derlenir; çalışma anında `src/web/ui` dizini gerekmez). Panelde satır içi script/olay yöneticisi ve satır içi stil bulunmadığı için CSP **`script-src 'self'`** ile sıkı tutulur, tüm yanıtlarda `nosniff` / `X-Frame-Options: DENY` / `no-store` başlıkları döner; `/api/health` canlılık kontrolü içindir. Bu sözleşme (HTML kimlikleri ↔ istemci erişimleri, panel anahtarları ↔ ayar şeması, API yolları ↔ rotalar) testlerle doğrulanır.
-  - **Sunucu seçici (bölüm bazlı override):** Ayarlar önce **Genel Varsayılan** olarak düzenlenir; bir sunucu seçildiğinde yalnızca **bilerek değiştirilen bölümler** (`modules` / `role_filters` / `ai` / `engine`) o sunucu için sabitlenir — diğer bölümler genel ayarları **miras alır** ve genel değişince otomatik güncellenir. Her bölüm başlığında `miras` / `özel` rozeti ve o bölümü genel değerlere döndüren **"genele sıfırla"** bulunur; raydaki **"Varsayılana Sıfırla"** ise sunucunun tüm sabitlemelerini siler. Etkin ayar tek bir çözümleme fonksiyonuyla üretilir (`resolve_settings`) — hem bot çalışma zamanı hem panel aynı sonucu alır. Kaydedilmemiş değişiklik varken komut çubuğunda uyarı çıkar.
-  - **Link Dönüştürme Motoru paneli:** `Proxy` / `Native Embed` seçimi ve yedek alan adları **yalnızca proxy motoru kullanılabilen platformlarda** (TikTok, Bluesky, Spotify) görünür; Twitter/X, Instagram ve Reddit satırları sabit native embed olarak işaretlidir (**proxy yedeği anahtarı da yalnızca bu üç platformu etkiler**), X veri kaynağı, **otomatik Türkçe çeviri**, **kullanıcıyı taklit etme**, kart **emoji seti**, medya sınırları (maks. görsel sayısı, maks. video boyutu, proxy yedeği) ve kart içeriği (metrik, tarih, topluluk notu, alıntı) seçenekleri.
-  - **Rol Tabanlı Filtreleme:** Her modül için ayrı `Devre Dışı` / `Kara Liste` / `Beyaz Liste`; roller sunucudan seçilir (Genel görünümünde rolün hangi sunucuya ait olduğu yazar) veya ID ile eklenir.
-  - Sistem promptu ve AI modelini web arayüzünden anlık güncelleme (`Ctrl+S` ile kaydetme, hata durumunda sunucu mesajı gösterilir).
-  - Yapılan tüm değişiklikler `settings.json` ile anında kalıcı olarak kaydedilir (eski tek `role_filter` alanı okunup modül filtresine taşınır, artık yazılmaz). Dosyada **`schema_version`** bulunur: eski (tam kopya) sunucu kayıtları ilk açılışta **bir kez** bölüm bazlı override'a indirgenir; göç öncesi `settings.json.bak-<zaman>` yedeği alınır (**geri alma yöntemi: yedeği geri kopyalamak**).
+1. Rust toolchain: `rust-toolchain.toml` **1.98.1** sürümünü sabitler; kaynak dil tabanı Rust 1.88'dir.
+   Linux için C derleyicisi/linker gerekir (SQLite bundled olarak derlenir).
+2. `.env.example` dosyasını `.env` olarak kopyalayın. Gerçek `.env` dosyasını Git'e eklemeyin.
+3. `DISCORD_TOKEN` ve yönetim paneli için `ADMIN_TOKEN` değerlerini doldurun.
+4. `cargo run --locked` çalıştırın. Sürüm sorgusu: `cargo run --locked -- --version`.
 
----
+Discord Developer Portal'da **Message Content Intent** açılmalıdır. Gerekli bot izinleri:
+Send Messages, Embed Links, Read Message History, Add Reactions; orijinal mesajları silmek için
+Manage Messages, kullanıcı taklidi için Manage Webhooks. Yanıtlarda varsayılan olarak bot kimliği kullanılır.
 
-## 🏷️ Sürümleme
+### Windows
 
-Sürüm **git etiketlerinden** türetilir ve **derleme zamanında ikiliye gömülür** (`build.rs`,
-`cargo:rustc-env`); böylece "bot hep v0.1.0" durumu kalmaz — her commit künyeyi değiştirir.
+MSVC toolchain için Visual C++ Build Tools ve Windows SDK gerekir. Önceden kurulu GNU/LLVM toolchain
+kullanıyorsanız örneğin `cargo +stable-x86_64-pc-windows-gnullvm test --locked` çalıştırın;
+bu seçeneğin derleyici sürümünü `rustc +stable-x86_64-pc-windows-gnullvm --version` ile doğrulayın.
+Global rustup ayarını değiştirmeniz gerekmez.
 
-| Girdi | Rol |
-| ----- | --- |
-| `Cargo.toml` `[package] version` | Sürümün **taban**ı (release script'i günceller) |
-| `vX.Y.Z` etiketi | Etiketin tam üstünde olmak = **yayın sürümü** |
-| `BOTGEK_BUILD_VERSION` | Açık override (CI tag derlemesi / Docker `--build-arg BOTGEK_VERSION`) |
-| `BOTGEK_GIT_SHA`, `SOURCE_DATE_EPOCH` | Künyedeki commit ve **tekrarlanabilir** derleme damgası |
+## Yönetici girişi
 
-Türetilen biçim (semver build metadata):
+`.env` içinde:
 
-| Durum | Sürüm | `is_release` |
-| ----- | ----- | ------------ |
-| Etiketin tam üstünde, ağaç temiz | `0.2.0` | ✅ |
-| Etiketten 5 commit sonra | `0.2.0+5.g8fc2692` | — |
-| Hiç etiket yok (geliştirme) | `0.2.0+dev.g8fc2692` | — |
-| Kirli çalışma ağacı | `0.2.0+5.g8fc2692.dirty` | — |
-| Git yok (Docker/tarball) | `0.2.0+local` | — |
-
-Görünürlük:
-- **`botgek --version`** — tek satır künye: sürüm · yayın/geliştirme · commit · etiket · derleme
-  tarihi · hedef üçlü (`.env` gerekmez; systemd/CI/Docker teşhisi). `botgek --help` kullanımı basar.
-- **Panel rayı** — `v0.2.0` (yayın, yeşil) veya `v0.2.0+5` / `+dev` (geliştirme, turuncu);
-  fare üstüne gelince sha, tarih, hedef ve etiket görünür. Kirli ağaçta `*`.
-- **`GET /api/info`** — `version`, `full_version`, `display_version`, `is_release`, `is_dirty`,
-  `git_sha`, `git_tag`, `commits_since_tag`, `build_date`, `target`.
-- **Log** — açılışta `Sürüm: v0.2.0+5.g8fc2692 · geliştirme · …`.
-- **Docker imaj etiketleri** (`:0.2.0`, `:latest`) ve **paket dosya adları** sürümü taşır.
-
-Yayınlama (mantığın tek kaynağı `release.sh`):
-```bash
-./release.sh patch         # 0.1.0 → 0.1.1 (testler çalışır, commit + annotated etiket atılır)
-./release.sh minor --push  # push'lar → CI paket + GitHub Release + Docker yayınını başlatır
-./release.sh 1.0.0         # açık sürüm
-```
-Windows: `powershell -File release.ps1 minor --push` (Git for Windows bash'ine devreder).
-
-Kurallar: çalışma ağacı temiz olmalı; `Cargo.toml` + `Cargo.lock` + etiket **birlikte** güncellenir;
-etiket ile `Cargo.toml` ayrışırsa derleme **uyarı** verir (sessiz sapma olmaz); aynı etiket iki kez
-atılamaz. Kaynak Docker derlemesinde `.git` bağlamda olmadığı için künyeyi elle verin:
-`docker build --build-arg BOTGEK_VERSION=v0.2.0 --build-arg BOTGEK_SHA=$(git rev-parse --short HEAD) .`
-
----
-
-## 🚀 GitHub Actions ile Raspberry Pi Debian Derlemesi (CI/CD)
-
-Projede iki GitHub Actions iş akışı tanımlıdır:
-
-1. **`build-release.yml` (test → paket → yayın → Docker):** dört iş (job) hâlinde çalışır:
-   - **test:** `cargo test --locked` çalıştırır ve **sürüm künyesini derlenmiş ikiliden** okur
-     (`botgek --version`) — paket adları ve doğrulama bu tek kaynaktan beslenir.
-   - **build-and-package:** `cross` ile **Raspberry Pi 64-bit (`aarch64-unknown-linux-gnu`)**,
-     **32-bit (`armv7-unknown-linux-gnueabihf`)** ve **Linux x86_64** için derler; **sürümü taşıyan**
-     `.deb` (`botgek_<sürüm>_arm64.deb`) ve `.tar.gz` (`botgek-<sürüm>-…tar.gz`) paketlerini
-     Actions Artifacts'a yükler. x86_64 derlemesinde `--version` çıktısı etiketle karşılaştırılır.
-   - **release:** yalnızca `v*` etiketinde çalışır; paketleri GitHub Releases'e iliştirir
-     (sürüm notları commit'lerden üretilir).
-   - **docker-publish:** `linux/amd64`, `linux/arm64`, `linux/arm/v7` için çok mimarili imaj üretip
-     GitHub Container Registry'ye (`ghcr.io`) yükler; imaj etiketleri **etiketten semver** ile
-     üretilir (`:0.2.0`, ve varsayılan dalda `:latest`).
-2. **`release.yml` (elle sürüm yayını):** Actions → *Release (sürüm bump + etiket)* →
-   **Run workflow**; `patch` / `minor` / `major` (veya açık sürüm) seçilir. Sürümü bump'lar,
-   `Cargo.toml` + `Cargo.lock`'u günceller, testleri çalıştırır, `chore(release): vX.Y.Z`
-   commit'i + **annotated tag** atar ve push'lar. Etiket push'u yukarıdaki zinciri tetikler —
-   yayın mantığının tek kaynağı `release.sh`'tir (yerelde de aynı script kullanılır).
-
----
-
-## 🍓 Raspberry Pi Debian Kurulumu
-
-### Seçenek 1: Debian Paketi ile Kurulum (`.deb`) — *En Kolay Yol*
-
-GitHub Actions sayfasından veya Releases sekmesinden mimarinize uygun `.deb` paketini indirin (dosya adı sürümü taşır: `botgek_0.2.0_arm64.deb` veya `botgek_0.2.0_armhf.deb`):
-
-```bash
-# Paketi kurun (dosya adını indirdiğiniz sürümle değiştirin)
-sudo dpkg -i botgek_0.2.0_arm64.deb
-
-# Kurulu sürümü doğrulayın (sürüm, commit, derleme tarihi ve hedef makine)
-botgek --version
-
-# Yapılandırma dosyanızı oluşturun ve düzenleyin
-sudo cp /etc/botgek/botgek.env.example /etc/botgek/botgek.env
-sudo nano /etc/botgek/botgek.env
-
-# Bot kullanıcısı ve çalışma dizini (servis burada çalışır; kalıcı kayıt veritabanı
-# botgek.db bu dizinde tutulur, böylece 🗑️ silme izni ve AI koruması kayıtları kalıcı olur)
-sudo id -u botgek >/dev/null 2>&1 || sudo useradd -r -s /bin/false -d /var/lib/botgek botgek
-sudo mkdir -p /var/lib/botgek
-sudo chown botgek:botgek /var/lib/botgek
-
-# Systemd servisini başlatın
-sudo systemctl enable --now botgek
-
-# Durum ve logları kontrol edin
-sudo systemctl status botgek
-sudo journalctl -u botgek -f
+```dotenv
+ADMIN_TOKEN=
+WEB_BIND=127.0.0.1
+WEB_PORT=3000
+WEB_SECURE_COOKIE=false
 ```
 
----
+`ADMIN_TOKEN` için **32–512 karakterlik, yüksek entropili rastgele bir sır** kullanın.
+Örneğin kendi terminalinizde `openssl rand -hex 32` ile üretebilirsiniz. Çıktıyı `.env` dosyanıza
+yerel olarak yazın; sohbet, log, ekran görüntüsü veya Git'e koymayın.
 
-### Seçenek 2: Tarball Arşivi & Kurulum Betiği (`deploy-rpi.sh`)
+- Token yok/geçersizse **WebUI açılmaz**; Discord botunun çalışması etkilenmez.
+- `http://127.0.0.1:3000` giriş sayfasına yönlenir. Token yalnızca giriş isteğinde gönderilir;
+  localStorage/sessionStorage'a yazılmaz.
+- Oturum **8 saat** sürer; rastgele kimlik, `HttpOnly`, `SameSite=Strict` çerezi kullanılır.
+  Yeniden başlatma tüm oturumları iptal eder. Panelde **Çıkış yap** düğmesi vardır.
+- Durum değiştiren istekler `X-Botgek-Request: 1` ister; CORS açılmamıştır.
+- Giriş denemeleri süreç genelinde **20/dakika**, oturum sayısı **64** ile sınırlıdır.
+- Uzak erişimde **HTTPS ters proxy** veya SSH tüneli kullanın. HTTPS için `WEB_SECURE_COOKIE=true`
+  ayarlayın; botun HTTP portunu doğrudan internete açmayın. Uygulama TLS sonlandırmaz.
 
-```bash
-# Arşivi çıkarın ve dizine girin
-tar -xzvf botgek-raspberry-pi-64bit-arm64.tar.gz
-cd botgek-raspberry-pi-64bit-arm64
+Tokenı döndürmek için `.env` değerini değiştirip botu yeniden başlatın. Token API yanıtlarında ve loglarda görünmez.
 
-# Otomatik kurulum betiğini root olarak çalıştırın
-sudo bash deploy-rpi.sh
+## Yapılandırma ve kalıcılık
 
-# .env dosyasını düzenleyip botu başlatın
-sudo nano /etc/botgek/botgek.env
-sudo systemctl start botgek
-```
+| Değişken | Davranış |
+| --- | --- |
+| `BOTGEK_SETTINGS_PATH` | Ayar dosyası; varsayılan çalışma dizinindeki `settings.json` |
+| `BOTGEK_SETTINGS_SEED` | Yalnızca hedef dosya yoksa ilk içe aktarım kaynağı |
+| `BOTGEK_DB_PATH` | Kart–paylaşan kullanıcı kaydı; varsayılan `botgek.db` |
+| `OPENROUTER_API_KEY` | İsteğe bağlı AI erişimi |
+| `INSTAGRAM_SESSIONID` | İsteğe bağlı Instagram reel/video çerezi; yalnızca ortamda saklanır |
+| `REDDIT_CLIENT_ID` | İsteğe bağlı public OAuth istemci kimliği; sır değildir |
+| `DELETE_ORIGINAL` | Başarılı dönüşüm sonrası orijinal mesajı silme |
 
----
+Ayarlar global varsayılan + sunucu başına bölüm override'ı (`modules`, `role_filters`, `ai`, `engine`) olarak
+çözümlenir. Dosya yazımı aynı dizinde geçici dosya, flush ve atomik replacement kullanır. WebUI kayıtları
+seri işlenir; disk işlemi async worker'ı bloklamaz. Bozuk ayar dosyası **varsayılan erişim politikasıyla
+başlatılmaz**: düzeltmeniz veya sağlam yedeği geri koymanız gerekir. Göç öncesi yedek alınamıyorsa göç durur.
 
-### Seçenek 3: Docker ile Çalıştırma
+SQLite WAL kullanılır; işlemler sınırlı blocking worker üzerinden yürür. 200.000 kart sınırı ve budama vardır.
+Dosya açılamazsa bellek içi fallback loglanır ve readiness başarısız olur; bunu kalıcı çalışma saymayın.
 
-```bash
-# Projeyi çekin
-git clone <depo_adresi> botgek
-cd botgek
+## Docker ve güncelleme
 
-# .env dosyasını ayarlayın
-cp .env.example .env
-nano .env
-
-# Docker Compose ile arka planda başlatın
+```sh
 docker compose up -d --build
 ```
 
-> **Ortam değişkenleri:** `.env` içindeki tüm değerler (`docker-compose.yml` → `env_file`) container'a aktarılır.
-> Instagram reellerinin **kartın içinde oynaması** için `.env` dosyasına `INSTAGRAM_SESSIONID=<çerez>` satırını
-> eklemeniz yeterlidir (bkz. yukarıdaki *Instagram native kart* notu); değer gizli tutulur —
-> `settings.json`'a veya WebUI'a yazılmaz. Değeri doğrudan compose dosyasında/kabuk ortamında vermek
-> isterseniz `docker-compose.yml` içindeki `INSTAGRAM_SESSIONID=${INSTAGRAM_SESSIONID:-}` satırı bunu destekler.
+Compose yönetim portunu yalnızca **host 127.0.0.1** üzerinde yayınlar; container içinde `WEB_BIND=0.0.0.0`
+kullanılır. Uzak makinede SSH tüneli örneği: `ssh -L 3000:127.0.0.1:3000 sunucu`.
 
----
+**Mevcut kurulumdan geçiş:** `./settings.json` salt okunur `/app/settings.legacy.json` olarak bağlanır.
+İlk açılışta `/app/data/settings.json` yoksa bu dosya içe aktarılır. Sonraki WebUI kayıtları `botgek-data`
+volume'undaki dosyaya gider; hosttaki eski dosya artık güncellenmez. Güncellemeden önce ayar ve SQLite
+dosyalarının yedeğini alın. `docker compose down -v` kalıcı volume'u siler; normal güncellemede kullanmayın.
 
-## 🛠️ Discord Developer Portal İzinleri
+Atomik ayar replacement'ı için tek yazılabilir dosya bind-mount'u yerine **dizin/volume** kullanın.
+Bot kullanıcısına (Docker: UID/GID 1000) dizin yazma izni verin; `chmod 666` kullanmayın.
+Yedek/geri yükleme işlemlerinde artık `BOTGEK_SETTINGS_PATH` ile gösterilen güncel dosyayı hedefleyin.
 
-1. [Discord Developer Portal](https://discord.com/developers/applications) adresine gidin.
-2. Botunuzun ayarlarından **Bot** sekmesine gelin:
-   - **`MESSAGE CONTENT INTENT`** seçeneğini mutlaka **AÇIK (Enabled)** yapın.
-3. **OAuth2 -> URL Generator** üzerinden botu sunucunuza şu yetkilerle davet edin:
-   - `Send Messages`, `Manage Messages`, `Embed Links`, `Read Message History`, `Add Reactions`.
+Kaynak imaj derlemesinde `.git` bulunmaz. Sürüm künyesini `BOTGEK_VERSION` ve `BOTGEK_SHA` build arg'larıyla
+verebilirsiniz. Runtime root olmayan kullanıcıdır; ffmpeg kurulmaz ve kullanılmaz.
 
----
+Debian paketinde servis: `botgek.service`; çalışma dizini `/var/lib/botgek`, ortam dosyası
+`/etc/botgek/botgek.env`. Bot kullanıcısı/dizini hazırlandıktan sonra `systemctl enable --now botgek`.
+Log: `journalctl -u botgek -f`. Kaynak tarball kurulumu için `deploy-rpi.sh` mevcuttur.
 
-## 📤 Projeyi GitHub'a Gönderme (Push)
+## Kontroller ve CI
 
-GitHub üzerinde yeni ve boş bir repository oluşturduktan sonra terminalinizde şu komutları çalıştırın:
-
-```bash
-# 1. Uzak depoyu ekleyin (kendi repo linkinizi yazın)
-git remote add origin https://github.com/KULLANICI_ADI/REPO_ADI.git
-
-# 2. Ana dala pushlayın
-git branch -M main
-git push -u origin main
-
-# 3. Yeni bir sürüm oluşturup Raspberry Pi derlemelerini ve Docker imajını yayınlamak için:
-./release.sh patch --push        # 0.1.0 → 0.1.1 (test + commit + etiket + push)
-#   → etiket push'u CI'yı tetikler: .deb/.tar.gz → GitHub Release → ghcr.io imajı (semver + latest)
-#
-# Alternatif: GitHub → Actions → "Release (sürüm bump + etiket)" → Run workflow (patch/minor/major)
+```sh
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+node --check src/web/ui/app.js
+node --check src/web/ui/login.js
+node --test tests/web-ui.test.cjs
 ```
+
+Normal test koşusu **ağdaki sosyal medya servislerine bağlanmaz**. Yerel HTTP testleri yalnızca loopback
+üzerinde fixture sunucuları açar; dosya testleri geçici dosyalar kullanır. Rust ve JavaScript ayar çözümleme
+testleri `tests/fixtures/settings-resolution.json` sözleşmesini paylaşır.
+
+Canlı testler açıkça ignore edilir ve yalnızca bilerek çalıştırılır:
+
+```sh
+cargo test --locked live_ -- --ignored --nocapture
+```
+
+Bu komut gerçek upstream erişimi ister; Instagram oturum testi ayrıca özel çerez ister. Eksik önkoşul veya
+başarısız birleştirme **başarılı test gibi gösterilmez**. Üretim sırlarını public PR testlerine aktarmayın.
+
+- `build-release.yml`: test, fmt, Clippy, panel testleri; ardından ARM64/ARMv7/x86_64 paket ve imaj.
+- `quality.yml`: RustSec audit ve LCOV artifact. Coverage ilk ölçümden itibaren izlenir; uydurma eşik yoktur.
+- `release.yml`: elle sürüm bump/etiket akışı. Yerelde `./release.sh patch` veya
+  `./release.sh minor --push`; Windows'ta `release.ps1`. Temiz çalışma ağacı gerekir.
+- Sürüm `build.rs` ile git etiketinden gömülür; `SOURCE_DATE_EPOCH` tekrar üretilebilir tarih içindir.
+
+Serenity 0.12'nin Rustls gateway arka ucu eski `rustls-webpki 0.102` sürümünü sabitlediği için
+Serenity'nin desteklenen **native-TLS** arka ucu kullanılır; Linux/ARM'da OpenSSL vendored derlenir
+(build ortamında C toolchain, Perl ve make gerekir), Windows'ta OS TLS kullanılır. Botun kendi HTTP
+istemcileri **Rustls 0.23** kullanmayı sürdürür. RUSTSEC-2026-0049/0098/0099/0104 istisnayla susturulmaz.
+Gelecekte upstream gateway güncellendiğinde bu uyumluluk tercihinin yeniden değerlendirilmesi gerekir.
+Bağımlılık denetiminin gerçekten geçtiğini ilgili CI sonucu olmadan varsaymayın.
+
+## Gözlemlenebilirlik ve performans
+
+- `/api/health`: public liveness; yalnızca HTTP sunucusunun ayakta olduğunu söyler.
+- `/api/ready`: giriş gerektirir; Discord bağlantısı ve kalıcı SQLite erişimini kontrol eder, bozuk durumda 503.
+- `/api/metrics`: giriş gerektirir; platform bazlı native başarı/hata, kümülatif gecikme histogramı,
+  cache-hit ve kapasite aşımı sayıları. Süreç yeniden başlayınca sıfırlanır; kullanıcı/veri/token içermez.
+- `RUST_LOG=botgek=debug,serenity=warn`: veri/medya/gönderim süreleri. Logları özel tutun; gönderi URL'leri içerebilir.
+
+Tekrarlanabilir offline CPU başlangıç ölçümü:
+
+```sh
+cargo test --release --locked offline_card_baseline -- --ignored --nocapture
+```
+
+Bu 10.000 örnekte parse+render p50/p95 ölçer; **ağ, toplam Discord gecikmesi veya RSS ölçmez**.
+Gerçek Raspberry Pi üzerinde aynı sürüm/derleyiciyle sıcak-soğuk önbellek, büyük Reddit videosu,
+eşzamanlı aynı/farklı URL, yavaş upstream ve 429 senaryolarını ayrıca ölçün. RSS/CPU, upstream istek sayısı,
+timeout sonrası aktif iş ve p95 değerlerini değişiklik öncesi/sonrası karşılaştırın. Donanım üzerinde
+ölçülmeden hızlanma veya bellek tasarrufu yüzdesi iddia edilmez.

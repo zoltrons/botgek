@@ -20,7 +20,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use super::opengraph::{self, OpenGraph};
-use super::{parse_timestamp, unescape_html, Author, BuiltinPost, Media, MediaKind, Stats};
+use super::{Author, BuiltinPost, Media, MediaKind, Stats, parse_timestamp, unescape_html};
 use crate::converters::parser::{ParsedPost, Platform};
 
 /// Kalıcı gönderi bağlantısından (`/p/`, `/reel/`, `/reels/`, `/tv/`) tür + kodu çıkarır.
@@ -58,8 +58,7 @@ static LIKES_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli beğeni regex")
 });
 static COMMENTS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)View all ([0-9][0-9.,]*[KkMmBb]?) comments"#)
-        .expect("geçerli yorum regex")
+    Regex::new(r#"(?is)View all ([0-9][0-9.,]*[KkMmBb]?) comments"#).expect("geçerli yorum regex")
 });
 static CAPTION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)<div class="Caption">(.*?)<div class="CaptionComments""#)
@@ -75,9 +74,8 @@ static CAPTION_USERNAME_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 static BR_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)<br\s*/?>"#).expect("geçerli br regex"));
-static ANCHOR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)<a[^>]*>(.*?)</a>"#).expect("geçerli anchor regex")
-});
+static ANCHOR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?is)<a[^>]*>(.*?)</a>"#).expect("geçerli anchor regex"));
 static TAG_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?is)<[^>]+>"#).expect("geçerli etiket regex"));
 
@@ -118,8 +116,7 @@ const SESSION_API_BASES: [(&str, &str); 2] = [
     ("https://www.instagram.com/api/v1/media", "936619743392459"),
 ];
 /// Uygulama API'sinin beklediği istemci kimliği (mobil uygulama User-Agent'ı).
-const SESSION_USER_AGENT: &str =
-    "Instagram 273.0.0.16.70 (iPhone15,2; iOS 17_5_1; en_US; en-US; scale=3.00; 1290x2796; 470085518)";
+const SESSION_USER_AGENT: &str = "Instagram 273.0.0.16.70 (iPhone15,2; iOS 17_5_1; en_US; en-US; scale=3.00; 1290x2796; 470085518)";
 /// Oturum yanıtı için okunacak en büyük gövde (1 MB) — video listesi + açıklama fazlasıyla sığar.
 const SESSION_MAX_BODY_BYTES: usize = 1024 * 1024;
 
@@ -172,7 +169,10 @@ async fn fetch_session_media(
     code: &str,
     sessionid: Option<&str>,
 ) -> Option<SessionMedia> {
-    let token = sessionid.map(str::trim).filter(|t| !t.is_empty())?.to_string();
+    let token = sessionid
+        .map(str::trim)
+        .filter(|t| !t.is_empty())?
+        .to_string();
     let pk = shortcode_to_pk(code)?;
 
     // Tarayıcı çerezi `%3A` ile kodlanmış olabilir: ham değer ve çözülmüş biçim denenir.
@@ -299,9 +299,14 @@ fn parse_session_media(json: &Value) -> Option<SessionMedia> {
         likes: item.get("like_count").and_then(Value::as_u64),
         comments: item.get("comment_count").and_then(Value::as_u64),
         // Görüntülenme alanı sürüme göre farklı adlarla gelir.
-        views: ["play_count", "ig_play_count", "view_count", "video_view_count"]
-            .iter()
-            .find_map(|key| item.get(*key).and_then(Value::as_u64)),
+        views: [
+            "play_count",
+            "ig_play_count",
+            "view_count",
+            "video_view_count",
+        ]
+        .iter()
+        .find_map(|key| item.get(*key).and_then(Value::as_u64)),
         taken_at: item.get("taken_at").and_then(Value::as_i64),
         is_reel: item
             .get("product_type")
@@ -321,9 +326,7 @@ fn string_field(parent: Option<&Value>, key: &str) -> Option<String> {
 
 /// Tek bir medya düğümünü (gönderi ya da carousel öğesi) listeye ekler.
 fn push_session_node(out: &mut Vec<Media>, node: &Value) {
-    let poster = node
-        .get("image_versions2")
-        .and_then(largest_candidate_url);
+    let poster = node.get("image_versions2").and_then(largest_candidate_url);
     let width = node
         .get("original_width")
         .and_then(Value::as_u64)
@@ -413,8 +416,12 @@ pub async fn fetch(
     parsed: &ParsedPost,
     instagram_sessionid: Option<&str>,
 ) -> Result<BuiltinPost, String> {
-    let (kind, code) = parse_permalink(&parsed.original_url)
-        .ok_or_else(|| format!("Instagram kalıcı linki çözümlenemedi: {}", parsed.original_url))?;
+    let (kind, code) = parse_permalink(&parsed.original_url).ok_or_else(|| {
+        format!(
+            "Instagram kalıcı linki çözümlenemedi: {}",
+            parsed.original_url
+        )
+    })?;
 
     let embed_url = format!("https://www.instagram.com/{kind}/{code}/embed/captioned/");
     let page_url = format!("https://www.instagram.com/{kind}/{code}/");
@@ -604,7 +611,12 @@ fn build_post(
     post.text = embed
         .caption
         .clone()
-        .or_else(|| graph.description.as_deref().and_then(caption_from_og_description))
+        .or_else(|| {
+            graph
+                .description
+                .as_deref()
+                .and_then(caption_from_og_description)
+        })
         .unwrap_or_default();
 
     // Tarih: og:description içindeki `... on August 26, 2022: ...`.
@@ -912,10 +924,20 @@ mod tests {
     #[test]
     fn shortcode_converts_to_media_pk() {
         // Instagram embed sayfasındaki `data-media-id` değerleriyle birebir eşleşir.
-        assert_eq!(shortcode_to_pk("BsOGulcndj-"), Some(1_949_525_278_281_554_174));
-        assert_eq!(shortcode_to_pk("Chunk8-jurw"), Some(2_913_440_072_144_448_240));
+        assert_eq!(
+            shortcode_to_pk("BsOGulcndj-"),
+            Some(1_949_525_278_281_554_174)
+        );
+        assert_eq!(
+            shortcode_to_pk("Chunk8-jurw"),
+            Some(2_913_440_072_144_448_240)
+        );
         assert_eq!(shortcode_to_pk(""), None);
-        assert_eq!(shortcode_to_pk("geçersiz!"), None, "alfabe dışı karakter reddedilir");
+        assert_eq!(
+            shortcode_to_pk("geçersiz!"),
+            None,
+            "alfabe dışı karakter reddedilir"
+        );
     }
 
     #[test]
@@ -929,7 +951,10 @@ mod tests {
         assert_eq!(session.media[0].kind, MediaKind::Video);
         // En yüksek çözünürlüklü mp4 ve kapak seçilir.
         assert_eq!(session.media[0].url, "https://cdn/video-1080.mp4");
-        assert_eq!(session.media[0].poster.as_deref(), Some("https://cdn/cover.jpg"));
+        assert_eq!(
+            session.media[0].poster.as_deref(),
+            Some("https://cdn/cover.jpg")
+        );
         assert_eq!(session.media[0].duration, Some(12));
         assert_eq!(session.media[0].width, Some(1080));
         assert_eq!(session.media[0].height, Some(1920));
@@ -958,7 +983,10 @@ mod tests {
         assert_eq!(session.media[1].kind, MediaKind::Image);
         assert!(session.media[2].is_video());
         assert_eq!(session.media[2].url, "https://cdn/c.mp4");
-        assert_eq!(session.media[2].poster.as_deref(), Some("https://cdn/c.jpg"));
+        assert_eq!(
+            session.media[2].poster.as_deref(),
+            Some("https://cdn/c.jpg")
+        );
         assert!(session.has_video());
         assert!(!session.is_reel, "carousel gönderi reel değil");
     }
@@ -978,7 +1006,10 @@ mod tests {
         assert_eq!(post.media.len(), 1);
         assert!(post.media[0].is_video(), "reel mp4 olarak taşınmalı");
         assert_eq!(post.media[0].url, "https://cdn/video-1080.mp4");
-        assert_eq!(post.media[0].poster.as_deref(), Some("https://cdn/cover.jpg"));
+        assert_eq!(
+            post.media[0].poster.as_deref(),
+            Some("https://cdn/cover.jpg")
+        );
         assert_eq!(post.extra_label.as_deref(), Some("Reel"));
 
         // API verisi kartı zenginleştirir (embed metrikleri kesin değerlerle değişir).
@@ -999,7 +1030,10 @@ mod tests {
         assert!(embed.verified, "doğrulama işareti bulunmalı");
         let avatar = embed.avatar.expect("avatar bulunmalı");
         assert!(avatar.starts_with("https://scontent.cdninstagram.com/avatar.jpg"));
-        assert!(avatar.contains("&_nc_cat=110"), "HTML varlıkları çözülmeli: {avatar}");
+        assert!(
+            avatar.contains("&_nc_cat=110"),
+            "HTML varlıkları çözülmeli: {avatar}"
+        );
         assert_eq!(embed.likes, Some(60_279_326));
         assert_eq!(embed.comments, Some(3_771_804));
         assert_eq!(
@@ -1008,26 +1042,49 @@ mod tests {
         );
 
         let caption = embed.caption.expect("açıklama bulunmalı");
-        assert!(caption.contains("Let\u{2019}s set a world record together!"), "caption: {caption}");
+        assert!(
+            caption.contains("Let\u{2019}s set a world record together!"),
+            "caption: {caption}"
+        );
         assert!(caption.contains("#EggGang"), "etiket korunmalı: {caption}");
-        assert!(!caption.contains("world_record_egg"), "kullanıcı adı çıkarılmalı: {caption}");
-        assert!(!caption.contains('<'), "HTML etiketleri temizlenmeli: {caption}");
+        assert!(
+            !caption.contains("world_record_egg"),
+            "kullanıcı adı çıkarılmalı: {caption}"
+        );
+        assert!(
+            !caption.contains('<'),
+            "HTML etiketleri temizlenmeli: {caption}"
+        );
     }
 
     #[test]
     fn open_graph_helpers_are_parsed() {
         let desc = "975K likes, 16K comments - instagram on August 26, 2022: \"Gingerton\". ";
-        assert_eq!(stat_from_description(&OG_LIKES_REGEX, Some(desc)), Some(975_000));
-        assert_eq!(stat_from_description(&OG_COMMENTS_REGEX, Some(desc)), Some(16_000));
+        assert_eq!(
+            stat_from_description(&OG_LIKES_REGEX, Some(desc)),
+            Some(975_000)
+        );
+        assert_eq!(
+            stat_from_description(&OG_COMMENTS_REGEX, Some(desc)),
+            Some(16_000)
+        );
         assert_eq!(parse_ig_date(desc), parse_timestamp("2022-08-26T00:00:00Z"));
-        assert_eq!(caption_from_og_description(desc).as_deref(), Some("Gingerton"));
+        assert_eq!(
+            caption_from_og_description(desc).as_deref(),
+            Some("Gingerton")
+        );
         assert_eq!(
             display_name_from_title("Instagram on Instagram: \"...\"").as_deref(),
             Some("Instagram")
         );
-        assert_eq!(display_name_from_title("Instagram"), None, "sadece site adı ad sayılmaz");
         assert_eq!(
-            username_from_og_url("https://www.instagram.com/world_record_egg/p/BsOGulcndj-/").as_deref(),
+            display_name_from_title("Instagram"),
+            None,
+            "sadece site adı ad sayılmaz"
+        );
+        assert_eq!(
+            username_from_og_url("https://www.instagram.com/world_record_egg/p/BsOGulcndj-/")
+                .as_deref(),
             Some("world_record_egg")
         );
     }
@@ -1051,7 +1108,10 @@ mod tests {
         );
 
         assert_eq!(post.platform, Platform::Instagram);
-        assert_eq!(post.author.name, "Just An Egg \u{1f95a}", "og:title'dan görünen ad");
+        assert_eq!(
+            post.author.name, "Just An Egg \u{1f95a}",
+            "og:title'dan görünen ad"
+        );
         assert_eq!(post.author.handle, "world_record_egg");
         assert!(post.author.verified);
         assert_eq!(
@@ -1083,7 +1143,10 @@ mod tests {
         assert_eq!(post.stats.likes, 975_000);
         assert_eq!(post.stats.replies, 16_000);
         assert_eq!(post.media.len(), 1);
-        assert!(post.media[0].is_image(), "video kapağı görsel olarak taşınır");
+        assert!(
+            post.media[0].is_image(),
+            "video kapağı görsel olarak taşınır"
+        );
     }
 
     #[test]
@@ -1095,7 +1158,13 @@ mod tests {
                <meta property="og:description" content="120 likes, 3 comments - somebody on March 2, 2023: &quot;Merhaba dünya&quot;. " />"#,
         );
 
-        let post = build_post(&parsed("reel", "CDUMkliABpa"), "reel", None, Some(graph), None);
+        let post = build_post(
+            &parsed("reel", "CDUMkliABpa"),
+            "reel",
+            None,
+            Some(graph),
+            None,
+        );
 
         assert_eq!(post.author.name, "Somebody");
         assert_eq!(post.author.handle, "somebody");
@@ -1104,14 +1173,12 @@ mod tests {
         assert_eq!(post.stats.replies, 3);
         assert_eq!(post.extra_label.as_deref(), Some("Reel"));
         assert_eq!(post.media.len(), 1);
-        assert_eq!(
-            post.created_at,
-            parse_timestamp("2023-03-02T00:00:00Z")
-        );
+        assert_eq!(post.created_at, parse_timestamp("2023-03-02T00:00:00Z"));
     }
 
     /// Canlı kaynak testi: Instagram'ın herkese açık uçları gerçek veri döndürmeli.
     #[tokio::test]
+    #[ignore = "requires live Instagram access; run explicitly"]
     async fn live_fetch_photo_and_reel() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
@@ -1139,18 +1206,27 @@ mod tests {
     /// Instagram çerezi reddeder (giriş sayfasına yönlendirir); kart yine herkese açık
     /// kaynaklarla üretilmeli ve video iddia edilmemelidir (kapak karesi kalır).
     #[tokio::test]
+    #[ignore = "requires live Instagram access; run explicitly"]
     async fn live_invalid_session_falls_back_to_cover() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
             .unwrap();
 
-        let post = fetch(&client, &parsed("reel", "DbOKxSpolaP"), Some("gecersiz-cerez-degeri"))
-            .await
-            .expect("geçersiz çerezde bile kart üretilmeli");
+        let post = fetch(
+            &client,
+            &parsed("reel", "DbOKxSpolaP"),
+            Some("gecersiz-cerez-degeri"),
+        )
+        .await
+        .expect("geçersiz çerezde bile kart üretilmeli");
 
         assert_eq!(post.author.handle, "efewissiex");
-        assert_eq!(post.extra_label.as_deref(), Some("Reel"), "reel etiketi korunur");
+        assert_eq!(
+            post.extra_label.as_deref(),
+            Some("Reel"),
+            "reel etiketi korunur"
+        );
         assert!(!post.media.is_empty(), "kapak karesi gelmeli");
         assert!(
             post.media.iter().all(Media::is_image),
@@ -1163,28 +1239,37 @@ mod tests {
     ///
     /// `INSTAGRAM_SESSIONID` ortam değişkeni yoksa test atlanır (CI'da sır bulunmaz).
     #[tokio::test]
+    #[ignore = "requires a private Instagram cookie and live access; run explicitly"]
     async fn live_session_reel_is_playable_when_cookie_is_set() {
-        let Ok(sessionid) = std::env::var("INSTAGRAM_SESSIONID") else {
-            return; // sır yok → atlanır
-        };
-        if sessionid.trim().is_empty() {
-            return;
-        }
+        let sessionid =
+            std::env::var("INSTAGRAM_SESSIONID").expect("live test requires INSTAGRAM_SESSIONID");
+        assert!(
+            !sessionid.trim().is_empty(),
+            "live test requires a nonempty cookie"
+        );
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .build()
             .unwrap();
-        let post = fetch(&client, &parsed("reel", "DbOKxSpolaP"), Some(sessionid.trim()))
-            .await
-            .expect("reel çekilmeli");
+        let post = fetch(
+            &client,
+            &parsed("reel", "DbOKxSpolaP"),
+            Some(sessionid.trim()),
+        )
+        .await
+        .expect("reel çekilmeli");
 
         let video = post
             .media
             .iter()
             .find(|media| media.is_video())
             .unwrap_or_else(|| panic!("reel mp4 olarak gelmeli: {:?}", post.media));
-        assert!(video.url.contains(".mp4"), "mp4 bağlantısı beklenir: {}", video.url);
+        assert!(
+            video.url.contains(".mp4"),
+            "mp4 bağlantısı beklenir: {}",
+            video.url
+        );
         assert!(video.poster.is_some(), "video kapağı olmalı");
         assert_eq!(post.author.handle, "efewissiex");
         assert_eq!(post.extra_label.as_deref(), Some("Reel"));

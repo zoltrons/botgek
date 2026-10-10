@@ -44,7 +44,10 @@ pub const SEMVER: &str = build_or!("BOTGEK_VERSION_SEMVER", env!("CARGO_PKG_VERS
 /// Tam sürüm gösterimi (ör. `0.2.0+5.g8fc2692.dirty`).
 pub const DISPLAY: &str = build_or!("BOTGEK_VERSION_DISPLAY", env!("CARGO_PKG_VERSION"));
 /// `v` önekli tam sürüm (panelde gösterilir).
-pub const FULL: &str = build_or!("BOTGEK_VERSION_FULL", concat!("v", env!("CARGO_PKG_VERSION")));
+pub const FULL: &str = build_or!(
+    "BOTGEK_VERSION_FULL",
+    concat!("v", env!("CARGO_PKG_VERSION"))
+);
 /// Kısaltılmış commit kimliği, bulunamazsa `unknown`.
 pub const GIT_SHA: &str = build_or!("BOTGEK_GIT_SHA", "unknown");
 /// En yakın etiket (ör. `v0.2.0`); etiket yoksa boş.
@@ -61,11 +64,15 @@ pub const IS_RELEASE: bool = build_flag(option_env!("BOTGEK_IS_RELEASE"));
 pub const IS_DIRTY: bool = build_flag(option_env!("BOTGEK_IS_DIRTY"));
 
 /// Dış servislere kendini tanıtan User-Agent (`media`, `reddit_video` vb. kullanır).
-pub const USER_AGENT: &str =
-    build_or!("BOTGEK_USER_AGENT", "Botgek/unknown (Discord link converter)");
+pub const USER_AGENT: &str = build_or!(
+    "BOTGEK_USER_AGENT",
+    "Botgek/unknown (Discord link converter)"
+);
 /// Discord REST API için resmi standartta User-Agent (`DiscordBot ($url, $versionNumber)`).
-pub const DISCORD_USER_AGENT: &str =
-    build_or!("BOTGEK_DISCORD_USER_AGENT", "DiscordBot (https://github.com/zoltrons/botgek)");
+pub const DISCORD_USER_AGENT: &str = build_or!(
+    "BOTGEK_DISCORD_USER_AGENT",
+    "DiscordBot (https://github.com/zoltrons/botgek)"
+);
 
 /// Derlemeye gömülen **ham** git girdilerinden sürümün yeniden çözülmüş hâli.
 ///
@@ -97,7 +104,11 @@ pub fn commits_since_tag() -> Option<u32> {
 
 /// En yakın etiket (yoksa `None`).
 pub fn tag() -> Option<&'static str> {
-    if GIT_TAG.is_empty() { None } else { Some(GIT_TAG) }
+    if GIT_TAG.is_empty() {
+        None
+    } else {
+        Some(GIT_TAG)
+    }
 }
 
 /// Tek satır teşhis özeti: sürüm · yayın/geliştirme · sha · etiket · tarih · hedef.
@@ -111,12 +122,20 @@ pub fn summary() -> String {
     format!(
         "{} · {} · {} · {} · {} · {}{}",
         details.full,
-        if details.is_release { "yayın" } else { "geliştirme" },
+        if details.is_release {
+            "yayın"
+        } else {
+            "geliştirme"
+        },
         details.git_sha.as_deref().unwrap_or("unknown"),
         tag,
         BUILD_DATE,
         TARGET,
-        if details.is_dirty { " · kirli ağaç" } else { "" },
+        if details.is_dirty {
+            " · kirli ağaç"
+        } else {
+            ""
+        },
     )
 }
 
@@ -165,7 +184,12 @@ mod tests {
     /// Kirli çalışma ağacı `.dirty` olarak işaretlenir ve yayın sayılmaz.
     #[test]
     fn derive_dirty_tree_is_marked() {
-        let derived = derive_version(&inputs("0.2.0", None, Some("v0.2.0-0-g8fc2692-dirty"), None));
+        let derived = derive_version(&inputs(
+            "0.2.0",
+            None,
+            Some("v0.2.0-0-g8fc2692-dirty"),
+            None,
+        ));
         assert_eq!(derived.display, "0.2.0+dev.g8fc2692.dirty");
         assert!(!derived.is_release);
         assert!(derived.is_dirty);
@@ -194,8 +218,12 @@ mod tests {
     /// Açık override (CI/Docker) etiketten de `Cargo.toml`'dan da önceliklidir.
     #[test]
     fn derive_override_wins_over_tag_and_package() {
-        let derived =
-            derive_version(&inputs("0.1.0", Some("v0.3.0"), Some("v0.2.0-4-g8fc2692"), None));
+        let derived = derive_version(&inputs(
+            "0.1.0",
+            Some("v0.3.0"),
+            Some("v0.2.0-4-g8fc2692"),
+            None,
+        ));
         assert_eq!(derived.semver, "0.3.0", "`v` öneki temizlenmeli");
         assert_eq!(derived.commits_since_tag, Some(4));
     }
@@ -251,7 +279,10 @@ mod compiled {
     #[test]
     fn compiled_constants_match_runtime_provenance() {
         let derived = provenance();
-        assert_eq!(SEMVER, derived.semver, "gömülen semver çalışma zamanıyla ayrışık");
+        assert_eq!(
+            SEMVER, derived.semver,
+            "gömülen semver çalışma zamanıyla ayrışık"
+        );
         assert_eq!(DISPLAY, derived.display, "gömülen gösterim ayrışık");
         assert_eq!(FULL, derived.full, "gömülen tam sürüm ayrışık");
         assert_eq!(IS_RELEASE, derived.is_release, "yayın bayrağı ayrışık");
@@ -264,11 +295,20 @@ mod compiled {
     #[test]
     fn compiled_constants_have_expected_shape() {
         assert!(is_semver(SEMVER), "semver geçersiz: {SEMVER}");
-        assert!(DISPLAY.starts_with(SEMVER), "gösterim semver ile başlamalı: {DISPLAY}");
+        assert!(
+            DISPLAY.starts_with(SEMVER),
+            "gösterim semver ile başlamalı: {DISPLAY}"
+        );
         assert_eq!(FULL, format!("v{DISPLAY}"));
         assert!(USER_AGENT.starts_with("Botgek/"), "UA biçimi: {USER_AGENT}");
-        assert!(DISCORD_USER_AGENT.starts_with("DiscordBot (https://"), "UA biçimi");
-        assert!(DISCORD_USER_AGENT.contains(SEMVER), "Discord UA semver taşımalı");
+        assert!(
+            DISCORD_USER_AGENT.starts_with("DiscordBot (https://"),
+            "UA biçimi"
+        );
+        assert!(
+            DISCORD_USER_AGENT.contains(SEMVER),
+            "Discord UA semver taşımalı"
+        );
         assert!(summary().contains(SEMVER));
         assert!(!BUILD_DATE.is_empty() && !TARGET.is_empty());
     }

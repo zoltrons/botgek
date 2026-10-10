@@ -36,7 +36,7 @@ pub async fn get(key: &str) -> Option<Arc<BuiltinPost>> {
 }
 
 /// Gönderiyi önbelleğe yazar; sınır aşılırsa süresi dolanlar ve en eski girdiler atılır.
-pub async fn put(key: String, post: &BuiltinPost) {
+pub async fn put(key: String, post: Arc<BuiltinPost>) {
     let mut cache = CACHE.lock().await;
 
     if cache.len() >= MAX_ENTRIES {
@@ -53,7 +53,7 @@ pub async fn put(key: String, post: &BuiltinPost) {
         }
     }
 
-    cache.insert(key, (Instant::now(), Arc::new(post.clone())));
+    cache.insert(key, (Instant::now(), post));
 }
 
 #[cfg(test)]
@@ -75,14 +75,14 @@ mod tests {
         let key = "test-key-webui".to_string();
         assert!(get(&key).await.is_none());
 
-        put(key.clone(), &post()).await;
+        put(key.clone(), Arc::new(post())).await;
         assert!(get(&key).await.is_some());
 
         // Farklı anahtar etkilenmez
         assert!(get("baska-anahtar").await.is_none());
 
         // Aynı anahtar tazelenebilir
-        put(key.clone(), &post()).await;
+        put(key.clone(), Arc::new(post())).await;
         assert!(get(&key).await.is_some());
     }
 }

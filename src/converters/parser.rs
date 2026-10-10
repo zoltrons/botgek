@@ -1,5 +1,5 @@
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::config::Config;
 
@@ -232,7 +232,10 @@ pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
 }
 
 /// Ayarlardan çözümlenmiş alan adlarıyla dönüştürme yapar.
-pub fn parse_message_with_domains(raw_content: &str, domains: &PlatformDomains) -> Option<ParsedPost> {
+pub fn parse_message_with_domains(
+    raw_content: &str,
+    domains: &PlatformDomains,
+) -> Option<ParsedPost> {
     // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
     if !raw_content.contains("http://")
         && !raw_content.contains("https://")
@@ -289,7 +292,10 @@ fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
     if let Some(caps) = TWITTER_SPOILER_REGEX.captures(raw_content) {
         let username = caps.get(1)?.as_str();
         let tweet_id = caps.get(2)?.as_str();
-        let extra = caps.get(3).map(|m| format!("/{}", m.as_str())).unwrap_or_default();
+        let extra = caps
+            .get(3)
+            .map(|m| format!("/{}", m.as_str()))
+            .unwrap_or_default();
 
         let original_url = format!("https://x.com/{}/status/{}{}", username, tweet_id, extra);
         let fixed_url = original_url.clone();
@@ -306,7 +312,10 @@ fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
     if let Some(caps) = TWITTER_REGEX.captures(raw_content) {
         let username = caps.get(1)?.as_str();
         let tweet_id = caps.get(2)?.as_str();
-        let extra = caps.get(3).map(|m| format!("/{}", m.as_str())).unwrap_or_default();
+        let extra = caps
+            .get(3)
+            .map(|m| format!("/{}", m.as_str()))
+            .unwrap_or_default();
 
         let original_url = format!("https://x.com/{}/status/{}{}", username, tweet_id, extra);
         let fixed_url = original_url.clone();
@@ -436,7 +445,10 @@ fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
         let target = caps.get(2)?.as_str();
         let id = caps.get(3)?.as_str();
         let section = if prefix == "u" { "user" } else { prefix };
-        let original_url = format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id);
+        let original_url = format!(
+            "https://www.reddit.com/{}/{}/comments/{}",
+            section, target, id
+        );
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: true,
@@ -451,7 +463,10 @@ fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
         let target = caps.get(2)?.as_str();
         let id = caps.get(3)?.as_str();
         let section = if prefix == "u" { "user" } else { prefix };
-        let original_url = format!("https://www.reddit.com/{}/{}/comments/{}", section, target, id);
+        let original_url = format!(
+            "https://www.reddit.com/{}/{}/comments/{}",
+            section, target, id
+        );
         return Some(ParsedPost {
             platform: Platform::Reddit,
             is_spoiler: false,
@@ -617,10 +632,16 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Twitter);
-        assert_eq!(parsed.original_url, "https://x.com/elonmusk/status/123456789");
+        assert_eq!(
+            parsed.original_url,
+            "https://x.com/elonmusk/status/123456789"
+        );
         assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
-        assert_eq!(parsed.user_comment.as_deref(), Some("Harika video  mutlaka izleyin"));
+        assert_eq!(
+            parsed.user_comment.as_deref(),
+            Some("Harika video  mutlaka izleyin")
+        );
     }
 
     #[test]
@@ -641,8 +662,14 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::TikTok);
-        assert_eq!(parsed.original_url, "https://www.tiktok.com/@scout2015/video/6718335390845095173");
-        assert_eq!(parsed.fixed_url, "https://tnktok.com/@scout2015/video/6718335390845095173");
+        assert_eq!(
+            parsed.original_url,
+            "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+        );
+        assert_eq!(
+            parsed.fixed_url,
+            "https://tnktok.com/@scout2015/video/6718335390845095173"
+        );
         assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment, None);
     }
@@ -666,7 +693,10 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Instagram);
-        assert_eq!(parsed.original_url, "https://www.instagram.com/reel/C3abcXYZ123");
+        assert_eq!(
+            parsed.original_url,
+            "https://www.instagram.com/reel/C3abcXYZ123"
+        );
         assert_eq!(
             parsed.fixed_url, parsed.original_url,
             "native-only platform: proxy linki üretilmez"
@@ -680,7 +710,10 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
-        assert_eq!(parsed.original_url, "https://www.reddit.com/r/rust/comments/123456");
+        assert_eq!(
+            parsed.original_url,
+            "https://www.reddit.com/r/rust/comments/123456"
+        );
         assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
     }
@@ -692,7 +725,10 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
-        assert_eq!(parsed.original_url, "https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234");
+        assert_eq!(
+            parsed.original_url,
+            "https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234"
+        );
         assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Buna bak  harika"));
@@ -717,7 +753,10 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
-        assert_eq!(parsed.original_url, "https://www.reddit.com/user/someone/comments/abcdef12");
+        assert_eq!(
+            parsed.original_url,
+            "https://www.reddit.com/user/someone/comments/abcdef12"
+        );
         assert_eq!(parsed.fixed_url, parsed.original_url);
     }
 
@@ -728,7 +767,10 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
-        assert_eq!(parsed.original_url, "https://www.reddit.com/r/news/comments/789xyz");
+        assert_eq!(
+            parsed.original_url,
+            "https://www.reddit.com/r/news/comments/789xyz"
+        );
         assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(parsed.is_spoiler);
     }
@@ -767,15 +809,22 @@ mod tests {
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Bluesky);
-        assert_eq!(parsed.original_url, "https://bsky.app/profile/alice.bsky.social/post/3k6abc123");
-        assert_eq!(parsed.fixed_url, "https://fxbsky.app/profile/alice.bsky.social/post/3k6abc123");
+        assert_eq!(
+            parsed.original_url,
+            "https://bsky.app/profile/alice.bsky.social/post/3k6abc123"
+        );
+        assert_eq!(
+            parsed.fixed_url,
+            "https://fxbsky.app/profile/alice.bsky.social/post/3k6abc123"
+        );
         assert!(parsed.is_spoiler);
     }
 
     #[test]
     fn test_spotify_track() {
         let cfg = dummy_config();
-        let content = "Şu şarkıya bak https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc harika";
+        let content =
+            "Şu şarkıya bak https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc harika";
         let parsed = parse_message(content, &cfg).unwrap();
 
         assert_eq!(parsed.platform, Platform::Spotify);
@@ -788,7 +837,10 @@ mod tests {
             "https://open.fixspotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
         );
         assert!(!parsed.is_spoiler);
-        assert_eq!(parsed.user_comment.as_deref(), Some("Şu şarkıya bak  harika"));
+        assert_eq!(
+            parsed.user_comment.as_deref(),
+            Some("Şu şarkıya bak  harika")
+        );
     }
 
     #[test]
@@ -820,4 +872,3 @@ mod tests {
         assert_eq!(parsed.fixed_url, "https://open.fixspotify.com/AbCdEf1234");
     }
 }
-

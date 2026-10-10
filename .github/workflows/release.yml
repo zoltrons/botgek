@@ -54,6 +54,8 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2

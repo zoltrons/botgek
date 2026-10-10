@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Botgek · Yönetici girişi</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/login.js" defer></script>
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <p class="mono login-eyebrow">BG / Yönetim erişimi</p>
+    <h1>Kontrol sizde.</h1>
+    <p class="login-description">Panele erişmek için sunucunun <code>ADMIN_TOKEN</code> değerini girin. Token tarayıcıda saklanmaz; oturum 8 saat sonra kapanır.</p>
+    <form id="login-form">
+      <label for="admin-token">Yönetici tokenı</label>
+      <input id="admin-token" name="token" type="password" required minlength="32" maxlength="512" autocomplete="current-password" aria-describedby="login-status" autofocus>
+      <button class="btn btn-primary" id="login-submit" type="submit">Panele giriş yap</button>
+      <p id="login-status" role="status" aria-live="polite"></p>
+    </form>
+    <p class="note">Uzak erişimde HTTPS veya güvenli bir SSH tüneli kullanın.</p>
+  </main>
+</body>
+</html>

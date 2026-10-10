@@ -49,6 +49,32 @@ pub struct RoleFilterSettings {
     /// Discord Rol ID'leri (örn: ["123456789012345678"])
     pub roles: Vec<String>,
 }
+
+impl RoleFilterSettings {
+    pub fn sanitize(&mut self) {
+        self.roles = self
+            .roles
+            .iter()
+            .filter_map(|r| r.trim().parse::<u64>().ok())
+            .filter(|id| *id > 0)
+            .map(|id| id.to_string())
+            .take(200)
+            .collect();
+        self.roles.sort_unstable();
+        self.roles.dedup();
+    }
+
+    pub fn allows_roles<'a>(&self, roles: impl IntoIterator<Item = &'a str>) -> bool {
+        let matched = roles
+            .into_iter()
+            .any(|role| self.roles.iter().any(|allowed| allowed == role));
+        match self.mode {
+            FilterMode::Disabled => true,
+            FilterMode::Blacklist => !matched,
+            FilterMode::Allowlist => matched,
+        }
+    }
+}
 // =====================================================================================
 // LINK DÖNÜŞTÜRME MOTORU (PROXY vs BUILT-IN)
 // =====================================================================================
@@ -265,8 +291,11 @@ impl EmojiSettings {
         self.reposts = normalize_emoji(&self.reposts, DEFAULT_REPOSTS_EMOJI, REPOSTS_NAMES);
         self.likes = normalize_emoji(&self.likes, DEFAULT_LIKES_EMOJI, LIKES_NAMES);
         self.views = normalize_emoji(&self.views, DEFAULT_VIEWS_EMOJI, VIEWS_NAMES);
-        self.translation =
-            normalize_emoji(&self.translation, DEFAULT_TRANSLATION_EMOJI, TRANSLATION_NAMES);
+        self.translation = normalize_emoji(
+            &self.translation,
+            DEFAULT_TRANSLATION_EMOJI,
+            TRANSLATION_NAMES,
+        );
         self.twitter = normalize_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, TWITTER_NAMES);
         self.instagram = normalize_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, INSTAGRAM_NAMES);
         self.reddit = normalize_emoji(&self.reddit, DEFAULT_REDDIT_EMOJI, REDDIT_NAMES);
@@ -295,7 +324,12 @@ impl EmojiSettings {
     }
 
     pub fn translation(&self) -> &str {
-        resolve_emoji(&self.translation, DEFAULT_TRANSLATION_EMOJI, "🌐", TRANSLATION_NAMES)
+        resolve_emoji(
+            &self.translation,
+            DEFAULT_TRANSLATION_EMOJI,
+            "🌐",
+            TRANSLATION_NAMES,
+        )
     }
 
     /// X/Twitter göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
@@ -306,7 +340,12 @@ impl EmojiSettings {
 
     /// Instagram göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
     pub fn instagram(&self) -> Option<&str> {
-        let resolved = resolve_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, "", INSTAGRAM_NAMES);
+        let resolved = resolve_emoji(
+            &self.instagram,
+            DEFAULT_INSTAGRAM_EMOJI,
+            "",
+            INSTAGRAM_NAMES,
+        );
         (!resolved.is_empty()).then_some(resolved)
     }
 
@@ -342,9 +381,12 @@ fn resolve_emoji<'a>(
         return trimmed;
     }
     if let Some(name) = emoji_name(trimmed)
-        && names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
-            return default_custom;
-        }
+        && names
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(name))
+    {
+        return default_custom;
+    }
     // `:foo:` gibi tanınmayan kısa girdiler metne dökülmesin.
     if colonized {
         return unicode;
@@ -370,9 +412,12 @@ fn normalize_emoji(value: &str, default_custom: &str, names: &[&str]) -> String 
         return trimmed.to_string();
     }
     if let Some(name) = emoji_name(trimmed)
-        && names.iter().any(|candidate| candidate.eq_ignore_ascii_case(name)) {
-            return default_custom.to_string();
-        }
+        && names
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(name))
+    {
+        return default_custom.to_string();
+    }
 
     String::new()
 }
@@ -391,7 +436,6 @@ fn emoji_name(value: &str) -> Option<&str> {
     valid.then_some(name)
 }
 
-
 /// `<:ad:id>` / `<a:ad:id>` biçimini veya kısa bir Unicode emojiyi kabul eder.
 /// Markdown'ı bozabilecek karakterler (`[`, `]`, `(`, `)`, `` ` `` ...) reddedilir.
 fn valid_emoji(value: &str) -> bool {
@@ -399,7 +443,10 @@ fn valid_emoji(value: &str) -> bool {
         return false;
     }
 
-    if let Some(body) = value.strip_prefix("<:").or_else(|| value.strip_prefix("<a:")) {
+    if let Some(body) = value
+        .strip_prefix("<:")
+        .or_else(|| value.strip_prefix("<a:"))
+    {
         let Some(body) = body.strip_suffix('>') else {
             return false;
         };
@@ -414,7 +461,10 @@ fn valid_emoji(value: &str) -> bool {
             && id.chars().all(|c| c.is_ascii_digit());
     }
 
-    value.chars().count() <= 8 && !value.chars().any(|c| "[\\]()`<>|*_~".contains(c) || c.is_control())
+    value.chars().count() <= 8
+        && !value
+            .chars()
+            .any(|c| "[\\]()`<>|*_~".contains(c) || c.is_control())
 }
 
 /// Discord'un (boost'suz sunucularda) yüklenen dosya limiti 10 MB'tır; üzerine çıkılırsa
@@ -574,6 +624,23 @@ pub struct GuildSettings {
     pub ai: AiSettings,
     #[serde(default)]
     pub engine: EngineSettings,
+}
+
+impl ModuleRoleFilters {
+    pub fn sanitize(&mut self) {
+        for filter in [
+            &mut self.twitter,
+            &mut self.tiktok,
+            &mut self.instagram,
+            &mut self.reddit,
+            &mut self.bluesky,
+            &mut self.spotify,
+            &mut self.translation,
+            &mut self.ai_chat,
+        ] {
+            filter.sanitize();
+        }
+    }
 }
 
 static DEFAULT_DISABLED_FILTER: std::sync::LazyLock<RoleFilterSettings> =
@@ -814,12 +881,16 @@ impl AppSettings {
         self.role_filters.instagram = legacy.clone();
         self.role_filters.reddit = legacy.clone();
         self.role_filters.bluesky = legacy.clone();
+        self.role_filters.spotify = legacy.clone();
         self.role_filters.translation = legacy.clone();
         self.role_filters.ai_chat = legacy;
     }
 }
 
-fn resolve_settings_path() -> PathBuf {
+pub(crate) fn resolve_settings_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("BOTGEK_SETTINGS_PATH").filter(|p| !p.is_empty()) {
+        return PathBuf::from(path);
+    }
     let p = Path::new("settings.json");
     if p.is_dir() {
         // Docker bind-mount hostta dosya olmadığı için otomatik klasör olarak açılmışsa
@@ -845,10 +916,24 @@ fn backup_settings_file(path: &Path) -> Result<PathBuf, std::io::Error> {
 }
 
 impl AppSettings {
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, String> {
         let path = resolve_settings_path();
+        Self::load_from(&path)
+    }
+
+    fn load_from(path: &Path) -> Result<Self, String> {
+        if !path.exists()
+            && let Some(seed) = std::env::var_os("BOTGEK_SETTINGS_SEED")
+        {
+            let content = fs::read_to_string(seed).map_err(|e| format!("settings seed: {e}"))?;
+            let imported: AppSettings =
+                serde_json::from_str(&content).map_err(|e| format!("settings seed: {e}"))?;
+            imported
+                .save_to(path)
+                .map_err(|e| format!("settings import: {e}"))?;
+        }
         if path.is_file() {
-            let loaded = fs::read_to_string(&path)
+            let loaded = fs::read_to_string(path)
                 .map_err(|e| format!("okunamadı: {e:?}"))
                 .and_then(|content| {
                     serde_json::from_str::<AppSettings>(&content)
@@ -862,6 +947,9 @@ impl AppSettings {
                     // alan adları ve aralık dışı değerler güvenli sınıra çekilir.
                     settings.engine.sanitize();
                     for guild in settings.guilds.values_mut() {
+                        if let Some(filters) = guild.role_filters.as_mut() {
+                            filters.sanitize();
+                        }
                         if let Some(engine) = guild.engine.as_mut() {
                             engine.sanitize();
                         }
@@ -869,6 +957,7 @@ impl AppSettings {
 
                     // Eski tek `role_filter` alanı modül filtresine taşınır (bir kez).
                     settings.migrate_legacy_role_filter();
+                    settings.role_filters.sanitize();
 
                     // Göç (bir kez): eski **tam kopya** sunucu kayıtları sparse override'a
                     // indirgenir. Öncesinde tarih damgalı yedek alınır, sonuç diske yazılır;
@@ -879,18 +968,13 @@ impl AppSettings {
                     if settings.schema_version < SETTINGS_SCHEMA_VERSION {
                         let reduced = settings.migrate_legacy_guild_overrides();
                         settings.schema_version = SETTINGS_SCHEMA_VERSION;
-                        match backup_settings_file(&path) {
-                            Ok(backup) => info!(
-                                "Göç öncesi ayar yedeği alındı: {}",
-                                backup.display()
-                            ),
-                            Err(err) => warn!(
-                                "Göç öncesi ayar yedeği alınamadı ('{}'): {} — geri alma yedeği YOK",
-                                path.display(),
-                                err
-                            ),
+                        match backup_settings_file(path) {
+                            Ok(backup) => {
+                                info!("Göç öncesi ayar yedeği alındı: {}", backup.display())
+                            }
+                            Err(err) => return Err(format!("migration backup failed: {err}")),
                         }
-                        match settings.save() {
+                        match settings.save_to(path) {
                             Ok(()) => info!(
                                 "Sunucu ayarları sparse override modeline göç etti: {} kayıt indirgendi/sadeleşti.",
                                 reduced
@@ -903,50 +987,72 @@ impl AppSettings {
                         }
                     }
 
-                    info!("Ayarlar '{}' dosyasından başarıyla yüklendi.", path.display());
-                    return settings;
+                    info!(
+                        "Ayarlar '{}' dosyasından başarıyla yüklendi.",
+                        path.display()
+                    );
+                    return Ok(settings);
                 }
                 Err(reason) => {
                     // Dosyanın üzerine yazmak kullanıcı ayarlarını kalıcı olarak yok eder;
-                    // bozuk dosya olduğu gibi bırakılır ve varsayılanlarla devam edilir.
+                    // bozuk dosya korunur; erişim politikaları varsayılana düşürülmez.
                     error!(
-                        "Ayarlar dosyası ('{}') {} — mevcut dosya korunuyor, varsayılan ayarlarla başlanıyor.",
+                        "Ayarlar dosyası ('{}') {} — mevcut dosya korunuyor, başlatma durduruldu.",
                         path.display(),
                         reason
                     );
-                    return AppSettings::default();
+                    return Err(format!(
+                        "settings could not be loaded: {reason}; refusing to reset access policies"
+                    ));
                 }
             }
         }
 
         let defaults = AppSettings::default();
-        let _ = defaults.save();
         defaults
+            .save_to(path)
+            .map_err(|e| format!("settings initialization failed: {e}"))?;
+        Ok(defaults)
     }
 
-    pub fn save(&self) -> Result<(), std::io::Error> {
-        let path = resolve_settings_path();
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
-
-        // Docker bind-mount durumunda inode korunması gerektiği için doğrudan dosyaya yazılır
-        let write_result = if path.exists() && path.is_file() {
-            fs::write(&path, &json)
-        } else {
-            // Dosya henüz yoksa önce temp dosyaya yazıp rename dene, başarısız olursa doğrudan yaz
-            let temp_file = format!("{}.tmp", path.display());
-            if fs::write(&temp_file, &json).is_ok() {
-                if fs::rename(&temp_file, &path).is_err() {
-                    let res = fs::write(&path, &json);
-                    let _ = fs::remove_file(&temp_file);
-                    res
-                } else {
-                    Ok(())
-                }
-            } else {
-                fs::write(&path, &json)
+    pub(crate) fn save_to(&self, path: &Path) -> Result<(), std::io::Error> {
+        use std::io::Write;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).map_err(std::io::Error::other)?;
+        let name: String = random.iter().map(|b| format!("{b:02x}")).collect();
+        let temp = parent.join(format!(".botgek-settings-{name}.tmp"));
+        let write_result = (|| {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
             }
-        };
+            let mut file = options.open(&temp)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temp, path)?;
+            #[cfg(unix)]
+            {
+                // Replacement already committed. Publish the same state to memory even
+                // if the filesystem cannot provide directory durability guarantees.
+                if let Err(error) = fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+                    warn!("Settings directory sync failed after committed replacement: {error}");
+                }
+            }
+            Ok::<(), std::io::Error>(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
 
         match write_result {
             Ok(_) => {
@@ -957,11 +1063,15 @@ impl AppSettings {
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
                     error!(
                         "Ayarlar dosyasına ('{}') yazma izni reddedildi (Permission Denied)! \
-                        Host üzerinde 'sudo chown 1000:1000 settings.json' veya 'chmod 666 settings.json' çalıştırın.",
+                        Ayar dizininin bot kullanıcısına ait olduğunu doğrulayın; dosya yerine dizini mount edin.",
                         path.display()
                     );
                 } else {
-                    error!("Ayarlar '{}' dosyasına kaydedilirken hata: {:?}", path.display(), e);
+                    error!(
+                        "Ayarlar '{}' dosyasına kaydedilirken hata: {:?}",
+                        path.display(),
+                        e
+                    );
                 }
                 Err(e)
             }
@@ -972,6 +1082,51 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_browser_fixtures_match_rust_resolution() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/settings-resolution.json"))
+                .unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let global: AppSettings = serde_json::from_value(fixture["global"].clone()).unwrap();
+            let over: Option<GuildOverride> =
+                serde_json::from_value(fixture["override"].clone()).unwrap();
+            let result = serde_json::to_value(resolve_settings(&global, over.as_ref())).unwrap();
+            for (pointer, expected) in fixture["expected"].as_object().unwrap() {
+                assert_eq!(
+                    result.pointer(pointer),
+                    Some(expected),
+                    "{}: {pointer}",
+                    fixture["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn atomic_settings_replace_and_invalid_files_fail_closed() {
+        let path = std::env::temp_dir().join(format!(
+            "botgek-settings-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut settings = AppSettings::default();
+        settings.save_to(&path).unwrap();
+        settings.modules.twitter = false;
+        settings.save_to(&path).unwrap();
+        assert!(!AppSettings::load_from(&path).unwrap().modules.twitter);
+        let before = fs::read(&path).unwrap();
+        assert!(settings.save_to(&path.join("cannot-write-here")).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::write(&path, "invalid JSON").unwrap();
+        assert!(AppSettings::load_from(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "invalid JSON");
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn test_settings_serialization() {
@@ -993,7 +1148,10 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(json).unwrap();
 
         assert!(!settings.modules.twitter);
-        assert!(settings.modules.reddit, "eksik alan struct varsayılanıyla doldurulmalı");
+        assert!(
+            settings.modules.reddit,
+            "eksik alan struct varsayılanıyla doldurulmalı"
+        );
         assert_eq!(settings.ai.model, "test/model");
         assert!(!settings.ai.system_prompt.trim().is_empty());
         assert_eq!(settings.role_filters.twitter.mode, FilterMode::Disabled);
@@ -1030,7 +1188,10 @@ mod tests {
 
         // Migrasyondan sonra eski alan dosyaya yazılmaz: ayarlar tek gerçeği taşır.
         let saved = serde_json::to_string(&settings).unwrap();
-        assert!(!saved.contains("\"role_filter\""), "eski çift alan kaydedilmemeli: {saved}");
+        assert!(
+            !saved.contains("\"role_filter\""),
+            "eski çift alan kaydedilmemeli: {saved}"
+        );
 
         // Modül filtreleri doluysa migrasyon üzerine yazmaz.
         let mut customized = settings.clone();
@@ -1059,15 +1220,30 @@ mod tests {
 
     #[test]
     fn test_filter_mode_serde() {
-        assert_eq!(serde_json::to_string(&FilterMode::Blacklist).unwrap(), "\"blacklist\"");
-        assert_eq!(serde_json::to_string(&FilterMode::Allowlist).unwrap(), "\"allowlist\"");
-        assert_eq!(serde_json::to_string(&FilterMode::Disabled).unwrap(), "\"disabled\"");
+        assert_eq!(
+            serde_json::to_string(&FilterMode::Blacklist).unwrap(),
+            "\"blacklist\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FilterMode::Allowlist).unwrap(),
+            "\"allowlist\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FilterMode::Disabled).unwrap(),
+            "\"disabled\""
+        );
     }
 
     #[test]
     fn test_conversion_mode_serde_and_defaults() {
-        assert_eq!(serde_json::to_string(&ConversionMode::Builtin).unwrap(), "\"builtin\"");
-        assert_eq!(serde_json::to_string(&ConversionMode::Proxy).unwrap(), "\"proxy\"");
+        assert_eq!(
+            serde_json::to_string(&ConversionMode::Builtin).unwrap(),
+            "\"builtin\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ConversionMode::Proxy).unwrap(),
+            "\"proxy\""
+        );
 
         // Varsayılan: twitter/instagram/reddit/bluesky/spotify builtin, tiktok proxy
         let cfg = AppSettings::default();
@@ -1085,7 +1261,10 @@ mod tests {
         settings.engine.modes.set("tiktok", ConversionMode::Builtin);
         settings.engine.twitter_source = TwitterSource::Fxtwitter;
         settings.engine.max_video_mb = 12;
-        settings.engine.domains.set("spotify", "fixspotify.com".to_string());
+        settings
+            .engine
+            .domains
+            .set("spotify", "fixspotify.com".to_string());
 
         let json = serde_json::to_string(&settings).unwrap();
         let decoded: AppSettings = serde_json::from_str(&json).unwrap();
@@ -1179,7 +1358,10 @@ mod tests {
 
         // Kaldırılan anahtarlar yok sayılır: native-only platformlar daima native.
         assert_eq!(settings.engine.mode_for("twitter"), ConversionMode::Builtin);
-        assert_eq!(settings.engine.mode_for("instagram"), ConversionMode::Builtin);
+        assert_eq!(
+            settings.engine.mode_for("instagram"),
+            ConversionMode::Builtin
+        );
         assert_eq!(settings.engine.mode_for("reddit"), ConversionMode::Builtin);
         assert!(!settings.engine.allows_proxy_fallback("reddit"));
         // Proxy kullanılabilen platformlar okunmaya devam eder.
@@ -1195,7 +1377,6 @@ mod tests {
         assert!(!guild.engine.allows_proxy_fallback("reddit"));
         assert!(guild.engine.allows_proxy_fallback("bluesky"));
     }
-
 
     #[test]
     fn engine_settings_missing_fields_fall_back_to_defaults() {
@@ -1253,7 +1434,9 @@ mod tests {
             max_video_mb: 200,
             ..Default::default()
         };
-        engine.domains.set("tiktok", "https://Tnktok.com/".to_string());
+        engine
+            .domains
+            .set("tiktok", "https://Tnktok.com/".to_string());
         engine.domains.set("bluesky", "kötü domain!!".to_string());
 
         engine.sanitize();
@@ -1261,7 +1444,10 @@ mod tests {
         assert!(MAX_IMAGES_RANGE.contains(&engine.max_images));
         assert!(MAX_VIDEO_MB_RANGE.contains(&engine.max_video_mb));
         assert_eq!(engine.domains.tiktok, "tnktok.com");
-        assert!(engine.domains.bluesky.is_empty(), "geçersiz alan adı temizlenmeli");
+        assert!(
+            engine.domains.bluesky.is_empty(),
+            "geçersiz alan adı temizlenmeli"
+        );
     }
 
     #[test]
@@ -1307,7 +1493,10 @@ mod tests {
         assert!(!settings.engine.auto_translate);
         assert_eq!(settings.engine.max_images, 7);
         // WebUI aralık dışı değer gönderirse güvenli sınıra çekilir
-        assert_eq!(settings.engine.max_video_mb, MAX_VIDEO_MB_RANGE.end().to_owned());
+        assert_eq!(
+            settings.engine.max_video_mb,
+            MAX_VIDEO_MB_RANGE.end().to_owned()
+        );
         assert_eq!(settings.engine.domains.tiktok, "tnktok.com");
         // Yeni alanlar JSON'da yoksa varsayılanları alır
         assert!(settings.engine.impersonate_user);
@@ -1391,16 +1580,23 @@ mod tests {
             twitter: ":twitter:".to_string(),
             ..EmojiSettings::default()
         };
-        assert_eq!(raw.twitter(), Some(DEFAULT_TWITTER_EMOJI), "kimliksiz ad bot emojisine düşer");
+        assert_eq!(
+            raw.twitter(),
+            Some(DEFAULT_TWITTER_EMOJI),
+            "kimliksiz ad bot emojisine düşer"
+        );
 
         let unknown = EmojiSettings {
             twitter: ":botgek_emoji:".to_string(),
             ..EmojiSettings::default()
         };
-        assert_eq!(unknown.twitter(), None, "tanınmayan ad platform adına düşer");
+        assert_eq!(
+            unknown.twitter(),
+            None,
+            "tanınmayan ad platform adına düşer"
+        );
         assert_eq!(unknown.twitter.trim(), ":botgek_emoji:");
     }
-
 
     #[test]
     fn emoji_sanitize_rejects_invalid_values() {
@@ -1428,7 +1624,11 @@ mod tests {
         assert_eq!(emojis.reposts(), "<a:rt:1553712344939495424>");
         assert_eq!(emojis.likes(), "💖");
         assert_eq!(emojis.views(), "👁️");
-        assert_eq!(emojis.twitter(), Some("<:twitter:1476642012072920355>"), "baştaki/sondaki boşluk temizlenir");
+        assert_eq!(
+            emojis.twitter(),
+            Some("<:twitter:1476642012072920355>"),
+            "baştaki/sondaki boşluk temizlenir"
+        );
     }
 
     #[test]
@@ -1450,7 +1650,11 @@ mod tests {
         // Genel varsayılan: sunucu kaydı yok → miras.
         settings.engine.modes.set("bluesky", ConversionMode::Proxy);
         assert_eq!(
-            settings.get_guild_settings(Some(guild_id)).engine.modes.bluesky,
+            settings
+                .get_guild_settings(Some(guild_id))
+                .engine
+                .modes
+                .bluesky,
             ConversionMode::Proxy
         );
 
@@ -1470,12 +1674,20 @@ mod tests {
         );
 
         assert_eq!(
-            settings.get_guild_settings(Some(guild_id)).engine.modes.bluesky,
+            settings
+                .get_guild_settings(Some(guild_id))
+                .engine
+                .modes
+                .bluesky,
             ConversionMode::Builtin
         );
         // Bilinmeyen sunucu geneli miras alır.
         assert_eq!(
-            settings.get_guild_settings(Some(serenity::all::GuildId::new(7))).engine.modes.bluesky,
+            settings
+                .get_guild_settings(Some(serenity::all::GuildId::new(7)))
+                .engine
+                .modes
+                .bluesky,
             ConversionMode::Proxy
         );
     }
@@ -1823,4 +2035,3 @@ mod tests {
         );
     }
 }
-

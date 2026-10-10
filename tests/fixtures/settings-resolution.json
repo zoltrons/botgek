@@ -1,0 +1,20 @@
+[
+  {
+    "name": "missing override inherits",
+    "global": {"modules":{"twitter":false},"role_filters":{},"engine":{"max_images":4},"ai":{"model":"global/model","system_prompt":"Global prompt"}},
+    "override": null,
+    "expected": {"/modules/twitter":false,"/engine/max_images":4,"/ai/model":"global/model"}
+  },
+  {
+    "name": "pinned sections and empty AI fields",
+    "global": {"modules":{"twitter":false},"role_filters":{},"engine":{"max_images":4},"ai":{"model":"global/model","system_prompt":"Global prompt"}},
+    "override": {"modules":{"twitter":true},"ai":{"model":" ","system_prompt":"Custom prompt"}},
+    "expected": {"/modules/twitter":true,"/engine/max_images":4,"/ai/model":"global/model","/ai/system_prompt":"Custom prompt"}
+  },
+  {
+    "name": "role lists replace rather than append",
+    "global": {"modules":{"twitter":false},"role_filters":{"twitter":{"mode":"allowlist","roles":["1","2"]}},"engine":{"max_images":4},"ai":{"model":"global/model","system_prompt":"Global prompt"}},
+    "override": {"role_filters":{"twitter":{"mode":"blacklist","roles":["3"]}},"engine":{"max_images":2}},
+    "expected": {"/role_filters/twitter/roles":["3"],"/role_filters/twitter/mode":"blacklist","/engine/max_images":2}
+  }
+]

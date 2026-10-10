@@ -21,12 +21,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let pkg_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
-    let target = env::var("TARGET").or_else(|_| env::var("HOST")).unwrap_or_else(|_| "bilinmeyen".to_string());
+    let target = env::var("TARGET")
+        .or_else(|_| env::var("HOST"))
+        .unwrap_or_else(|_| "bilinmeyen".to_string());
 
     let override_version = non_empty_env("BOTGEK_BUILD_VERSION");
-    let describe = git(&manifest_dir, &[
-        "describe", "--tags", "--long", "--dirty", "--always", "--match", "v[0-9]*",
-    ]);
+    let describe = git(
+        &manifest_dir,
+        &[
+            "describe", "--tags", "--long", "--dirty", "--always", "--match", "v[0-9]*",
+        ],
+    );
     let git_sha = non_empty_env("BOTGEK_GIT_SHA")
         .map(|value| value.chars().take(7).collect::<String>())
         .or_else(|| git(&manifest_dir, &["rev-parse", "--short", "HEAD"]));
@@ -69,24 +74,45 @@ fn main() {
     emit("BOTGEK_VERSION_SEMVER", &derived.semver);
     emit("BOTGEK_VERSION_DISPLAY", &derived.display);
     emit("BOTGEK_VERSION_FULL", &derived.full);
-    emit("BOTGEK_GIT_SHA", derived.git_sha.as_deref().unwrap_or("unknown"));
+    emit(
+        "BOTGEK_GIT_SHA",
+        derived.git_sha.as_deref().unwrap_or("unknown"),
+    );
     emit("BOTGEK_GIT_TAG", derived.tag.as_deref().unwrap_or(""));
     emit(
         "BOTGEK_COMMITS_SINCE_TAG",
-        &derived.commits_since_tag.map(|count| count.to_string()).unwrap_or_default(),
+        &derived
+            .commits_since_tag
+            .map(|count| count.to_string())
+            .unwrap_or_default(),
     );
-    emit("BOTGEK_IS_RELEASE", if derived.is_release { "true" } else { "false" });
-    emit("BOTGEK_IS_DIRTY", if derived.is_dirty { "true" } else { "false" });
+    emit(
+        "BOTGEK_IS_RELEASE",
+        if derived.is_release { "true" } else { "false" },
+    );
+    emit(
+        "BOTGEK_IS_DIRTY",
+        if derived.is_dirty { "true" } else { "false" },
+    );
     emit("BOTGEK_BUILD_DATE", &build_date);
     emit("BOTGEK_TARGET", &target);
-    emit("BOTGEK_USER_AGENT", &format!("Botgek/{} (Discord link converter)", derived.display));
+    emit(
+        "BOTGEK_USER_AGENT",
+        &format!("Botgek/{} (Discord link converter)", derived.display),
+    );
     emit(
         "BOTGEK_DISCORD_USER_AGENT",
-        &format!("DiscordBot (https://github.com/zoltrons/botgek, {})", derived.semver),
+        &format!(
+            "DiscordBot (https://github.com/zoltrons/botgek, {})",
+            derived.semver
+        ),
     );
 
     // Ham girdiler: çalışma zamanı aynı fonksiyonla yeniden çözebilsin (teşhis + test).
-    emit("BOTGEK_VERSION_OVERRIDE", override_version.as_deref().unwrap_or(""));
+    emit(
+        "BOTGEK_VERSION_OVERRIDE",
+        override_version.as_deref().unwrap_or(""),
+    );
     emit("BOTGEK_GIT_DESCRIBE", describe.as_deref().unwrap_or(""));
 
     println!("cargo:rerun-if-changed=build.rs");
@@ -94,11 +120,21 @@ fn main() {
     // `.git` yoksa (Docker bağlamı) yönergeleri yazmayız: aksi hâlde build script her derlemede
     // gereksiz yeniden çalışır ve önbellek etkisizleşir.
     if Path::new(&manifest_dir).join(".git").exists() {
-        for path in [".git/HEAD", ".git/index", ".git/refs/tags", ".git/packed-refs"] {
+        for path in [
+            ".git/HEAD",
+            ".git/index",
+            ".git/refs/tags",
+            ".git/packed-refs",
+        ] {
             println!("cargo:rerun-if-changed={path}");
         }
     }
-    for key in ["BOTGEK_BUILD_VERSION", "BOTGEK_GIT_SHA", "BOTGEK_BUILD_DATE", "SOURCE_DATE_EPOCH"] {
+    for key in [
+        "BOTGEK_BUILD_VERSION",
+        "BOTGEK_GIT_SHA",
+        "BOTGEK_BUILD_DATE",
+        "SOURCE_DATE_EPOCH",
+    ] {
         println!("cargo:rerun-if-env-changed={key}");
     }
 }

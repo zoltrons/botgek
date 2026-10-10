@@ -6,20 +6,26 @@
 
 use serde::Deserialize;
 
-use super::{encode_component, Author, BuiltinPost, Media, MediaKind};
+use super::{Author, BuiltinPost, Media, MediaKind, encode_component};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const OEMBED_URL: &str = "https://www.tiktok.com/oembed";
 
 /// TikTok gönderisini oEmbed üzerinden çeker ve kart verisine dönüştürür.
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let url = format!("{OEMBED_URL}?url={}", encode_component(&parsed.original_url));
+    let url = format!(
+        "{OEMBED_URL}?url={}",
+        encode_component(&parsed.original_url)
+    );
     let value = super::get_json(client, &url).await?;
     let oembed: TikTokOEmbed = serde_json::from_value(value)
         .map_err(|e| format!("TikTok oEmbed yanıtı çözümlenemedi: {e}"))?;
 
     if oembed.title.is_none() && oembed.thumbnail_url.is_none() {
-        return Err(format!("TikTok gönderisi bulunamadı: {}", parsed.original_url));
+        return Err(format!(
+            "TikTok gönderisi bulunamadı: {}",
+            parsed.original_url
+        ));
     }
 
     Ok(oembed.into_post(parsed))
@@ -110,7 +116,13 @@ mod tests {
 
     #[test]
     fn oembed_request_url_is_encoded() {
-        let url = format!("{OEMBED_URL}?url={}", encode_component(&parsed().original_url));
-        assert!(url.contains("%3A%2F%2Fwww.tiktok.com%2F%40kullanici"), "url: {url}");
+        let url = format!(
+            "{OEMBED_URL}?url={}",
+            encode_component(&parsed().original_url)
+        );
+        assert!(
+            url.contains("%3A%2F%2Fwww.tiktok.com%2F%40kullanici"),
+            "url: {url}"
+        );
     }
 }

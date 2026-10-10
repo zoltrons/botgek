@@ -1,4 +1,5 @@
 use std::env;
+pub const DEFAULT_REDDIT_CLIENT_ID: &str = "ohXpoqrZYub1kg";
 
 #[derive(Clone)]
 pub struct Config {
@@ -34,9 +35,15 @@ impl std::fmt::Debug for Config {
             .field("bluesky_domain", &self.bluesky_domain)
             .field("spotify_domain", &self.spotify_domain)
             .field("delete_original", &self.delete_original)
-            .field("openrouter_api_key", &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "openrouter_api_key",
+                &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("reddit_client_id", &self.reddit_client_id)
-            .field("instagram_sessionid", &self.instagram_sessionid.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "instagram_sessionid",
+                &self.instagram_sessionid.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("web_port", &self.web_port)
             .finish()
     }
@@ -104,7 +111,7 @@ impl Config {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| crate::converters::builtin::reddit::DEFAULT_CLIENT_ID.to_string());
+            .unwrap_or_else(|| DEFAULT_REDDIT_CLIENT_ID.to_string());
 
         // Instagram oturum çerezi: yalnızca ortamdan okunur (sır; dosyaya/WebUI'a yazılmaz).
         let instagram_sessionid = env::var("INSTAGRAM_SESSIONID")
@@ -137,10 +144,22 @@ mod tests {
 
     #[test]
     fn clean_domain_normalizes_user_input() {
-        assert_eq!(clean_domain("  FixupX.com/  ").as_deref(), Some("fixupx.com"));
-        assert_eq!(clean_domain("https://vxtwitter.com").as_deref(), Some("vxtwitter.com"));
-        assert_eq!(clean_domain("http://tnktok.com/").as_deref(), Some("tnktok.com"));
-        assert_eq!(clean_domain("localhost:8080").as_deref(), Some("localhost:8080"));
+        assert_eq!(
+            clean_domain("  FixupX.com/  ").as_deref(),
+            Some("fixupx.com")
+        );
+        assert_eq!(
+            clean_domain("https://vxtwitter.com").as_deref(),
+            Some("vxtwitter.com")
+        );
+        assert_eq!(
+            clean_domain("http://tnktok.com/").as_deref(),
+            Some("tnktok.com")
+        );
+        assert_eq!(
+            clean_domain("localhost:8080").as_deref(),
+            Some("localhost:8080")
+        );
     }
 
     #[test]
@@ -150,8 +169,11 @@ mod tests {
         assert_eq!(clean_domain("evil.com/status/1<td>"), None);
         assert_eq!(clean_domain(""), None);
         assert_eq!(clean_domain("   "), None);
-        assert_eq!(clean_domain("alanadi"), None, "nokta içermeyen alan adı geçersiz");
+        assert_eq!(
+            clean_domain("alanadi"),
+            None,
+            "nokta içermeyen alan adı geçersiz"
+        );
         assert_eq!(clean_domain(&format!("{}.com", "a".repeat(200))), None);
     }
 }
-

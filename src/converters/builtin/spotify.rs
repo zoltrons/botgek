@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::render::{escape_markdown, format_count};
 use super::{Author, BuiltinPost, CustomCard, MAX_BODY_BYTES};
@@ -67,7 +67,10 @@ struct Target {
 /// Spotify gönderisini çeker ve modern karta dönüştürür.
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
     let target = resolve_target(client, &parsed.original_url).await?;
-    let embed_url = format!("{SPOTIFY_EMBED}/{}/{}?utm_source=botgek", target.kind, target.id);
+    let embed_url = format!(
+        "{SPOTIFY_EMBED}/{}/{}?utm_source=botgek",
+        target.kind, target.id
+    );
     let html = get_html(client, &embed_url).await?;
 
     let next = extract_next_data(&html)
@@ -77,10 +80,9 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     if let Some(status) = page_props
         .and_then(|props| props.get("status"))
         .and_then(Value::as_i64)
+        && (status == 404 || status == 500)
     {
-        if status == 404 || status == 500 {
-            return Err(format!("Spotify içeriği bulunamadı: {}", target.open_url));
-        }
+        return Err(format!("Spotify içeriği bulunamadı: {}", target.open_url));
     }
 
     let entity = page_props
@@ -139,16 +141,18 @@ async fn resolve_target(client: &reqwest::Client, original_url: &str) -> Result<
     }
     // 2) Aksi halde gövdedeki kanonik adres (og:url) okunur.
     let body = response.text().await.unwrap_or_default();
-    if let Some(og) = OG_URL_REGEX.captures(&body).and_then(|caps| caps.get(1)) {
-        if let Some(target) = target_from_url(og.as_str()) {
-            return Ok(target);
-        }
+    if let Some(og) = OG_URL_REGEX.captures(&body).and_then(|caps| caps.get(1))
+        && let Some(target) = target_from_url(og.as_str())
+    {
+        return Ok(target);
     }
     // 3) Son çare: gövdedeki ilk open.spotify.com bağlantısı.
     if let Some(target) = target_from_url(&body) {
         return Ok(target);
     }
-    Err(format!("Spotify kısa link hedefi bulunamadı: {original_url}"))
+    Err(format!(
+        "Spotify kısa link hedefi bulunamadı: {original_url}"
+    ))
 }
 
 /// Adres metninden (tam URL, redirect adresi veya HTML gövdesi) Spotify hedefi çıkarır.
@@ -168,7 +172,10 @@ async fn get_html(client: &reqwest::Client, url: &str) -> Result<String, String>
     let response = client
         .get(url)
         .header("user-agent", BROWSER_USER_AGENT)
-        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("accept-language", "en-US,en;q=0.9")
         .timeout(TIMEOUT)
         .send()
@@ -176,12 +183,15 @@ async fn get_html(client: &reqwest::Client, url: &str) -> Result<String, String>
         .map_err(|e| format!("Spotify sayfası alınamadı ({url}): {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("Spotify sayfası {} döndü ({url})", response.status()));
+        return Err(format!(
+            "Spotify sayfası {} döndü ({url})",
+            response.status()
+        ));
     }
-    if let Some(len) = response.content_length() {
-        if len > MAX_BODY_BYTES as u64 {
-            return Err(format!("Spotify yanıtı çok büyük ({url}): {len} bayt"));
-        }
+    if let Some(len) = response.content_length()
+        && len > MAX_BODY_BYTES as u64
+    {
+        return Err(format!("Spotify yanıtı çok büyük ({url}): {len} bayt"));
     }
 
     let mut response = response;
@@ -458,7 +468,10 @@ mod tests {
             let target = target_from_url(input).expect("hedef çözümlenmeli");
             assert_eq!(target.kind, kind);
             assert_eq!(target.id, id);
-            assert_eq!(target.open_url, format!("https://open.spotify.com/{kind}/{id}"));
+            assert_eq!(
+                target.open_url,
+                format!("https://open.spotify.com/{kind}/{id}")
+            );
         }
     }
 
@@ -491,30 +504,48 @@ mod tests {
         let view = EntityView::from(&entity, "track");
         assert_eq!(view.title.as_deref(), Some("Never Gonna Give You Up"));
         assert_eq!(view.subtitle.as_deref(), Some("Rick Astley"));
-        assert_eq!(view.image.as_deref(), Some("https://i.scdn.co/image/large.jpg"));
+        assert_eq!(
+            view.image.as_deref(),
+            Some("https://i.scdn.co/image/large.jpg")
+        );
         assert_eq!(view.details, vec!["3:33", "Çıkış 1987-11-12"]);
 
-        let card = build_card(&view, "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", false);
+        let card = build_card(
+            &view,
+            "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
+            false,
+        );
         assert_eq!(card.accent_color, Some(0x1DB954));
         assert_eq!(card.components.len(), 3);
 
         let section = &card.components[0];
         assert_eq!(section["type"], TYPE_SECTION);
         assert_eq!(section["accessory"]["type"], TYPE_THUMBNAIL);
-        assert!(section["components"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("[Never Gonna Give You Up](https://open.spotify.com/track/"));
+        assert!(
+            section["components"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("[Never Gonna Give You Up](https://open.spotify.com/track/")
+        );
 
         // Buton satırı: Spotify + Apple Music + YouTube Music (önizleme butonu yok).
         let buttons = card.components[2]["components"].as_array().unwrap();
         assert_eq!(buttons.len(), 3);
-        assert_eq!(buttons[0]["url"], "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT");
+        assert_eq!(
+            buttons[0]["url"],
+            "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
+        );
         let apple = buttons[1]["url"].as_str().unwrap();
-        assert!(apple.starts_with("https://music.apple.com/search?term="), "apple: {apple}");
+        assert!(
+            apple.starts_with("https://music.apple.com/search?term="),
+            "apple: {apple}"
+        );
         assert!(apple.contains("Never"));
         let youtube = buttons[2]["url"].as_str().unwrap();
-        assert!(youtube.starts_with("https://music.youtube.com/search?q="), "youtube: {youtube}");
+        assert!(
+            youtube.starts_with("https://music.youtube.com/search?q="),
+            "youtube: {youtube}"
+        );
         assert!(youtube.contains("Rick"));
         for button in buttons {
             assert_eq!(button["style"], 5);
@@ -532,7 +563,10 @@ mod tests {
         // Görsel yoksa bölüm erişilebilirliği bir bağlantı butonu olur.
         assert_eq!(card.components[0]["accessory"]["type"], 2);
         // Müzik butonları her zaman vardır (Spotify + Apple Music + YouTube Music).
-        assert_eq!(card.components[2]["components"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            card.components[2]["components"].as_array().unwrap().len(),
+            3
+        );
     }
 
     #[test]
@@ -540,10 +574,11 @@ mod tests {
         let entity = json!({ "name": "Gizli parça", "artists": [{ "name": "Biri" }] });
         let view = EntityView::from(&entity, "track");
         let card = build_card(&view, "https://open.spotify.com/track/x", true);
-        assert!(card.components[0]["components"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("||"));
+        assert!(
+            card.components[0]["components"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("||")
+        );
     }
-
 }

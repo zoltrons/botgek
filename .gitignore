@@ -12,6 +12,9 @@ target/
 
 # Loglar ve geçici dosyalar
 *.log
+lcov.info
+settings.json.bak-*
+.botgek-settings-*.tmp
 
 # Kalıcı kayıt veritabanı (SQLite) - her kurulumda kendi verisi oluşur
 botgek.db

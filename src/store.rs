@@ -17,13 +17,13 @@
 //! Docker: `BOTGEK_DB_PATH=/app/data/botgek.db` — kalıcı `botgek-data` volume'u).
 //! Testler bellek içi veritabanında (`:memory:`) çalışır, gerçek dosyaya dokunmaz.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use std::sync::LazyLock;
 use rusqlite::{Connection, OptionalExtension, params};
 use serenity::all::{ChannelId, MessageId, UserId};
+use std::sync::LazyLock;
 use tracing::{info, warn};
 
 /// Kayıt dosyasının varsayılan adı (çalışma dizinine göre).
@@ -39,6 +39,37 @@ const PRUNE_EVERY: u64 = 512;
 static DB: LazyLock<Db> = LazyLock::new(|| Db::open(&default_path()));
 /// Son budamadan bu yana yapılan yazma sayısı.
 static WRITES: AtomicU64 = AtomicU64::new(0);
+static DB_SLOT: LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+
+/// Serialize blocking SQLite work off the Tokio workers; cancellation cannot release
+/// the permit while the native operation is still running.
+pub async fn blocking<T: Send + Default + 'static>(job: impl FnOnce() -> T + Send + 'static) -> T {
+    let Ok(permit) = DB_SLOT.clone().acquire_owned().await else {
+        return T::default();
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        job()
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            warn!("SQLite worker failed: {error}");
+            T::default()
+        }
+    }
+}
+
+pub fn healthy() -> bool {
+    DB.path() != ":memory:"
+        && DB
+            .with_connection(|connection| {
+                connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+            })
+            .is_ok()
+}
 
 /// SQLite veritabanı sarmalayıcısı. Sorgular tek satır (birincil anahtar) üzerinde
 /// çalıştığı için çağrılar mikrosaniye düzeyindedir; bu yüzden API senkron tutulur.
@@ -55,7 +86,10 @@ impl Db {
         let (connection, path) = match Self::connect(path) {
             Ok(connection) => (connection, path.to_string()),
             Err(err) => {
-                warn!("Kayıt veritabanı açılamadı ({}): {} — bellekte çalışılacak", path, err);
+                warn!(
+                    "Kayıt veritabanı açılamadı ({}): {} — bellekte çalışılacak",
+                    path, err
+                );
                 let connection =
                     Self::connect(":memory:").expect("bellek içi veritabanı her zaman açılmalı");
                 (connection, ":memory:".to_string())
@@ -94,20 +128,21 @@ impl Db {
     pub fn remember(&self, message_id: MessageId, channel_id: ChannelId, author_id: UserId) {
         let created_at = now_unix();
         let result = self.with_connection(|connection| {
-            connection.execute(
-                "INSERT INTO cards (message_id, channel_id, author_id, created_at)
+            connection
+                .execute(
+                    "INSERT INTO cards (message_id, channel_id, author_id, created_at)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(message_id) DO UPDATE SET
                      channel_id = excluded.channel_id,
                      author_id  = excluded.author_id",
-                params![
-                    message_id.get() as i64,
-                    channel_id.get() as i64,
-                    author_id.get() as i64,
-                    created_at
-                ],
-            )
-            .map(|_| ())
+                    params![
+                        message_id.get() as i64,
+                        channel_id.get() as i64,
+                        author_id.get() as i64,
+                        created_at
+                    ],
+                )
+                .map(|_| ())
         });
 
         if let Err(err) = result {
@@ -133,9 +168,12 @@ impl Db {
 
     /// Kartı paylaşan kullanıcı (kayıt yoksa `None`).
     pub fn author(&self, message_id: MessageId) -> Option<UserId> {
-        self.query_one("SELECT author_id FROM cards WHERE message_id = ?1", message_id)
-            .and_then(|value| u64::try_from(value).ok())
-            .map(UserId::new)
+        self.query_one(
+            "SELECT author_id FROM cards WHERE message_id = ?1",
+            message_id,
+        )
+        .and_then(|value| u64::try_from(value).ok())
+        .map(UserId::new)
     }
 
     /// Bu mesaj için kayıt var mı? (kart tanıma)
@@ -168,7 +206,9 @@ impl Db {
     fn query_one(&self, sql: &str, message_id: MessageId) -> Option<i64> {
         let result = self.with_connection(|connection| {
             connection
-                .query_row(sql, params![message_id.get() as i64], |row| row.get::<_, i64>(0))
+                .query_row(sql, params![message_id.get() as i64], |row| {
+                    row.get::<_, i64>(0)
+                })
                 .optional()
         });
 
@@ -234,7 +274,10 @@ pub fn init() {
 fn prune_db(db: &Db) {
     let removed = db.prune(MAX_RECORDS);
     if removed > 0 {
-        info!("Kayıt veritabanı budandı: {} eski kart kaydı silindi", removed);
+        info!(
+            "Kayıt veritabanı budandı: {} eski kart kaydı silindi",
+            removed
+        );
     }
 }
 
@@ -295,7 +338,10 @@ mod tests {
 
         // Bot yeniden başlatıldı: yeni bağlantı aynı kaydı görmeli.
         let reopened = Db::open(&path_str);
-        assert_eq!(reopened.author(MessageId::new(1_000)), Some(UserId::new(42)));
+        assert_eq!(
+            reopened.author(MessageId::new(1_000)),
+            Some(UserId::new(42))
+        );
         assert!(reopened.contains(MessageId::new(1_000)));
         assert_eq!(reopened.author(MessageId::new(2_000)), None);
         assert!(!reopened.contains(MessageId::new(2_000)));
@@ -347,6 +393,9 @@ mod tests {
         let db = Db::open("/olmayan-dizin/veritabani.db");
         assert_eq!(db.path(), ":memory:");
         db.remember(MessageId::new(5), ChannelId::new(1), UserId::new(2));
-        assert!(db.contains(MessageId::new(5)), "bellek içi veritabanı çalışmalı");
+        assert!(
+            db.contains(MessageId::new(5)),
+            "bellek içi veritabanı çalışmalı"
+        );
     }
 }

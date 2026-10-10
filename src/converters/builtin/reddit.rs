@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use super::{Author, BuiltinPost, Media, MediaKind, Stats, MAX_BODY_BYTES, REQUEST_TIMEOUT};
+use super::{Author, BuiltinPost, MAX_BODY_BYTES, Media, MediaKind, REQUEST_TIMEOUT, Stats};
 use crate::converters::parser::{ParsedPost, Platform};
 
 /// Reddit, tarayıcı dışı istekleri 403 ile engeller. fxreddit servisinin de kullandığı,
@@ -46,7 +46,8 @@ static SHORT_ID_REGEX: LazyLock<Regex> =
 /// Reddit'in **herkese açık** OAuth istemci kimliği (redlib'in de kullandığı Android uygulama
 /// kimliği). `installed_client` akışı kullanıcı izni/parolası istemez. `.env`'deki
 /// `REDDIT_CLIENT_ID` ile kendi uygulamanızın kimliğiyle değiştirilebilir.
-pub const DEFAULT_CLIENT_ID: &str = "ohXpoqrZYub1kg";
+#[cfg(test)]
+pub const DEFAULT_CLIENT_ID: &str = crate::config::DEFAULT_REDDIT_CLIENT_ID;
 
 /// Token uç noktası ve OAuth API tabanı.
 const OAUTH_TOKEN_URL: &str = "https://www.reddit.com/api/v1/access_token";
@@ -96,6 +97,7 @@ fn base64_ascii(input: &str) -> String {
 ///
 /// Herhangi bir hata `None` döner; çağıran taraf kimliksiz yola düşer, akış bozulmaz.
 pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
+    let _refresh = super::coordination::lock("reddit:oauth".into()).await;
     {
         let guard = TOKEN.lock().await;
         if let Some(entry) = guard.as_ref()
@@ -125,7 +127,10 @@ pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Op
     let response = match response {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            debug!("Reddit OAuth token isteği reddedildi: {}", response.status());
+            debug!(
+                "Reddit OAuth token isteği reddedildi: {}",
+                response.status()
+            );
             return None;
         }
         Err(err) => {
@@ -147,7 +152,10 @@ pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Op
         token: token.clone(),
         expires_at: Instant::now() + lifetime,
     });
-    debug!("Reddit OAuth token alındı ({} sn geçerli)", lifetime.as_secs());
+    debug!(
+        "Reddit OAuth token alındı ({} sn geçerli)",
+        lifetime.as_secs()
+    );
 
     Some(token)
 }
@@ -182,8 +190,8 @@ pub async fn fetch(
 
 /// JSON gönderi listesini karta çevirir (crosspost ise asıl içerik ebeveyn gönderdedir).
 fn listings_to_post(value: serde_json::Value) -> Result<BuiltinPost, String> {
-    let listings: Vec<RedditListing> = serde_json::from_value(value)
-        .map_err(|e| format!("Reddit yanıtı çözümlenemedi: {e}"))?;
+    let listings: Vec<RedditListing> =
+        serde_json::from_value(value).map_err(|e| format!("Reddit yanıtı çözümlenemedi: {e}"))?;
 
     let post = listings
         .first()
@@ -214,7 +222,10 @@ async fn extract_post_id(client: &reqwest::Client, original_url: &str) -> Result
     let response = client
         .get(original_url)
         .header("user-agent", REDDIT_USER_AGENT)
-        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .timeout(REQUEST_TIMEOUT)
         .send()
         .await
@@ -249,10 +260,7 @@ fn post_id_from_url(original_url: &str) -> Option<String> {
 
 /// Kimliksiz JSON isteği. Tarayıcı kılığındaki User-Agent, Reddit'in bot isteklerine
 /// uyguladığı 403 engelinin önüne geçmeye çalışır (engellenen IP'lerde OAuth devreye girer).
-async fn get_reddit_json(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<serde_json::Value, String> {
+async fn get_reddit_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
     let response = client
         .get(url)
         .header("user-agent", REDDIT_USER_AGENT)
@@ -399,9 +407,10 @@ fn reddit_extra_label(post: &RedditPost) -> Option<String> {
         parts.push(subreddit.to_string());
     }
     if let Some(flair) = post.link_flair_text.as_deref()
-        && !flair.trim().is_empty() {
-            parts.push(flair.trim().to_string());
-        }
+        && !flair.trim().is_empty()
+    {
+        parts.push(flair.trim().to_string());
+    }
     if parts.is_empty() {
         None
     } else {
@@ -409,14 +418,14 @@ fn reddit_extra_label(post: &RedditPost) -> Option<String> {
     }
 }
 
-
 /// Gönderi medyasını çıkarır: galeri > video > doğrudan görsel > önizleme görseli.
 fn reddit_media(post: &RedditPost) -> Vec<Media> {
     if post.is_gallery.unwrap_or(false)
         && let Some(gallery) = gallery_media(post)
-            && !gallery.is_empty() {
-                return gallery;
-            }
+        && !gallery.is_empty()
+    {
+        return gallery;
+    }
 
     // Gönderinin videosu `media` **veya** `secure_media` altında olabilir (fxreddit de ikisini
     // okur; bazı gönderilerde medya yalnızca `secure_media` içinde bulunur).
@@ -426,16 +435,17 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
         .or(post.secure_media.as_ref())
         .and_then(|media| media.reddit_video.as_ref());
     if let Some(video) = reddit_video
-        && let Some(url) = video.fallback_url.as_deref() {
-            return vec![Media {
-                kind: MediaKind::Video,
-                url: unescape_url(url),
-                poster: preview_image(post),
-                width: video.width,
-                height: video.height,
-                duration: video.duration,
-            }];
-        }
+        && let Some(url) = video.fallback_url.as_deref()
+    {
+        return vec![Media {
+            kind: MediaKind::Video,
+            url: unescape_url(url),
+            poster: preview_image(post),
+            width: video.width,
+            height: video.height,
+            duration: video.duration,
+        }];
+    }
 
     if let Some(url) = direct_image_url(post) {
         let (width, height) = preview_dimensions(post);
@@ -466,11 +476,7 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
 /// `url_overridden_by_dest` doğrudan bir görsel dosyasıysa onu döndürür.
 fn direct_image_url(post: &RedditPost) -> Option<String> {
     let url = post.url_overridden_by_dest.as_deref()?;
-    let path = url
-        .split('?')
-        .next()
-        .unwrap_or(url)
-        .to_ascii_lowercase();
+    let path = url.split('?').next().unwrap_or(url).to_ascii_lowercase();
     let is_image = [".jpg", ".jpeg", ".png", ".webp", ".gif"]
         .iter()
         .any(|ext| path.ends_with(ext));
@@ -509,11 +515,19 @@ fn preview_dimensions(post: &RedditPost) -> (Option<u32>, Option<u32>) {
 /// bu açıklamalar gönderi metnine numaralı olarak eklenir; aksi hâlde kartta hiç görünmez.
 fn gallery_captions(post: &RedditPost) -> Vec<String> {
     let meta = post.media_metadata.as_ref();
-    let items = post.gallery_data.as_ref().and_then(|data| data.items.as_ref());
+    let items = post
+        .gallery_data
+        .as_ref()
+        .and_then(|data| data.items.as_ref());
 
     // Sıra: `gallery_data.items` (yoksa medya meta anahtarları) — medya listesiyle aynı kural.
     let order: Vec<String> = items
-        .map(|items| items.iter().filter_map(|item| item.media_id.clone()).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.media_id.clone())
+                .collect()
+        })
         .or_else(|| meta.map(|meta| meta.keys().cloned().collect()))
         .unwrap_or_default();
 
@@ -549,7 +563,12 @@ fn gallery_media(post: &RedditPost) -> Option<Vec<Media>> {
         .gallery_data
         .as_ref()
         .and_then(|data| data.items.as_ref())
-        .map(|items| items.iter().filter_map(|item| item.media_id.clone()).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.media_id.clone())
+                .collect()
+        })
         .unwrap_or_else(|| metadata.keys().cloned().collect());
 
     let media: Vec<Media> = order
@@ -566,16 +585,17 @@ fn gallery_item_to_media(item: &MediaMeta) -> Option<Media> {
 
     // Hareketli görseller (gif) mp4 olarak da sunulur.
     if item.e.as_deref() == Some("AnimatedImage")
-        && let Some(mp4) = source.mp4.as_deref() {
-            return Some(Media {
-                kind: MediaKind::Gif,
-                url: unescape_url(mp4),
-                poster: source.u.as_deref().map(unescape_url),
-                width: source.x,
-                height: source.y,
-                duration: None,
-            });
-        }
+        && let Some(mp4) = source.mp4.as_deref()
+    {
+        return Some(Media {
+            kind: MediaKind::Gif,
+            url: unescape_url(mp4),
+            poster: source.u.as_deref().map(unescape_url),
+            width: source.x,
+            height: source.y,
+            duration: None,
+        });
+    }
 
     Some(Media {
         kind: MediaKind::Image,
@@ -586,7 +606,6 @@ fn gallery_item_to_media(item: &MediaMeta) -> Option<Media> {
         duration: None,
     })
 }
-
 
 // =====================================================================================
 // JSON MODELİ
@@ -718,7 +737,8 @@ mod tests {
     use super::*;
 
     fn parse(json: &str) -> BuiltinPost {
-        let listings: Vec<RedditListing> = serde_json::from_str(json).expect("örnek JSON geçerli olmalı");
+        let listings: Vec<RedditListing> =
+            serde_json::from_str(json).expect("örnek JSON geçerli olmalı");
         let post = &listings[0].data.children[0].data;
         // `fetch` ile aynı davranış: crosspost ise içerik ebeveyn gönderiden alınır.
         let content = post
@@ -756,7 +776,10 @@ mod tests {
         let post = parse(json);
         assert_eq!(post.platform, Platform::Reddit);
         assert_eq!(post.title.as_deref(), Some("Güzel bir manzara"));
-        assert_eq!(post.url, "https://www.reddit.com/r/EarthPorn/comments/abc123/guzel_bir_manzara/");
+        assert_eq!(
+            post.url,
+            "https://www.reddit.com/r/EarthPorn/comments/abc123/guzel_bir_manzara/"
+        );
         assert_eq!(post.author.label(), "u/gezgin");
         assert_eq!(post.stats.likes, 15234);
         assert_eq!(post.stats.replies, 421);
@@ -792,7 +815,10 @@ mod tests {
         assert_eq!(post.media.len(), 1);
         assert_eq!(post.media[0].kind, MediaKind::Video);
         assert_eq!(post.media[0].url, "https://v.redd.it/vid1/DASH_720.mp4");
-        assert_eq!(post.media[0].poster.as_deref(), Some("https://preview.redd.it/vid1.jpg"));
+        assert_eq!(
+            post.media[0].poster.as_deref(),
+            Some("https://preview.redd.it/vid1.jpg")
+        );
         assert_eq!(post.media[0].duration, Some(42));
     }
 
@@ -813,7 +839,10 @@ mod tests {
 
         let post = parse(json);
         let urls: Vec<&str> = post.media.iter().map(|m| m.url.as_str()).collect();
-        assert_eq!(urls, vec!["https://i.redd.it/b.jpg", "https://i.redd.it/a.jpg"]);
+        assert_eq!(
+            urls,
+            vec!["https://i.redd.it/b.jpg", "https://i.redd.it/a.jpg"]
+        );
         assert_eq!(post.media[0].width, Some(30));
     }
 
@@ -854,7 +883,10 @@ mod tests {
             "gallery_data'da yoksa media_metadata'dan alınmalı: {}",
             post.text
         );
-        assert!(post.text.starts_with("Açıklamalı galeri"), "selftext korunur");
+        assert!(
+            post.text.starts_with("Açıklamalı galeri"),
+            "selftext korunur"
+        );
     }
 
     #[test]
@@ -901,7 +933,10 @@ mod tests {
         let post = parse(json);
         assert_eq!(post.title.as_deref(), Some("Asıl başlık"));
         assert_eq!(post.author.label(), "u/ozgun");
-        assert_eq!(post.url, "https://www.reddit.com/r/original/comments/parent1/asil/");
+        assert_eq!(
+            post.url,
+            "https://www.reddit.com/r/original/comments/parent1/asil/"
+        );
         assert_eq!(post.media[0].url, "https://i.redd.it/asil.jpg");
     }
 
@@ -1005,6 +1040,7 @@ mod tests {
     /// Reddit kimliksiz `.json` isteklerini `403` ile engellediği (JS meydan okuması) için
     /// bu akış native motorun çalışması adına zorunludur.
     #[tokio::test]
+    #[ignore = "requires live Reddit access; run explicitly"]
     async fn live_oauth_fetch_returns_post() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
@@ -1043,7 +1079,9 @@ mod tests {
             .expect("Reddit gönderisi çekilmeli");
 
         assert!(
-            post.title.as_deref().is_some_and(|title| !title.trim().is_empty()),
+            post.title
+                .as_deref()
+                .is_some_and(|title| !title.trim().is_empty()),
             "başlık gelmeli: {:?}",
             post.title
         );

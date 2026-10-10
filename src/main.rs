@@ -1,9 +1,13 @@
 mod ai;
+#[cfg(test)]
+mod benchmarks;
 mod config;
 mod converters;
 mod handler;
+mod policy;
 mod settings;
 mod store;
+mod telemetry;
 mod utils;
 mod version;
 mod web;
@@ -104,12 +108,10 @@ async fn main() {
 
     // Loglama sistemini başlat
     let default_filter = "botgek=info,serenity=warn";
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     info!("Botgek başlatılıyor...");
     // Sürüm, derleme zamanında git etiketlerinden gömülür (`build.rs`): hangi ikilinin
@@ -126,7 +128,14 @@ async fn main() {
     };
 
     // Dinamik Ayarları Yükle (settings.json)
-    let settings = Arc::new(RwLock::new(settings::AppSettings::load()));
+    let loaded = match settings::AppSettings::load() {
+        Ok(settings) => settings,
+        Err(reason) => {
+            error!("{reason}");
+            std::process::exit(1);
+        }
+    };
+    let settings = Arc::new(RwLock::new(loaded));
 
     // Kalıcı kayıt deposu (SQLite): kart kayıtları, 🗑️ silme izni ve AI koruması.
     // Bot yeniden başladığında/güncellendiğinde hiçbir kayıt kaybolmaz.
@@ -135,6 +144,7 @@ async fn main() {
     // HTTP/2 + bağlantı havuzu: paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması
     // tekrarlanmaz → dönüşüm gecikmesi düşer.
     let http_client = reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30))
         .connect_timeout(std::time::Duration::from_secs(8))
         .pool_idle_timeout(std::time::Duration::from_secs(90))
@@ -181,13 +191,12 @@ async fn main() {
         web::start_web_server(web_settings, &web_config, web_http, web_cache).await;
     });
 
-
     // Güvenli durdurma sinyali dinleyicisi (CTRL+C ve Unix SIGTERM)
     let shard_manager = client.shard_manager.clone();
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             // panic=abort profiline karşı: SIGTERM kaydı başarısız olsa da süreç
             // abort edilmemeli, en azından Ctrl+C ile temiz kapanabilmeli
             match signal(SignalKind::terminate()) {
@@ -198,7 +207,9 @@ async fn main() {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("SIGTERM dinleyicisi kaydedilemedi: {err:?}; yalnızca Ctrl+C dinleniyor");
+                    tracing::warn!(
+                        "SIGTERM dinleyicisi kaydedilemedi: {err:?}; yalnızca Ctrl+C dinleniyor"
+                    );
                     let _ = tokio::signal::ctrl_c().await;
                 }
             }

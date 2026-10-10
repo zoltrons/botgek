@@ -3,11 +3,11 @@
 //! Resmî AppView'ın herkese açık XRPC uç noktaları kullanılır (`public.api.bsky.app`):
 //! önce handle → DID çözümlenir, sonra gönderi ipliği `getPostThread` ile çekilir.
 
-use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
+use std::sync::LazyLock;
 
-use super::{parse_timestamp, Author, BuiltinPost, Media, MediaKind, Stats};
+use super::{Author, BuiltinPost, Media, MediaKind, Stats, parse_timestamp};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const API_BASE: &str = "https://public.api.bsky.app/xrpc";
@@ -20,7 +20,12 @@ static BSKY_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
     let captures = BSKY_URL_REGEX
         .captures(&parsed.original_url)
-        .ok_or_else(|| format!("Bluesky gönderi adresi çözümlenemedi: {}", parsed.original_url))?;
+        .ok_or_else(|| {
+            format!(
+                "Bluesky gönderi adresi çözümlenemedi: {}",
+                parsed.original_url
+            )
+        })?;
     let handle = captures
         .get(1)
         .map(|m| m.as_str().to_string())
@@ -28,20 +33,27 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let rkey = captures
         .get(2)
         .map(|m| m.as_str().to_string())
-        .ok_or_else(|| format!("Bluesky gönderi kimliği bulunamadı: {}", parsed.original_url))?;
+        .ok_or_else(|| {
+            format!(
+                "Bluesky gönderi kimliği bulunamadı: {}",
+                parsed.original_url
+            )
+        })?;
 
     let did = resolve_did(client, &handle).await?;
     let uri = format!("at://{did}/app.bsky.feed.post/{rkey}");
-    let url = format!("{API_BASE}/app.bsky.feed.getPostThread?depth=0&uri={}", encode_component(&uri));
+    let url = format!(
+        "{API_BASE}/app.bsky.feed.getPostThread?depth=0&uri={}",
+        encode_component(&uri)
+    );
     let value = super::get_json(client, &url).await?;
 
     let response: ThreadResponse = serde_json::from_value(value)
         .map_err(|e| format!("Bluesky yanıtı çözümlenemedi ({rkey}): {e}"))?;
 
-    let post = response
-        .thread
-        .post
-        .ok_or_else(|| format!("Bluesky gönderisi bulunamadı ({rkey}); silinmiş veya engellenmiş olabilir"))?;
+    let post = response.thread.post.ok_or_else(|| {
+        format!("Bluesky gönderisi bulunamadı ({rkey}); silinmiş veya engellenmiş olabilir")
+    })?;
 
     Ok(post_view_to_post(&post, &handle))
 }
@@ -66,14 +78,7 @@ async fn resolve_did(client: &reqwest::Client, handle: &str) -> Result<String, S
 
 /// Sorgu parametrelerinde kullanılmak üzere percent-encoding uygular.
 fn encode_component(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
+    super::encode_component(value)
 }
 
 // =====================================================================================
@@ -124,27 +129,26 @@ fn post_view_to_post(post: &PostView, fallback_handle: &str) -> BuiltinPost {
 
         if let Some(card) = parts.external.as_ref() {
             if built.text.trim().is_empty()
-                && let Some(description) = card.description.as_deref() {
-                    built.text = description.trim().to_string();
-                }
+                && let Some(description) = card.description.as_deref()
+            {
+                built.text = description.trim().to_string();
+            }
             if built.title.is_none() {
-                built.title = card
-                    .title
-                    .clone()
-                    .filter(|title| !title.trim().is_empty());
+                built.title = card.title.clone().filter(|title| !title.trim().is_empty());
             }
             // Bağlantı kartının küçük görseli kapak olarak kullanılır.
             if built.media.is_empty()
-                && let Some(thumb) = card.thumb.as_deref() {
-                    built.media.push(Media {
-                        kind: MediaKind::Image,
-                        url: thumb.to_string(),
-                        poster: None,
-                        width: None,
-                        height: None,
-                        duration: None,
-                    });
-                }
+                && let Some(thumb) = card.thumb.as_deref()
+            {
+                built.media.push(Media {
+                    kind: MediaKind::Image,
+                    url: thumb.to_string(),
+                    poster: None,
+                    width: None,
+                    height: None,
+                    duration: None,
+                });
+            }
         }
 
         built.quote = parts.quote.map(Box::new);
@@ -200,9 +204,13 @@ fn apply_link_facets(text: &str, facets: Option<&[Facet]>) -> String {
             .and_then(|feature| feature.uri.clone());
 
         if let Some(uri) = uri
-            && start < end && end <= text.len() && text.is_char_boundary(start) && text.is_char_boundary(end) {
-                ranges.push((start, end, uri));
-            }
+            && start < end
+            && end <= text.len()
+            && text.is_char_boundary(start)
+            && text.is_char_boundary(end)
+        {
+            ranges.push((start, end, uri));
+        }
     }
 
     ranges.sort_by_key(|a| std::cmp::Reverse(a.0));
@@ -225,8 +233,6 @@ fn has_adult_label(labels: Option<&[Label]>) -> bool {
         )
     })
 }
-
-
 
 /// Embed verisinin ayrıştırılmış hâli.
 #[derive(Debug, Default)]
@@ -332,7 +338,10 @@ fn quote_from_post_view(view: &PostView) -> Option<BuiltinPost> {
             .unwrap_or_else(|| handle.clone()),
         handle.clone(),
     );
-    author.avatar = view.author.as_ref().and_then(|author| author.avatar.clone());
+    author.avatar = view
+        .author
+        .as_ref()
+        .and_then(|author| author.avatar.clone());
     author.verified = view
         .author
         .as_ref()
@@ -349,7 +358,6 @@ fn quote_from_post_view(view: &PostView) -> Option<BuiltinPost> {
 
     Some(quote)
 }
-
 
 // =====================================================================================
 // JSON MODELİ
@@ -497,7 +505,8 @@ mod tests {
     use super::*;
 
     fn thread_from(json: &str) -> PostView {
-        let response: ThreadResponse = serde_json::from_str(json).expect("örnek JSON geçerli olmalı");
+        let response: ThreadResponse =
+            serde_json::from_str(json).expect("örnek JSON geçerli olmalı");
         response.thread.post.expect("gönderi bulunmalı")
     }
 
@@ -534,10 +543,16 @@ mod tests {
         let post = post_view_to_post(&thread_from(json), "bsky.app");
 
         assert_eq!(post.platform, Platform::Bluesky);
-        assert_eq!(post.url, "https://bsky.app/profile/bsky.app/post/3mw2cdr44fc2a");
+        assert_eq!(
+            post.url,
+            "https://bsky.app/profile/bsky.app/post/3mw2cdr44fc2a"
+        );
         assert_eq!(post.author.label(), "Bluesky (@bsky.app)");
         assert!(post.author.verified);
-        assert!(post.text.contains("[https://example.com/oy](<https://example.com/oy>)"));
+        assert!(
+            post.text
+                .contains("[https://example.com/oy](<https://example.com/oy>)")
+        );
         assert_eq!(post.stats.likes, 712);
         assert_eq!(post.stats.reposts, 84);
         assert_eq!(post.stats.replies, 87);
@@ -614,7 +629,10 @@ mod tests {
         let quote = post.quote.expect("alıntı eklenmeli");
         assert_eq!(quote.text, "alıntılanan metin");
         assert_eq!(quote.author.label(), "Alıntı (@alintilanan.bsky.social)");
-        assert_eq!(quote.url, "https://bsky.app/profile/alintilanan.bsky.social/post/alinti");
+        assert_eq!(
+            quote.url,
+            "https://bsky.app/profile/alintilanan.bsky.social/post/alinti"
+        );
     }
 
     #[test]

@@ -149,14 +149,13 @@ fn push_media(plan: &mut MediaPlan, media: &Media, max_images: usize) {
     // Ancak servis yalnızca belirli platformları (örn. Twitter) destekler;
     // dönüştürülemeyen (Reddit vb.) mp4 formatındaki GIF'ler video olarak işlenir
     // ki kartta kırık görsel yerine oynatılabilir bir video çıksın.
-    if media.kind == MediaKind::Gif
-        && media::gif_convert_url(&media.url).is_some() {
-            if plan.gifs.len() < max_images {
-                plan.gifs.push(media.url.clone());
-            }
-            return;
+    if media.kind == MediaKind::Gif && media::gif_convert_url(&media.url).is_some() {
+        if plan.gifs.len() < max_images {
+            plan.gifs.push(media.url.clone());
         }
-        // Servisin desteklemediği GIF (örn. Reddit i.redd.it/*.mp4): video olarak devam et.
+        return;
+    }
+    // Servisin desteklemediği GIF (örn. Reddit i.redd.it/*.mp4): video olarak devam et.
 
     if media.is_video() {
         if plan.video.is_none() {
@@ -231,10 +230,14 @@ pub fn direct_media(plan: &MediaPlan) -> ResolvedMedia {
         ..ResolvedMedia::default()
     };
 
+    resolved.images.extend(
+        plan.remote_images
+            .iter()
+            .map(|url| media::card_image_url(url)),
+    );
     resolved
         .images
-        .extend(plan.remote_images.iter().map(|url| media::card_image_url(url)));
-    resolved.images.extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
+        .extend(plan.gifs.iter().map(|url| remote_gif_url(url)));
 
     resolved
 }
@@ -512,7 +515,10 @@ mod tests {
         post.link_preview = Some(link_preview(None));
 
         let plan = plan_media(&post, &options);
-        assert!(plan.remote_images.is_empty(), "görsel yoksa galeri boş kalır");
+        assert!(
+            plan.remote_images.is_empty(),
+            "görsel yoksa galeri boş kalır"
+        );
         assert!(plan_is_empty(&plan));
     }
 
@@ -526,7 +532,4 @@ mod tests {
             site_name: Some("example.com".to_string()),
         }
     }
-
-
-
 }

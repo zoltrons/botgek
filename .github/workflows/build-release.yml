@@ -38,12 +38,31 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
       - name: Run Cargo Test
         run: cargo test --verbose --locked
+
+      - name: Format and lint
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Setup Node for dependency-free panel tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Panel syntax and behavior
+        run: |
+          node --check src/web/ui/app.js
+          node --check src/web/ui/login.js
+          node --test tests/web-ui.test.cjs
 
       - name: Sürüm künyesi (derlenmiş ikiliden)
         id: version
@@ -52,7 +71,7 @@ jobs:
           BOTGEK_GIT_SHA: ${{ github.sha }}
         run: |
           set -eu
-          summary="$(cargo run --quiet -- --version)"
+          summary="$(cargo run --locked --quiet -- --version)"
           echo "$summary"
           version="$(printf '%s' "$summary" | awk '{print $2}')"
           version="${version#v}"
@@ -99,6 +118,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          toolchain: 1.98.1
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -117,9 +137,9 @@ jobs:
           BOTGEK_GIT_SHA: ${{ github.sha }}
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --locked --release --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --locked --release --target ${{ matrix.target }}
           fi
 
       - name: Doğrula — sürüm ikiliye gömülmüş (yalnızca ana makine hedefi)

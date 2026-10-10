@@ -7,14 +7,17 @@
 
 use std::time::Duration;
 
-use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
+use std::sync::LazyLock;
 use tracing::{debug, warn};
 
 use super::media::card_image_url;
-use super::translate::{needs_turkish_translation, TARGET_LANGUAGE_CODE};
-use super::{parse_timestamp, strip_trailing_media_links, Author, BuiltinPost, LinkPreview, Media, MediaKind, Stats, Translation};
+use super::translate::{TARGET_LANGUAGE_CODE, needs_turkish_translation};
+use super::{
+    Author, BuiltinPost, LinkPreview, Media, MediaKind, Stats, Translation, parse_timestamp,
+    strip_trailing_media_links,
+};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::settings::{EngineSettings, TwitterSource};
 
@@ -22,7 +25,8 @@ const SYNDICATION_URL: &str = "https://cdn.syndication.twimg.com/tweet-result";
 const FXTWITTER_URL: &str = "https://api.fxtwitter.com";
 
 static TWEET_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]{1,20})/status/(\d{1,25})").expect("geçerli tweet regex")
+    Regex::new(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]{1,20})/status/(\d{1,25})")
+        .expect("geçerli tweet regex")
 });
 
 /// Hızlı yol (FxTwitter) bu süre içinde yanıt vermezse X syndication ucu **paralel**
@@ -33,7 +37,7 @@ const HEDGE_DELAY: Duration = Duration::from_millis(500);
 const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(300);
 /// Harici link önizlemesi (X'in "link kartı") için tanınan süre: hedef sayfa bu süre
 /// içinde yanıt vermezse kart önizlemesiz gönderilir (kart asla bekletilmez).
-const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(2500);
+const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(500);
 /// Önizleme metinlerinin kart bütçesini yormaması için üst sınırlar.
 const LINK_PREVIEW_TITLE_LIMIT: usize = 180;
 const LINK_PREVIEW_DESCRIPTION_LIMIT: usize = 400;
@@ -42,7 +46,13 @@ const LINK_PREVIEW_DESCRIPTION_LIMIT: usize = 400;
 static URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"https?://[^\s<>()\[\]]+").expect("geçerli URL regex"));
 /// X/Twitter'a ait adresler link kartına konmaz (gönderi/alıntı/medya bağlantıları).
-static OWN_HOSTS: [&str; 5] = ["x.com", "twitter.com", "t.co", "pic.twitter.com", "twimg.com"];
+static OWN_HOSTS: [&str; 5] = [
+    "x.com",
+    "twitter.com",
+    "t.co",
+    "pic.twitter.com",
+    "twimg.com",
+];
 
 /// Gönderi verisini seçilen kaynaktan çeker.
 ///
@@ -70,9 +80,13 @@ pub async fn fetch(
     // `max_video_bytes` platforma bağlı değildir; anahtar sözleşmeyi açık tutar.
     let video_budget =
         super::render::RenderOptions::from_engine(engine, "twitter").max_video_bytes();
-    debug!("X verisi çekiliyor (kaynak: {}, id: {id})", engine.twitter_source.key());
+    debug!(
+        "X verisi çekiliyor (kaynak: {}, id: {id})",
+        engine.twitter_source.key()
+    );
 
-    let mut post = fetch_post_internal(client, &parsed.original_url, &id, engine, video_budget).await?;
+    let mut post =
+        fetch_post_internal(client, &parsed.original_url, &id, engine, video_budget).await?;
 
     // Medyasız zincirlerde X alıntının alıntısını da (3 seviye) gösterir.
     // Ancak ne Syndication ne de FxTwitter API'si tek yanıtta iç içe alıntıyı dönmez:
@@ -94,7 +108,7 @@ pub async fn fetch(
 /// hedef sayfanın `og:`/`twitter:` etiketleri okunur. Hiçbir medya indirilmez; önizleme
 /// görseli doğrudan CDN bağlantısıyla karta bağlanır. Sayfa yanıt vermezse, etiketler boşsa
 /// ya da [`LINK_PREVIEW_TIMEOUT`] dolarsa kart önizlemesiz gönderilir.
-async fn attach_link_preview(client: &reqwest::Client, post: &mut BuiltinPost) {
+async fn attach_link_preview(_client: &reqwest::Client, post: &mut BuiltinPost) {
     if !post.media.is_empty() || post.quote.is_some() {
         return;
     }
@@ -102,23 +116,24 @@ async fn attach_link_preview(client: &reqwest::Client, post: &mut BuiltinPost) {
         return;
     };
 
-    let html = match tokio::time::timeout(LINK_PREVIEW_TIMEOUT, super::get_text(client, &url)).await {
-        Ok(Ok(html)) => html,
-        Ok(Err(err)) => {
-            debug!("Link önizlemesi alınamadı ({url}): {err}");
-            return;
-        }
-        Err(_elapsed) => {
-            debug!(
-                "Link önizlemesi {} ms içinde gelmedi: {url}",
-                LINK_PREVIEW_TIMEOUT.as_millis()
-            );
-            return;
-        }
-    };
+    let (target, html) =
+        match tokio::time::timeout(LINK_PREVIEW_TIMEOUT, super::safe_http::preview(&url)).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => {
+                debug!("Link önizlemesi alınamadı ({url}): {err}");
+                return;
+            }
+            Err(_elapsed) => {
+                debug!(
+                    "Link önizlemesi {} ms içinde gelmedi: {url}",
+                    LINK_PREVIEW_TIMEOUT.as_millis()
+                );
+                return;
+            }
+        };
 
     let graph = super::opengraph::parse_open_graph(&html);
-    let target = graph.url.unwrap_or(url);
+    // The fetched, validated URL is canonical here; untrusted og:url cannot replace it.
     let preview = LinkPreview {
         site_name: meta_value(graph.site_name, 80).or_else(|| host_label(&target)),
         title: meta_value(graph.title, LINK_PREVIEW_TITLE_LIMIT),
@@ -172,7 +187,7 @@ fn host_label(url: &str) -> Option<String> {
         .next()?
         .trim()
         .trim_start_matches("www.");
-    if host.is_empty() || OWN_HOSTS.iter().any(|own| host == *own) {
+    if host.is_empty() || OWN_HOSTS.contains(&host) {
         return None;
     }
     Some(host.to_string())
@@ -266,7 +281,10 @@ async fn populate_nested_quote(
 
 /// Tweet URL'sinden gönderi kimliğini (sayısal ID) çıkarır.
 fn extract_tweet_id(url: &str) -> Option<String> {
-    TWEET_URL_REGEX.captures(url).and_then(|c| c.get(2)).map(|m| m.as_str().to_string())
+    TWEET_URL_REGEX
+        .captures(url)
+        .and_then(|c| c.get(2))
+        .map(|m| m.as_str().to_string())
 }
 
 /// Hızlı yol: **tek** FxTwitter isteği + gecikme sigortası (hedge).
@@ -324,7 +342,9 @@ async fn fetch_fx_fast(
             Ok(post) => Ok(post),
             Err(err) => {
                 debug!("FxTwitter hedge sonrası hata verdi ({id}): {err}");
-                syndication.await.map_err(|sy_err| format!("{err} | {sy_err}"))
+                syndication
+                    .await
+                    .map_err(|sy_err| format!("{err} | {sy_err}"))
             }
         };
     }
@@ -337,7 +357,6 @@ async fn fetch_fx_fast(
 
     x_result.expect("select her zaman bir dalı döner")
 }
-
 
 /// Eksik alanları doldurur; kaynakta 0/`None` olan değerleri taze veriyle değiştirir.
 fn merge_stats(target: &mut Stats, fresh: &Stats) {
@@ -357,7 +376,6 @@ fn merge_stats(target: &mut Stats, fresh: &Stats) {
         target.views = fresh.views;
     }
 }
-
 
 /// X'in syndication uç noktası token'ı doğrulamıyor; istemci tarafında üretilen
 /// deterministik token yeterli oluyor (referans JS: `((id / 1e15) * Math.PI).toString(36)`).
@@ -556,16 +574,15 @@ fn pick_video(
         return None;
     }
 
-    let pool: Vec<VideoCandidate> = if prefer_tweet_video
-        && candidates.iter().any(|c| c.url.contains("tweet_video"))
-    {
-        candidates
-            .into_iter()
-            .filter(|c| c.url.contains("tweet_video"))
-            .collect()
-    } else {
-        candidates
-    };
+    let pool: Vec<VideoCandidate> =
+        if prefer_tweet_video && candidates.iter().any(|c| c.url.contains("tweet_video")) {
+            candidates
+                .into_iter()
+                .filter(|c| c.url.contains("tweet_video"))
+                .collect()
+        } else {
+            candidates
+        };
 
     // 1) Bütçeye sığanlar arasından en yüksek bit hızlı aday (boyut bilinmiyorsa sığar sayılır).
     if let Some(best) = pool
@@ -616,13 +633,18 @@ async fn from_syndication(
     id: &str,
     max_video_bytes: u64,
 ) -> Result<BuiltinPost, String> {
-    let url = format!("{SYNDICATION_URL}?id={id}&token={}&lang=en", syndication_token(id));
+    let url = format!(
+        "{SYNDICATION_URL}?id={id}&token={}&lang=en",
+        syndication_token(id)
+    );
     let value = super::get_json(client, &url).await?;
     let tweet: SyndicationTweet = serde_json::from_value(value)
         .map_err(|e| format!("Syndication yanıtı çözümlenemedi ({id}): {e}"))?;
 
     if tweet.is_empty() {
-        return Err(format!("Gönderi bulunamadı (silinmiş veya korumalı olabilir): {id}"));
+        return Err(format!(
+            "Gönderi bulunamadı (silinmiş veya korumalı olabilir): {id}"
+        ));
     }
 
     syndication_to_post(&tweet, original_url, max_video_bytes)
@@ -636,7 +658,8 @@ fn syndication_to_post(
     let user = tweet.user.as_ref();
     let handle = user.and_then(|u| u.screen_name.clone()).unwrap_or_default();
     let mut author = Author::new(
-        user.and_then(|u| u.name.clone()).unwrap_or_else(|| handle.clone()),
+        user.and_then(|u| u.name.clone())
+            .unwrap_or_else(|| handle.clone()),
         handle.clone(),
     );
     author.avatar = user.and_then(|u| u.profile_image_url_https.clone());
@@ -662,7 +685,8 @@ fn syndication_to_post(
     } else {
         cut_to_display_range(&raw_text, tweet.display_text_range.as_deref())
     };
-    post.text = strip_trailing_media_links(&expand_url_entities(&raw_text, tweet.entities.as_ref()));
+    post.text =
+        strip_trailing_media_links(&expand_url_entities(&raw_text, tweet.entities.as_ref()));
     post.language = tweet.lang.clone().filter(|lang| !lang.trim().is_empty());
 
     post.created_at = tweet.created_at.as_deref().and_then(parse_timestamp);
@@ -687,9 +711,10 @@ fn syndication_to_post(
             format!("https://x.com/{quoted_handle}/status/{quoted_id}")
         });
         if let Some(quoted_url) = quoted_url
-            && let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url, max_video_bytes) {
-                post.quote = Some(Box::new(quoted_post));
-            }
+            && let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url, max_video_bytes)
+        {
+            post.quote = Some(Box::new(quoted_post));
+        }
     }
 
     Ok(post)
@@ -713,7 +738,9 @@ fn expand_url_entities(text: &str, entities: Option<&SyndicationEntities>) -> St
     let mut out = text.to_string();
     if let Some(urls) = entities.and_then(|e| e.urls.as_deref()) {
         for entity in urls {
-            if let (Some(short), Some(expanded)) = (entity.url.as_deref(), entity.expanded_url.as_deref()) {
+            if let (Some(short), Some(expanded)) =
+                (entity.url.as_deref(), entity.expanded_url.as_deref())
+            {
                 if short == expanded {
                     continue;
                 }
@@ -728,12 +755,13 @@ fn expand_url_entities(text: &str, entities: Option<&SyndicationEntities>) -> St
 /// `mediaDetails` (varsa) veya `photos` + `video` alanlarından medya listesi üretir.
 fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Media> {
     if let Some(details) = tweet.media_details.as_deref()
-        && !details.is_empty() {
-            return details
-                .iter()
-                .filter_map(|detail| media_from_detail(detail, max_video_bytes))
-                .collect();
-        }
+        && !details.is_empty()
+    {
+        return details
+            .iter()
+            .filter_map(|detail| media_from_detail(detail, max_video_bytes))
+            .collect();
+    }
 
     let mut media = Vec::new();
     if let Some(photos) = tweet.photos.as_deref() {
@@ -751,16 +779,22 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
         }
     }
     if let Some(video) = tweet.video.as_ref()
-        && let Some(url) = best_mp4(video.variants.as_deref(), video.duration_ms, max_video_bytes, true) {
-            media.push(Media {
-                kind: MediaKind::Video,
-                url,
-                poster: video.poster.as_deref().map(card_image_url),
-                width: None,
-                height: None,
-                duration: video.duration_ms.map(|ms| ms / 1000),
-            });
-        }
+        && let Some(url) = best_mp4(
+            video.variants.as_deref(),
+            video.duration_ms,
+            max_video_bytes,
+            true,
+        )
+    {
+        media.push(Media {
+            kind: MediaKind::Video,
+            url,
+            poster: video.poster.as_deref().map(card_image_url),
+            width: None,
+            height: None,
+            duration: video.duration_ms.map(|ms| ms / 1000),
+        });
+    }
     media
 }
 
@@ -795,10 +829,7 @@ fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> O
                     MediaKind::Video
                 },
                 url,
-                poster: detail
-                    .media_url_https
-                    .as_deref()
-                    .map(card_image_url),
+                poster: detail.media_url_https.as_deref().map(card_image_url),
                 width,
                 height,
                 duration: video_info.duration_millis.map(|ms| ms / 1000),
@@ -924,12 +955,13 @@ async fn from_fxtwitter(
         .map_err(|e| format!("fxtwitter yanıtı çözümlenemedi ({id}): {e}"))?;
 
     if let Some(code) = response.code
-        && code != 200 {
-            return Err(format!(
-                "fxtwitter gönderiyi döndürmedi ({id}, kod {code}): {}",
-                response.message.unwrap_or_default()
-            ));
-        }
+        && code != 200
+    {
+        return Err(format!(
+            "fxtwitter gönderiyi döndürmedi ({id}, kod {code}): {}",
+            response.message.unwrap_or_default()
+        ));
+    }
 
     let tweet = response
         .tweet
@@ -938,11 +970,16 @@ async fn from_fxtwitter(
     fx_to_post(&tweet, original_url, max_video_bytes)
 }
 
-fn fx_to_post(tweet: &FxTweet, fallback_url: &str, max_video_bytes: u64) -> Result<BuiltinPost, String> {
+fn fx_to_post(
+    tweet: &FxTweet,
+    fallback_url: &str,
+    max_video_bytes: u64,
+) -> Result<BuiltinPost, String> {
     let user = tweet.author.as_ref();
     let handle = user.and_then(|a| a.screen_name.clone()).unwrap_or_default();
     let mut author = Author::new(
-        user.and_then(|a| a.name.clone()).unwrap_or_else(|| handle.clone()),
+        user.and_then(|a| a.name.clone())
+            .unwrap_or_else(|| handle.clone()),
         handle.clone(),
     );
     author.avatar = user.and_then(|a| a.avatar_url.clone());
@@ -1002,9 +1039,10 @@ fn fx_to_post(tweet: &FxTweet, fallback_url: &str, max_video_bytes: u64) -> Resu
             })
             .unwrap_or_default();
         if !quoted_url.is_empty()
-            && let Ok(quoted_post) = fx_to_post(quoted, &quoted_url, max_video_bytes) {
-                post.quote = Some(Box::new(quoted_post));
-            }
+            && let Ok(quoted_post) = fx_to_post(quoted, &quoted_url, max_video_bytes)
+        {
+            post.quote = Some(Box::new(quoted_post));
+        }
     }
 
     // Alıntılanan gönderi de kendi `fx_to_post` çağrısında çevrilir.
@@ -1104,7 +1142,9 @@ fn pick_fx_video(item: &FxMediaItem, max_bytes: u64) -> Option<String> {
                 url: format.url.as_deref()?,
                 bitrate: format.bitrate.unwrap_or(0),
                 // Kaynak tam boyut veriyorsa o, yoksa bit hızı × süre tahmini kullanılır.
-                bytes: format.size.or_else(|| estimated_bytes(format.bitrate, duration_ms)),
+                bytes: format
+                    .size
+                    .or_else(|| estimated_bytes(format.bitrate, duration_ms)),
             })
         })
         .collect();
@@ -1127,7 +1167,9 @@ fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
             // Görsel kartta CDN'den geldiği için vx/fxTwitter gibi tam çözünürlüklü varyantı (name=orig) kullanılır.
             MediaKind::Image => card_image_url(url),
             // Video: `formats` varsa ağırlıklı seçim (1080p dev varyant yerine hızlı oynayan).
-            MediaKind::Video => pick_fx_video(item, video_budget).unwrap_or_else(|| url.to_string()),
+            MediaKind::Video => {
+                pick_fx_video(item, video_budget).unwrap_or_else(|| url.to_string())
+            }
             // GIF kaynağı `tweet_video` mp4'ü olarak kalmalı: FxEmbed GIF adresi ondan türetilir.
             MediaKind::Gif => url.to_string(),
         },
@@ -1137,7 +1179,6 @@ fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
         duration: item.duration.map(|seconds| seconds.round() as u64),
     })
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1210,8 +1251,7 @@ mod tests {
 
         let post = post_from(&json);
         assert_eq!(
-            post.media[0].url,
-            "https://pbs.twimg.com/media/ABC.jpg?name=orig",
+            post.media[0].url, "https://pbs.twimg.com/media/ABC.jpg?name=orig",
             "kart görseli vx/fxTwitter gibi tam kalitede (name=orig) tutulur"
         );
     }
@@ -1267,7 +1307,11 @@ mod tests {
         assert_eq!(stats.likes, 15_600, "mevcut beğeni korunur");
         assert_eq!(stats.reposts, 412, "eksik repost tamamlanır");
         assert_eq!(stats.quotes, 12, "eksik alıntı tamamlanır");
-        assert_eq!(stats.views, Some(1_240_000), "eksik görüntülenme tamamlanır");
+        assert_eq!(
+            stats.views,
+            Some(1_240_000),
+            "eksik görüntülenme tamamlanır"
+        );
     }
 
     #[test]
@@ -1289,7 +1333,10 @@ mod tests {
         let post = post_from(&translated_tweet("de"));
 
         assert_eq!(post.language.as_deref(), Some("de"));
-        assert_eq!(post.text, "Herkese günaydın", "Grok (X) çevirisi metne yazılmalı");
+        assert_eq!(
+            post.text, "Herkese günaydın",
+            "Grok (X) çevirisi metne yazılmalı"
+        );
         assert_eq!(
             post.translation.as_ref().and_then(|t| t.source.as_deref()),
             Some("de")
@@ -1327,17 +1374,26 @@ mod tests {
 
         let post = post_from(&json);
 
-        assert!(post.translation.is_none(), "sağlayıcı bilinmiyorsa Grok sayılmaz");
+        assert!(
+            post.translation.is_none(),
+            "sağlayıcı bilinmiyorsa Grok sayılmaz"
+        );
         assert_eq!(post.text, "Guten Morgen zusammen");
     }
 
     #[test]
     fn only_grok_providers_are_accepted() {
         for provider in ["grok", "Grok", "xai", "x-ai", "grok-3"] {
-            assert!(is_grok_translation(Some(provider)), "{provider} kabul edilmeli");
+            assert!(
+                is_grok_translation(Some(provider)),
+                "{provider} kabul edilmeli"
+            );
         }
         for provider in ["deepl", "google", "microsoft", ""] {
-            assert!(!is_grok_translation(Some(provider)), "{provider} reddedilmeli");
+            assert!(
+                !is_grok_translation(Some(provider)),
+                "{provider} reddedilmeli"
+            );
         }
         assert!(!is_grok_translation(None), "sağlayıcı yoksa kabul edilmez");
     }
@@ -1346,8 +1402,14 @@ mod tests {
     fn turkish_and_english_posts_keep_original_text() {
         for lang in ["en", "tr", "en-GB"] {
             let post = post_from(&translated_tweet(lang));
-            assert_eq!(post.text, "Guten Morgen zusammen", "orijinal metin korunmalı ({lang})");
-            assert!(post.translation.is_none(), "tr/en gönderiler çevrilmemeli ({lang})");
+            assert_eq!(
+                post.text, "Guten Morgen zusammen",
+                "orijinal metin korunmalı ({lang})"
+            );
+            assert!(
+                post.translation.is_none(),
+                "tr/en gönderiler çevrilmemeli ({lang})"
+            );
         }
     }
 
@@ -1487,7 +1549,10 @@ mod tests {
     #[test]
     fn size_estimates_need_both_bitrate_and_duration() {
         // 1 Mbps × 8 sn = 1 MB
-        assert_eq!(estimated_bytes(Some(1_000_000), Some(8_000)), Some(1_000_000));
+        assert_eq!(
+            estimated_bytes(Some(1_000_000), Some(8_000)),
+            Some(1_000_000)
+        );
         assert_eq!(estimated_bytes(None, Some(8_000)), None);
         assert_eq!(estimated_bytes(Some(1_000_000), None), None);
         assert_eq!(estimated_bytes(Some(0), Some(8_000)), None);
@@ -1505,6 +1570,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires live X/FxTwitter access; run explicitly"]
     async fn live_fetch_three_level_quote() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -1517,10 +1583,14 @@ mod tests {
             is_spoiler: false,
             user_comment: None,
         };
-        let mut engine = EngineSettings::default();
-        engine.twitter_source = TwitterSource::Fxtwitter;
-        engine.show_quote = true;
-        let post = fetch(&client, &parsed, &engine).await.expect("tweet çekilmeli");
+        let mut engine = EngineSettings {
+            twitter_source: TwitterSource::Fxtwitter,
+            show_quote: true,
+            ..EngineSettings::default()
+        };
+        let post = fetch(&client, &parsed, &engine)
+            .await
+            .expect("tweet çekilmeli");
 
         assert!(post.quote.is_some(), "ilk alıntı (Mark_Hobin) bulunmalı");
         let middle = post.quote.as_ref().unwrap();
@@ -1544,7 +1614,9 @@ mod tests {
         let plan = crate::converters::builtin::render::plan_media(&post, &render_opts);
         assert!(!plan.remote_images.is_empty(), "plan görsel içermeli");
 
-        let resolved = crate::converters::builtin::render::resolve_media(&client, &post, &plan, &render_opts).await;
+        let resolved =
+            crate::converters::builtin::render::resolve_media(&client, &post, &plan, &render_opts)
+                .await;
         let emojis = crate::settings::EmojiSettings::default();
         let card = crate::converters::builtin::v2::V2Card {
             post: &post,
@@ -1561,18 +1633,34 @@ mod tests {
         let payload_str = serde_json::to_string(&payload).unwrap();
         assert!(payload_str.contains("firstshowing"), "ana yazar olmalı");
         assert!(payload_str.contains("Mark_Hobin"), "ilk alıntı olmalı");
-        assert!(payload_str.contains("DiscussingFilm"), "ikinci alıntı olmalı");
-        assert!(payload_str.contains("DIGGER"), "DiscussingFilm metni olmalı");
-        assert!(payload_str.contains("media_gallery") || payload_str.contains("HTy-9WNWYAAGzcK"), "galeri görseli olmalı");
+        assert!(
+            payload_str.contains("DiscussingFilm"),
+            "ikinci alıntı olmalı"
+        );
+        assert!(
+            payload_str.contains("DIGGER"),
+            "DiscussingFilm metni olmalı"
+        );
+        assert!(
+            payload_str.contains("media_gallery") || payload_str.contains("HTy-9WNWYAAGzcK"),
+            "galeri görseli olmalı"
+        );
 
         // Syndication kaynağı da 3 seviyeli zinciri tamamlayabilmeli:
         engine.twitter_source = TwitterSource::Syndication;
-        let post_syn = fetch(&client, &parsed, &engine).await.expect("syndication tweet çekilmeli");
+        let post_syn = fetch(&client, &parsed, &engine)
+            .await
+            .expect("syndication tweet çekilmeli");
         let middle_syn = post_syn.quote.expect("syndication ilk alıntı bulunmalı");
         assert_eq!(middle_syn.author.handle, "Mark_Hobin");
-        let inner_syn = middle_syn.quote.expect("syndication iç içe alıntı tamamlanmalı");
+        let inner_syn = middle_syn
+            .quote
+            .expect("syndication iç içe alıntı tamamlanmalı");
         assert_eq!(inner_syn.author.handle, "DiscussingFilm");
-        assert!(!inner_syn.media.is_empty(), "syndication medya tamamlanmalı");
+        assert!(
+            !inner_syn.media.is_empty(),
+            "syndication medya tamamlanmalı"
+        );
     }
     // =================================================================================
     // LİNK KARTI (harici bağlantı önizlemesi)
@@ -1618,6 +1706,4 @@ mod tests {
             "uzun meta metni karta sığacak şekilde kesilir"
         );
     }
-
-
 }

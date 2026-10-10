@@ -5,8 +5,8 @@
 //! native motoru ([`super::instagram`]) hem SSR embed sayfasını hem de bu çözümleyiciyi
 //! kullanır: embed'de olmayan görünen ad, tarih ve medya bağlantısı buradan tamamlanır.
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use super::unescape_html;
 
@@ -47,7 +47,9 @@ pub fn parse_open_graph(html: &str) -> OpenGraph {
             None => continue,
         };
         let content = match CONTENT_ATTR_REGEX.captures(tag) {
-            Some(captures) => unescape_html(captures.get(1).map(|m| m.as_str()).unwrap_or_default()),
+            Some(captures) => {
+                unescape_html(captures.get(1).map(|m| m.as_str()).unwrap_or_default())
+            }
             None => continue,
         };
         let content = content.trim().to_string();
@@ -85,14 +87,15 @@ pub fn parse_open_graph(html: &str) -> OpenGraph {
 
     // og:title yoksa <title> etiketi kullanılır.
     if graph.title.is_none()
-        && let Some(captures) = TITLE_REGEX.captures(html) {
-            let title = unescape_html(captures.get(1).map(|m| m.as_str()).unwrap_or_default())
-                .trim()
-                .to_string();
-            if !title.is_empty() {
-                graph.title = Some(title);
-            }
+        && let Some(captures) = TITLE_REGEX.captures(html)
+    {
+        let title = unescape_html(captures.get(1).map(|m| m.as_str()).unwrap_or_default())
+            .trim()
+            .to_string();
+        if !title.is_empty() {
+            graph.title = Some(title);
         }
+    }
 
     graph
 }

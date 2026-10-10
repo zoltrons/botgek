@@ -12,7 +12,11 @@ fn preview(body: &str) -> String {
     if body.chars().count() <= MAX_CHARS {
         body.to_string()
     } else {
-        format!("{} ({} karaktere kırpıldı)", truncate_chars(body, MAX_CHARS), body.chars().count())
+        format!(
+            "{} ({} karaktere kırpıldı)",
+            truncate_chars(body, MAX_CHARS),
+            body.chars().count()
+        )
     }
 }
 
@@ -59,7 +63,10 @@ struct OpenRouterError {
 
 /// WebUI / Cursor tarzı slug'ları OpenRouter'ın beklediği `sağlayıcı/model` biçimine çevirir.
 pub fn normalize_openrouter_model(raw: &str) -> String {
-    let mut model = raw.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+    let mut model = raw
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_string();
     if model.is_empty() {
         return DEFAULT_MODEL.to_string();
     }
@@ -73,9 +80,10 @@ pub fn normalize_openrouter_model(raw: &str) -> String {
     }
 
     if let Some(rest) = model.strip_prefix("openrouter/")
-        && rest.contains('/') {
-            model = rest.to_string();
-        }
+        && rest.contains('/')
+    {
+        model = rest.to_string();
+    }
 
     if model.is_empty() {
         DEFAULT_MODEL.to_string()
@@ -134,8 +142,13 @@ fn choice_text(choice: &ChatChoice) -> Option<String> {
 }
 
 fn extract_reply(body_text: &str) -> Result<String, String> {
-    let parsed: ChatCompletionResponse = serde_json::from_str(body_text)
-        .map_err(|e| format!("OpenRouter JSON ayrıştırma hatası: {:?} (Gövde: {})", e, preview(body_text)))?;
+    let parsed: ChatCompletionResponse = serde_json::from_str(body_text).map_err(|e| {
+        format!(
+            "OpenRouter JSON ayrıştırma hatası: {:?} (Gövde: {})",
+            e,
+            preview(body_text)
+        )
+    })?;
 
     if let Some(err) = parsed.error {
         return Err(format!("OpenRouter hata mesajı: {}", err.message));
@@ -143,9 +156,10 @@ fn extract_reply(body_text: &str) -> Result<String, String> {
 
     if let Some(choices) = parsed.choices
         && let Some(choice) = choices.into_iter().next()
-            && let Some(content) = choice_text(&choice) {
-                return Ok(content);
-            }
+        && let Some(content) = choice_text(&choice)
+    {
+        return Ok(content);
+    }
 
     Err("OpenRouter'dan boş yanıt döndü.".to_string())
 }
@@ -193,7 +207,10 @@ pub async fn query_openrouter(
         temperature: 0.9,
     };
 
-    info!("OpenRouter isteği gönderiliyor (Model: {})...", effective_model);
+    info!(
+        "OpenRouter isteği gönderiliyor (Model: {})...",
+        effective_model
+    );
 
     let res = client
         .post(url)
@@ -216,15 +233,33 @@ pub async fn query_openrouter(
             Ok(content) => return Ok(content),
             Err(e) if effective_model == AUTO_FALLBACK_MODEL => return Err(e),
             Err(e) => {
-                tracing::warn!("Model '{}' yanıtı kullanılamadı ({}), '{}' deneniyor...", effective_model, e, AUTO_FALLBACK_MODEL);
+                tracing::warn!(
+                    "Model '{}' yanıtı kullanılamadı ({}), '{}' deneniyor...",
+                    effective_model,
+                    e,
+                    AUTO_FALLBACK_MODEL
+                );
             }
         }
     } else {
-        error!("OpenRouter API hata döndürdü (HTTP {}): {}", status, preview(&body_text));
+        error!(
+            "OpenRouter API hata döndürdü (HTTP {}): {}",
+            status,
+            preview(&body_text)
+        );
         if effective_model == AUTO_FALLBACK_MODEL {
-            return Err(format!("OpenRouter API hatası ({}): {}", status, preview(&body_text)));
+            return Err(format!(
+                "OpenRouter API hatası ({}): {}",
+                status,
+                preview(&body_text)
+            ));
         }
-        tracing::warn!("Model '{}' başarısız oldu (HTTP {}), '{}' ile yeniden deneniyor...", effective_model, status, AUTO_FALLBACK_MODEL);
+        tracing::warn!(
+            "Model '{}' başarısız oldu (HTTP {}), '{}' ile yeniden deneniyor...",
+            effective_model,
+            status,
+            AUTO_FALLBACK_MODEL
+        );
     }
 
     // İstemci tarafı ikinci savunma hattı: Doğrudan OpenRouter Free Router ile tekrar dene
@@ -262,7 +297,11 @@ pub async fn query_openrouter(
         .map_err(|e| format!("Yedek yanıt gövdesi okunamadı: {:?}", e))?;
 
     if !fb_status.is_success() {
-        return Err(format!("OpenRouter API hatası ({}): {}", fb_status, preview(&fb_body)));
+        return Err(format!(
+            "OpenRouter API hatası ({}): {}",
+            fb_status,
+            preview(&fb_body)
+        ));
     }
 
     extract_reply(&fb_body)
@@ -284,7 +323,10 @@ mod tests {
             ]
         }"#;
 
-        assert_eq!(extract_reply(json_str).unwrap(), "Aferin sana, yine başardın!");
+        assert_eq!(
+            extract_reply(json_str).unwrap(),
+            "Aferin sana, yine başardın!"
+        );
     }
 
     #[test]
@@ -320,8 +362,14 @@ mod tests {
 
     #[test]
     fn test_normalize_openrouter_model() {
-        assert_eq!(normalize_openrouter_model("openrouter:free"), "openrouter/free");
-        assert_eq!(normalize_openrouter_model("openrouter/free"), "openrouter/free");
+        assert_eq!(
+            normalize_openrouter_model("openrouter:free"),
+            "openrouter/free"
+        );
+        assert_eq!(
+            normalize_openrouter_model("openrouter/free"),
+            "openrouter/free"
+        );
         assert_eq!(normalize_openrouter_model("  "), DEFAULT_MODEL);
         assert_eq!(
             normalize_openrouter_model("google/gemma-4-31b-it:free"),

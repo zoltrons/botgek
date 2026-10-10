@@ -1,10 +1,12 @@
+mod auth;
+
 use axum::{
-    extract::{DefaultBodyLimit, Request, State},
-    http::{header, HeaderValue, StatusCode},
-    middleware::{from_fn, Next},
-    response::{Html, IntoResponse, Response},
-    routing::get,
     Json, Router,
+    extract::{DefaultBodyLimit, Request, State},
+    http::{HeaderValue, StatusCode, header},
+    middleware::{Next, from_fn, from_fn_with_state},
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,6 +17,7 @@ use crate::config::Config;
 use crate::settings::AppSettings;
 
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
+type RolesCache = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Vec<DiscordGuildRolesDto>)>>>;
 
 /// WebUI'ın kendini tanıtması için gereken bilgiler: sürüm, port ve `.env` kaynaklı
 /// yedek alan adları (WebUI'daki alan boş bırakıldığında geçerli olan değerler).
@@ -83,6 +86,10 @@ pub struct WebState {
     pub http: Arc<serenity::all::Http>,
     pub cache: Arc<serenity::all::Cache>,
     pub info: WebInfo,
+    pub auth: Arc<auth::Auth>,
+    pub save_lock: Arc<tokio::sync::Mutex<()>>,
+    pub settings_path: Arc<std::path::PathBuf>,
+    pub roles_cache: RolesCache,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -107,16 +114,38 @@ pub async fn start_web_server(
     cache: Arc<serenity::all::Cache>,
 ) {
     let port = config.web_port;
+    let secure = std::env::var("WEB_SECURE_COOKIE").is_ok_and(|v| v == "true");
+    let auth = match auth::Auth::new(std::env::var("ADMIN_TOKEN").unwrap_or_default(), secure) {
+        Ok(auth) => auth,
+        Err(reason) => {
+            error!("WebUI disabled: {reason}");
+            return;
+        }
+    };
+    let bind = match std::env::var("WEB_BIND")
+        .unwrap_or_else(|_| "127.0.0.1".into())
+        .parse::<std::net::IpAddr>()
+    {
+        Ok(bind) => bind,
+        Err(_) => {
+            error!("WebUI disabled: invalid WEB_BIND");
+            return;
+        }
+    };
     let state = WebState {
         settings,
         http,
         cache,
         info: WebInfo::from_config(config),
+        auth,
+        save_lock: Arc::new(tokio::sync::Mutex::new(())),
+        settings_path: Arc::new(crate::settings::resolve_settings_path()),
+        roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
     };
 
     let app = build_router(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from((bind, port));
     info!("WebUI başlatılıyor: http://localhost:{}", port);
 
     match tokio::net::TcpListener::bind(addr).await {
@@ -135,12 +164,20 @@ pub async fn start_web_server(
 fn build_router(state: WebState) -> Router {
     Router::new()
         .route("/", get(index_handler))
-        .route("/app.css", get(app_css_handler))
         .route("/app.js", get(app_js_handler))
         .route("/api/settings", get(get_settings).post(save_settings))
         .route("/api/info", get(get_info))
         .route("/api/discord/roles", get(get_discord_roles))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/ready", get(readiness))
+        .route("/api/metrics", get(metrics))
+        .route_layer(from_fn_with_state(state.auth.clone(), auth::require_login))
+        .route("/login", get(auth::page))
+        .route("/login.js", get(auth::script))
+        .route("/app.css", get(app_css_handler))
+        .route("/api/auth/login", post(auth::login))
         .route("/api/health", get(health_check))
+        .layer(from_fn(auth::csrf))
         .layer(from_fn(add_security_headers))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state)
@@ -149,10 +186,19 @@ fn build_router(state: WebState) -> Router {
 async fn add_security_headers(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
-    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "X-Content-Type-Options",
+        HeaderValue::from_static("nosniff"),
+    );
     headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
-    headers.insert("Referrer-Policy", HeaderValue::from_static("strict-origin-when-cross-origin"));
-    headers.insert("Permissions-Policy", HeaderValue::from_static("camera=(), microphone=(), geolocation=()"));
+    headers.insert(
+        "Referrer-Policy",
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(
+        "Permissions-Policy",
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
     // Yönetim paneli (rol ID'leri, sistem istemi) önbelleğe alınmamalı
     headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
     // Panel kendi varlıklarını (/app.css, /app.js) servis eder ve **satır içi olay
@@ -174,6 +220,28 @@ async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
+async fn readiness() -> impl IntoResponse {
+    let discord = crate::telemetry::DISCORD_READY.load(std::sync::atomic::Ordering::Relaxed);
+    let database = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        crate::store::blocking(crate::store::healthy),
+    )
+    .await
+    .unwrap_or(false);
+    (
+        if discord && database {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(serde_json::json!({"discord": discord, "persistent_database": database})),
+    )
+}
+
+async fn metrics() -> impl IntoResponse {
+    Json(crate::telemetry::snapshot())
+}
+
 async fn get_settings(State(state): State<WebState>) -> impl IntoResponse {
     let s = state.settings.read().await;
     Json((*s).clone())
@@ -185,6 +253,13 @@ async fn get_info(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
+    // One refresh at a time; concurrent panels reuse the same short-lived snapshot.
+    let mut cached = state.roles_cache.lock().await;
+    if let Some((created, roles)) = cached.as_ref()
+        && created.elapsed() < std::time::Duration::from_secs(30)
+    {
+        return Json(roles.clone());
+    }
     let mut result: Vec<DiscordGuildRolesDto> = Vec::new();
     let mut uncached_guild_ids = Vec::new();
 
@@ -192,87 +267,85 @@ async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
     {
         let guild_ids = state.cache.guilds();
         for guild_id in guild_ids {
-            match state.cache.guild(guild_id) { Some(guild) => {
-                let mut roles_list: Vec<DiscordRoleDto> = guild
-                    .roles
-                    .values()
-                    .filter(|r| r.name != "@everyone")
-                    .map(|r| {
-                        let hex = format!("#{:06x}", r.colour.0);
-                        DiscordRoleDto {
-                            id: r.id.to_string(),
-                            name: r.name.clone(),
-                            color: if r.colour.0 == 0 { "#94a3b8".to_string() } else { hex },
-                            position: r.position,
-                        }
-                    })
-                    .collect();
+            match state.cache.guild(guild_id) {
+                Some(guild) => {
+                    let mut roles_list: Vec<DiscordRoleDto> = guild
+                        .roles
+                        .values()
+                        .filter(|r| r.name != "@everyone")
+                        .map(role_dto)
+                        .collect();
 
-                roles_list.sort_by_key(|a| std::cmp::Reverse(a.position));
+                    roles_list.sort_by_key(|a| std::cmp::Reverse(a.position));
 
-                result.push(DiscordGuildRolesDto {
-                    guild_id: guild.id.to_string(),
-                    guild_name: guild.name.clone(),
-                    roles: roles_list,
-                });
-            } _ => {
-                uncached_guild_ids.push(guild_id);
-            }}
+                    result.push(DiscordGuildRolesDto {
+                        guild_id: guild.id.to_string(),
+                        guild_name: guild.name.clone(),
+                        roles: roles_list,
+                    });
+                }
+                _ => {
+                    uncached_guild_ids.push(guild_id);
+                }
+            }
         }
     }
 
-    // 2. Cache'de bulunmayan sunucular için Discord HTTP API'ye danış
-    for guild_id in uncached_guild_ids {
-        if let Ok(roles) = state.http.get_guild_roles(guild_id).await {
-            let mut roles_list: Vec<DiscordRoleDto> = roles
-                .iter()
-                .filter(|r| r.name != "@everyone")
-                .map(|r| {
-                    let hex = format!("#{:06x}", r.colour.0);
-                    DiscordRoleDto {
-                        id: r.id.to_string(),
-                        name: r.name.clone(),
-                        color: if r.colour.0 == 0 { "#94a3b8".to_string() } else { hex },
-                        position: r.position,
-                    }
+    // At most four cache misses at once; a slow guild cannot wait indefinitely.
+    for chunk in uncached_guild_ids.chunks(4) {
+        let mut jobs = tokio::task::JoinSet::new();
+        for &guild_id in chunk {
+            let http = state.http.clone();
+            jobs.spawn(async move {
+                let roles = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    http.get_guild_roles(guild_id),
+                )
+                .await
+                .ok()?
+                .ok()?;
+                let mut roles: Vec<_> = roles
+                    .iter()
+                    .filter(|r| r.name != "@everyone")
+                    .map(role_dto)
+                    .collect();
+                roles.sort_by_key(|r| std::cmp::Reverse(r.position));
+                Some(DiscordGuildRolesDto {
+                    guild_id: guild_id.to_string(),
+                    guild_name: format!("Sunucu {guild_id}"),
+                    roles,
                 })
-                .collect();
-
-            roles_list.sort_by_key(|a| std::cmp::Reverse(a.position));
-
-            result.push(DiscordGuildRolesDto {
-                guild_id: guild_id.to_string(),
-                guild_name: format!("Sunucu {}", guild_id),
-                roles: roles_list,
             });
         }
+        while let Some(result_item) = jobs.join_next().await {
+            if let Ok(Some(guild)) = result_item {
+                result.push(guild);
+            }
+        }
     }
-
+    result.sort_by(|a, b| a.guild_id.cmp(&b.guild_id));
+    *cached = Some((std::time::Instant::now(), result.clone()));
     Json(result)
+}
+
+fn role_dto(role: &serenity::all::Role) -> DiscordRoleDto {
+    DiscordRoleDto {
+        id: role.id.to_string(),
+        name: role.name.clone(),
+        color: if role.colour.0 == 0 {
+            "#94a3b8".into()
+        } else {
+            format!("#{:06x}", role.colour.0)
+        },
+        position: role.position,
+    }
 }
 
 async fn save_settings(
     State(state): State<WebState>,
     Json(mut new_settings): Json<AppSettings>,
 ) -> impl IntoResponse {
-    // Güvenlik & Doğrulama: Tüm modüllerin rol ID'lerini kontrol et
-    let sanitize_roles = |roles: &mut Vec<String>| {
-        roles.retain(|r| {
-            let trimmed = r.trim();
-            !trimmed.is_empty() && trimmed.len() <= 25 && trimmed.chars().all(|c| c.is_ascii_digit())
-        });
-        if roles.len() > 200 {
-            roles.truncate(200);
-        }
-    };
-
-    sanitize_roles(&mut new_settings.role_filters.twitter.roles);
-    sanitize_roles(&mut new_settings.role_filters.tiktok.roles);
-    sanitize_roles(&mut new_settings.role_filters.instagram.roles);
-    sanitize_roles(&mut new_settings.role_filters.reddit.roles);
-    sanitize_roles(&mut new_settings.role_filters.bluesky.roles);
-    sanitize_roles(&mut new_settings.role_filters.translation.roles);
-    sanitize_roles(&mut new_settings.role_filters.ai_chat.roles);
+    new_settings.role_filters.sanitize();
 
     fn safe_truncate_str(s: &mut String, max_bytes: usize) {
         if s.len() > max_bytes {
@@ -298,19 +371,7 @@ async fn save_settings(
 
     for guild_cfg in new_settings.guilds.values_mut() {
         if let Some(filters) = guild_cfg.role_filters.as_mut() {
-            // Not: `spotify` de temizlenir (eski kod bu modülü atlıyordu).
-            for roles in [
-                &mut filters.twitter.roles,
-                &mut filters.tiktok.roles,
-                &mut filters.instagram.roles,
-                &mut filters.reddit.roles,
-                &mut filters.bluesky.roles,
-                &mut filters.spotify.roles,
-                &mut filters.translation.roles,
-                &mut filters.ai_chat.roles,
-            ] {
-                sanitize_roles(roles);
-            }
+            filters.sanitize();
         }
 
         if let Some(ai) = guild_cfg.ai.as_mut() {
@@ -329,27 +390,35 @@ async fn save_settings(
     // Şema sürümü panelden gelmez; sunucudaki değer **korunur**. Aksi hâlde sürüm 0'a düşer
     // ve sunucu ayarları göçü her açılışta yeniden çalışarak bilerek sabitlenen bölümleri
     // sessizce mirasa döndürebilirdi.
-    let stored_schema_version = state.settings.read().await.schema_version;
-    if new_settings.schema_version < stored_schema_version {
-        new_settings.schema_version = stored_schema_version;
+    // The owned task completes disk + memory publication even if the HTTP caller disconnects.
+    let update = tokio::spawn(async move {
+        let _writer = state.save_lock.lock_owned().await;
+        new_settings.schema_version = state.settings.read().await.schema_version;
+        let persisted = new_settings.clone();
+        let settings_path = state.settings_path.clone();
+        tokio::task::spawn_blocking(move || persisted.save_to(&settings_path))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        *state.settings.write().await = new_settings.clone();
+        Ok::<_, String>(new_settings)
+    })
+    .await;
+    match update {
+        Ok(Ok(settings)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"success": true, "settings": settings})),
+        ),
+        result => {
+            error!("Settings transaction failed: {result:?}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"success": false, "error": "Ayarlar kaydedilemedi; sunucu logunu kontrol edin"}),
+                ),
+            )
+        }
     }
-
-    if let Err(e) = new_settings.save() {
-        error!("Ayarlar kaydedilirken hata: {:?}", e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "success": false, "error": e.to_string() })),
-        );
-    }
-
-    let mut s = state.settings.write().await;
-    *s = new_settings;
-    info!("Ayarlar WebUI üzerinden güncellendi.");
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({ "success": true, "message": "Ayarlar kaydedildi" })),
-    )
 }
 
 async fn index_handler() -> Html<&'static str> {
@@ -371,7 +440,10 @@ async fn app_css_handler() -> impl IntoResponse {
 /// Panelin istemci mantığı (gömülü). Panelde satır içi olay yöneticisi
 /// kullanılmadığı için CSP `script-src 'self'` ile sıkı tutulabilir.
 async fn app_js_handler() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS)
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        APP_JS,
+    )
 }
 
 #[cfg(test)]
@@ -409,9 +481,19 @@ mod tests {
         assert_eq!(info.commits_since_tag, crate::version::commits_since_tag());
         assert_eq!(info.build_date, crate::version::BUILD_DATE);
         assert_eq!(info.target, crate::version::TARGET);
-        assert!(info.full_version.starts_with('v'), "panel biçimi: {}", info.full_version);
-        assert_eq!(info.env_domains.get("tiktok").map(String::as_str), Some("tnktok.com"));
-        assert_eq!(info.env_domains.get("bluesky").map(String::as_str), Some("fxbsky.app"));
+        assert!(
+            info.full_version.starts_with('v'),
+            "panel biçimi: {}",
+            info.full_version
+        );
+        assert_eq!(
+            info.env_domains.get("tiktok").map(String::as_str),
+            Some("tnktok.com")
+        );
+        assert_eq!(
+            info.env_domains.get("bluesky").map(String::as_str),
+            Some("fxbsky.app")
+        );
         assert_eq!(
             info.env_domains.get("spotify").map(String::as_str),
             Some("open.fixspotify.com")
@@ -452,7 +534,10 @@ mod tests {
         let looked_up = capture(APP_JS, r#"\$\('([^']+)'\)"#);
         assert!(!looked_up.is_empty(), "istemci mantığı alanları bulmalı");
         let missing_ids: Vec<&String> = looked_up.difference(&page_ids).collect();
-        assert!(missing_ids.is_empty(), "panelde bulunmayan kimlikler: {missing_ids:?}");
+        assert!(
+            missing_ids.is_empty(),
+            "panelde bulunmayan kimlikler: {missing_ids:?}"
+        );
 
         // 2) İstemcinin değiştirdiği her sınıfın stili vardır (bölme sırasında stil kaybı
         //    sessizce bozuk görünüme yol açıyordu).
@@ -534,11 +619,18 @@ mod tests {
         );
 
         // 4) İstemci yalnızca sunucuda tanımlı API yollarını çağırır (bkz. `build_router`).
-        let routed: BTreeSet<String> =
-            ["/api/settings", "/api/info", "/api/discord/roles", "/api/health"]
-                .iter()
-                .map(|path| (*path).to_string())
-                .collect();
+        let routed: BTreeSet<String> = [
+            "/api/settings",
+            "/api/info",
+            "/api/discord/roles",
+            "/api/health",
+            "/api/auth/logout",
+            "/api/ready",
+            "/api/metrics",
+        ]
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect();
         let called = capture(APP_JS, r#"'(/api/[a-z/]*[a-z])'"#);
         assert!(!called.is_empty(), "panel API uçlarını çağırmalı");
         let unrouted: Vec<&String> = called.difference(&routed).collect();
@@ -556,7 +648,10 @@ mod tests {
                 "panelde bölüm bazlı sparse çözümleme izi bulunamadı: {marker}"
             );
         }
-        assert!(unrouted.is_empty(), "rotası olmayan API yolları: {unrouted:?}");
+        assert!(
+            unrouted.is_empty(),
+            "rotası olmayan API yolları: {unrouted:?}"
+        );
     }
 
     /// Panel HTML'i **dengeli** ve **beklenen şekilde iç içe** olmalıdır.
@@ -570,10 +665,7 @@ mod tests {
     fn panel_markup_is_balanced_and_nested_as_expected() {
         // Yorumlar ayıklanır: içlerindeki `<...>` dizileri etiket sanılmasın.
         let mut html = INDEX_HTML.to_string();
-        loop {
-            let (Some(start), Some(end)) = (html.find("<!--"), html.find("-->")) else {
-                break;
-            };
+        while let (Some(start), Some(end)) = (html.find("<!--"), html.find("-->")) {
             if end < start {
                 break;
             }
@@ -584,7 +676,8 @@ mod tests {
             "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
             "source", "track", "wbr",
         ];
-        let tag = regex::Regex::new(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>").expect("desen geçerli");
+        let tag =
+            regex::Regex::new(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>").expect("desen geçerli");
 
         // (etiket adı, ham açılış etiketi) yığını: ham etiket, sınıf denetimi için tutulur.
         let mut stack: Vec<(String, String)> = Vec::new();
@@ -629,7 +722,10 @@ mod tests {
                 let (opened, _) = stack
                     .pop()
                     .unwrap_or_else(|| panic!("fazladan kapanış etiketi: </{name}>"));
-                assert_eq!(opened, name, "yanlış kapanış: <{opened}> beklenirken </{name}>");
+                assert_eq!(
+                    opened, name,
+                    "yanlış kapanış: <{opened}> beklenirken </{name}>"
+                );
             } else {
                 stack.push((name, raw));
             }
@@ -679,8 +775,18 @@ mod tests {
         );
 
         for attribute in [
-            "onclick=", "onchange=", "oninput=", "onsubmit=", "onkeyup=", "onkeydown=", "onblur=",
-            "onfocus=", "onload=", "onerror=", "onmouseover=", "ondragstart=",
+            "onclick=",
+            "onchange=",
+            "oninput=",
+            "onsubmit=",
+            "onkeyup=",
+            "onkeydown=",
+            "onblur=",
+            "onfocus=",
+            "onload=",
+            "onerror=",
+            "onmouseover=",
+            "ondragstart=",
         ] {
             assert!(
                 !INDEX_HTML.contains(attribute),
@@ -700,11 +806,23 @@ mod tests {
     /// Panel, gömülü varlıkları ve API uçları gerçek HTTP isteğiyle doğrulanır.
     #[tokio::test]
     async fn web_api_serves_the_panel_and_info_payload() {
+        let settings_path = std::env::temp_dir().join(format!(
+            "botgek-web-test-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let state = WebState {
             settings: Arc::new(RwLock::new(AppSettings::default())),
             http: Arc::new(serenity::all::Http::new("test-token")),
             cache: Arc::new(serenity::all::Cache::new()),
             info: WebInfo::from_config(&config()),
+            auth: auth::Auth::new("test-administrator-token-32-characters".into(), false).unwrap(),
+            save_lock: Arc::new(tokio::sync::Mutex::new(())),
+            settings_path: Arc::new(settings_path.clone()),
+            roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -715,8 +833,59 @@ mod tests {
             let _ = axum::serve(listener, build_router(state)).await;
         });
 
-        let client = reqwest::Client::new();
         let base = format!("http://{addr}");
+        let anonymous = reqwest::Client::new();
+        assert_eq!(
+            anonymous
+                .get(format!("{base}/api/settings"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            anonymous
+                .post(format!("{base}/api/auth/login"))
+                .json(&serde_json::json!({"token":"incorrect"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            anonymous
+                .post(format!("{base}/api/auth/login"))
+                .header("x-botgek-request", "1")
+                .json(&serde_json::json!({"token":"incorrect"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let login = reqwest::Client::new()
+            .post(format!("{base}/api/auth/login"))
+            .header("x-botgek-request", "1")
+            .json(&serde_json::json!({"token": "test-administrator-token-32-characters"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::NO_CONTENT);
+        let cookie = login.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::COOKIE, cookie.parse().unwrap());
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap();
 
         // 1) Panel (HTML) servis edilir: dinamik alanlar ve gömülü varlık bağlantıları.
         let page = client
@@ -727,8 +896,14 @@ mod tests {
             .text()
             .await
             .expect("panel gövdesi");
-        assert!(page.contains("id=\"app-version\""), "sürüm alanı panelde olmalı");
-        assert!(page.contains("id=\"system-status\""), "durum alanı panelde olmalı");
+        assert!(
+            page.contains("id=\"app-version\""),
+            "sürüm alanı panelde olmalı"
+        );
+        assert!(
+            page.contains("id=\"system-status\""),
+            "durum alanı panelde olmalı"
+        );
         assert!(page.contains("/app.css"), "panel stil dosyasını istemeli");
         assert!(page.contains("/app.js"), "panel istemci mantığını istemeli");
         assert!(
@@ -737,7 +912,10 @@ mod tests {
         );
         // Panelde satır içi olay yöneticisi ve satır içi stil yoktur: yanıt sonrası
         // sertleştirilen CSP (script-src 'self') bu yüzden yeterlidir.
-        assert!(!page.contains("onclick="), "satır içi olay yöneticisi CSP ile uyumlu değil");
+        assert!(
+            !page.contains("onclick="),
+            "satır içi olay yöneticisi CSP ile uyumlu değil"
+        );
         assert!(!page.contains("style=\""), "satır içi stil kullanılmamalı");
 
         // 2) Stil dosyası: doğru içerik türü + katman sırası sözleşmesi.
@@ -762,7 +940,10 @@ mod tests {
             !css.contains("backdrop-filter:"),
             "backdrop-filter açılır menüyü sonraki panelin arkasında bırakıyordu"
         );
-        assert!(css.contains("--z-dropdown: 200"), "açılır menü katmanı tanımlı olmalı");
+        assert!(
+            css.contains("--z-dropdown: 200"),
+            "açılır menü katmanı tanımlı olmalı"
+        );
         assert!(
             css.contains("z-index: var(--z-dropdown)"),
             "açılır menü komut çubuğunun üzerinde olmalı"
@@ -807,7 +988,10 @@ mod tests {
             .json()
             .await
             .expect("ayar gövdesi");
-        assert!(settings.get("role_filter").is_none(), "eski çift alan API'de görünmemeli");
+        assert!(
+            settings.get("role_filter").is_none(),
+            "eski çift alan API'de görünmemeli"
+        );
         assert_eq!(settings["modules"]["ai_chat"], true);
 
         // 6) Güvenlik başlıkları varlıklarda da geçerli; sertleştirilmiş CSP satır içi
@@ -839,10 +1023,18 @@ mod tests {
                 "{path} içerik türü: {:?}",
                 header("content-type")
             );
-            assert_eq!(header("cache-control"), Some("no-store"), "{path} önbelleğe alınmamalı");
+            assert_eq!(
+                header("cache-control"),
+                Some("no-store"),
+                "{path} önbelleğe alınmamalı"
+            );
             assert_eq!(header("x-content-type-options"), Some("nosniff"), "{path}");
             assert_eq!(header("x-frame-options"), Some("DENY"), "{path}");
-            assert_eq!(header("referrer-policy"), Some("strict-origin-when-cross-origin"), "{path}");
+            assert_eq!(
+                header("referrer-policy"),
+                Some("strict-origin-when-cross-origin"),
+                "{path}"
+            );
 
             let csp = header("content-security-policy").expect("CSP başlığı olmalı");
             assert!(csp.contains("script-src 'self'"), "{path} CSP: {csp}");
@@ -852,7 +1044,128 @@ mod tests {
             );
         }
 
+        assert_eq!(
+            client
+                .post(format!("{base}/api/settings"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        let saved = client.post(format!("{base}/api/settings"))
+            .header("x-botgek-request", "1")
+            .json(&serde_json::json!({"schema_version":999,"role_filters":{"spotify":{"mode":"allowlist","roles":[" 42 ", "bad", "42"]}}}))
+            .send().await.unwrap();
+        assert_eq!(saved.status(), StatusCode::OK);
+        let saved: serde_json::Value = saved.json().await.unwrap();
+        assert_eq!(
+            saved["settings"]["schema_version"],
+            crate::settings::SETTINGS_SCHEMA_VERSION
+        );
+        assert_eq!(
+            saved["settings"]["role_filters"]["spotify"]["roles"],
+            serde_json::json!(["42"])
+        );
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(disk, saved["settings"]);
+        assert_eq!(
+            client
+                .get(format!("{base}/api/settings"))
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap(),
+            disk
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/api/ready"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/api/metrics"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let first = client
+            .post(format!("{base}/api/settings"))
+            .header("x-botgek-request", "1")
+            .json(&serde_json::json!({"modules":{"twitter":false}}));
+        let second = client
+            .post(format!("{base}/api/settings"))
+            .header("x-botgek-request", "1")
+            .json(&serde_json::json!({"modules":{"twitter":true}}));
+        let (first, second) = tokio::join!(first.send(), second.send());
+        assert_eq!(first.unwrap().status(), StatusCode::OK);
+        assert_eq!(second.unwrap().status(), StatusCode::OK);
+        let published: serde_json::Value = client
+            .get(format!("{base}/api/settings"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(
+            published, persisted,
+            "concurrent writes publish the same state to memory and disk"
+        );
+        std::fs::remove_file(&settings_path).unwrap();
+        std::fs::create_dir(&settings_path).unwrap();
+        let failed = client
+            .post(format!("{base}/api/settings"))
+            .header("x-botgek-request", "1")
+            .json(&serde_json::json!({"ai":{"model":"must-not-publish"}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            client
+                .get(format!("{base}/api/settings"))
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap(),
+            published
+        );
+        std::fs::remove_dir(&settings_path).unwrap();
+        assert_eq!(
+            client
+                .post(format!("{base}/api/auth/logout"))
+                .header("x-botgek-request", "1")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/api/settings"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
         server.abort();
     }
 }
-

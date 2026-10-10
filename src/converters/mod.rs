@@ -6,9 +6,9 @@ use serenity::all::{Context, CreateMessage, Message, ReactionType};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
-use crate::settings::{ConversionMode, EngineSettings, FilterMode, GuildSettings};
+use crate::settings::{ConversionMode, EngineSettings, GuildSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
-use crate::utils::{truncate_chars, DISCORD_CONTENT_LIMIT};
+use crate::utils::{DISCORD_CONTENT_LIMIT, truncate_chars};
 
 /// Ayarlardaki alan adı override'larını (WebUI) `.env` değerleriyle birleştirir.
 fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::PlatformDomains {
@@ -56,36 +56,16 @@ pub async fn handle_message(
 
     // 2. Modüle Özel Rol Tabanlı Allowlist / Blacklist Filtresi
     let role_filter = settings.get_role_filter(module_key);
-    if role_filter.mode != FilterMode::Disabled && !role_filter.roles.is_empty() {
-        let user_roles: Vec<String> = if let Some(ref member) = msg.member {
-            member.roles.iter().map(|r| r.get().to_string()).collect()
-        } else if let Some(guild_id) = msg.guild_id {
-            match guild_id.member(&ctx.http, msg.author.id).await { Ok(member) => {
-                member.roles.iter().map(|r| r.get().to_string()).collect()
-            } _ => {
-                Vec::new()
-            }}
-        } else {
-            Vec::new()
-        };
-
-        let has_matching_role = user_roles.iter().any(|r| role_filter.roles.contains(r));
-
-        match role_filter.mode {
-            FilterMode::Blacklist => {
-                if has_matching_role {
-                    info!("Kullanıcı modül kara listesinde ({}: Blacklist rolü var), dönüştürme atlandı: {}", module_key, msg.author.id);
-                    return;
-                }
-            }
-            FilterMode::Allowlist => {
-                if !has_matching_role {
-                    info!("Kullanıcı modül beyaz listesinde değil ({}: Allowlist rolü yok), dönüştürme atlandı: {}", module_key, msg.author.id);
-                    return;
-                }
-            }
-            FilterMode::Disabled => {}
-        }
+    if !crate::policy::allows(
+        ctx,
+        msg.guild_id,
+        msg.author.id,
+        msg.member.as_ref().map(|m| m.roles.as_slice()),
+        role_filter,
+    )
+    .await
+    {
+        return;
     }
 
     // 3. Motor Seçimi: native embed veya (yalnızca proxy destekleyen platformlarda) proxy
@@ -185,4 +165,3 @@ pub async fn handle_message(
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
     }
 }
-

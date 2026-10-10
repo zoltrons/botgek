@@ -19,6 +19,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use hls_transmux::crypto::key::{
@@ -41,6 +42,8 @@ use super::{REQUEST_TIMEOUT, USER_AGENT};
 /// HLS parçaları genelde birkaç yüz KB'dir; BYTERANGE kullanılmayan listelerde parça tek dosyanın
 /// tamamı olabilir — bu yüzden kart medya sınırından (`MAX_BODY_BYTES` = 2 MB) geniş tutulur.
 const MAX_PART_BYTES: usize = 16 * 1024 * 1024;
+static MERGE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 
 /// `v.redd.it/{id}/...` bağlantısından video kimliğini çıkarır (`4ilyyn689buh1` gibi).
 fn video_id_from_url(url: &str) -> Option<String> {
@@ -155,7 +158,7 @@ fn parse_master_playlist(text: &str) -> Vec<Variant> {
 /// çözünürlük denenir.
 fn variant_ladder(variants: &[Variant]) -> Vec<&Variant> {
     let mut sorted: Vec<&Variant> = variants.iter().collect();
-    sorted.sort_by(|a, b| b.bandwidth.cmp(&a.bandwidth));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.bandwidth));
     sorted.dedup_by(|a, b| a.video == b.video);
     if sorted.is_empty() {
         return sorted;
@@ -177,7 +180,18 @@ fn variant_ladder(variants: &[Variant]) -> Vec<&Variant> {
 /// Konumdan URL üretir (yerel dosya konumları desteklenmez).
 fn location_url(location: &SourceLocation) -> Result<Url, HlsError> {
     match location {
-        SourceLocation::Url(url) => Ok(url.clone()),
+        SourceLocation::Url(url)
+            if url.scheme() == "https"
+                && url.host_str() == Some("v.redd.it")
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.port_or_known_default() == Some(443) =>
+        {
+            Ok(url.clone())
+        }
+        SourceLocation::Url(_) => Err(HlsError::InvalidInput(
+            "Reddit media must stay on v.redd.it".into(),
+        )),
         SourceLocation::File(path) => Err(HlsError::InvalidInput(format!(
             "yerel dosya konumu desteklenmiyor: {}",
             path.display()
@@ -256,9 +270,9 @@ impl Source for ReqwestSource {
 
 /// fMP4 kutusu başlığını okur: (boyut, tip). Geçersiz/taşan kutuda `None`.
 fn read_box(data: &[u8], offset: usize) -> Option<(usize, [u8; 4])> {
-    let header = data.get(offset..offset + 8)?;
+    let header = data.get(offset..offset.checked_add(8)?)?;
     let size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    if size < 8 || offset + size > data.len() {
+    if size < 8 || offset.checked_add(size)? > data.len() {
         return None;
     }
     Some((size, [header[4], header[5], header[6], header[7]]))
@@ -271,27 +285,24 @@ fn read_box(data: &[u8], offset: usize) -> Option<(usize, [u8; 4])> {
 fn adjust_trun_offsets(payload: &mut [u8], delta: i32) -> Option<()> {
     let mut offset = 0;
     while offset + 8 <= payload.len() {
-        let (size, kind, flags) = {
-            let header = payload.get(offset..offset + 8)?;
-            (
-                u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize,
-                [header[4], header[5], header[6], header[7]],
-                u32::from_be_bytes([0, header[1], header[2], header[3]]),
-            )
-        };
-        if size < 8 || offset + size > payload.len() {
-            return None;
-        }
-        if &kind == b"trun" && flags & 0x0000_0001 != 0 {
-            let at = offset + 12; // sürüm+flags (4) + sample_count (4) + data_offset
-            let current = i32::from_be_bytes(payload.get(at..at + 4)?.try_into().ok()?);
-            payload
-                .get_mut(at..at + 4)?
-                .copy_from_slice(&(current - delta).to_be_bytes());
+        let (size, kind) = read_box(payload, offset)?;
+        if &kind == b"trun" {
+            let fullbox = payload.get(offset + 8..offset + size)?;
+            let flags = u32::from_be_bytes(fullbox.get(..4)?.try_into().ok()?);
+            if flags & 1 != 0 {
+                if size < 20 {
+                    return None;
+                }
+                let at = offset + 16; // box header + version/flags + sample_count
+                let current = i32::from_be_bytes(payload.get(at..at + 4)?.try_into().ok()?);
+                payload
+                    .get_mut(at..at + 4)?
+                    .copy_from_slice(&current.checked_sub(delta)?.to_be_bytes());
+            }
         }
         offset += size;
     }
-    Some(())
+    (offset == payload.len()).then_some(())
 }
 
 /// Parçadaki `sbgp`/`sgpd` (örnek grubu) kutularını çıkarır.
@@ -303,6 +314,28 @@ fn adjust_trun_offsets(payload: &mut [u8], delta: i32) -> Option<()> {
 ///
 /// Değişiklik gerekmiyorsa ya da yapı beklenmedikse `None` döner (çağıran özgün baytları kullanır).
 fn strip_sample_group_boxes(data: &[u8]) -> Option<Vec<u8>> {
+    let mut output = Vec::with_capacity(data.len());
+    let mut cursor = 0;
+    let mut changed = false;
+    while cursor < data.len() {
+        let (size, kind) = read_box(data, cursor)?;
+        let current = data.get(cursor..cursor + size)?;
+        if kind == *b"moof" {
+            if let Some(rewritten) = strip_moof(current) {
+                output.extend_from_slice(&rewritten);
+                changed = true;
+            } else {
+                output.extend_from_slice(current);
+            }
+        } else {
+            output.extend_from_slice(current);
+        }
+        cursor += size;
+    }
+    changed.then_some(output)
+}
+
+fn strip_moof(data: &[u8]) -> Option<Vec<u8>> {
     let mut cursor = 0;
     let mut moof = None;
     while let Some((size, kind)) = read_box(data, cursor) {
@@ -322,6 +355,9 @@ fn strip_sample_group_boxes(data: &[u8]) -> Option<Vec<u8>> {
     let mut pos = moof_offset + 8;
     while pos < moof_end {
         let (size, kind) = read_box(data, pos)?;
+        if pos + size > moof_end {
+            return None;
+        }
         if &kind == b"sbgp" || &kind == b"sgpd" {
             removed_at.push(pos);
             removed_total += size;
@@ -331,6 +367,9 @@ fn strip_sample_group_boxes(data: &[u8]) -> Option<Vec<u8>> {
             let mut shrink = 0usize;
             while inner < traf_end {
                 let (inner_size, inner_kind) = read_box(data, inner)?;
+                if inner + inner_size > traf_end {
+                    return None;
+                }
                 if &inner_kind == b"sbgp" || &inner_kind == b"sgpd" {
                     removed_at.push(inner);
                     shrink += inner_size;
@@ -366,9 +405,23 @@ fn strip_sample_group_boxes(data: &[u8]) -> Option<Vec<u8>> {
             .find(|(at, _)| *at == pos)
             .map(|(_, shrink)| *shrink)
             .unwrap_or(0);
-        let mut payload = data.get(pos + 8..pos + size)?.to_vec();
-        if shrink > 0 {
-            adjust_trun_offsets(&mut payload, removed_total as i32)?;
+        let mut payload = Vec::new();
+        if &kind == b"traf" {
+            let mut inner = pos + 8;
+            while inner < pos + size {
+                let (child_size, _) = read_box(data, inner)?;
+                if inner + child_size > pos + size {
+                    return None;
+                }
+                if !removed_at.contains(&inner) {
+                    payload.extend_from_slice(data.get(inner..inner + child_size)?);
+                }
+                inner += child_size;
+            }
+            // Every traf points into the same mdat, including tracks without removed boxes.
+            adjust_trun_offsets(&mut payload, i32::try_from(removed_total).ok()?)?;
+        } else {
+            payload.extend_from_slice(data.get(pos + 8..pos + size)?);
         }
         output.extend_from_slice(&((size - shrink) as u32).to_be_bytes());
         output.extend_from_slice(&kind);
@@ -455,22 +508,60 @@ impl ContinuousWait for Waiter {
 /// sessiz kart videosuna (Reddit'in video-only mp4'ü) düşer, akış bozulmaz.
 pub async fn merge(client: &reqwest::Client, video_url: &str, max_bytes: u64) -> Option<MediaFile> {
     let video_id = video_id_from_url(video_url)?;
-    let client = client.clone();
+    let _ = client;
+    // Reject overload rather than creating an unbounded queue of native threads.
+    let permit = MERGE_SLOTS.clone().try_acquire_owned().ok()?;
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 3
+                || attempt.url().host_str() != Some("v.redd.it")
+                || attempt.url().scheme() != "https"
+            {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .ok()?;
 
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let merged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
+    let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+    let _cancel_on_drop = cancel;
+    std::thread::Builder::new()
+        .name("reddit-merge".into())
+        .spawn(move || {
+            let _permit = permit;
+            let merged = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .ok()?;
-            runtime.block_on(merge_inner(&client, &video_id, max_bytes))
-        }))
-        .unwrap_or(None);
-        let _ = sender.send(merged);
-    });
+                .ok()
+                .and_then(|runtime| {
+                    runtime.block_on(cancellable_merge(
+                        cancelled,
+                        super::render::VIDEO_MERGE_BUDGET,
+                        merge_inner(&client, &video_id, max_bytes),
+                    ))
+                });
+            let _ = sender.send(merged);
+        })
+        .ok()?;
 
     receiver.await.ok().flatten()
+}
+
+async fn cancellable_merge(
+    cancelled: tokio::sync::oneshot::Receiver<()>,
+    budget: Duration,
+    work: impl Future<Output = Option<MediaFile>>,
+) -> Option<MediaFile> {
+    tokio::select! {
+        _ = cancelled => None,
+        result = tokio::time::timeout(budget, work) => result.ok().flatten(),
+    }
 }
 
 /// Birleştirmenin asıl akışı (ayrı iş parçacığında, current-thread runtime üzerinde çalışır).
@@ -589,7 +680,8 @@ async fn render_variant(
     )
     .map_err(hls_err)?;
     // Çok-izli oturumda `waiter` zorunludur (aksi halde motor `InvalidOptions` döner).
-    let options = ContinuousOptions::default().with_waiter(Arc::new(Waiter), Duration::from_secs(30));
+    let options =
+        ContinuousOptions::default().with_waiter(Arc::new(Waiter), Duration::from_secs(30));
     let session = MultiTrackSession::new(inputs, keys, options).map_err(engine_err)?;
 
     session
@@ -631,6 +723,92 @@ async fn render_variant(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn mp4_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn sample_groups_are_removed_and_all_track_offsets_are_rebased() {
+        let mut trun = 1u32.to_be_bytes().to_vec(); // data-offset-present
+        trun.extend_from_slice(&7u32.to_be_bytes()); // sample_count must remain unchanged
+        trun.extend_from_slice(&200i32.to_be_bytes());
+        let trun = mp4_box(b"trun", &trun);
+        let group = mp4_box(b"sbgp", &[0; 4]);
+        let track = mp4_box(b"traf", &[trun.clone(), group.clone()].concat());
+        let other = mp4_box(b"traf", &trun);
+        let moof = mp4_box(b"moof", &[track, other].concat());
+        let data = [moof.clone(), mp4_box(b"mdat", &[42; 8])].concat();
+        let result = strip_sample_group_boxes(&data).unwrap();
+        assert_eq!(result.len(), data.len() - group.len());
+        assert_eq!(read_box(&result, 0).unwrap().0, moof.len() - group.len());
+        assert!(!result.windows(4).any(|s| s == b"sbgp"));
+        for pos in [8, 36] {
+            assert_eq!(read_box(&result, pos).unwrap(), (28, *b"traf"));
+            assert_eq!(&result[pos + 20..pos + 24], &7u32.to_be_bytes());
+            assert_eq!(&result[pos + 24..pos + 28], &188i32.to_be_bytes());
+        }
+        assert_eq!(&result[result.len() - 8..], &[42; 8]);
+    }
+
+    #[test]
+    fn malformed_boxes_and_missing_data_offsets_are_safe() {
+        assert!(strip_sample_group_boxes(&[0; 7]).is_none());
+        assert!(read_box(&[0; 8], usize::MAX).is_none());
+        let mut no_offset = mp4_box(b"trun", &[0; 8]);
+        let before = no_offset.clone();
+        assert_eq!(adjust_trun_offsets(&mut no_offset, 12), Some(()));
+        assert_eq!(no_offset, before);
+        let mut truncated = mp4_box(b"trun", &1u32.to_be_bytes());
+        assert_eq!(adjust_trun_offsets(&mut truncated, 12), None);
+    }
+
+    #[tokio::test]
+    async fn cancelling_caller_drops_work_and_overload_does_not_start_downloads() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Dropped(dropped.clone());
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let (started, running) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(cancellable_merge(
+            cancelled,
+            Duration::from_secs(10),
+            async move {
+                let _guard = guard;
+                let _ = started.send(());
+                std::future::pending::<Option<MediaFile>>().await
+            },
+        ));
+        running.await.unwrap();
+        drop(cancel);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert!(dropped.load(Ordering::SeqCst));
+        let _full = MERGE_SLOTS.clone().acquire_many_owned(2).await.unwrap();
+        assert!(
+            merge(
+                &reqwest::Client::new(),
+                "https://v.redd.it/test/CMAF_720.mp4",
+                1024
+            )
+            .await
+            .is_none()
+        );
+    }
 
     /// Reddit'in gerçek master playlist'i (kısaltılmış): iki ses rendition'ı (`GROUP-ID` 5/6) ve
     /// bu gruplara `AUDIO=` ile bağlanan video varyantları.
@@ -739,22 +917,21 @@ CMAF_720.m3u8"#;
     ///
     /// Ağ/upstream erişilemezse (ör. kısıtlı CI) test sessizce atlanır.
     #[tokio::test]
+    #[ignore = "requires live Reddit video access; run explicitly"]
     async fn live_reddit_video_is_merged_with_audio() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap();
 
-        let Some(video_id) = live_video_id(&client).await else {
-            println!("canlı Reddit video kimliği bulunamadı; test atlandı");
-            return;
-        };
+        let video_id = live_video_id(&client)
+            .await
+            .expect("live Reddit video lookup failed");
 
         let video_url = format!("https://v.redd.it/{video_id}/CMAF_720.mp4");
-        let Some(merged) = merge(&client, &video_url, 10 * 1024 * 1024).await else {
-            println!("{video_id} birleştirilemedi; test atlandı (kart sessiz videoya düşer)");
-            return;
-        };
+        let merged = merge(&client, &video_url, 10 * 1024 * 1024)
+            .await
+            .expect("live video merge failed");
         println!(
             "{video_id}: sesli MP4 birleştirildi — {} bayt",
             merged.bytes.len()
