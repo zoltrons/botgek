@@ -242,12 +242,26 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
     Some(text(spoiler_wrap(&lines.join("\n"), hidden(card))))
 }
 
-/// Genel kart düzeni: yazar satırı, gövde metni, (varsa) topluluk notu, alıntı(lar),
+/// Genel kart düzeni: yazar satırı, (Reddit için) başlık, gövde metni,
+/// (varsa) topluluk notu, alıntı(lar),
 /// medya galerisi, metrikler ve alt bilgi. Platforma özel kartı olmayan tüm gönderiler
 /// bu yolu kullanır.
 fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     let mut children: Vec<Value> = vec![author_component(card.post, card.emojis)];
 
+    if card.post.platform == Platform::Reddit
+        && let Some(title) = card
+            .post
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    {
+        children.push(text(spoiler_wrap(
+            &format!("**{}**", escape_markdown(title)),
+            hidden(card),
+        )));
+    }
     if !card.post.text.trim().is_empty() {
         children.push(text(spoiler_wrap(card.post.text.trim(), hidden(card))));
     }
@@ -966,6 +980,67 @@ mod tests {
             texts.last().unwrap(),
             "-# <:twitter:1476642012072920355> • [Link](https://x.com/kullanici/status/1)"
         );
+    }
+
+    #[test]
+    fn reddit_title_precedes_body_and_escapes_markdown() {
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/comments/abc/",
+            Author::new("reddituser", ""),
+        );
+        post.title = Some("  Kulaklık **önerisi** [link]  ".to_string());
+        post.text = "Gövde metni".to_string();
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let lines = texts(&payload);
+        assert_eq!(lines[1], r"**Kulaklık \*\*önerisi\*\* \[link\]**");
+        assert_eq!(lines[2], "Gövde metni");
+    }
+
+    #[test]
+    fn reddit_title_respects_sensitive_and_user_spoilers() {
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/comments/abc/",
+            Author::new("reddituser", ""),
+        );
+        post.title = Some("Başlık || metin".to_string());
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        for (sensitive, spoiler) in [(true, false), (false, true)] {
+            post.sensitive = sensitive;
+            let mut card = card(&post, &options, &resolved, &emojis);
+            card.spoiler = spoiler;
+            let payload = build_payload(&card);
+            assert_eq!(texts(&payload)[1], r"||**Başlık \|\| metin**||");
+        }
+    }
+
+    #[test]
+    fn absent_reddit_titles_and_other_platforms_keep_the_existing_layout() {
+        let mut post = sample_post();
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let original = build_payload(&card(&post, &options, &resolved, &emojis));
+        post.title = Some("Başka platform başlığı".to_string());
+        assert_eq!(
+            build_payload(&card(&post, &options, &resolved, &emojis)),
+            original
+        );
+        post.platform = Platform::Reddit;
+        post.title = None;
+        let without_title = build_payload(&card(&post, &options, &resolved, &emojis));
+        for title in ["", " \n\t "] {
+            post.title = Some(title.to_string());
+            assert_eq!(
+                build_payload(&card(&post, &options, &resolved, &emojis)),
+                without_title
+            );
+        }
     }
 
     #[test]

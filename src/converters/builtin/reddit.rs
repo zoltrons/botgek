@@ -792,6 +792,49 @@ mod tests {
     }
 
     #[test]
+    fn image_post_title_reaches_the_v2_card_above_the_image() {
+        let post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+            "id": "1x1quvc",
+            "title": "Samsung S26 ve pc için alınır mı? Ldac desteği olmaması kararsız bırakıyor.",
+            "selftext": "",
+            "author": "AlexanderMirzayev",
+            "permalink": "/r/teknoloji/comments/1x1quvc/samsung_s26_ve_pc_için_alınır_mı_ldac_desteği/",
+            "url_overridden_by_dest": "https://i.redd.it/ornek.jpg"
+        }}] }}]"#,
+        );
+        assert!(post.text.is_empty());
+        let options = super::super::render::RenderOptions::from_engine(
+            &crate::settings::EngineSettings::default(),
+            "reddit",
+        );
+        let resolved = super::super::render::ResolvedMedia {
+            images: vec![post.media[0].url.clone()],
+            ..Default::default()
+        };
+        let emojis = crate::settings::EmojiSettings::default();
+        let payload = super::super::v2::build_payload(&super::super::v2::V2Card {
+            post: &post,
+            options: &options,
+            resolved: &resolved,
+            emojis: &emojis,
+            spoiler: false,
+            sender: None,
+            user_comment: None,
+            impersonation: None,
+            allowed_mentions: None,
+        });
+        let children = payload["components"][0]["components"].as_array().unwrap();
+        assert_eq!(children[1]["type"], 10);
+        assert_eq!(
+            children[1]["content"],
+            "**Samsung S26 ve pc için alınır mı? Ldac desteği olmaması kararsız bırakıyor.**"
+        );
+        assert_eq!(children[2]["type"], 12);
+        assert_eq!(children[2]["items"][0]["media"]["url"], post.media[0].url);
+    }
+
+    #[test]
     fn hosted_video_uses_fallback_url_and_preview_poster() {
         let json = r#"[{ "data": { "children": [{ "data": {
             "id": "vid1",
