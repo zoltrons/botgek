@@ -3,6 +3,8 @@ pub mod parser;
 pub mod translation;
 
 use serenity::all::{Context, CreateMessage, Message, ReactionType};
+use std::sync::OnceLock;
+use tokio::sync::mpsc::{self, Sender, TrySendError};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
@@ -10,12 +12,98 @@ use crate::settings::{ConversionMode, EngineSettings, GuildSettings};
 use crate::utils::mentions::build_selective_allowed_mentions;
 use crate::utils::{DISCORD_CONTENT_LIMIT, truncate_chars};
 
+/// Tek tüketicili dönüşüm kuyruğu, Discord olayları başına sınırsız görev birikmesini önler.
+/// Kuyruk dolduğunda yeni bağlantı sessizce bekletilmez; özgün mesaj korunarak açıkça reddedilir.
+pub const CONVERSION_QUEUE_CAPACITY: usize = 32;
+
+struct ConversionJob {
+    ctx: Context,
+    msg: Message,
+    client: reqwest::Client,
+    config: Config,
+    settings: GuildSettings,
+    parsed: parser::ParsedPost,
+}
+
+static CONVERSION_QUEUE: OnceLock<Sender<ConversionJob>> = OnceLock::new();
+
+fn conversion_sender() -> &'static Sender<ConversionJob> {
+    CONVERSION_QUEUE.get_or_init(|| {
+        let (sender, mut receiver) = mpsc::channel(CONVERSION_QUEUE_CAPACITY);
+        tokio::spawn(async move {
+            while let Some(job) = receiver.recv().await {
+                crate::telemetry::CONVERSION_QUEUE_DEPTH
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                process_message(
+                    &job.ctx,
+                    &job.msg,
+                    &job.client,
+                    &job.config,
+                    &job.settings,
+                    &job.parsed,
+                )
+                .await;
+                crate::telemetry::CONVERSION_QUEUE_COMPLETED
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        sender
+    })
+}
+
 /// Ayarlardaki alan adı override'larını (WebUI) `.env` değerleriyle birleştirir.
 fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::PlatformDomains {
     parser::PlatformDomains {
         tiktok: engine.domain_for("tiktok", config),
         bluesky: engine.domain_for("bluesky", config),
         spotify: engine.domain_for("spotify", config),
+    }
+}
+
+/// Kullanıcının mesajındaki desteklenen sosyal medya linkini kuyruğa alır.
+///
+/// Kuyruk doluysa `false` döner. Bu, ölçülebilir backpressure davranışıdır: özgün mesaj
+/// korunur ve çağıran taraf AI akışına devam edebilir. Link/module/rol kontrolleri kuyruğa
+/// girmeden önce yapılır; böylece yetkisiz işler kapasite tüketmez.
+pub async fn enqueue_message(
+    ctx: &Context,
+    msg: &Message,
+    client: &reqwest::Client,
+    config: &Config,
+    settings: &GuildSettings,
+) -> bool {
+    let Some(job) = prepare_job(ctx, msg, client, config, settings).await else {
+        return true;
+    };
+
+    crate::telemetry::CONVERSION_QUEUE_DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    match conversion_sender().try_send(job) {
+        Ok(()) => {
+            crate::telemetry::CONVERSION_QUEUE_ENQUEUED
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            true
+        }
+        Err(TrySendError::Full(_job)) => {
+            crate::telemetry::CONVERSION_QUEUE_DEPTH
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            crate::telemetry::CONVERSION_QUEUE_SATURATED
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::telemetry::OVERLOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            warn!(
+                capacity = CONVERSION_QUEUE_CAPACITY,
+                "Conversion queue capacity reached; original message preserved"
+            );
+            false
+        }
+        Err(TrySendError::Closed(_job)) => {
+            crate::telemetry::CONVERSION_QUEUE_DEPTH
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            crate::telemetry::CONVERSION_QUEUE_SATURATED
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::telemetry::OVERLOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            error!("Conversion queue worker stopped; original message preserved");
+            false
+        }
     }
 }
 
@@ -34,10 +122,31 @@ pub async fn handle_message(
     config: &Config,
     settings: &GuildSettings,
 ) {
+    let Some(job) = prepare_job(ctx, msg, client, config, settings).await else {
+        return;
+    };
+    process_message(
+        &job.ctx,
+        &job.msg,
+        &job.client,
+        &job.config,
+        &job.settings,
+        &job.parsed,
+    )
+    .await;
+}
+
+async fn prepare_job(
+    ctx: &Context,
+    msg: &Message,
+    client: &reqwest::Client,
+    config: &Config,
+    settings: &GuildSettings,
+) -> Option<ConversionJob> {
     let domains = resolve_domains(&settings.engine, config);
     let parsed = match parser::parse_message_with_domains(&msg.content, &domains) {
         Some(p) => p,
-        None => return, // Desteklenen bir bağlantı bulunamadı
+        None => return None, // Desteklenen bir bağlantı bulunamadı
     };
 
     // 1. Modül Etkinlik Kontrolü
@@ -51,7 +160,7 @@ pub async fn handle_message(
     };
 
     if !module_enabled {
-        return;
+        return None;
     }
 
     // 2. Modüle Özel Rol Tabanlı Allowlist / Blacklist Filtresi
@@ -65,15 +174,33 @@ pub async fn handle_message(
     )
     .await
     {
-        return;
+        return None;
     }
 
+    Some(ConversionJob {
+        ctx: ctx.clone(),
+        msg: msg.clone(),
+        client: client.clone(),
+        config: config.clone(),
+        settings: settings.clone(),
+        parsed,
+    })
+}
+
+async fn process_message(
+    ctx: &Context,
+    msg: &Message,
+    client: &reqwest::Client,
+    config: &Config,
+    settings: &GuildSettings,
+    parsed: &parser::ParsedPost,
+) {
     // 3. Motor Seçimi: native embed veya (yalnızca proxy destekleyen platformlarda) proxy
     //    yönlendirmesi. Twitter/X, Instagram ve Reddit **native-only**'dir: `mode_for` bu
     //    platformlarda daima `Builtin` döner ve proxy yedeği hiç kullanılmaz.
     let platform_key = builtin::platform_key(parsed.platform);
     if settings.engine.mode_for(platform_key) == ConversionMode::Builtin {
-        if builtin::handle(ctx, msg, client, &parsed, config, &settings.engine).await {
+        if builtin::handle(ctx, msg, client, parsed, config, &settings.engine).await {
             return;
         }
 
@@ -163,5 +290,30 @@ pub async fn handle_message(
         .await
     {
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn conversion_queue_rejects_after_fixed_capacity_and_keeps_fifo_order() {
+        let (sender, mut receiver) = mpsc::channel(CONVERSION_QUEUE_CAPACITY);
+
+        for value in 0..CONVERSION_QUEUE_CAPACITY {
+            sender
+                .try_send(value)
+                .expect("capacity should admit each slot");
+        }
+        assert!(matches!(
+            sender.try_send(CONVERSION_QUEUE_CAPACITY),
+            Err(TrySendError::Full(value)) if value == CONVERSION_QUEUE_CAPACITY
+        ));
+
+        for expected in 0..CONVERSION_QUEUE_CAPACITY {
+            assert_eq!(receiver.recv().await, Some(expected));
+        }
+        assert!(receiver.try_recv().is_err());
     }
 }

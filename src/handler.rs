@@ -1,6 +1,6 @@
 use serenity::all::{
-    Context, CreateAllowedMentions, CreateMessage, EditMessage, EventHandler, Message, Permissions,
-    Reaction, ReactionType, Ready, UserId, async_trait,
+    Context, CreateAllowedMentions, CreateMessage, EditMessage, EventHandler, GuildId, Message,
+    Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,6 +11,74 @@ use tracing::{error, info, warn};
 
 static AI_COOLDOWNS: LazyLock<Mutex<HashMap<UserId, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const AI_BUDGET_WINDOW: Duration = Duration::from_secs(10);
+const AI_GLOBAL_REQUESTS_PER_WINDOW: u32 = 20;
+const AI_GUILD_REQUESTS_PER_WINDOW: u32 = 5;
+
+struct RateWindow {
+    started: Instant,
+    used: u32,
+}
+
+impl RateWindow {
+    fn new(now: Instant) -> Self {
+        Self {
+            started: now,
+            used: 0,
+        }
+    }
+
+    fn available(&self, now: Instant, limit: u32) -> bool {
+        now.duration_since(self.started) >= AI_BUDGET_WINDOW || self.used < limit
+    }
+
+    fn consume(&mut self, now: Instant) {
+        if now.duration_since(self.started) >= AI_BUDGET_WINDOW {
+            self.started = now;
+            self.used = 0;
+        }
+        self.used = self.used.saturating_add(1);
+    }
+}
+
+struct AiBudgetState {
+    global: RateWindow,
+    guilds: HashMap<GuildId, RateWindow>,
+}
+
+static AI_BUDGETS: LazyLock<Mutex<AiBudgetState>> = LazyLock::new(|| {
+    let now = Instant::now();
+    Mutex::new(AiBudgetState {
+        global: RateWindow::new(now),
+        guilds: HashMap::new(),
+    })
+});
+
+async fn consume_ai_budget(guild_id: Option<GuildId>) -> bool {
+    let now = Instant::now();
+    let mut budgets = AI_BUDGETS.lock().await;
+    budgets
+        .guilds
+        .retain(|_, window| now.duration_since(window.started) < AI_BUDGET_WINDOW);
+
+    let guild_available = guild_id
+        .and_then(|id| budgets.guilds.get(&id))
+        .is_none_or(|window| window.available(now, AI_GUILD_REQUESTS_PER_WINDOW));
+    if !budgets.global.available(now, AI_GLOBAL_REQUESTS_PER_WINDOW) || !guild_available {
+        return false;
+    }
+
+    budgets.global.consume(now);
+    if let Some(id) = guild_id {
+        budgets
+            .guilds
+            .entry(id)
+            .or_insert_with(|| RateWindow::new(now))
+            .consume(now);
+    }
+    true
+}
 
 use crate::config::Config;
 use crate::converters;
@@ -82,7 +150,7 @@ impl EventHandler for Handler {
         let current_settings = self.settings.read().await.get_guild_settings(msg.guild_id);
 
         // 1. Sosyal Medya Link Dönüştürme Kontrolü
-        converters::handle_message(
+        let _conversion_accepted = converters::enqueue_message(
             &ctx,
             &msg,
             &self.http_client,
@@ -165,6 +233,14 @@ impl EventHandler for Handler {
                     .to_string();
 
                 if !clean_query.is_empty() {
+                    if !consume_ai_budget(msg.guild_id).await {
+                        warn!(
+                            guild_id = ?msg.guild_id,
+                            "AI guild/global bütçesi dolu, istek atlandı"
+                        );
+                        return;
+                    }
+
                     // Discord "Yazıyor..." göstergesi
                     let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 

@@ -6,18 +6,18 @@
 // Sözleşme (semver):
 //   * `Cargo.toml` sürümü **taban** sürümdür; release script'i onu güncelleyip `vX.Y.Z`
 //     etiketi atar.
-//   * Etiketin tam üstünde ve çalışma ağacı temizse → sürüm yalın `0.2.0` olur (`is_release`).
-//   * Etiketten sonraki commit'lerde → build metadata eklenir: `0.2.0+5.g8fc2692`
+//   * Etiketin tam üstünde ve çalışma ağacı temizse → sürüm yalın `X.Y.Z` olur (`is_release`).
+//   * Etiketten sonraki commit'lerde → build metadata eklenir: `X.Y.Z+5.g8fc2692`
 //     (5 commit, kısa sha). Kirli ağaçta `.dirty` eklenir.
-//   * Hiç etiket yoksa → `0.2.0+dev.g8fc2692` (geliştirme sürümü).
-//   * Git/etiket bilgisi hiç yoksa → `0.2.0+local`.
+//   * Hiç etiket yoksa → `X.Y.Z+dev.g8fc2692` (geliştirme sürümü).
+//   * Git/etiket bilgisi hiç yoksa → `X.Y.Z+local`.
 
 /// Derlemeye gömülen (ve çalışma zamanında yeniden çözülen) ham sürüm girdileri.
 #[derive(Debug, Clone, Default)]
 pub struct RawVersionInputs<'a> {
     /// `Cargo.toml` sürümü — sürümün tabanı.
     pub pkg_version: &'a str,
-    /// Açık sürüm override'ı (`BOTGEK_BUILD_VERSION`; CI tag derlemesinde `v0.2.0`).
+    /// Açık sürüm override'ı (`BOTGEK_BUILD_VERSION`; CI tag derlemesinde `vX.Y.Z`).
     pub override_version: Option<&'a str>,
     /// `git describe --tags --long --dirty --always --match "v[0-9]*"` çıktısı.
     pub describe: Option<&'a str>,
@@ -28,11 +28,11 @@ pub struct RawVersionInputs<'a> {
 /// Ham girdilerden türetilen sürüm bilgisi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedVersion {
-    /// Semver taban (ör. `0.2.0`) — API ve bildirimlerde bu kullanılır.
+    /// Semver taban (ör. `X.Y.Z`) — API ve bildirimlerde bu kullanılır.
     pub semver: String,
-    /// Tam gösterim (ör. `0.2.0+5.g8fc2692.dirty`).
+    /// Tam gösterim (ör. `X.Y.Z+5.g8fc2692.dirty`).
     pub display: String,
-    /// `v` önekli tam gösterim (ör. `v0.2.0+5.g8fc2692`).
+    /// `v` önekli tam gösterim (ör. `vX.Y.Z+5.g8fc2692`).
     pub full: String,
     /// Tam etiket isabeti + temiz ağaç → yayın sürümü.
     pub is_release: bool,
@@ -40,7 +40,7 @@ pub struct DerivedVersion {
     pub is_dirty: bool,
     /// Etiketten bu yana commit sayısı (etiket yoksa `None`).
     pub commits_since_tag: Option<u32>,
-    /// En yakın etiket (ör. `v0.2.0`), yoksa `None`.
+    /// En yakın etiket (ör. `vX.Y.Z`), yoksa `None`.
     pub tag: Option<String>,
     /// Kısaltılmış commit kimliği, yoksa `None`.
     pub git_sha: Option<String>,
@@ -57,7 +57,7 @@ struct DescribeParts {
 
 /// `git describe --tags --long --dirty --always --match "v[0-9]*"` çıktısını çözümler.
 ///
-/// Kabul edilen biçimler: `v0.2.0-5-g8fc2692`, `v0.2.0-0-g8fc2692-dirty`, `8fc2692`
+/// Kabul edilen biçimler: `vX.Y.Z-5-g8fc2692`, `vX.Y.Z-0-g8fc2692-dirty`, `8fc2692`
 /// (etiket yok) ve `8fc2692-dirty`. Başka her şey `Default` (boş) döner.
 fn parse_describe(raw: &str) -> DescribeParts {
     let raw = raw.trim();
@@ -71,7 +71,7 @@ fn parse_describe(raw: &str) -> DescribeParts {
         let (left, sha_part) = rest.split_at(index);
         let sha = &sha_part[2..];
         if !left.is_empty() && is_hex(sha) {
-            // "v0.2.0-5" → (tag "v0.2.0", commits 5)
+            // "vX.Y.Z-5" → (tag "vX.Y.Z", commits 5)
             if let Some(dash) = left.rfind('-') {
                 let (tag, count) = left.split_at(dash);
                 if let Ok(commits) = count[1..].parse::<u32>() {
@@ -218,7 +218,7 @@ pub fn derive_version(inputs: &RawVersionInputs<'_>) -> DerivedVersion {
         !parts.dirty && override_version.as_deref() == Some(pkg.as_str())
     };
 
-    // Build metadata: yayın sürümünde **boş** (yalın `0.2.0`), aksi hâlde
+    // Build metadata: yayın sürümünde **boş** (yalın `X.Y.Z`), aksi hâlde
     // `<commit sayısı | dev | local>[.g<sha>][.dirty]`.
     let mut metadata: Vec<String> = Vec::new();
     if !is_release {

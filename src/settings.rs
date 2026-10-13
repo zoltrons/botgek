@@ -915,6 +915,55 @@ fn backup_settings_file(path: &Path) -> Result<PathBuf, std::io::Error> {
     Ok(backup)
 }
 
+#[cfg(not(windows))]
+fn replace_settings_file(temp: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    // POSIX rename replaces an existing destination atomically.
+    fs::rename(temp, destination)
+}
+
+#[cfg(windows)]
+fn replace_settings_file(temp: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+    fn wide(path: &Path) -> Result<Vec<u16>, std::io::Error> {
+        let mut value: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if value.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "settings path contains an embedded NUL",
+            ));
+        }
+        value.push(0);
+        Ok(value)
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing_name: *const u16, new_name: *const u16, flags: u32) -> i32;
+    }
+
+    let temp = wide(temp)?;
+    let destination = wide(destination)?;
+    // Unlike std::fs::rename, MoveFileExW explicitly replaces an existing
+    // destination. WRITE_THROUGH asks Windows to flush the metadata before it
+    // reports success, preserving the same durability intent as the Unix path.
+    let replaced = unsafe {
+        MoveFileExW(
+            temp.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 impl AppSettings {
     pub fn load() -> Result<Self, String> {
         let path = resolve_settings_path();
@@ -1039,7 +1088,7 @@ impl AppSettings {
             file.write_all(json.as_bytes())?;
             file.sync_all()?;
             drop(file);
-            fs::rename(&temp, path)?;
+            replace_settings_file(&temp, path)?;
             #[cfg(unix)]
             {
                 // Replacement already committed. Publish the same state to memory even

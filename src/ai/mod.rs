@@ -1,9 +1,26 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing::{error, info};
 
 use crate::utils::truncate_chars;
 
 pub const DEFAULT_MODEL: &str = "google/gemma-4-31b-it:free";
+
+/// Hard limits for an individual provider call. These are deliberately kept
+/// here, next to the request construction, so callers cannot accidentally
+/// bypass them by using a different prompt path.
+pub const MAX_PROMPT_CHARS: usize = 8_000;
+pub const MAX_RESPONSE_BYTES: usize = 1_048_576;
+pub const MAX_REPLY_CHARS: usize = 8_000;
+const MAX_MODEL_CHARS: usize = 256;
+const MAX_IN_FLIGHT_REQUESTS: usize = 2;
+
+/// Do not queue an unbounded number of provider calls. The handler already has
+/// a per-user cooldown; this guard protects the whole process from a burst of
+/// users or from a slow provider holding tasks indefinitely.
+static AI_IN_FLIGHT: std::sync::LazyLock<Arc<Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)));
 
 /// Gövdeyi log/ hata metni için sınırlı tutar: ham yanıt logları şişirebilir ve
 /// istem içeriğini geri yansıtabilir.
@@ -18,6 +35,49 @@ fn preview(body: &str) -> String {
             body.chars().count()
         )
     }
+}
+
+fn bounded_prompt(prompt: &str, label: &str) -> String {
+    let trimmed = prompt.trim();
+    if trimmed.chars().count() <= MAX_PROMPT_CHARS {
+        trimmed.to_string()
+    } else {
+        tracing::warn!(
+            "AI {label} istemi {} karakterden {} karaktere kırpıldı",
+            trimmed.chars().count(),
+            MAX_PROMPT_CHARS
+        );
+        truncate_chars(trimmed, MAX_PROMPT_CHARS)
+    }
+}
+
+async fn read_bounded_body(mut response: reqwest::Response) -> Result<String, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(format!(
+            "OpenRouter yanıtı boyut sınırını aşıyor (en fazla {} bayt)",
+            MAX_RESPONSE_BYTES
+        ));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("Yanıt gövdesi okunamadı: {:?}", e))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(format!(
+                "OpenRouter yanıtı boyut sınırını aşıyor (en fazla {} bayt)",
+                MAX_RESPONSE_BYTES
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    String::from_utf8(body).map_err(|_| "Yanıt gövdesi UTF-8 değil".to_string())
 }
 
 #[derive(Serialize)]
@@ -158,7 +218,7 @@ fn extract_reply(body_text: &str) -> Result<String, String> {
         && let Some(choice) = choices.into_iter().next()
         && let Some(content) = choice_text(&choice)
     {
-        return Ok(content);
+        return Ok(truncate_chars(&content, MAX_REPLY_CHARS));
     }
 
     Err("OpenRouter'dan boş yanıt döndü.".to_string())
@@ -174,8 +234,19 @@ pub async fn query_openrouter(
     system_prompt: &str,
     user_prompt: &str,
 ) -> Result<String, String> {
+    let _permit = AI_IN_FLIGHT
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "AI istek sınırı dolu; lütfen biraz sonra tekrar deneyin.".to_string())?;
+
     let url = "https://openrouter.ai/api/v1/chat/completions";
     let effective_model = normalize_openrouter_model(model);
+    if effective_model.chars().count() > MAX_MODEL_CHARS {
+        return Err(format!(
+            "OpenRouter model adı çok uzun (en fazla {} karakter)",
+            MAX_MODEL_CHARS
+        ));
+    }
 
     // OpenRouter otomatik geçiş (failover) zinciri:
     // Eğer seçilen model rate-limit veya 504 alırsa, OpenRouter sonraki modeli anında dener.
@@ -188,7 +259,12 @@ pub async fn query_openrouter(
     }
 
     let safety_guardrail = "\n\n[KRİTİK GÜVENLİK TALİMATI]: Yanıtlarında ASLA '@everyone' veya '@here' etiketlerini KULLANMA. Kullanıcıları veya rolleri etiketleme. Bu kural kesindir ve çiğnenemez.";
-    let full_system_prompt = format!("{}{}", system_prompt.trim(), safety_guardrail);
+    let full_system_prompt = format!(
+        "{}{}",
+        bounded_prompt(system_prompt, "system"),
+        safety_guardrail
+    );
+    let bounded_user_prompt = bounded_prompt(user_prompt, "kullanıcı");
 
     let payload = ChatCompletionRequest {
         model: &effective_model,
@@ -200,7 +276,7 @@ pub async fn query_openrouter(
             },
             ChatMessage {
                 role: "user",
-                content: user_prompt,
+                content: &bounded_user_prompt,
             },
         ],
         max_tokens: 500,
@@ -223,10 +299,7 @@ pub async fn query_openrouter(
         .map_err(|e| format!("OpenRouter HTTP bağlantı hatası: {:?}", e))?;
 
     let status = res.status();
-    let body_text = res
-        .text()
-        .await
-        .map_err(|e| format!("Yanıt gövdesi okunamadı: {:?}", e))?;
+    let body_text = read_bounded_body(res).await?;
 
     if status.is_success() {
         match extract_reply(&body_text) {
@@ -273,7 +346,7 @@ pub async fn query_openrouter(
             },
             ChatMessage {
                 role: "user",
-                content: user_prompt,
+                content: &bounded_user_prompt,
             },
         ],
         max_tokens: 500,
@@ -291,10 +364,7 @@ pub async fn query_openrouter(
         .map_err(|e| format!("OpenRouter yedek HTTP bağlantı hatası: {:?}", e))?;
 
     let fb_status = fb_res.status();
-    let fb_body = fb_res
-        .text()
-        .await
-        .map_err(|e| format!("Yedek yanıt gövdesi okunamadı: {:?}", e))?;
+    let fb_body = read_bounded_body(fb_res).await?;
 
     if !fb_status.is_success() {
         return Err(format!(
@@ -358,6 +428,24 @@ mod tests {
         }"#;
 
         assert_eq!(extract_reply(json_str).unwrap(), "Parça 1 parça 2");
+    }
+
+    #[test]
+    fn oversized_provider_reply_is_bounded_before_returning() {
+        let content = "x".repeat(MAX_REPLY_CHARS + 500);
+        let json = serde_json::json!({
+            "choices": [{"message": {"content": content}}]
+        })
+        .to_string();
+
+        let reply = extract_reply(&json).unwrap();
+        assert_eq!(reply.chars().count(), MAX_REPLY_CHARS);
+    }
+
+    #[test]
+    fn oversized_prompt_is_bounded() {
+        let prompt = bounded_prompt(&"x".repeat(MAX_PROMPT_CHARS + 1), "test");
+        assert_eq!(prompt.chars().count(), MAX_PROMPT_CHARS);
     }
 
     #[test]

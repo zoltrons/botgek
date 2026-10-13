@@ -667,8 +667,9 @@ pub async fn is_native_message(message_id: MessageId) -> bool {
 /// Kayıttan bağımsız **yapısal kart imzası** (test edilebilir çekirdek).
 ///
 /// Kartlar **yalnızca** Components V2 olarak gönderilir: `content` alanı boştur ve bileşenler
-/// bu crate'te tip olarak yoktur; bu yüzden kart, **gönderen kimliği** (bot ya da bir webhook)
-/// ile birlikte "içeriksiz + embedsiz mesaj" olarak tanınır.
+/// bu crate'te tip olarak yoktur. Bu düşük seviyeli yardımcı, çağıranın ayrıca Components V2
+/// bayrağını doğrulamasına uygun olarak yalnızca Botgek kimliğiyle birleşen yapısal alanları
+/// kontrol eder; webhook kimliği tek başına güvenilir bir marker değildir.
 pub fn has_card_signature(
     author_id: UserId,
     from_webhook: bool,
@@ -676,8 +677,10 @@ pub fn has_card_signature(
     embeds: &[Embed],
     bot_id: UserId,
 ) -> bool {
-    let from_bot_or_webhook = author_id == bot_id || from_webhook;
-    from_bot_or_webhook && content.trim().is_empty() && embeds.is_empty()
+    // A webhook can be created by any integration, so an empty webhook message is not
+    // evidence that Botgek sent a card. Webhook cards are recognized only through their
+    // persistent message-id registry in `is_card_message` below.
+    !from_webhook && author_id == bot_id && content.trim().is_empty() && embeds.is_empty()
 }
 
 /// Bu mesaj Botgek'in dönüştürme kartı mı?
@@ -697,20 +700,20 @@ pub async fn is_card_message(msg: &Message, bot_id: UserId) -> bool {
         return true;
     }
 
+    // The Components V2 flag plus this bot's author identity is a reliable structural
+    // marker. A webhook's identity is not reliable here (the message only exposes that it
+    // came from *some* webhook), so unregistered webhook messages must stay unclassified.
     if let Some(flags) = msg.flags
-        && (flags.bits() & (1 << 15) != 0)
-        && (msg.author.id == bot_id || msg.webhook_id.is_some())
+        && (flags.bits() & v2::COMPONENTS_V2_FLAG != 0)
+        && msg.author.id == bot_id
+        && has_card_signature(msg.author.id, false, &msg.content, &msg.embeds, bot_id)
     {
         return true;
     }
 
-    has_card_signature(
-        msg.author.id,
-        msg.webhook_id.is_some(),
-        &msg.content,
-        &msg.embeds,
-        bot_id,
-    )
+    // No Components V2 flag and no persistent card record means there is no reliable card
+    // marker. In particular, do not classify arbitrary empty bot/webhook messages.
+    false
 }
 
 // -------------------------------------------------------------------------------------
@@ -1254,14 +1257,18 @@ mod message_tests {
         let bot_id = UserId::new(1);
         let user_id = UserId::new(2);
 
-        // Modern kart (Components V2): içerik ve embed yok → gönderen kimliğiyle tanınır.
+        // Modern kart (Components V2): bot kimliğiyle ve içerik/embed yokluğuyla tanınır.
         assert!(
             has_card_signature(bot_id, false, "", &[], bot_id),
             "botun gönderdiği içeriksiz modern kart tanınmalı"
         );
         assert!(
-            has_card_signature(user_id, true, "", &[], bot_id),
-            "taklit webhook'unun gönderdiği modern kart tanınmalı"
+            !has_card_signature(user_id, true, "", &[], bot_id),
+            "rastgele webhook'un içeriksiz mesajı kart sayılmamalı"
+        );
+        assert!(
+            !has_card_signature(bot_id, true, "", &[], bot_id),
+            "webhook işaretli mesaj bot kimliğiyle de kart sayılmamalı"
         );
 
         // Kart olmayanlar: bunlara verilen yanıtlar AI'yı tetikleyebilmeli.
@@ -1282,10 +1289,10 @@ mod message_tests {
         let user_id = UserId::new(2);
         let webhook_id = WebhookId::new(77);
 
-        // Modern kart (içerik/embed yok): kart kaydı hiç olmasa bile yapısal imza ile
-        // tanınmalı (AI tetiklenmemesi bu sayede garanti).
+        // Components V2 bayrağı olan bot kartı, kart kaydı hiç olmasa bile tanınmalı
+        // (AI tetiklenmemesi bu sayede garanti).
         let card_id = MessageId::new(9_001);
-        let card = message_fixture(card_id, bot_id, "", vec![], None);
+        let card = components_v2_message_fixture(card_id, bot_id, "", vec![], None);
         assert!(
             !is_native_message(card_id).await,
             "bu kimlik için kayıt yok"
@@ -1295,10 +1302,25 @@ mod message_tests {
             "içeriksiz modern kart tanınmalı"
         );
 
-        // Taklit webhook'unun modern kartı: yazar bot değil, webhook kimliği kart sayılır.
-        let impersonated =
-            message_fixture(MessageId::new(9_002), user_id, "", vec![], Some(webhook_id));
-        assert!(is_card_message(&impersonated, bot_id).await);
+        // İçeriksiz bot mesajı Components V2 bayrağı taşımıyorsa kart değildir.
+        let empty_bot = message_fixture(MessageId::new(9_007), bot_id, "", vec![], None);
+        assert!(!is_card_message(&empty_bot, bot_id).await);
+
+        // Kayıtsız bir webhook'un içeriksiz Components V2 mesajı kart sayılamaz; başka
+        // entegrasyonların boş mesajları AI yanıtlarını susturmamalıdır.
+        let impersonated = components_v2_message_fixture(
+            MessageId::new(9_002),
+            user_id,
+            "",
+            vec![],
+            Some(webhook_id),
+        );
+        assert!(!is_card_message(&impersonated, bot_id).await);
+
+        // Bayraksız boş webhook mesajı da kart değildir.
+        let empty_webhook =
+            message_fixture(MessageId::new(9_003), user_id, "", vec![], Some(webhook_id));
+        assert!(!is_card_message(&empty_webhook, bot_id).await);
 
         // Kalıcı kayıt da tanımayı sağlar (kart kaydı kalıcıdır, yeniden başlatmada kaybolmaz).
         let recorded_id = MessageId::new(9_004);
@@ -1415,6 +1437,20 @@ mod message_tests {
             "type": 0
         }))
         .expect("mesaj çözümlenmeli")
+    }
+
+    /// Components V2 bayrağı taşıyan test mesajı.
+    fn components_v2_message_fixture(
+        id: MessageId,
+        author_id: UserId,
+        content: &str,
+        embeds: Vec<Embed>,
+        webhook_id: Option<WebhookId>,
+    ) -> Message {
+        let mut message = message_fixture(id, author_id, content, embeds, webhook_id);
+        message.flags =
+            Some(serde_json::from_value(serde_json::json!(v2::COMPONENTS_V2_FLAG)).unwrap());
+        message
     }
 
     #[test]

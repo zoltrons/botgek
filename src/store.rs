@@ -35,6 +35,15 @@ const MAX_RECORDS: i64 = 200_000;
 /// Budama kontrolü her bu kadar kayıtta bir yapılır (her yazmada sorgu çalıştırmamak için).
 const PRUNE_EVERY: u64 = 512;
 
+/// Controls whether opening a database may fall back to an in-memory store.
+/// Production startup uses [`PersistencePolicy::RequirePersistent`]; allowing
+/// the fallback remains useful for isolated tests and explicit local tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistencePolicy {
+    RequirePersistent,
+    AllowEphemeral,
+}
+
 /// Tek paylaşılan veritabanı bağlantısı.
 static DB: LazyLock<Db> = LazyLock::new(|| Db::open(&default_path()));
 /// Son budamadan bu yana yapılan yazma sayısı.
@@ -80,25 +89,38 @@ pub struct Db {
 
 impl Db {
     /// Veritabanını açar, şemayı kurar ve performans pragmalarını uygular.
-    /// Dosya açılamazsa (izin/yol hatası) bot çalışmaya devam etsin diye bellek içi
-    /// veritabanına düşülür ve uyarı log'lanır.
+    /// Backwards-compatible convenience API: callers that need a startup
+    /// guarantee must use [`Self::open_with_policy`] with
+    /// [`PersistencePolicy::RequirePersistent`].
     pub fn open(path: &str) -> Self {
-        let (connection, path) = match Self::connect(path) {
-            Ok(connection) => (connection, path.to_string()),
-            Err(err) => {
+        Self::open_with_policy(path, PersistencePolicy::AllowEphemeral)
+            .expect("ephemeral SQLite fallback must be available")
+    }
+
+    /// Opens SQLite according to an explicit persistence policy.
+    pub fn open_with_policy(path: &str, policy: PersistencePolicy) -> Result<Self, String> {
+        match Self::connect(path) {
+            Ok(connection) => Ok(Self {
+                connection: Mutex::new(connection),
+                path: path.to_string(),
+            }),
+            Err(err) if policy == PersistencePolicy::AllowEphemeral => {
                 warn!(
                     "Kayıt veritabanı açılamadı ({}): {} — bellekte çalışılacak",
                     path, err
                 );
-                let connection =
-                    Self::connect(":memory:").expect("bellek içi veritabanı her zaman açılmalı");
-                (connection, ":memory:".to_string())
+                let connection = Self::connect(":memory:").map_err(|memory_err| {
+                    format!("SQLite bellek içi açılış hatası: {memory_err}")
+                })?;
+                Ok(Self {
+                    connection: Mutex::new(connection),
+                    path: ":memory:".to_string(),
+                })
             }
-        };
-
-        Self {
-            connection: Mutex::new(connection),
-            path,
+            Err(err) => Err(format!(
+                "kalıcı SQLite veritabanı açılamadı ({}): {}",
+                path, err
+            )),
         }
     }
 
@@ -261,13 +283,21 @@ pub fn is_card(message_id: MessageId) -> bool {
 }
 
 /// Kayıt veritabanını hazırlar (şema + budama) ve özet bilgiyi log'lar.
-pub fn init() {
+/// Üretim derlemesinde bellek içi fallback tespit edilirse hata döner; çağıran
+/// startup'ı durdurmalıdır.
+pub fn init() -> Result<(), String> {
+    if DB.path() == ":memory:" && !cfg!(test) {
+        return Err(
+            "kalıcı SQLite açılamadı; ephemeral bellek deposuyla başlatma reddedildi".to_string(),
+        );
+    }
     info!(
         "Kayıt veritabanı hazır: {} ({} kart kaydı)",
         DB.path(),
         DB.count()
     );
     prune_db(&DB);
+    Ok(())
 }
 
 /// En eski kayıtları budar (kayıt sayısı sınırı aşılmadıysa hiçbir şey silinmez).
@@ -389,8 +419,26 @@ mod tests {
     }
 
     #[test]
-    fn unknown_paths_fall_back_to_memory_instead_of_failing() {
-        let db = Db::open("/olmayan-dizin/veritabani.db");
+    fn explicit_persistence_policy_rejects_unknown_paths() {
+        let path = std::env::temp_dir()
+            .join(format!("botgek-store-missing-{}", std::process::id()))
+            .join("database.db");
+        assert!(
+            Db::open_with_policy(
+                &path.display().to_string(),
+                PersistencePolicy::RequirePersistent
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_ephemeral_policy_remains_available_for_tests() {
+        let db = Db::open_with_policy(
+            "/olmayan-dizin/veritabani.db",
+            PersistencePolicy::AllowEphemeral,
+        )
+        .expect("test fallback");
         assert_eq!(db.path(), ":memory:");
         db.remember(MessageId::new(5), ChannelId::new(1), UserId::new(2));
         assert!(

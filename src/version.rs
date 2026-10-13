@@ -6,13 +6,13 @@
 //! ile çalışma zamanında raporlanan değer ayrışamaz (test bunu doğrular).
 //!
 //! Sözleşme:
-//! - `SEMVER` → `0.2.0` (API/bildirimler; `Cargo.toml` ile senkron, etiket varsa etiketten).
-//! - `DISPLAY` → `0.2.0+5.g8fc2692` (etiketten sonraki 5 commit) veya yayında yalın `0.2.0`.
-//! - `FULL` → `v0.2.0+5.g8fc2692` (panelde gösterilen biçim).
+//! - `SEMVER` → `Cargo.toml` sürümü (API/bildirimler; etiket varsa etiketten).
+//! - `DISPLAY` → `X.Y.Z+5.g8fc2692` (etiketten sonraki 5 commit) veya yayında yalın `X.Y.Z`.
+//! - `FULL` → `vX.Y.Z+5.g8fc2692` (panelde gösterilen biçim).
 //! - `IS_RELEASE` → tam etiket isabeti + temiz ağaç.
 //!
 //! Git bilgisi bulunamazsa (Docker/tarball bağlamı) `Cargo.toml` sürümüne düşülür ve
-//! geliştirme işareti eklenir (`0.2.0+local`); derleme asla bu yüzden başarısız olmaz.
+//! geliştirme işareti eklenir (`X.Y.Z+local`); derleme asla bu yüzden başarısız olmaz.
 
 use std::sync::LazyLock;
 

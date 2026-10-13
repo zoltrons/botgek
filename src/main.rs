@@ -139,7 +139,10 @@ async fn main() {
 
     // Kalıcı kayıt deposu (SQLite): kart kayıtları, 🗑️ silme izni ve AI koruması.
     // Bot yeniden başladığında/güncellendiğinde hiçbir kayıt kaybolmaz.
-    store::init();
+    if let Err(reason) = store::init() {
+        error!("Kalıcı kayıt deposu hazır değil: {reason}");
+        std::process::exit(1);
+    }
 
     // HTTP/2 + bağlantı havuzu: paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması
     // tekrarlanmaz → dönüşüm gecikmesi düşer.

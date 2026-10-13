@@ -110,7 +110,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
 }
 
 /// Hedefi `original_url`'den okur; `spotify.link` kısa linki ise hedefe çözer.
-async fn resolve_target(client: &reqwest::Client, original_url: &str) -> Result<Target, String> {
+async fn resolve_target(_client: &reqwest::Client, original_url: &str) -> Result<Target, String> {
     if let Some(target) = target_from_url(original_url) {
         return Ok(target);
     }
@@ -127,20 +127,18 @@ async fn resolve_target(client: &reqwest::Client, original_url: &str) -> Result<
     }
 
     let url = format!("{SPOTIFY_LINK}/{}", super::encode_component(token));
-    let response = client
-        .get(&url)
-        .header("user-agent", BROWSER_USER_AGENT)
-        .timeout(TIMEOUT)
-        .send()
+    // Kısa linkler güvenilmeyen bir redirect/HTML sınırıdır. Ortak güvenli HTTP yolu;
+    // durum kodunu doğrular, yönlendirmeleri elle ve sınırlı sayıda takip eder, her hedefi
+    // public HTTP endpoint olarak doğrular ve gövdeyi akış sırasında sınırlar.
+    let (resolved_url, body) = super::safe_http::preview(&url)
         .await
         .map_err(|e| format!("Spotify kısa link çözümlenemedi ({url}): {e}"))?;
 
     // 1) Yönlendirme sonrası adres zaten open.spotify.com olabilir.
-    if let Some(target) = target_from_url(response.url().as_str()) {
+    if let Some(target) = target_from_url(&resolved_url) {
         return Ok(target);
     }
     // 2) Aksi halde gövdedeki kanonik adres (og:url) okunur.
-    let body = response.text().await.unwrap_or_default();
     if let Some(og) = OG_URL_REGEX.captures(&body).and_then(|caps| caps.get(1))
         && let Some(target) = target_from_url(og.as_str())
     {
@@ -473,6 +471,15 @@ mod tests {
                 format!("https://open.spotify.com/{kind}/{id}")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn short_link_with_invalid_token_is_rejected_without_request() {
+        let client = reqwest::Client::new();
+        let error = resolve_target(&client, "https://spotify.link/not-a-valid-token!")
+            .await
+            .expect_err("geçersiz kısa link ağ isteği yapmamalı");
+        assert!(error.contains("link biçimi tanınamadı"));
     }
 
     #[test]
