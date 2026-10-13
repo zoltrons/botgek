@@ -63,7 +63,7 @@ static OWN_HOSTS: [&str; 5] = [
 ///
 /// Diğer durumlarda X'in syidication ucu ile FxTwitter **paralel** istenir (toplam gecikme
 /// tek istek kadardır): X verisi esas alınır, eksik metrikler (repost, görüntülenme, alıntı)
-/// FxTwitter yanıtından tamamlanır.
+/// ve etkinse topluluk notu FxTwitter yanıtından tamamlanır.
 pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
@@ -223,6 +223,7 @@ async fn fetch_post_internal(
             translate,
             &engine.translation_target,
             video_budget,
+            engine.show_community_note,
         )
         .await;
     }
@@ -241,7 +242,9 @@ async fn fetch_post_internal(
     );
 
     // Syndication repost/görüntülenme/alıntı vermez: paralel istenen yanıttan tamamlanır.
-    let fx_stats = fx_result.as_ref().ok().map(|post| post.stats);
+    let fx_post = fx_result.as_ref().ok();
+    let fx_stats = fx_post.map(|post| post.stats);
+    let fx_community_note = fx_post.and_then(|post| post.community_note.clone());
     let mut post = match x_result {
         Ok(post) => post,
         Err(err) => {
@@ -252,6 +255,9 @@ async fn fetch_post_internal(
     if let Some(stats) = fx_stats {
         merge_stats(&mut post.stats, &stats);
     }
+    // Keep the fetched post complete even when rendering is configured to hide notes. This is
+    // important for cached posts: visibility belongs to RenderOptions, not the fetch result.
+    merge_community_note(&mut post.community_note, fx_community_note.as_deref());
 
     Ok(post)
 }
@@ -307,8 +313,9 @@ fn extract_tweet_id(url: &str) -> Option<String> {
 ///
 /// FxTwitter [`HEDGE_DELAY`] içinde yanıt vermezse X syndication ucu paralel başlatılır ve
 /// ilk kullanılabilir veri kartı üretir; X ucu kazanırsa FxTwitter'a çeviri ve metrikleri
-/// tamamlaması için yalnızca [`HEDGE_MERGE_GRACE`] kadar ek süre tanınır. Böylece yavaş ya
-/// da askıda kalan bir uç kartı 12 sn'ye kadar (istek zaman aşımı) geciktiremez.
+/// tamamlaması için [`HEDGE_MERGE_GRACE`] kadar ek süre tanınır. Topluluk notları açıksa, notu
+/// kaybetmemek için bu süreden sonra da aynı FxTwitter isteği tamamlanana kadar beklenir. Böylece
+/// notlar kapalıyken yavaş ya da askıda kalan uç kartı 12 sn'ye kadar (istek zaman aşımı) geciktiremez.
 ///
 /// Hızlı yol **hata verirse** FxTwitter ikinci kez istenmez: kaynak `syndication` ise doğrudan
 /// X ucu kullanılır (eskiden yavaş yol aynı isteği bir kez daha atıyordu).
@@ -320,6 +327,7 @@ async fn fetch_fx_fast(
     translate: bool,
     translation_target: &str,
     max_video_bytes: u64,
+    show_community_note: bool,
 ) -> Result<BuiltinPost, String> {
     let language = translate.then_some(translation_target);
     let fx = from_fxtwitter(
@@ -381,13 +389,25 @@ async fn fetch_fx_fast(
         };
     }
 
-    // X ucu kazandı: veri hazır. FxTwitter'a yalnızca kısa bir ek süre tanınır; gelmezse
-    // (veya hata verirse) X verisi kullanılır: kart hazırı bekletmek anlamsız olur.
-    if let Ok(Ok(fx_post)) = tokio::time::timeout(HEDGE_MERGE_GRACE, &mut fx).await {
-        return Ok(fx_post);
+    // X ucu kazandı: veri hazır. Normalde yalnızca kısa bir ek süre tanınır; topluluk notları
+    // açıksa aynı FxTwitter isteği tamamlanana kadar beklenir, aksi halde not kaybolur.
+    let post = x_result.expect("select her zaman bir dalı döner");
+    match tokio::time::timeout(HEDGE_MERGE_GRACE, &mut fx).await {
+        Ok(Ok(fx_post)) => return Ok(fx_post),
+        Ok(Err(err)) => {
+            debug!("FxTwitter hedge sonrası hata verdi ({id}): {err}");
+        }
+        Err(_) if show_community_note => {
+            // A late FxTwitter response is the only source of a community note. When notes are
+            // enabled, wait for that in-flight request before falling back to the fast Syndication
+            // result; otherwise the note would disappear whenever the 300 ms grace was exceeded.
+            if let Ok(fx_post) = fx.await {
+                return Ok(fx_post);
+            }
+        }
+        Err(_) => {}
     }
-
-    x_result.expect("select her zaman bir dalı döner")
+    post
 }
 
 /// Eksik alanları doldurur; kaynakta 0/`None` olan değerleri taze veriyle değiştirir.
@@ -406,6 +426,17 @@ fn merge_stats(target: &mut Stats, fresh: &Stats) {
     }
     if target.views.is_none() {
         target.views = fresh.views;
+    }
+}
+
+/// Syndication yanıtında bulunmayan topluluk notunu FxTwitter yanıtından tamamlar.
+/// Hedefte zaten bir not varsa onu korur; boş bir FxTwitter notu da karta eklenmez.
+fn merge_community_note(target: &mut Option<String>, fresh: Option<&str>) {
+    if target.is_none() {
+        *target = fresh
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
     }
 }
 
@@ -1323,6 +1354,21 @@ mod tests {
     }
 
     #[test]
+    fn fx_community_note_is_copied_to_the_builtin_post() {
+        let mut json = translated_tweet("en");
+        json["community_note"] = serde_json::json!({
+            "text": "Readers added context"
+        });
+
+        let post = post_from(&json);
+
+        assert_eq!(
+            post.community_note.as_deref(),
+            Some("Readers added context")
+        );
+    }
+
+    #[test]
     fn missing_syndication_metrics_are_merged_without_overwriting_existing_ones() {
         // Syndication yalnızca yanıt + beğeni verir; repost/görüntülenme FxTwitter'dan gelir.
         let mut stats = Stats {
@@ -1352,6 +1398,23 @@ mod tests {
             Some(1_240_000),
             "eksik görüntülenme tamamlanır"
         );
+    }
+
+    #[test]
+    fn community_note_is_merged_from_fxtwitter_without_replacing_existing_note() {
+        let mut note = None;
+        merge_community_note(&mut note, Some("  Topluluk notu  "));
+        assert_eq!(note.as_deref(), Some("Topluluk notu"));
+
+        merge_community_note(&mut note, Some("başka not"));
+        assert_eq!(note.as_deref(), Some("Topluluk notu"));
+    }
+
+    #[test]
+    fn empty_fxtwitter_community_note_is_not_added() {
+        let mut note = None;
+        merge_community_note(&mut note, Some("  "));
+        assert!(note.is_none());
     }
 
     #[test]

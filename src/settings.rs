@@ -1060,9 +1060,38 @@ impl AppSettings {
 }
 
 pub(crate) fn resolve_settings_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("BOTGEK_SETTINGS_PATH").filter(|p| !p.is_empty()) {
-        return PathBuf::from(path);
+    let configured = std::env::var_os("BOTGEK_SETTINGS_PATH")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let database = std::env::var_os("BOTGEK_DB_PATH")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    resolve_settings_path_from(configured.as_deref(), database.as_deref())
+}
+
+/// Ayar yolu açıkça verilmemişse, kalıcı veritabanının dizinini paylaşır.
+///
+/// Docker kurulumlarının bir kısmı yalnızca `BOTGEK_DB_PATH=/app/data/botgek.db`
+/// ayarını yapıyordu. Bu durumda eski varsayılan olan `./settings.json`, container
+/// katmanında kalıyor ve container yeniden oluşturulunca WebUI kayıtları kayboluyordu.
+/// Açık ayar yolu her zaman önceliklidir; veritabanı yolu ise güvenli bir kalıcılık
+/// fallback'i sağlar.
+fn resolve_settings_path_from(configured: Option<&Path>, database: Option<&Path>) -> PathBuf {
+    if let Some(path) = configured {
+        return path.to_path_buf();
     }
+
+    if let Some(database) = database {
+        let database_name = database.as_os_str();
+        if database_name != std::ffi::OsStr::new(":memory:")
+            && let Some(parent) = database
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            return parent.join("settings.json");
+        }
+    }
+
     let p = Path::new("settings.json");
     if p.is_dir() {
         // Docker bind-mount hostta dosya olmadığı için otomatik klasör olarak açılmışsa
@@ -1338,6 +1367,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn settings_path_follows_persistent_database_directory_when_unconfigured() {
+        let database = Path::new("data").join("botgek.db");
+        assert_eq!(
+            resolve_settings_path_from(None, Some(&database)),
+            Path::new("data").join("settings.json")
+        );
+    }
+
+    #[test]
+    fn explicit_settings_path_and_memory_database_keep_their_existing_behavior() {
+        let explicit = Path::new("/custom/settings.json");
+        assert_eq!(
+            resolve_settings_path_from(Some(explicit), Some(Path::new("data/botgek.db"))),
+            explicit
+        );
+        assert_eq!(
+            resolve_settings_path_from(None, Some(Path::new(":memory:"))),
+            Path::new("settings.json")
+        );
     }
 
     #[test]

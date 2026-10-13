@@ -64,6 +64,10 @@ RUN groupadd -g 1000 botgek && \
 USER botgek
 WORKDIR /app
 
+# Ayarlar, data dizini volume ile bağlanmasa bile veritabanıyla aynı kalıcı hedefi
+# kullanır. Compose ayrıca bu değeri açıkça tekrar tanımlar.
+ENV BOTGEK_SETTINGS_PATH=/app/data/settings.json
+
 # Derlenen ikili dosyayı kopyala
 COPY --chmod=755 --from=builder --chown=botgek:botgek /usr/local/bin/botgek /app/botgek
 

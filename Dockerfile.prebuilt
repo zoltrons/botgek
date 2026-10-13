@@ -18,6 +18,10 @@ RUN groupadd -g 1000 botgek && \
 USER botgek
 WORKDIR /app
 
+# Compose dışı çalıştırmalarda da ayarlar /app/data altında, veritabanıyla aynı
+# kalıcılık hedefinde tutulur.
+ENV BOTGEK_SETTINGS_PATH=/app/data/settings.json
+
 ARG TARGETARCH
 ARG TARGETVARIANT
 COPY --chmod=755 --chown=botgek:botgek bin/${TARGETARCH}${TARGETVARIANT}/botgek /app/botgek

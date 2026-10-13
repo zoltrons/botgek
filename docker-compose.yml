@@ -44,6 +44,8 @@ services:
           memory: 256M
 
 volumes:
-  # Kalıcı kayıt veritabanı (SQLite). Silmek isterseniz: docker volume rm botgek_botgek-data
+  # Compose proje adı değişse bile aynı volume yeniden kullanılsın. Farklı bir
+  # kurulumdaki mevcut volume için BOTGEK_DATA_VOLUME ile gerçek adını verin.
   botgek-data:
+    name: ${BOTGEK_DATA_VOLUME:-botgek_botgek-data}
 

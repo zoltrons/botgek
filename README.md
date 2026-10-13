@@ -104,9 +104,15 @@ Dosya açılamazsa bellek içi fallback loglanır ve readiness başarısız olur
 
 ## Docker ve güncelleme
 
+Kaynak koddan derleyen bu Compose dosyasında güncelleme komutu:
+
 ```sh
 docker compose up -d --build
 ```
+
+`docker compose pull` yalnızca `image:` kullanan bir Compose tanımı için yeni imajı
+çeker; bu dosyada imaj `build:` ile üretilir. Yayınlanmış GHCR imajına geçildiğinde
+`pull && up -d` kullanılabilir.
 
 Compose yönetim portunu yalnızca **host 127.0.0.1** üzerinde yayınlar; container içinde `WEB_BIND=0.0.0.0`
 kullanılır. Uzak makinede SSH tüneli örneği: `ssh -L 3000:127.0.0.1:3000 sunucu`.
@@ -117,6 +123,8 @@ volume'undaki dosyaya gider; hosttaki eski dosya artık güncellenmez. Güncelle
 dosyalarının yedeğini alın. `docker compose down -v` kalıcı volume'u siler; normal güncellemede kullanmayın.
 
 Atomik ayar replacement'ı için tek yazılabilir dosya bind-mount'u yerine **dizin/volume** kullanın.
+Compose volume adı varsayılan olarak `botgek_botgek-data`'dır ve proje dizini değişse bile sabit kalır;
+başka bir mevcut volume kullanıyorsanız `.env` içine `BOTGEK_DATA_VOLUME=<gerçek-volume-adı>` yazın.
 Bot kullanıcısına (Docker: UID/GID 1000) dizin yazma izni verin; `chmod 666` kullanmayın.
 Yedek/geri yükleme işlemlerinde artık `BOTGEK_SETTINGS_PATH` ile gösterilen güncel dosyayı hedefleyin.
 
