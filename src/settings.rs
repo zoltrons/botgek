@@ -2280,11 +2280,13 @@ mod tests {
         let channel = serenity::all::ChannelId::new(71);
         let mut settings = AppSettings::default();
         settings.modules.twitter = true;
-        let mut over = GuildOverride::default();
-        over.modules = Some(PlatformModules {
-            twitter: false,
-            ..settings.modules.clone()
-        });
+        let mut over = GuildOverride {
+            modules: Some(PlatformModules {
+                twitter: false,
+                ..settings.modules.clone()
+            }),
+            ..Default::default()
+        };
         over.channels.insert(
             parent.to_string(),
             ChannelOverride {
@@ -2325,8 +2327,10 @@ mod tests {
 
     #[test]
     fn schema_two_is_upgraded_without_equal_block_unpin() {
-        let mut settings = AppSettings::default();
-        settings.schema_version = 2;
+        let mut settings = AppSettings {
+            schema_version: 2,
+            ..Default::default()
+        };
         settings.guilds.insert(
             "7".into(),
             GuildOverride {
@@ -2345,7 +2349,7 @@ mod tests {
         let engine = EngineSettings::default();
         assert_eq!(engine.sensitive_mode, SensitiveMode::HideAlways);
         assert_eq!(
-            serde_json::to_value(&engine.sensitive_mode).unwrap(),
+            serde_json::to_value(engine.sensitive_mode).unwrap(),
             "hide_always"
         );
         assert_eq!(

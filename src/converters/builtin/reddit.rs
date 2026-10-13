@@ -866,7 +866,10 @@ impl RedditReplies {
     fn listing(&self) -> Option<&RedditListingData> {
         match self {
             Self::Listing { data } => data.as_ref(),
-            Self::Empty(_) => None,
+            Self::Empty(value) => {
+                let _ = value;
+                None
+            }
         }
     }
 }

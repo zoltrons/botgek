@@ -208,7 +208,7 @@ fn thread_view_to_post(thread: &ThreadView, fallback_handle: &str) -> BuiltinPos
         });
     }
 
-    if let Some(reason) = thread.reason.as_ref().or_else(|| post.reason.as_ref())
+    if let Some(reason) = thread.reason.as_ref().or(post.reason.as_ref())
         && reason
             .kind
             .as_deref()

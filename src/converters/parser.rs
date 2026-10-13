@@ -685,11 +685,7 @@ fn parse_spotify(raw_content: &str, domain: &str) -> Option<ParsedPost> {
 fn canonical_clip_url(raw: &str) -> Option<String> {
     let raw = raw.trim_end_matches(['.', ',', '!', ';']);
     let path = raw.split(['?', '#']).next()?.trim_end_matches('/');
-    let slug = if let Some(slug) = path.rsplit('/').next() {
-        slug
-    } else {
-        return None;
-    };
+    let slug = path.rsplit('/').next()?;
     (!slug.is_empty()).then(|| format!("https://clips.twitch.tv/{slug}"))
 }
 
@@ -799,11 +795,11 @@ fn parse_facebook(raw_content: &str) -> Option<ParsedPost> {
             let raw = raw.trim_end_matches(['.', ',', '!', ';']);
             let parsed = url::Url::parse(raw).ok()?;
             let mut original_url = format!("https://www.facebook.com{}", parsed.path());
-            if let Some(query) = parsed.query() {
-                if parsed.path() == "/watch/" {
-                    original_url.push('?');
-                    original_url.push_str(query);
-                }
+            if let Some(query) = parsed.query()
+                && parsed.path() == "/watch/"
+            {
+                original_url.push('?');
+                original_url.push_str(query);
             }
             return Some(ParsedPost {
                 platform: Platform::Facebook,

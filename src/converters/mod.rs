@@ -123,35 +123,6 @@ pub async fn enqueue_message(
     }
 }
 
-/// Kullanıcının mesajındaki desteklenen sosyal medya linkini tespit eder ve dönüştürür.
-///
-/// Dönüştürme, platformun ayarına göre iki motordan biriyle yapılır:
-/// - `builtin`: bot veriyi kendisi çeker ve native Discord embed'i üretir.
-/// - `proxy`: link harici bir önizleme servisine (fixupx.com vb.) yönlendirilir.
-///
-/// Proxy formatı: `<@User>[:](fixedLink) [**Platform**](<origLink>)\n> Alıntı`
-/// Silme işlemi için kompakt 🗑️ reaksiyonu eklenir.
-pub async fn handle_message(
-    ctx: &Context,
-    msg: &Message,
-    client: &reqwest::Client,
-    config: &Config,
-    settings: &GuildSettings,
-) {
-    let Some(job) = prepare_job(ctx, msg, client, config, settings).await else {
-        return;
-    };
-    process_message(
-        &job.ctx,
-        &job.msg,
-        &job.client,
-        &job.config,
-        &job.settings,
-        &job.parsed,
-    )
-    .await;
-}
-
 async fn prepare_job(
     ctx: &Context,
     msg: &Message,

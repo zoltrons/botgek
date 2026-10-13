@@ -45,7 +45,10 @@ pub enum PersistencePolicy {
 }
 
 /// Tek paylaşılan veritabanı bağlantısı.
-static DB: LazyLock<Db> = LazyLock::new(|| Db::open(&default_path()));
+static DB: LazyLock<Db> = LazyLock::new(|| {
+    Db::open_with_policy(&default_path(), PersistencePolicy::RequirePersistent)
+        .expect("persistent SQLite database is required")
+});
 /// Son budamadan bu yana yapılan yazma sayısı.
 static WRITES: AtomicU64 = AtomicU64::new(0);
 static DB_SLOT: LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
@@ -89,14 +92,6 @@ pub struct Db {
 
 impl Db {
     /// Veritabanını açar, şemayı kurar ve performans pragmalarını uygular.
-    /// Backwards-compatible convenience API: callers that need a startup
-    /// guarantee must use [`Self::open_with_policy`] with
-    /// [`PersistencePolicy::RequirePersistent`].
-    pub fn open(path: &str) -> Self {
-        Self::open_with_policy(path, PersistencePolicy::AllowEphemeral)
-            .expect("ephemeral SQLite fallback must be available")
-    }
-
     /// Opens SQLite according to an explicit persistence policy.
     pub fn open_with_policy(path: &str, policy: PersistencePolicy) -> Result<Self, String> {
         match Self::connect(path) {
@@ -354,6 +349,10 @@ fn cleanup(path: &std::path::Path) {
 mod tests {
     use super::*;
 
+    fn open_test(path: &str) -> Db {
+        Db::open_with_policy(path, PersistencePolicy::AllowEphemeral).expect("test database")
+    }
+
     #[test]
     fn records_survive_reopening_the_file() {
         let path = test_db_path("persistence");
@@ -361,13 +360,13 @@ mod tests {
         let path_str = path.display().to_string();
 
         {
-            let db = Db::open(&path_str);
+            let db = open_test(&path_str);
             db.remember(MessageId::new(1_000), ChannelId::new(9), UserId::new(42));
             assert_eq!(db.count(), 1);
         }
 
         // Bot yeniden başlatıldı: yeni bağlantı aynı kaydı görmeli.
-        let reopened = Db::open(&path_str);
+        let reopened = open_test(&path_str);
         assert_eq!(
             reopened.author(MessageId::new(1_000)),
             Some(UserId::new(42))
@@ -383,7 +382,7 @@ mod tests {
     fn forgetting_a_card_removes_only_that_record() {
         let path = test_db_path("forget");
         cleanup(&path);
-        let db = Db::open(&path.display().to_string());
+        let db = open_test(&path.display().to_string());
 
         db.remember(MessageId::new(11), ChannelId::new(1), UserId::new(2));
         db.remember(MessageId::new(12), ChannelId::new(1), UserId::new(3));
@@ -400,7 +399,7 @@ mod tests {
     fn pruning_keeps_the_newest_records() {
         let path = test_db_path("prune");
         cleanup(&path);
-        let db = Db::open(&path.display().to_string());
+        let db = open_test(&path.display().to_string());
 
         for id in 1..=5u64 {
             db.remember(MessageId::new(id), ChannelId::new(1), UserId::new(7));
