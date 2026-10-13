@@ -8,9 +8,12 @@
 pub mod bluesky;
 pub mod cache;
 mod coordination;
+pub mod facebook;
 pub mod instagram;
 pub mod media;
 pub mod opengraph;
+pub mod pixiv;
+mod preview;
 pub mod raw;
 pub mod reddit;
 pub mod reddit_video;
@@ -20,8 +23,11 @@ pub mod spotify;
 pub mod tiktok;
 pub mod translate;
 mod transport;
+pub mod tumblr;
+pub mod twitch;
 pub mod twitter;
 pub mod v2;
+pub mod youtube;
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -63,6 +69,11 @@ pub fn platform_key(platform: Platform) -> &'static str {
         Platform::Reddit => "reddit",
         Platform::Bluesky => "bluesky",
         Platform::Spotify => "spotify",
+        Platform::Twitch => "twitch",
+        Platform::Pixiv => "pixiv",
+        Platform::Tumblr => "tumblr",
+        Platform::Facebook => "facebook",
+        Platform::YouTube => "youtube",
     }
 }
 
@@ -135,12 +146,14 @@ pub async fn fetch(
 ) -> Result<std::sync::Arc<BuiltinPost>, String> {
     // Sonucu etkileyen ayarlar anahtara dahil edilir (kaynak + çeviri).
     let key = format!(
-        "post:{}|{}|{}|{}|{}",
+        "post:{}|{}|{}|{}|{}|{}|{}",
         parsed.original_url,
         engine.twitter_source.key(),
         engine.auto_translate,
+        engine.translation_target,
         engine.show_quote,
-        engine.max_video_mb
+        engine.max_video_mb,
+        parsed.is_spoiler
     );
 
     let _single_flight = coordination::lock(key.clone()).await;
@@ -160,6 +173,11 @@ pub async fn fetch(
             instagram::fetch(client, parsed, config.instagram_sessionid.as_deref()).await
         }
         Platform::Spotify => spotify::fetch(client, parsed).await,
+        Platform::Twitch => twitch::fetch(client, parsed).await,
+        Platform::Pixiv => pixiv::fetch(client, parsed).await,
+        Platform::Tumblr => tumblr::fetch(client, parsed).await,
+        Platform::Facebook => facebook::fetch(client, parsed).await,
+        Platform::YouTube => youtube::fetch(client, parsed).await,
     }?;
 
     let post = std::sync::Arc::new(post);
@@ -541,6 +559,50 @@ async fn webhook_target(ctx: &Context, msg: &Message) -> WebhookTarget {
                 thread_id: None,
             }
         }
+    }
+}
+
+/// Returns the effective NSFW flag for the message channel.
+///
+/// Thread channels inherit the flag from their parent. Cache data is preferred, with at most
+/// one REST request for the channel and one for a missing parent. DM channels and channels that
+/// cannot be verified as belonging to the message guild return `None` (fail closed).
+async fn resolve_channel_nsfw(ctx: &Context, msg: &Message) -> Option<bool> {
+    let guild_id = msg.guild_id?;
+    let channel_id = msg.channel_id;
+
+    let cached = ctx.cache.guild(guild_id).and_then(|guild| {
+        guild
+            .channels
+            .get(&channel_id)
+            .or_else(|| guild.threads.iter().find(|thread| thread.id == channel_id))
+            .cloned()
+            .filter(|channel| channel.guild_id == guild_id)
+    });
+
+    let channel = match cached {
+        Some(channel) => channel,
+        None => match ctx.http.get_channel(channel_id).await.ok()? {
+            Channel::Guild(channel) if channel.guild_id == guild_id => channel,
+            _ => return None,
+        },
+    };
+
+    let Some(parent_id) = channel.parent_id.filter(|_| is_thread_kind(channel.kind)) else {
+        return Some(channel.nsfw);
+    };
+
+    if let Some(parent) = ctx
+        .cache
+        .guild(guild_id)
+        .and_then(|guild| guild.channels.get(&parent_id).cloned())
+    {
+        return Some(parent.nsfw);
+    }
+
+    match ctx.http.get_channel(parent_id).await.ok()? {
+        Channel::Guild(parent) if parent.guild_id == guild_id => Some(parent.nsfw),
+        _ => None,
     }
 }
 
@@ -995,7 +1057,7 @@ pub async fn handle(
 
     // Taklit (webhook) kimliğinin çözümlenmesi **veri çekmeyle paralel** yürür: ikisi de REST
     // çağrısıdır ve eskiden dönüşümün kritik yolunda sırayla bekleniyordu.
-    let identity = should_impersonate(engine, msg.message_reference.is_some())
+    let identity = (!msg.author.bot && should_impersonate(engine, msg.message_reference.is_some()))
         .then(|| Impersonation::from_message(msg));
     if identity.is_some() {
         spawn_webhook_warmup(ctx, client, config, msg);
@@ -1017,6 +1079,16 @@ pub async fn handle(
         }
     };
     let fetched = started.elapsed();
+
+    // Source/channel visibility is resolved per send. Never modify the cached Arc: the same
+    // source post may be rendered in both NSFW and non-NSFW channels.
+    let channel_nsfw = resolve_channel_nsfw(ctx, msg).await;
+    let post = render::apply_visibility(
+        &post,
+        parsed.is_spoiler,
+        engine.sensitive_mode,
+        channel_nsfw,
+    );
 
     let platform = platform_key(parsed.platform);
     let options = render::RenderOptions::from_engine(engine, platform);
@@ -1448,8 +1520,9 @@ mod message_tests {
         webhook_id: Option<WebhookId>,
     ) -> Message {
         let mut message = message_fixture(id, author_id, content, embeds, webhook_id);
-        message.flags =
-            Some(serde_json::from_value(serde_json::json!(v2::COMPONENTS_V2_FLAG)).unwrap());
+        message.flags = Some(serenity::all::MessageFlags::from_bits_retain(
+            v2::COMPONENTS_V2_FLAG,
+        ));
         message
     }
 

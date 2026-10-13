@@ -8,14 +8,14 @@
      GET  /api/settings       → AppSettings (snake_case)
      POST /api/settings       → AppSettings gövdesi
      GET  /api/discord/roles  → [{ guild_id, guild_name, roles[] }]
+     GET  /api/discord/channels → [{ guild_id, guild_name, channels[] }]
      GET  /api/health         → "OK"
 
    Kapsam (scope): 'global' genel varsayılanlardır; bir sunucu kimliği seçilirse o
-   sunucuya özel ayarlar düzenlenir. Sunucu ayarı **bölüm bazlı sparse**'tır: yalnızca
-   kullanıcının o sunucuda bilerek değiştirdiği bölümler (modules / role_filters / ai /
-   engine) saklanır, diğer bölümler genelden miras alır. Etkin ayar `resolveSettings`
-   ile üretilir — Rust tarafındaki `resolve_settings` ile aynı semantik (tek kaynak,
-   kopya mantık yok).
+   sunucuya özel ayarlar düzenlenir. Sunucu ve kanal ayarı **bölüm bazlı sparse**'tır:
+   yalnızca kullanıcının bilerek değiştirdiği bölümler saklanır. Kanal çözümlemesi
+   global → sunucu → (yalnızca thread için) parent → kanal sırasındadır; kategori mirası
+   yoktur.
 
    Kural: panelde satır içi olay yöneticisi (onclick=) ve satır içi stil yoktur;
    CSP script-src 'self' bu yüzden gevşetilmedi.
@@ -35,11 +35,12 @@ async function apiFetch(path, options = {}) {
 }
 
 /* ── sabitler: Rust varsayılanlarıyla birebir aynı ───────────────────────── */
-const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'translation', 'ai_chat'];
-const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, translation: true, ai_chat: true };
+const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'pixiv', 'tumblr', 'facebook', 'youtube', 'translation', 'ai_chat'];
+const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, pixiv: true, tumblr: true, facebook: true, youtube: true, translation: true, ai_chat: true };
 const MODULE_LABELS = {
     twitter: 'Twitter / X', tiktok: 'TikTok', instagram: 'Instagram', reddit: 'Reddit',
-    bluesky: 'Bluesky', spotify: 'Spotify', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
+    bluesky: 'Bluesky', spotify: 'Spotify', twitch: 'Twitch', pixiv: 'Pixiv', tumblr: 'Tumblr',
+    facebook: 'Facebook', youtube: 'YouTube Posts', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
 };
 const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
 
@@ -56,7 +57,12 @@ const ENGINE_PLATFORMS = [
     { key: 'instagram', label: 'Instagram', nativeOnly: true },
     { key: 'reddit', label: 'Reddit', nativeOnly: true },
     { key: 'bluesky', label: 'Bluesky' },
-    { key: 'spotify', label: 'Spotify' }
+    { key: 'spotify', label: 'Spotify' },
+    { key: 'twitch', label: 'Twitch', nativeOnly: true },
+    { key: 'pixiv', label: 'Pixiv', nativeOnly: true },
+    { key: 'tumblr', label: 'Tumblr', nativeOnly: true },
+    { key: 'facebook', label: 'Facebook', nativeOnly: true },
+    { key: 'youtube', label: 'YouTube Posts', nativeOnly: true }
 ];
 
 const ENGINE_DEFAULTS = {
@@ -70,9 +76,12 @@ const ENGINE_DEFAULTS = {
     show_community_note: true,
     show_quote: true,
     auto_translate: true,
+    translation_target: 'tr',
     fallback_to_proxy: true,
     impersonate_skip_replies: true,
     impersonate_user: true,
+    respond_to_bots: false,
+    sensitive_mode: 'hide_always',
     emojis: {
         verified: '<:verified:1553709836859084841>',
         replies: '<:comment:1553712370302451782>',
@@ -115,7 +124,9 @@ const DIFF_LABELS = {
     'engine.auto_translate': 'Otomatik çeviri',
     'engine.fallback_to_proxy': 'Proxy yedeği',
     'engine.impersonate_user': 'Taklit',
-    'engine.impersonate_skip_replies': 'Yanıtlarda yanıtı koru'
+    'engine.impersonate_skip_replies': 'Yanıtlarda yanıtı koru',
+    'engine.respond_to_bots': 'Bot mesajlarına yanıt',
+    'engine.sensitive_mode': 'Hassas içerik modu'
 };
 
 /* ── durum ───────────────────────────────────────────────────────────────── */
@@ -133,12 +144,20 @@ let appSettings = {
     guilds: {}
 };
 let activeServer = 'global';
+let activeChannel = null;
 /* İstemci tarafı **sparse ayna**: sunucu kimliği → sabitlenmiş bölümler
    (`{ engine: true, modules: true }`). Sunucuya gönderilmez; kaydederken
    `buildGuildsPayload` gövdeyi bu aynadan üretir. */
 let rawOverrides = {};
+/* Sunucudan gelen sparse gövdenin kanal kısmı; API çevrimdışı olsa da kayıtlı
+   kanalların ve bilinmeyen kanal kimliklerinin kaybolmaması için tutulur. */
+let rawGuildPayload = {};
+let channelConfigs = {};
 let currentModule = 'twitter';
 let rawGuildsList = [];
+let rawChannelsList = [];
+let channelsLoaded = false;
+let channelFetchError = false;
 let discordRoles = [];
 let rolesLoaded = false;
 let dirty = false;
@@ -150,6 +169,7 @@ let modalReturnFocus = null;
 /* "Kaydedildi" onayının geri alma zamanlayıcısı (yerinde onay, bildirim değil). */
 let saveConfirmTimer = null;
 let toastTimer = null;
+let editRevision = 0;
 
 MODULE_KEYS.forEach(m => { appSettings.role_filters[m] = { mode: 'disabled', roles: [] }; });
 
@@ -181,16 +201,23 @@ function scrollToSection(id) {
 /* Eksik alanları (eski kayıtlar, elle düzenlenmiş settings.json, kısmi sunucu
    ayarları) varsayılanlarla doldurur; eksik alan erişimi paneli kırıyordu. */
 function ensureConfigShape(cfg) {
-    cfg.modules = Object.assign({}, MODULE_DEFAULTS, cfg.modules || {});
+    cfg.modules = cfg.modules || {};
+    MODULE_KEYS.forEach(key => {
+        if (cfg.modules[key] === undefined) cfg.modules[key] = MODULE_DEFAULTS[key];
+    });
     cfg.role_filters = cfg.role_filters || {};
     MODULE_KEYS.forEach(m => {
         const filter = cfg.role_filters[m];
-        cfg.role_filters[m] = {
-            mode: filter && filter.mode ? filter.mode : 'disabled',
-            roles: filter && Array.isArray(filter.roles) ? filter.roles : []
-        };
+        if (!filter) cfg.role_filters[m] = { mode: 'disabled', roles: [] };
+        else {
+            if (!filter.mode) filter.mode = 'disabled';
+            if (!Array.isArray(filter.roles)) filter.roles = [];
+        }
     });
-    cfg.ai = Object.assign({}, AI_DEFAULTS, cfg.ai || {});
+    cfg.ai = cfg.ai || {};
+    Object.keys(AI_DEFAULTS).forEach(key => {
+        if (cfg.ai[key] === undefined) cfg.ai[key] = AI_DEFAULTS[key];
+    });
     getEngineConfig(cfg);
     return cfg;
 }
@@ -208,10 +235,13 @@ function getEngineConfig(cfg) {
         }
     });
     ['twitter_source', 'max_images', 'max_video_mb', 'show_metrics',
-     'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
-     'impersonate_user', 'impersonate_skip_replies'].forEach(field => {
-        if (engine[field] === undefined || engine[field] === null) engine[field] = ENGINE_DEFAULTS[field];
-    });
+      'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
+      'impersonate_user', 'impersonate_skip_replies', 'respond_to_bots', 'sensitive_mode'].forEach(field => {
+         if (engine[field] === undefined || engine[field] === null) engine[field] = ENGINE_DEFAULTS[field];
+     });
+    if (typeof engine.respond_to_bots !== 'boolean') engine.respond_to_bots = ENGINE_DEFAULTS.respond_to_bots;
+    if (engine.sensitive_mode !== 'hide_always' && engine.sensitive_mode !== 'allow_in_nsfw') engine.sensitive_mode = ENGINE_DEFAULTS.sensitive_mode;
+    if (typeof engine.translation_target !== 'string' || !/^[a-z][a-z0-9-]{1,15}$/i.test(engine.translation_target)) engine.translation_target = ENGINE_DEFAULTS.translation_target;
     delete engine.components_v2;
     return engine;
 }
@@ -237,9 +267,81 @@ function resolveSettings(global, override) {
     return resolved;
 }
 
+function isThreadChannel(channel) {
+    return !!channel && ['public_thread', 'private_thread', 'news_thread'].indexOf(String(channel.kind || '').toLowerCase()) > -1;
+}
+
+function normalizeChannel(channel) {
+    const item = channel || {};
+    return {
+        id: String(item.id || ''),
+        name: String(item.name || item.id || 'kanal'),
+        kind: String(item.kind || 'text').toLowerCase(),
+        parent_id: item.parent_id === null || item.parent_id === undefined ? null : String(item.parent_id),
+        nsfw: !!item.nsfw
+    };
+}
+
+/* Kanal çözümlemesi backend ile aynı sırayı kullanır. Kategori (forum dahil)
+   ebeveyn değildir; yalnızca Discord thread türleri parent_id üzerinden miras alır. */
+function resolveChannelSettings(global, guildOverride, parentOverride, channelOverride, channel) {
+    let resolved = ensureConfigShape(resolveSettings(global, guildOverride));
+    if (isThreadChannel(channel)) resolved = ensureConfigShape(resolveSettings(resolved, parentOverride));
+    return ensureConfigShape(resolveSettings(resolved, channelOverride));
+}
+
+function channelById(guildId, channelId) {
+    const guild = rawChannelsList.filter(item => String(item.guild_id) === String(guildId))[0];
+    if (!guild) return null;
+    return (guild.channels || []).map(normalizeChannel).filter(item => item.id === String(channelId))[0] || null;
+}
+
+function sparseGuildFor(guildId) {
+    const full = appSettings.guilds && appSettings.guilds[guildId];
+    const pins = rawOverrides[guildId] || {};
+    const sparse = {};
+    BLOCK_KEYS.forEach(key => {
+        if (pins[key] && full && full[key] !== undefined) {
+            sparse[key] = key === 'ai' && rawGuildPayload[guildId] ? rawGuildPayload[guildId].ai : full[key];
+        }
+    });
+    return sparse;
+}
+
+function sparseChannelFor(guildId, channelId) {
+    const full = channelConfigs[guildId] && channelConfigs[guildId][channelId];
+    const pins = rawOverrides[guildId] && rawOverrides[guildId].channels && rawOverrides[guildId].channels[channelId];
+    const sparse = {};
+    BLOCK_KEYS.forEach(key => {
+        if (pins && pins[key] && full && full[key] !== undefined) {
+            const raw = rawGuildPayload[guildId] && rawGuildPayload[guildId].channels && rawGuildPayload[guildId].channels[channelId];
+            sparse[key] = key === 'ai' && raw ? raw.ai : full[key];
+        }
+    });
+    return sparse;
+}
+
+function inheritanceSource(blockKey, guildId, channelId) {
+    if (!guildId || !channelId) return 'global';
+    const channel = channelById(guildId, channelId);
+    const pins = rawOverrides[guildId] || {};
+    const channelPins = pins.channels && pins.channels[channelId];
+    if (channelPins && channelPins[blockKey]) return 'kanal';
+    if (isThreadChannel(channel) && channel.parent_id) {
+        const parentPins = pins.channels && pins.channels[channel.parent_id];
+        if (parentPins && parentPins[blockKey]) return 'parent kanal';
+    }
+    return pins[blockKey] ? 'sunucu' : 'global';
+}
+
 /* Sunucunun **sabitlenmiş bölümleri** (istemci tarafı sparse ayna). Genel kapsamda null. */
 function overrideOf(guildId) {
     return (guildId !== 'global' && rawOverrides[guildId]) ? rawOverrides[guildId] : null;
+}
+
+function channelOverrideOf(guildId, channelId) {
+    const guild = overrideOf(guildId);
+    return guild && guild.channels && guild.channels[channelId] ? guild.channels[channelId] : null;
 }
 
 /* Kapsamın çalışma kopyası. Genel kapsamda genelin kendisi; sunucu kapsamında
@@ -251,11 +353,49 @@ function getActiveConfig() {
     if (!appSettings.guilds[activeServer]) {
         appSettings.guilds[activeServer] = resolveSettings(ensureConfigShape(appSettings), null);
     }
-    return ensureConfigShape(appSettings.guilds[activeServer]);
+    const global = ensureConfigShape(appSettings);
+    const guildSparse = sparseGuildFor(activeServer);
+    const guildConfig = appSettings.guilds[activeServer];
+    const guildResolved = resolveSettings(global, guildSparse);
+    BLOCK_KEYS.forEach(key => {
+        if (!rawOverrides[activeServer] || !rawOverrides[activeServer][key] || key === 'ai') {
+            syncConfigObject(guildConfig[key], guildResolved[key]);
+        }
+    });
+    if (!activeChannel) return ensureConfigShape(guildConfig);
+
+    if (!channelConfigs[activeServer]) channelConfigs[activeServer] = {};
+    if (!channelConfigs[activeServer][activeChannel]) channelConfigs[activeServer][activeChannel] = ensureConfigShape({});
+    const channel = channelById(activeServer, activeChannel);
+    const parentSparse = channel && channel.parent_id ? sparseChannelFor(activeServer, channel.parent_id) : {};
+    const channelSparse = sparseChannelFor(activeServer, activeChannel);
+    const channelConfig = channelConfigs[activeServer][activeChannel];
+    const resolved = resolveChannelSettings(global, guildSparse, parentSparse, channelSparse, channel);
+    const pins = channelOverrideOf(activeServer, activeChannel) || {};
+    BLOCK_KEYS.forEach(key => {
+        if (!pins[key] || key === 'ai') syncConfigObject(channelConfig[key], resolved[key]);
+    });
+    return ensureConfigShape(channelConfig);
+}
+
+/* Preserve block/filter/array identities while refreshing inherited values. */
+function syncConfigObject(target, source) {
+    Object.keys(target).forEach(key => { if (!(key in source)) delete target[key]; });
+    Object.keys(source).forEach(key => {
+        const value = source[key];
+        if (Array.isArray(value) && Array.isArray(target[key])) target[key].splice(0, target[key].length, ...value);
+        else if (value && typeof value === 'object' && target[key] && typeof target[key] === 'object') syncConfigObject(target[key], value);
+        else target[key] = clone(value);
+    });
 }
 
 /* Bu bölüm o sunucuda **bilerek** değiştirildi mi? */
 function isBlockOverridden(blockKey) {
+    if (activeServer === 'global') return false;
+    if (activeChannel) {
+        const channel = channelOverrideOf(activeServer, activeChannel);
+        return !!(channel && channel[blockKey]);
+    }
     const override = overrideOf(activeServer);
     return !!(override && override[blockKey]);
 }
@@ -263,7 +403,7 @@ function isBlockOverridden(blockKey) {
 /* En az bir bölümü sabitlenmiş sunucu "özel" sayılır (kaydı varsa değil). */
 function isServerCustomized(guildId) {
     const override = overrideOf(guildId);
-    return !!override && Object.keys(override).length > 0;
+    return !!override && (BLOCK_KEYS.some(key => !!override[key]) || !!(override.channels && Object.keys(override.channels).length));
 }
 
 /* İlk düzenlemede o bölümü sabitler (miras → özel). Değer çalışma kopyasından okunur ve
@@ -271,19 +411,42 @@ function isServerCustomized(guildId) {
    düşer, genelin o anki değerine değil). */
 function ensureBlockOverridden(blockKey) {
     if (activeServer === 'global') return;
-    getActiveConfig();
+    if (isBlockOverridden(blockKey)) return;
+    const cfg = getActiveConfig();
+    if (!rawGuildPayload[activeServer]) rawGuildPayload[activeServer] = { channels: {} };
+    if (!rawGuildPayload[activeServer].channels) rawGuildPayload[activeServer].channels = {};
     if (!rawOverrides[activeServer]) rawOverrides[activeServer] = {};
-    if (!rawOverrides[activeServer][blockKey]) rawOverrides[activeServer][blockKey] = true;
+    if (activeChannel) {
+        if (!rawOverrides[activeServer].channels) rawOverrides[activeServer].channels = {};
+        if (!rawOverrides[activeServer].channels[activeChannel]) rawOverrides[activeServer].channels[activeChannel] = {};
+        rawOverrides[activeServer].channels[activeChannel][blockKey] = true;
+        if (!rawGuildPayload[activeServer].channels[activeChannel]) rawGuildPayload[activeServer].channels[activeChannel] = {};
+        if (blockKey === 'ai') rawGuildPayload[activeServer].channels[activeChannel].ai = clone(cfg.ai);
+    } else if (!rawOverrides[activeServer][blockKey]) rawOverrides[activeServer][blockKey] = true;
+    if (!activeChannel && blockKey === 'ai') rawGuildPayload[activeServer].ai = clone(cfg.ai);
 }
 
 /* Bir bölümü genele sıfırlar: değerler genelden tazelenir, sabitleme kaldırılır. */
 function resetBlockToGlobal(blockKey) {
     if (activeServer === 'global') return;
     const cfg = getActiveConfig();
-    cfg[blockKey] = clone(ensureConfigShape(appSettings)[blockKey]);
-    if (rawOverrides[activeServer]) {
-        delete rawOverrides[activeServer][blockKey];
-        if (!Object.keys(rawOverrides[activeServer]).length) delete rawOverrides[activeServer];
+    if (activeChannel) {
+        const channel = channelById(activeServer, activeChannel);
+        const guildSparse = sparseGuildFor(activeServer);
+        const parentSparse = channel && channel.parent_id ? sparseChannelFor(activeServer, channel.parent_id) : {};
+        cfg[blockKey] = clone(resolveChannelSettings(ensureConfigShape(appSettings), guildSparse, parentSparse, {}, channel)[blockKey]);
+        const channelPins = rawOverrides[activeServer] && rawOverrides[activeServer].channels && rawOverrides[activeServer].channels[activeChannel];
+        if (channelPins) {
+            delete channelPins[blockKey];
+            if (!Object.keys(channelPins).length) delete rawOverrides[activeServer].channels[activeChannel];
+        }
+        if (rawOverrides[activeServer] && rawOverrides[activeServer].channels && !Object.keys(rawOverrides[activeServer].channels).length) delete rawOverrides[activeServer].channels;
+    } else {
+        cfg[blockKey] = clone(ensureConfigShape(appSettings)[blockKey]);
+        if (rawOverrides[activeServer]) {
+            delete rawOverrides[activeServer][blockKey];
+            if (!Object.keys(rawOverrides[activeServer]).some(key => key === 'channels' || rawOverrides[activeServer][key])) delete rawOverrides[activeServer];
+        }
     }
     markDirty();
     refreshScope();
@@ -312,6 +475,8 @@ function normalizeFromServer(data) {
     });
 
     rawOverrides = {};
+    rawGuildPayload = {};
+    channelConfigs = {};
     const guilds = {};
     const rawGuilds = (data && data.guilds) || {};
     Object.keys(rawGuilds).forEach(guildId => {
@@ -320,10 +485,32 @@ function normalizeFromServer(data) {
         BLOCK_KEYS.forEach(block => {
             if (sparse[block] !== undefined && sparse[block] !== null) pinned[block] = true;
         });
-        // Hiçbir bölümü sabitlenmemiş kayıt "miras" sayılır: çalışma kopyası açılmaz.
-        if (!Object.keys(pinned).length) return;
-        rawOverrides[guildId] = pinned;
-        guilds[guildId] = resolveSettings(global, sparse);
+        const channels = sparse.channels && typeof sparse.channels === 'object' ? sparse.channels : {};
+        const channelPins = {};
+        Object.keys(channels).forEach(channelId => {
+            const channel = channels[channelId] || {};
+            const cp = {};
+            BLOCK_KEYS.forEach(block => {
+                if (channel[block] !== undefined && channel[block] !== null) cp[block] = true;
+            });
+            // Empty channel maps are retained: they are meaningful saved/offline scopes.
+            channelPins[String(channelId)] = cp;
+        });
+        // Channel-only guild records must remain in the model and payload.
+        if (Object.keys(pinned).length || Object.keys(channelPins).length || sparse.channels !== undefined) {
+            rawOverrides[guildId] = pinned;
+            if (Object.keys(channelPins).length || sparse.channels !== undefined) rawOverrides[guildId].channels = channelPins;
+            rawGuildPayload[guildId] = { ai: clone(sparse.ai || {}), channels: clone(channels) };
+            guilds[guildId] = ensureConfigShape(resolveSettings(global, sparse));
+            channelConfigs[guildId] = {};
+            Object.keys(channels).forEach(channelId => {
+                channelConfigs[guildId][String(channelId)] = resolveChannelSettings(global, sparse, {}, channels[channelId], null);
+            });
+            guilds[guildId].channels = channelConfigs[guildId];
+            return;
+        }
+        // No pinned block and no channel map means there is no sparse guild record.
+        return;
     });
 
     return {
@@ -338,14 +525,37 @@ function normalizeFromServer(data) {
 /* Sunucu kayıtlarının **sparse** gövdesi: yalnızca sabitlenmiş bölümler yazılır. */
 function buildGuildsPayload() {
     const out = {};
-    Object.keys(appSettings.guilds || {}).forEach(guildId => {
+    const guildIds = {};
+    Object.keys(appSettings.guilds || {}).forEach(id => { guildIds[id] = true; });
+    Object.keys(rawGuildPayload || {}).forEach(id => { guildIds[id] = true; });
+    Object.keys(rawOverrides || {}).forEach(id => { guildIds[id] = true; });
+    Object.keys(guildIds).forEach(guildId => {
         const pinned = rawOverrides[guildId];
-        if (!pinned) return;
-        const full = appSettings.guilds[guildId];
+        const full = appSettings.guilds[guildId] || resolveSettings(ensureConfigShape(appSettings), null);
         const sparse = {};
         BLOCK_KEYS.forEach(block => {
-            if (pinned[block]) sparse[block] = full[block];
+            if (pinned && pinned[block]) sparse[block] = block === 'ai' ? rawGuildPayload[guildId].ai : full[block];
         });
+        const originalChannels = rawGuildPayload[guildId] && rawGuildPayload[guildId].channels || {};
+        const channelPins = pinned && pinned.channels || {};
+        const channelIds = {};
+        Object.keys(originalChannels).forEach(id => { channelIds[id] = true; });
+        Object.keys(channelPins).forEach(id => { channelIds[id] = true; });
+        if (channelConfigs[guildId]) Object.keys(channelConfigs[guildId]).forEach(id => { channelIds[id] = true; });
+        const channels = {};
+        Object.keys(channelIds).forEach(channelId => {
+            const cpins = channelPins[channelId] || {};
+            const fullChannel = channelConfigs[guildId] && channelConfigs[guildId][channelId];
+            const original = originalChannels[channelId] || {};
+            const channelSparse = {};
+            BLOCK_KEYS.forEach(block => {
+                if (cpins[block] && fullChannel && fullChannel[block] !== undefined) channelSparse[block] = block === 'ai' ? original.ai : fullChannel[block];
+                else if (cpins[block] && original[block] !== undefined) channelSparse[block] = original[block];
+            });
+            // Keep an offline/unknown channel key and all already pinned blocks intact.
+            if (Object.keys(channelSparse).length) channels[channelId] = channelSparse;
+        });
+        if (Object.keys(channels).length) sparse.channels = channels;
         if (Object.keys(sparse).length) out[guildId] = sparse;
     });
     return out;
@@ -412,6 +622,7 @@ function labelFor(path) {
 
 function markDirty() {
     dirty = true;
+    editRevision++;
 }
 
 /* Kayıt durumu: ray göstergesi + dar ekranda çıkan kaydetme çubuğu. */
@@ -460,12 +671,13 @@ function wireSwitchLabels() {
 /* Bir alan değişti: ilgili **bölümü** o sunucuda sabitler (miras → özel), dirty işaretler.
    `blockKey` çağrı yerinde verilir (her bölüm kendi denetimlerini bildirir). */
 function onConfigModified(blockKey) {
-    if (blockKey && activeServer !== 'global' && !isBlockOverridden(blockKey)) {
+    const firstPin = blockKey && activeServer !== 'global' && !isBlockOverridden(blockKey);
+    if (firstPin) {
         ensureBlockOverridden(blockKey);
-        // Yalnızca sabitleme anında kapsam göstergeleri tazelenir (her tuş vuruşunda
-        // sunucu listesini yeniden kurmamak için).
-        refreshScope();
     }
+    // Commit before any refresh can read the effective configuration again.
+    commitDomToActiveConfig(blockKey);
+    if (firstPin) refreshScope();
     markDirty();
     updateDirtyUI();
 }
@@ -493,7 +705,7 @@ function writeModulesDom(modules) {
 function readAiDom() {
     const model = ($('ai-model-box').value || '').trim();
     return {
-        model: model || AI_DEFAULTS.model,
+        model: model || (activeServer === 'global' ? AI_DEFAULTS.model : ''),
         system_prompt: ($('ai-prompt-box').value || '').trim()
     };
 }
@@ -518,6 +730,10 @@ function readEngineDom(engine) {
     qsa('[data-emoji-key]').forEach(el => { engine.emojis[el.dataset.emojiKey] = el.value.trim(); });
     const source = $('engine-twitter-source');
     if (source) engine.twitter_source = source.value;
+    const translationTarget = $('engine-translation-target');
+    if (translationTarget) engine.translation_target = translationTarget.value.trim().toLowerCase() || ENGINE_DEFAULTS.translation_target;
+    const sensitive = $('engine-sensitive-mode');
+    if (sensitive) engine.sensitive_mode = sensitive.value === 'allow_in_nsfw' ? 'allow_in_nsfw' : 'hide_always';
 }
 
 function writeEngineDom(engine) {
@@ -543,16 +759,31 @@ function writeEngineDom(engine) {
     });
     const source = $('engine-twitter-source');
     if (source) source.value = engine.twitter_source || 'syndication';
+    const translationTarget = $('engine-translation-target');
+    if (translationTarget) translationTarget.value = engine.translation_target || ENGINE_DEFAULTS.translation_target;
+    const sensitive = $('engine-sensitive-mode');
+    if (sensitive) sensitive.value = engine.sensitive_mode === 'allow_in_nsfw' ? 'allow_in_nsfw' : 'hide_always';
 }
 
 /* Panelden sunucuya gönderilecek gövdeyi DOM'dan toplar. */
-function commitDomToActiveConfig() {
+function commitDomToActiveConfig(blockKey) {
     const cfg = getActiveConfig();
-    cfg.modules = Object.assign({}, cfg.modules, readModulesDom());
-    cfg.ai = Object.assign({}, cfg.ai, readAiDom());
-    readEngineDom(getEngineConfig(cfg));
-    const filter = getCurFilter();
-    filter.mode = getFilterModeDom();
+    const writable = key => (!blockKey || blockKey === key) && (activeServer === 'global' || isBlockOverridden(key));
+    if (writable('modules')) Object.assign(cfg.modules, readModulesDom());
+    if (writable('engine')) readEngineDom(cfg.engine);
+    if (writable('role_filters')) cfg.role_filters[currentModule].mode = getFilterModeDom();
+    // AI input events commit immediately. Scope switches/saves must not turn a
+    // displayed inherited value into a pinned value for a saved empty field.
+    if (blockKey === 'ai' && writable('ai')) {
+        const values = readAiDom();
+        if (activeServer === 'global') Object.assign(cfg.ai, values);
+        else {
+            const raw = activeChannel ? rawGuildPayload[activeServer].channels[activeChannel].ai : rawGuildPayload[activeServer].ai;
+            Object.keys(values).forEach(key => {
+                if (values[key] !== cfg.ai[key]) raw[key] = values[key];
+            });
+        }
+    }
     return cfg;
 }
 
@@ -741,8 +972,8 @@ function selectStudioModule(key) {
 }
 
 function setModelPreset(model) {
-    onConfigModified('ai');
     if ($('ai-model-box')) $('ai-model-box').value = model;
+    onConfigModified('ai');
     updatePresetChips();
     updateNavCounts();
 }
@@ -799,11 +1030,11 @@ function renderRoleChips() {
 }
 
 function toggleRole(roleId) {
-    onConfigModified('role_filters');
     const roles = getCurFilter().roles;
     const index = roles.indexOf(roleId);
     if (index > -1) roles.splice(index, 1);
     else roles.push(roleId);
+    onConfigModified('role_filters');
     updateModuleBadges();
     updateNavCounts();
     renderRoleChips();
@@ -811,8 +1042,8 @@ function toggleRole(roleId) {
 }
 
 function removeRole(index) {
-    onConfigModified('role_filters');
     getCurFilter().roles.splice(index, 1);
+    onConfigModified('role_filters');
     updateModuleBadges();
     updateNavCounts();
     renderRoleChips();
@@ -826,9 +1057,10 @@ function addRoleFromInput() {
     if (!box) return;
     const raw = (box.value || '').trim();
     if (!raw) return;
+    const ids = raw.split(/[\s,]+/).filter(id => /^\d{1,25}$/.test(id));
     const filter = getCurFilter();
     let added = 0;
-    raw.split(/[\s,]+/).forEach(id => {
+    ids.forEach(id => {
         if (/^\d{1,25}$/.test(id) && filter.roles.indexOf(id) === -1) {
             filter.roles.push(id);
             added++;
@@ -1006,7 +1238,11 @@ function updateServerSelectDropdown() {
     globalOption.textContent = 'Genel / varsayılan · tüm sunucular';
     select.appendChild(globalOption);
 
-    rawGuildsList.forEach(guild => {
+    const guilds = rawGuildsList.slice();
+    rawChannelsList.forEach(guild => {
+        if (!guilds.some(existing => String(existing.guild_id) === String(guild.guild_id))) guilds.push(guild);
+    });
+    guilds.forEach(guild => {
         const option = document.createElement('option');
         option.value = guild.guild_id;
         option.textContent = guild.guild_name + (isServerCustomized(guild.guild_id) ? ' · özel' : '');
@@ -1021,11 +1257,58 @@ function updateServerSelectDropdown() {
     }
 }
 
+function channelsForGuild(guildId) {
+    const item = rawChannelsList.filter(guild => String(guild.guild_id) === String(guildId))[0];
+    const known = item ? (item.channels || []).map(normalizeChannel) : [];
+    const saved = rawGuildPayload[guildId] && rawGuildPayload[guildId].channels || {};
+    Object.keys(saved).forEach(id => {
+        if (!known.some(channel => channel.id === String(id))) {
+            known.push({ id: String(id), name: 'kanal ' + id + ' · kayıtlı', kind: 'text', parent_id: null, nsfw: false, offline: true });
+        }
+    });
+    return known;
+}
+
+function updateChannelSelect() {
+    const wrap = $('channel-scope-wrap');
+    const select = $('channel-select');
+    if (!wrap || !select) return;
+    const guildScope = activeServer !== 'global';
+    wrap.hidden = !guildScope;
+    if (!guildScope) return;
+    const previous = activeChannel;
+    select.textContent = '';
+    const inherit = document.createElement('option');
+    inherit.value = '';
+    inherit.textContent = 'Tüm sunucu (kanal seçilmedi)';
+    select.appendChild(inherit);
+    channelsForGuild(activeServer).forEach(channel => {
+        const option = document.createElement('option');
+        option.value = channel.id;
+        const kind = channel.kind === 'forum' ? 'forum' : (isThreadChannel(channel) ? 'thread' : channel.kind);
+        option.textContent = '#' + channel.name + ' · ' + kind + (channel.offline ? ' · çevrimdışı' : '');
+        select.appendChild(option);
+    });
+    select.value = previous || '';
+    if (select.value !== (previous || '')) {
+        activeChannel = null;
+        select.value = '';
+    }
+    const status = $('channel-fetch-status');
+    if (status) {
+        status.textContent = channelFetchError
+            ? 'Kanal listesi alınamadı; kayıtlı kanallar korunuyor.'
+            : (channelsLoaded ? channelsForGuild(activeServer).length + ' kanal' : 'Kanal listesi yükleniyor…');
+        status.dataset.tone = channelFetchError ? 'error' : '';
+    }
+}
+
 function updateScopeUI() {
     const badge = $('server-custom-badge');
     const button = $('btn-toggle-custom');
     const notice = $('server-inherit-notice');
     const echo = $('scope-echo');
+    updateChannelSelect();
     const guild = rawGuildsList.filter(g => g.guild_id === activeServer)[0];
     const pickerLabel = $('picker-scope-label');
     if (pickerLabel) {
@@ -1044,10 +1327,12 @@ function updateScopeUI() {
         return;
     }
 
-    const pinnedCount = Object.keys(overrideOf(activeServer) || {}).length;
-    const customized = pinnedCount > 0;
+    const pinned = overrideOf(activeServer) || {};
+    const pinnedCount = BLOCK_KEYS.filter(key => !!pinned[key]).length;
+    const channelCount = pinned.channels ? Object.keys(pinned.channels).length : 0;
+    const customized = pinnedCount > 0 || channelCount > 0;
     if (badge) {
-        badge.textContent = customized ? pinnedCount + '/' + BLOCK_KEYS.length + ' bölüm özel' : 'miras alıyor';
+        badge.textContent = customized ? pinnedCount + '/' + BLOCK_KEYS.length + ' bölüm özel' + (channelCount ? ' · ' + channelCount + ' kanal' : '') : 'miras alıyor';
         badge.dataset.tone = customized ? 'custom' : 'inherit';
     }
     if (button) {
@@ -1059,7 +1344,7 @@ function updateScopeUI() {
     if (notice) notice.hidden = customized;
     if (echo) {
         echo.textContent = (guild ? guild.guild_name : 'sunucu ' + activeServer) +
-            (customized ? ' · ' + pinnedCount + '/' + BLOCK_KEYS.length + ' bölüm özel' : ' · genel varsayılanlar');
+            (activeChannel ? ' · kanal #' + activeChannel : (customized ? ' · ' + pinnedCount + '/' + BLOCK_KEYS.length + ' bölüm özel' : ' · genel varsayılanlar'));
     }
     updateBlockBadges();
 }
@@ -1076,11 +1361,12 @@ function updateBlockBadges() {
         }
         const overridden = isBlockOverridden(el.dataset.blockBadge);
         el.hidden = false;
-        el.textContent = overridden ? 'özel' : 'miras';
+        el.textContent = overridden ? 'özel · ' + (activeChannel ? 'kanal' : 'sunucu') : (activeChannel ? inheritanceSource(el.dataset.blockBadge, activeServer, activeChannel) : 'miras');
         el.dataset.tone = overridden ? 'custom' : 'inherit';
     });
     qsa('[data-block-reset]').forEach(el => {
         el.hidden = !(guildScope && isBlockOverridden(el.dataset.blockReset));
+        el.textContent = activeChannel ? 'miras ayarına sıfırla' : 'genele sıfırla';
     });
 }
 
@@ -1093,8 +1379,17 @@ function onServerChange() {
     commitDomToActiveConfig();
     const select = $('server-select');
     activeServer = select ? select.value : 'global';
+    activeChannel = null;
     refreshScope();
     filterDiscordRolesForActiveServer();
+    renderUI();
+}
+
+function onChannelChange() {
+    commitDomToActiveConfig();
+    const select = $('channel-select');
+    activeChannel = select && select.value ? String(select.value) : null;
+    refreshScope();
     renderUI();
 }
 
@@ -1103,11 +1398,18 @@ function toggleServerCustomSettings() {
     openModal({
         kicker: 'kapsam',
         title: 'Sunucu ayarlarını sıfırla',
-        body: 'Bu sunucuda sabitlenmiş tüm bölümler silinecek ve sunucu genel varsayılanları miras alacak. Kaydettiğinizde kalıcı olur.',
+        body: 'Bu sunucuda sabitlenmiş bölümler silinecek ve sunucu genel varsayılanları miras alacak. Kanal bazlı ayarlar korunur. Kaydettiğinizde kalıcı olur.',
         confirmLabel: 'Varsayılana sıfırla',
         onConfirm: () => {
-            delete appSettings.guilds[activeServer];
-            delete rawOverrides[activeServer];
+            const old = rawOverrides[activeServer] || {};
+            BLOCK_KEYS.forEach(key => delete old[key]);
+            if (Object.keys(old).some(key => key === 'channels' || old[key])) rawOverrides[activeServer] = old;
+            else delete rawOverrides[activeServer];
+            // Kanal blokları sunucu blokları sıfırlanırken aynen korunur.
+            if (appSettings.guilds[activeServer]) {
+                const fresh = resolveSettings(ensureConfigShape(appSettings), {});
+                BLOCK_KEYS.forEach(key => { appSettings.guilds[activeServer][key] = fresh[key]; });
+            }
             markDirty();
             refreshScope();
             renderUI();
@@ -1186,6 +1488,32 @@ async function fetchDiscordRoles() {
     }
 }
 
+async function fetchDiscordChannels() {
+    try {
+        const res = await apiFetch('/api/discord/channels');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const result = await res.json();
+        if (!Array.isArray(result)) throw new Error('geçersiz kanal listesi');
+        rawChannelsList = result.map(guild => ({
+            guild_id: String(guild.guild_id),
+            guild_name: String(guild.guild_name || guild.guild_id),
+            channels: Array.isArray(guild.channels) ? guild.channels.map(normalizeChannel).filter(channel => channel.id) : []
+        }));
+        channelsLoaded = true;
+        channelFetchError = false;
+        refreshScope();
+    } catch (err) {
+        // Known saved scopes remain visible and editable after API failure.
+        channelFetchError = true;
+        updateChannelSelect();
+        showToast('kanallar alınamadı · kayıtlı kanal ayarları korunuyor', true);
+    }
+}
+
+function retryDiscordChannels() {
+    fetchDiscordChannels();
+}
+
 /* Gerçek erişilebilirlik: başlıktaki lamba tahmine değil /api/health yanıtına bakar. */
 async function checkHealth() {
     const led = $('led');
@@ -1229,6 +1557,7 @@ function setSaving(busy) {
 async function saveSettingsToServer() {
     commitDomToActiveConfig();
     const submitted = JSON.stringify(buildPayload());
+    const submittedRevision = typeof editRevision === 'number' ? editRevision : null;
     setSaving(true);
     let saved = false;
     try {
@@ -1239,11 +1568,14 @@ async function saveSettingsToServer() {
         });
         if (res.ok) {
             const result = await res.json();
-            const unchanged = JSON.stringify(buildPayload()) === submitted;
+            const editedWhileSaving = submittedRevision !== null && editRevision !== submittedRevision;
+            const unchanged = !editedWhileSaving && JSON.stringify(buildPayload()) === submitted;
             if (unchanged && result.settings) {
                 appSettings = normalizeFromServer(result.settings);
                 renderUI();
             }
+            // Server sanitization is accepted only when no local edit happened during
+            // the request; otherwise the new local data remains in the working model.
             savedSnapshot = unchanged ? JSON.stringify(buildPayload()) : submitted;
             dirty = JSON.stringify(buildPayload()) !== savedSnapshot;
             saved = true;
@@ -1502,6 +1834,10 @@ function bind() {
         onConfigModified('engine');
         updateEngineSummary();
     });
+    if ($('engine-sensitive-mode')) $('engine-sensitive-mode').addEventListener('change', () => onConfigModified('engine'));
+    if ($('engine-translation-target')) $('engine-translation-target').addEventListener('input', () => onConfigModified('engine'));
+    if ($('channel-select')) $('channel-select').addEventListener('change', onChannelChange);
+    if ($('btn-retry-channels')) $('btn-retry-channels').addEventListener('click', retryDiscordChannels);
 
     // Rol stüdyosu: sekmeler (ok tuşlarıyla gezinme dahil)
     const tablist = qs('.studio-list');
@@ -1509,9 +1845,9 @@ function bind() {
     qsa('[data-studio-module]').forEach(button => button.addEventListener('click', () => selectStudioModule(button.dataset.studioModule)));
 
     qsa('input[name="filter-mode"]').forEach(radio => radio.addEventListener('change', () => {
-        onConfigModified('role_filters');
         const filter = getCurFilter();
         filter.mode = radio.value;
+        onConfigModified('role_filters');
         updateFilterModeUI(radio.value);
         updateModuleBadges();
         updateNavCounts();
@@ -1633,6 +1969,7 @@ async function boot() {
     await fetchInfo();
     await fetchSettings();
     fetchDiscordRoles();
+    fetchDiscordChannels();
     checkHealth();
 }
 

@@ -16,7 +16,10 @@ fn public_v4(ip: Ipv4Addr) -> bool {
         || a == 0
         || a >= 240
         || (a == 100 && (64..=127).contains(&b))
-        || (a == 192 && b == 0)
+        // Only 192.0.0.0/24 is reserved here; 192.0.77.0/24 is a public
+        // Tumblr/WordPress VIP range and must not be rejected as if it were
+        // the whole 192.0.0.0/16.
+        || (a == 192 && b == 0 && c == 0)
         || (a == 192 && b == 88 && c == 99)
         || (a == 198 && (b == 18 || b == 19))
         || ip.is_documentation())
@@ -117,6 +120,7 @@ mod tests {
             "169.254.169.254",
             "100.64.0.1",
             "192.0.2.1",
+            "192.0.0.1",
             "198.18.0.1",
             "240.0.0.1",
             "::1",
@@ -128,7 +132,7 @@ mod tests {
         ] {
             assert!(!public_ip(ip.parse().unwrap()), "{ip}");
         }
-        for ip in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
+        for ip in ["1.1.1.1", "8.8.8.8", "192.0.77.40", "2606:4700:4700::1111"] {
             assert!(public_ip(ip.parse().unwrap()));
         }
         for url in [

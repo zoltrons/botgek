@@ -11,7 +11,64 @@ use tracing::debug;
 
 use super::media::{self, DISCORD_FILE_LIMIT};
 use super::{BuiltinPost, Media, MediaKind};
-use crate::settings::EngineSettings;
+use crate::settings::{EngineSettings, SensitiveMode};
+
+/// Per-send source/channel inputs used to derive spoiler presentation.
+///
+/// This is deliberately pure data: channel discovery happens in the message flow, while
+/// deciding whether a post (or a quoted post) is hidden is deterministic and testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibilityDecision {
+    pub hide_sensitive: bool,
+    pub hide_source_spoiler: bool,
+    pub hide_manual_spoiler: bool,
+}
+
+impl VisibilityDecision {
+    /// Builds the decision for one post. `channel_nsfw == None` means that channel metadata is
+    /// unknown (including DMs), and therefore cannot opt sensitive content into visibility.
+    pub fn for_post(
+        post: &BuiltinPost,
+        manual_spoiler: bool,
+        mode: SensitiveMode,
+        channel_nsfw: Option<bool>,
+    ) -> Self {
+        let hide_sensitive = post.sensitive
+            && match mode {
+                SensitiveMode::HideAlways => true,
+                SensitiveMode::AllowInNsfw => channel_nsfw != Some(true),
+            };
+        Self {
+            hide_sensitive,
+            // Source spoilers are intentionally independent from NSFW mode. A source author
+            // explicitly asked for a click-to-reveal spoiler, so NSFW channels never unhide it.
+            hide_source_spoiler: post.source_spoiler,
+            hide_manual_spoiler: manual_spoiler,
+        }
+    }
+
+    pub fn hidden(self) -> bool {
+        self.hide_sensitive || self.hide_source_spoiler || self.hide_manual_spoiler
+    }
+}
+
+/// Clones a fetched post for one send and applies effective hidden state to every quote.
+/// Cached `Arc<BuiltinPost>` entries remain immutable and retain source metadata.
+pub fn apply_visibility(
+    post: &BuiltinPost,
+    manual_spoiler: bool,
+    mode: SensitiveMode,
+    channel_nsfw: Option<bool>,
+) -> BuiltinPost {
+    let decision = VisibilityDecision::for_post(post, manual_spoiler, mode, channel_nsfw);
+    let mut visible = post.clone();
+    visible.sensitive = decision.hidden();
+    visible.quote = post
+        .quote
+        .as_deref()
+        .map(|quote| Box::new(apply_visibility(quote, false, mode, channel_nsfw)));
+    visible
+}
 
 /// Video **birleştirme** bütçesi.
 ///
@@ -111,7 +168,20 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
 
     let mut next = post.quote.as_deref();
     while let Some(candidate) = next {
-        if !options.show_quote || !plan_is_empty(&plan) {
+        // A quote hidden by the per-send visibility decision must not leak its media into
+        // the parent card's fallback gallery. The quote remains in the model so its text can
+        // still be rendered as a spoiler, but its media is not promoted to the main gallery.
+        if !options.show_quote
+            || !plan_is_empty(&plan)
+            || candidate.sensitive
+            || candidate.source_spoiler
+        {
+            break;
+        }
+        // Do not let a hidden quoted post (or any child below it) leak its media into the
+        // parent card's fallback gallery. The parent may still render its own media as a
+        // spoiler-marked item.
+        if candidate.sensitive {
             break;
         }
         for media in &candidate.media {
@@ -520,6 +590,90 @@ mod tests {
             "görsel yoksa galeri boş kalır"
         );
         assert!(plan_is_empty(&plan));
+    }
+
+    #[test]
+    fn visibility_matrix_keeps_nsfw_mode_and_spoilers_distinct() {
+        let mut post = sample_post();
+        post.sensitive = true;
+
+        let hidden =
+            VisibilityDecision::for_post(&post, false, SensitiveMode::HideAlways, Some(true));
+        assert!(hidden.hidden());
+
+        let visible =
+            VisibilityDecision::for_post(&post, false, SensitiveMode::AllowInNsfw, Some(true));
+        assert!(
+            !visible.hidden(),
+            "NSFW metadata is allowed in a known NSFW channel"
+        );
+
+        let safe =
+            VisibilityDecision::for_post(&post, false, SensitiveMode::AllowInNsfw, Some(false));
+        assert!(safe.hidden());
+        let unknown = VisibilityDecision::for_post(&post, false, SensitiveMode::AllowInNsfw, None);
+        assert!(unknown.hidden(), "unknown metadata fails closed");
+
+        post.sensitive = false;
+        post.source_spoiler = true;
+        assert!(
+            VisibilityDecision::for_post(&post, false, SensitiveMode::AllowInNsfw, Some(true),)
+                .hidden(),
+            "source spoilers are always hidden"
+        );
+        assert!(
+            apply_visibility(&post, false, SensitiveMode::AllowInNsfw, Some(true)).sensitive,
+            "source spoiler remains hidden even in NSFW channels"
+        );
+        assert!(
+            apply_visibility(&post, true, SensitiveMode::AllowInNsfw, Some(true)).sensitive,
+            "manual spoilers remain hidden in NSFW channels"
+        );
+    }
+
+    #[test]
+    fn visibility_applies_to_quotes_and_prevents_hidden_quote_media_fallback() {
+        let mut post = sample_post();
+        let mut quote = sample_post();
+        quote.text = "gizli alıntı".to_string();
+        quote.sensitive = true;
+        quote.media = vec![image("https://cdn/hidden.jpg")];
+        post.quote = Some(Box::new(quote));
+
+        let visible = apply_visibility(&post, false, SensitiveMode::AllowInNsfw, Some(false));
+        assert!(visible.quote.as_deref().unwrap().sensitive);
+        let plan = plan_media(&visible, &options());
+        assert!(
+            plan_is_empty(&plan),
+            "hidden quote media must not enter parent gallery"
+        );
+
+        let mut nested = sample_post();
+        nested.media = vec![image("https://cdn/nested.jpg")];
+        let mut post_with_nested = post;
+        post_with_nested.quote.as_mut().unwrap().quote = Some(Box::new(nested));
+        let filtered = apply_visibility(
+            &post_with_nested,
+            false,
+            SensitiveMode::AllowInNsfw,
+            Some(false),
+        );
+        assert!(plan_is_empty(&plan_media(&filtered, &options())));
+    }
+
+    #[test]
+    fn spoiler_attachment_reference_matches_the_uploaded_filename() {
+        let filename = attachment_name("video.mp4", true);
+        assert_eq!(filename, "SPOILER_video.mp4");
+        let attachment = media::to_attachment(
+            media::MediaFile {
+                bytes: vec![1, 2, 3],
+                filename: "video.mp4".to_string(),
+                mime: "video/mp4".to_string(),
+            },
+            true,
+        );
+        assert_eq!(attachment.filename, filename);
     }
 
     /// Örnek link kartı (X'in harici bağlantı önizlemesi).

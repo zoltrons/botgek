@@ -11,6 +11,11 @@ pub enum Platform {
     Reddit,
     Bluesky,
     Spotify,
+    Twitch,
+    Pixiv,
+    Tumblr,
+    Facebook,
+    YouTube,
 }
 
 impl Platform {
@@ -22,6 +27,11 @@ impl Platform {
             Platform::Reddit => "Reddit",
             Platform::Bluesky => "Bluesky",
             Platform::Spotify => "Spotify",
+            Platform::Twitch => "Twitch",
+            Platform::Pixiv => "Pixiv",
+            Platform::Tumblr => "Tumblr",
+            Platform::Facebook => "Facebook",
+            Platform::YouTube => "YouTube",
         }
     }
 
@@ -158,6 +168,55 @@ static SPOTIFY_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Geçersiz Spotify kısa link regex deseni")
 });
 
+// ==================== YENİ KAMUYA AÇIK PLATFORM LİNKLERİ ====================
+// Bu desenler yalnızca kanonik gönderi biçimlerini kabul eder; profil/arama sayfaları
+// bilerek dönüştürülmez. URL'nin geri kalanındaki sorgu ve parça, normalleştirme sırasında
+// atılır; böylece Markdown hedefinde kullanıcı tarafından eklenmiş karakterler taşınmaz.
+static TWITCH_CLIP_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*(https?://(?:www\.)?(?:clips\.twitch\.tv/[A-Za-z0-9_-]+|twitch\.tv/[^/\s]+/clip/[A-Za-z0-9_-]+))[^\s|]*\s*\|\|")
+        .expect("geçerli Twitch clip spoiler regex")
+});
+static TWITCH_CLIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.)?(?:clips\.twitch\.tv/[A-Za-z0-9_-]+|twitch\.tv/[^/\s]+/clip/[A-Za-z0-9_-]+)[^\s<>()]*")
+        .expect("geçerli Twitch clip regex")
+});
+static PIXIV_ARTWORK_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\|\|\s*(https?://(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?artworks/[0-9]+)[^\s|]*\s*\|\|",
+    )
+    .expect("geçerli Pixiv spoiler regex")
+});
+static PIXIV_ARTWORK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.)?pixiv\.net/(?:[a-z]{2}/)?artworks/[0-9]+[^\s<>()]*")
+        .expect("geçerli Pixiv regex")
+});
+static TUMBLR_POST_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*(https?://(?:www\.)?(?:[A-Za-z0-9-]+\.tumblr\.com/post/[0-9]+|tumblr\.com/(?:[^/\s]+/post/[0-9]+|[^/\s]+/[0-9]+)))[^\s|]*\s*\|\|")
+        .expect("geçerli Tumblr spoiler regex")
+});
+static TUMBLR_POST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.)?(?:[A-Za-z0-9-]+\.tumblr\.com/post/[0-9]+|tumblr\.com/(?:[^/\s]+/post/[0-9]+|[^/\s]+/[0-9]+))[^\s<>()]*")
+        .expect("geçerli Tumblr regex")
+});
+static FACEBOOK_POST_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*(https?://(?:www\.|m\.)?facebook\.com/(?:[^/\s]+/posts/(?:[0-9]+|pfbid[A-Za-z0-9_-]+)|watch/\?v=[0-9]+|videos/(?:[0-9]+|pfbid[A-Za-z0-9_-]+)|reel/[0-9]+))[^\s|]*\s*\|\|")
+        .expect("geçerli Facebook spoiler regex")
+});
+static FACEBOOK_POST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.|m\.)?facebook\.com/(?:[^/\s]+/posts/(?:[0-9]+|pfbid[A-Za-z0-9_-]+)|watch/\?v=[0-9]+|videos/(?:[0-9]+|pfbid[A-Za-z0-9_-]+)|reel/[0-9]+)[^\s<>()]*")
+        .expect("geçerli Facebook regex")
+});
+static YOUTUBE_COMMUNITY_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\|\|\s*(https?://(?:www\.|m\.)?youtube\.com/post/[A-Za-z0-9_-]+)[^\s|]*\s*\|\|",
+    )
+    .expect("geçerli YouTube spoiler regex")
+});
+static YOUTUBE_COMMUNITY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.|m\.)?youtube\.com/post/[A-Za-z0-9_-]+[^\s<>()]*")
+        .expect("geçerli YouTube community regex")
+});
+
 /// Characters that would prematurely close or corrupt the Markdown link the
 /// converter wraps these URLs in (`[:](url)` / `[**Platform**](<url>)`).
 /// Left unescaped they let a crafted post URL inject arbitrary link text and a
@@ -271,6 +330,22 @@ pub fn parse_message_with_domains(
 
     // 6. Spotify
     if let Some(post) = parse_spotify(raw_content, &domains.spotify) {
+        return Some(sanitize_urls(post));
+    }
+
+    if let Some(post) = parse_twitch(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_pixiv(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_tumblr(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_facebook(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_youtube(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -607,6 +682,161 @@ fn parse_spotify(raw_content: &str, domain: &str) -> Option<ParsedPost> {
     None
 }
 
+fn canonical_clip_url(raw: &str) -> Option<String> {
+    let raw = raw.trim_end_matches(['.', ',', '!', ';']);
+    let path = raw.split(['?', '#']).next()?.trim_end_matches('/');
+    let slug = if let Some(slug) = path.rsplit('/').next() {
+        slug
+    } else {
+        return None;
+    };
+    (!slug.is_empty()).then(|| format!("https://clips.twitch.tv/{slug}"))
+}
+
+fn parse_twitch(raw_content: &str) -> Option<ParsedPost> {
+    for (regex, spoiler) in [
+        (&*TWITCH_CLIP_SPOILER_REGEX, true),
+        (&*TWITCH_CLIP_REGEX, false),
+    ] {
+        if let Some(caps) = regex.captures(raw_content) {
+            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
+            let original_url = canonical_clip_url(raw)?;
+            return Some(ParsedPost {
+                platform: Platform::Twitch,
+                is_spoiler: spoiler,
+                user_comment: extract_user_comment(raw_content, regex),
+                fixed_url: original_url.clone(),
+                original_url,
+            });
+        }
+    }
+    None
+}
+
+fn canonical_path_url(raw: &str, host: &str) -> Option<String> {
+    let raw = raw.trim_end_matches(['.', ',', '!', ';']);
+    let parsed = url::Url::parse(raw).ok()?;
+    let path = parsed.path().trim_end_matches('/');
+    (!path.is_empty()).then(|| format!("https://{host}{path}"))
+}
+
+fn parse_pixiv(raw_content: &str) -> Option<ParsedPost> {
+    for (regex, spoiler) in [
+        (&*PIXIV_ARTWORK_SPOILER_REGEX, true),
+        (&*PIXIV_ARTWORK_REGEX, false),
+    ] {
+        if let Some(caps) = regex.captures(raw_content) {
+            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
+            let original_url = canonical_path_url(raw, "www.pixiv.net")?;
+            return Some(ParsedPost {
+                platform: Platform::Pixiv,
+                is_spoiler: spoiler,
+                user_comment: extract_user_comment(raw_content, regex),
+                fixed_url: original_url.clone(),
+                original_url,
+            });
+        }
+    }
+    None
+}
+
+fn tumblr_canonical(raw: &str) -> Option<String> {
+    let raw = raw.trim_end_matches(['.', ',', '!', ';']);
+    let parsed = url::Url::parse(raw).ok()?;
+    let path = parsed.path().trim_end_matches('/');
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let blog = host
+        .strip_suffix(".tumblr.com")
+        .filter(|b| *b != "www")
+        .or_else(|| segments.first().copied())?;
+    let id_index = if host.ends_with(".tumblr.com") {
+        1
+    } else if segments.get(1) == Some(&"post") {
+        2
+    } else {
+        1
+    };
+    let id = segments
+        .get(id_index)
+        .filter(|id| id.chars().all(|c| c.is_ascii_digit()))?;
+    if host == "tumblr.com" || host == "www.tumblr.com" {
+        return Some(format!("https://www.tumblr.com/{blog}/{id}"));
+    }
+    Some(format!("https://{blog}.tumblr.com/post/{id}"))
+}
+
+fn parse_tumblr(raw_content: &str) -> Option<ParsedPost> {
+    for (regex, spoiler) in [
+        (&*TUMBLR_POST_SPOILER_REGEX, true),
+        (&*TUMBLR_POST_REGEX, false),
+    ] {
+        if let Some(caps) = regex.captures(raw_content) {
+            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
+            let original_url = tumblr_canonical(raw)?;
+            return Some(ParsedPost {
+                platform: Platform::Tumblr,
+                is_spoiler: spoiler,
+                user_comment: extract_user_comment(raw_content, regex),
+                fixed_url: original_url.clone(),
+                original_url,
+            });
+        }
+    }
+    None
+}
+
+fn parse_facebook(raw_content: &str) -> Option<ParsedPost> {
+    for (regex, spoiler) in [
+        (&*FACEBOOK_POST_SPOILER_REGEX, true),
+        (&*FACEBOOK_POST_REGEX, false),
+    ] {
+        if let Some(caps) = regex.captures(raw_content) {
+            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
+            let raw = raw.trim_end_matches(['.', ',', '!', ';']);
+            let parsed = url::Url::parse(raw).ok()?;
+            let mut original_url = format!("https://www.facebook.com{}", parsed.path());
+            if let Some(query) = parsed.query() {
+                if parsed.path() == "/watch/" {
+                    original_url.push('?');
+                    original_url.push_str(query);
+                }
+            }
+            return Some(ParsedPost {
+                platform: Platform::Facebook,
+                is_spoiler: spoiler,
+                user_comment: extract_user_comment(raw_content, regex),
+                fixed_url: original_url.clone(),
+                original_url,
+            });
+        }
+    }
+    None
+}
+
+fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
+    for (regex, spoiler) in [
+        (&*YOUTUBE_COMMUNITY_SPOILER_REGEX, true),
+        (&*YOUTUBE_COMMUNITY_REGEX, false),
+    ] {
+        if let Some(caps) = regex.captures(raw_content) {
+            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
+            let original_url = canonical_path_url(raw, "www.youtube.com")?;
+            return Some(ParsedPost {
+                platform: Platform::YouTube,
+                is_spoiler: spoiler,
+                user_comment: extract_user_comment(raw_content, regex),
+                fixed_url: original_url.clone(),
+                original_url,
+            });
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,5 +1100,72 @@ mod tests {
         assert_eq!(parsed.platform, Platform::Spotify);
         assert_eq!(parsed.original_url, "https://spotify.link/AbCdEf1234");
         assert_eq!(parsed.fixed_url, "https://open.fixspotify.com/AbCdEf1234");
+    }
+
+    #[test]
+    fn new_platform_urls_have_canonical_forms_and_comments() {
+        let cfg = dummy_config();
+        let cases = [
+            (
+                "bak https://www.twitch.tv/channel/clip/Ab_C-123 not",
+                Platform::Twitch,
+                "https://clips.twitch.tv/Ab_C-123",
+            ),
+            (
+                "||https://www.pixiv.net/en/artworks/12345||",
+                Platform::Pixiv,
+                "https://www.pixiv.net/en/artworks/12345",
+            ),
+            (
+                "not https://artist.tumblr.com/post/987654321?x=1",
+                Platform::Tumblr,
+                "https://artist.tumblr.com/post/987654321",
+            ),
+            (
+                "https://www.tumblr.com/ballots/829790623215321088?source=share",
+                Platform::Tumblr,
+                "https://www.tumblr.com/ballots/829790623215321088",
+            ),
+            (
+                "https://www.facebook.com/example/posts/123456?comment_id=2",
+                Platform::Facebook,
+                "https://www.facebook.com/example/posts/123456",
+            ),
+            (
+                "https://www.facebook.com/NASA/posts/pfbid02yLSD4sQr4mcpEEKwHR3jVmJmRMk6ReLukg697i5a731BXyY8mZ4hwwTT8s49852bl",
+                Platform::Facebook,
+                "https://www.facebook.com/NASA/posts/pfbid02yLSD4sQr4mcpEEKwHR3jVmJmRMk6ReLukg697i5a731BXyY8mZ4hwwTT8s49852bl",
+            ),
+            (
+                "hello https://m.youtube.com/post/UCabc_123",
+                Platform::YouTube,
+                "https://www.youtube.com/post/UCabc_123",
+            ),
+        ];
+        for (input, platform, url) in cases {
+            let parsed = parse_message(input, &cfg).expect("yeni platform linki bulunmalı");
+            assert_eq!(parsed.platform, platform);
+            assert_eq!(parsed.original_url, url);
+            assert_eq!(parsed.fixed_url, url);
+        }
+        assert!(
+            parse_message("||https://www.pixiv.net/en/artworks/12345||", &cfg)
+                .expect("spoiler")
+                .is_spoiler
+        );
+    }
+
+    #[test]
+    fn non_canonical_new_platform_pages_are_ignored() {
+        let cfg = dummy_config();
+        for input in [
+            "https://www.twitch.tv/channel",
+            "https://www.pixiv.net/users/123",
+            "https://artist.tumblr.com/",
+            "https://www.facebook.com/example",
+            "https://www.youtube.com/channel/abc",
+        ] {
+            assert!(parse_message(input, &cfg).is_none(), "{input}");
+        }
     }
 }

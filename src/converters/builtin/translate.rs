@@ -7,10 +7,6 @@
 //!
 //! Türkçe (`tr`) ve İngilizce (`en`) gönderiler olduğu gibi bırakılır.
 
-/// X'in çeviri servisinden istenen hedef dil kodu.
-pub const TARGET_LANGUAGE_CODE: &str = "tr";
-/// Bu dillerdeki gönderiler çevrilmez: metin zaten Türkçe veya İngilizce.
-pub const SKIP_LANGUAGE_CODES: [&str; 2] = ["tr", "en"];
 /// Dilin belirlenemediği/çeviriye uygun olmadığı kodlar (X'in sözde dilleri dahil).
 const UNKNOWN_LANGUAGE_CODES: [&str; 7] = ["und", "zxx", "mul", "qme", "qam", "qht", "art"];
 
@@ -36,9 +32,17 @@ pub fn normalize_language(language: Option<&str>) -> Option<String> {
 }
 
 /// Gönderi Türkçeye çevrilmeli mi? Türkçe/İngilizce ve dili belirsiz gönderiler için `false`.
-pub fn needs_turkish_translation(language: Option<&str>) -> bool {
+/// Gönderi dili hedef dilden farklıysa X'in çeviri uç noktasına gidilmelidir.
+pub fn needs_translation(language: Option<&str>, target: &str) -> bool {
+    let target = normalize_language(Some(target));
     match normalize_language(language) {
-        Some(lang) => !SKIP_LANGUAGE_CODES.contains(&lang.as_str()),
+        Some(lang) => {
+            target.as_deref() != Some(lang.as_str())
+                // Preserve the existing default policy: Turkish auto-translation does not
+                // rewrite English posts. A different configured target may still translate
+                // English (for example, English -> German).
+                && !(target.as_deref() == Some("tr") && lang == "en")
+        }
         None => false,
     }
 }
@@ -68,15 +72,15 @@ mod tests {
     #[test]
     fn only_foreign_languages_need_translation() {
         // Türkçe ve İngilizce gönderiler olduğu gibi bırakılır
-        assert!(!needs_turkish_translation(Some("tr")));
-        assert!(!needs_turkish_translation(Some("en-US")));
-        assert!(!needs_turkish_translation(Some("TR")));
-        assert!(!needs_turkish_translation(Some("und")));
-        assert!(!needs_turkish_translation(None));
+        assert!(!needs_translation(Some("tr"), "tr"));
+        assert!(!needs_translation(Some("en-US"), "en"));
+        assert!(!needs_translation(Some("TR"), "tr"));
+        assert!(!needs_translation(Some("und"), "tr"));
+        assert!(!needs_translation(None, "tr"));
         // Diğer diller çevrilir
-        assert!(needs_turkish_translation(Some("de")));
-        assert!(needs_turkish_translation(Some("ja")));
-        assert!(needs_turkish_translation(Some("ru")));
-        assert!(needs_turkish_translation(Some("ar-SA")));
+        assert!(needs_translation(Some("de"), "tr"));
+        assert!(needs_translation(Some("ja"), "tr"));
+        assert!(needs_translation(Some("ru"), "tr"));
+        assert!(needs_translation(Some("ar-SA"), "tr"));
     }
 }

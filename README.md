@@ -1,12 +1,24 @@
 # Botgek
 
 Rust ile yazılmış Discord sosyal medya bağlantı dönüştürücüsü ve isteğe bağlı OpenRouter sohbet botu.
-Twitter/X, Instagram, Reddit, Bluesky, TikTok ve Spotify desteklenir.
+Twitter/X, Instagram, Reddit, Bluesky, TikTok, Spotify, Twitch, Pixiv, Tumblr, Facebook ve YouTube
+Community Posts desteklenir.
 
 ## Güncel davranış
 
-- Twitter/X, Instagram ve Reddit **native-only**; TikTok, Bluesky ve Spotify için native/proxy seçilebilir.
+- Twitter/X, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook ve YouTube Community Posts
+  **native-only**; TikTok, Bluesky ve Spotify için native/proxy seçilebilir.
+- Ayarlar global, guild ve kanal kapsamlarında çözümlenir. Thread'ler yalnızca parent kanal ayarını miras alır;
+  kategori ayarı yoktur. Kanal kapsamları WebUI'daki authenticated Discord kanal listesinden seçilir.
+- Hassas içerik varsayılan olarak spoiler'dır. İstenirse yalnızca NSFW kanallarda açılabilir; kaynak spoiler'ı
+  ve kullanıcı tarafından `||...||` ile işaretlenen linkler NSFW kanalda da gizli kalır.
+- Başka botların desteklenen linkleri varsayılan olarak yok sayılır; WebUI'dan güvenli, impersonation'sız
+  bot dönüşümü açılabilir. Bot mesajları AI sohbetini tetiklemez ve duplicate kaynaklar TTL guard ile elenir.
+- Otomatik X çevirisinin hedef dili WebUI'dan `tr`, `en`, `de` veya BCP-47 uyumlu başka bir kod olarak
+  seçilebilir. Proxy bayrak çevirileri mevcut davranışını korur.
 - Native kartlar **yalnızca Discord Components V2** kullanır; klasik embed fallback'i veya kart stili seçimi yoktur.
+- Tumblr önce fxtumblr uyumlu renderer'ı (`FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`) dener; böylece NPF/reblog
+  zinciri ve çoklu medya tek güvenli render görselinde korunur. Renderer erişilemezse public OG fallback kullanılır.
 - Görseller ve GIF'ler doğrudan CDN bağlantılarıdır; X görsellerinde `name=orig` kullanılır.
 - X GIF'leri vxTwitter gifconvert üzerinden animasyonlu AVIF bağlantısına dönüştürülür; yerel ffmpeg yolu yoktur.
 - Reddit videosunda video/ses saf Rust ile MP4'e birleştirilir. Aynı anda en fazla **iki** birleştirme;
@@ -77,6 +89,7 @@ Tokenı döndürmek için `.env` değerini değiştirip botu yeniden başlatın.
 | `BOTGEK_SETTINGS_SEED` | Yalnızca hedef dosya yoksa ilk içe aktarım kaynağı |
 | `BOTGEK_DB_PATH` | Kart–paylaşan kullanıcı kaydı; varsayılan `botgek.db` |
 | `OPENROUTER_API_KEY` | İsteğe bağlı AI erişimi |
+| `FXTUMBLR_DOMAIN` | Tumblr NPF/render hizmeti; varsayılan `tpmblr.com`, boş bırakılırsa public OG fallback kullanılır |
 | `INSTAGRAM_SESSIONID` | İsteğe bağlı Instagram reel/video çerezi; yalnızca ortamda saklanır |
 | `REDDIT_CLIENT_ID` | İsteğe bağlı public OAuth istemci kimliği; sır değildir |
 | `DELETE_ORIGINAL` | Başarılı dönüşüm sonrası orijinal mesajı silme |

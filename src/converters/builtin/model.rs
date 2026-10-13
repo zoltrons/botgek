@@ -122,6 +122,9 @@ pub struct BuiltinPost {
     /// Adapter tarafından sınırlandırılan alıntı zinciri.
     pub quote: Option<Box<BuiltinPost>>,
     pub community_note: Option<String>,
+    /// Kaynağın açıkça spoiler olarak işaretlediği içerik (Reddit `spoiler`).
+    /// NSFW kanalda bile hiçbir zaman otomatik olarak açılmaz.
+    pub source_spoiler: bool,
     pub sensitive: bool,
     pub extra_label: Option<String>,
     pub language: Option<String>,
@@ -143,6 +146,7 @@ impl BuiltinPost {
             media: Vec::new(),
             quote: None,
             community_note: None,
+            source_spoiler: false,
             sensitive: false,
             extra_label: None,
             language: None,

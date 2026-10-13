@@ -11,6 +11,8 @@ use super::{Author, BuiltinPost, Media, MediaKind, Stats, parse_timestamp};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const API_BASE: &str = "https://public.api.bsky.app/xrpc";
+const THREAD_DEPTH: u8 = 2;
+const THREAD_PARENT_HEIGHT: u8 = 1;
 
 static BSKY_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"bsky\.app/profile/([^/\s]+)/post/([A-Za-z0-9]+)").expect("geçerli bluesky regex")
@@ -43,7 +45,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let did = resolve_did(client, &handle).await?;
     let uri = format!("at://{did}/app.bsky.feed.post/{rkey}");
     let url = format!(
-        "{API_BASE}/app.bsky.feed.getPostThread?depth=0&uri={}",
+        "{API_BASE}/app.bsky.feed.getPostThread?depth={THREAD_DEPTH}&parentHeight={THREAD_PARENT_HEIGHT}&uri={}",
         encode_component(&uri)
     );
     let value = super::get_json(client, &url).await?;
@@ -51,11 +53,11 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let response: ThreadResponse = serde_json::from_value(value)
         .map_err(|e| format!("Bluesky yanıtı çözümlenemedi ({rkey}): {e}"))?;
 
-    let post = response.thread.post.ok_or_else(|| {
+    response.thread.post.as_ref().ok_or_else(|| {
         format!("Bluesky gönderisi bulunamadı ({rkey}); silinmiş veya engellenmiş olabilir")
     })?;
 
-    Ok(post_view_to_post(&post, &handle))
+    Ok(thread_view_to_post(&response.thread, &handle))
 }
 
 /// `handle` → `did` çözümlemesi (zaten DID verilmişse doğrudan döner).
@@ -152,6 +154,84 @@ fn post_view_to_post(post: &PostView, fallback_handle: &str) -> BuiltinPost {
         }
 
         built.quote = parts.quote.map(Box::new);
+    }
+
+    built
+}
+
+/// Converts the requested post plus the single bounded parent/repost relation returned by
+/// AppView. Replies are represented as a compact label because the shared model has one quote
+/// slot and no thread collection.
+fn thread_view_to_post(thread: &ThreadView, fallback_handle: &str) -> BuiltinPost {
+    let Some(post) = thread.post.as_ref() else {
+        return BuiltinPost::new(
+            Platform::Bluesky,
+            format!("https://bsky.app/profile/{fallback_handle}"),
+            Author::new(fallback_handle, fallback_handle),
+        );
+    };
+    let mut built = post_view_to_post(post, fallback_handle);
+
+    if let Some(parent) = thread
+        .parent
+        .as_deref()
+        .and_then(|parent| parent.post.as_ref())
+    {
+        if let Some(parent_quote) = quote_from_post_view(parent) {
+            built.quote = Some(Box::new(parent_quote));
+        }
+        let handle = parent
+            .author
+            .as_ref()
+            .and_then(|author| author.handle.as_deref())
+            .unwrap_or("kullanıcı");
+        built.extra_label = Some(format!("Yanıt • @{handle}"));
+    } else if post
+        .record
+        .as_ref()
+        .and_then(|record| record.reply.as_ref())
+        .is_some()
+    {
+        built.extra_label = Some("Yanıt".to_string());
+    }
+
+    let reply_count = thread
+        .replies
+        .as_ref()
+        .map(|replies| replies.len().min(32))
+        .unwrap_or(0);
+    if reply_count > 0 {
+        let suffix = format!("+{reply_count} yanıt");
+        built.extra_label = Some(match built.extra_label.take() {
+            Some(label) => format!("{label} • {suffix}"),
+            None => suffix,
+        });
+    }
+
+    if let Some(reason) = thread.reason.as_ref().or_else(|| post.reason.as_ref())
+        && reason
+            .kind
+            .as_deref()
+            .is_some_and(|kind| kind.contains("reasonRepost"))
+    {
+        let by = reason
+            .by
+            .as_ref()
+            .and_then(|profile| profile.handle.as_deref())
+            .map(|handle| format!("@{handle}"))
+            .unwrap_or_else(|| "başka kullanıcı".to_string());
+        let repost_label = format!("Repost • {by}");
+        built.extra_label = Some(if thread.parent.is_some() {
+            match built.extra_label.take() {
+                Some(label) => format!("{repost_label} • {label}"),
+                None => repost_label,
+            }
+        } else {
+            // A repost reason is authoritative when AppView does not provide a parent.
+            // The record may still carry a reply reference from the original post; do not
+            // present that stale relation as if the repost itself were a reply.
+            repost_label
+        });
     }
 
     built
@@ -375,6 +455,9 @@ struct ThreadView {
     #[serde(rename = "type", alias = "$type")]
     kind: Option<String>,
     post: Option<PostView>,
+    parent: Option<Box<ThreadView>>,
+    replies: Option<Vec<ThreadView>>,
+    reason: Option<RepostReason>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -397,6 +480,7 @@ struct PostView {
     quote_count: Option<u64>,
     #[serde(rename = "indexedAt")]
     indexed_at: Option<String>,
+    reason: Option<RepostReason>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -430,6 +514,29 @@ struct PostRecord {
     #[serde(rename = "createdAt")]
     created_at: Option<String>,
     facets: Option<Vec<Facet>>,
+    reply: Option<ReplyRef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ReplyRef {
+    root: Option<ReplyTarget>,
+    parent: Option<ReplyTarget>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ReplyTarget {
+    uri: Option<String>,
+    cid: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RepostReason {
+    #[serde(rename = "$type", alias = "type")]
+    kind: Option<String>,
+    by: Option<ProfileView>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -665,6 +772,58 @@ mod tests {
         assert_eq!(
             encode_component("at://did:plc:abc/app.bsky.feed.post/1"),
             "at%3A%2F%2Fdid%3Aplc%3Aabc%2Fapp.bsky.feed.post%2F1"
+        );
+    }
+
+    #[test]
+    fn bounded_thread_fixture_preserves_parent_and_repost_relation() {
+        let json = r#"{
+            "thread": {
+                "type": "app.bsky.feed.defs#threadViewPost",
+                "reason": { "$type": "app.bsky.feed.defs#reasonRepost", "by": { "handle": "resharer.bsky.social" } },
+                "parent": { "post": {
+                    "uri": "at://did:plc:parent/app.bsky.feed.post/parent1",
+                    "author": { "handle": "parent.bsky.social", "displayName": "Parent" },
+                    "record": { "text": "Üst gönderi", "createdAt": "2024-05-06T12:34:56Z" }
+                }},
+                "replies": [
+                    { "post": { "uri": "at://did:plc:reply/app.bsky.feed.post/reply1", "author": { "handle": "reply.bsky.social" }, "record": { "text": "yanıt" } } },
+                    { "post": { "uri": "at://did:plc:reply/app.bsky.feed.post/reply2", "author": { "handle": "reply2.bsky.social" }, "record": { "text": "yanıt 2" } } }
+                ],
+                "post": {
+                    "uri": "at://did:plc:main/app.bsky.feed.post/main1",
+                    "author": { "handle": "main.bsky.social" },
+                    "record": { "text": "Ana gönderi", "reply": { "parent": { "uri": "at://did:plc:parent/app.bsky.feed.post/parent1" } } }
+                }
+            }
+        }"#;
+        let response: ThreadResponse = serde_json::from_str(json).expect("thread fixture geçerli");
+        let post = thread_view_to_post(&response.thread, "main.bsky.social");
+        let parent = post
+            .quote
+            .expect("parent gönderi bounded quote olarak korunmalı");
+        assert_eq!(parent.text, "Üst gönderi");
+        assert!(
+            post.extra_label
+                .as_deref()
+                .is_some_and(|label| label.contains("Yanıt") && label.contains("+2 yanıt"))
+        );
+
+        let repost = RepostReason {
+            kind: Some("app.bsky.feed.defs#reasonRepost".to_string()),
+            by: Some(ProfileView {
+                handle: Some("resharer.bsky.social".to_string()),
+                ..Default::default()
+            }),
+        };
+        let mut repost_thread = response.thread;
+        repost_thread.parent = None;
+        repost_thread.replies = None;
+        repost_thread.reason = Some(repost);
+        let repost_post = thread_view_to_post(&repost_thread, "main.bsky.social");
+        assert_eq!(
+            repost_post.extra_label.as_deref(),
+            Some("Repost • @resharer.bsky.social")
         );
     }
 }

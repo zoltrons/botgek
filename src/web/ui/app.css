@@ -325,6 +325,11 @@ body {
 /* ── ray: kapsam ve kayıt blokları ───────────────────────────────────────── */
 .rail-block { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--rule); }
 .rail-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.channel-scope { display: flex; flex-direction: column; gap: 7px; padding-top: 10px; border-top: 1px dashed var(--rule); }
+.channel-status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.channel-status-row .note { min-width: 0; }
+.channel-status-row .btn { flex: 0 0 auto; }
+.note[data-tone="error"] { color: var(--alert); }
 
 .dirty-line { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.03em; color: var(--ink-dim); }
 #dirty-indicator.is-dirty { color: var(--signal); }

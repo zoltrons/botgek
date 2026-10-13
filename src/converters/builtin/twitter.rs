@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 use tracing::{debug, warn};
 
 use super::media::card_image_url;
-use super::translate::{TARGET_LANGUAGE_CODE, needs_turkish_translation};
+use super::translate::needs_translation;
 use super::{
     Author, BuiltinPost, LinkPreview, Media, MediaKind, Stats, Translation, parse_timestamp,
     strip_trailing_media_links,
@@ -215,13 +215,29 @@ async fn fetch_post_internal(
 
     // 1) Hızlı yol: tek FxTwitter isteği (çeviri açıksa dil ekli uç orijinal + çeviri verir).
     if source == TwitterSource::Fxtwitter || translate {
-        return fetch_fx_fast(client, original_url, id, source, translate, video_budget).await;
+        return fetch_fx_fast(
+            client,
+            original_url,
+            id,
+            source,
+            translate,
+            &engine.translation_target,
+            video_budget,
+        )
+        .await;
     }
 
     // 2) X syndication + FxTwitter aynı anda: biri hata verse de diğeri kullanılır.
     let (x_result, fx_result) = tokio::join!(
         from_syndication(client, original_url, id, video_budget),
-        from_fxtwitter(client, original_url, id, None, video_budget),
+        from_fxtwitter(
+            client,
+            original_url,
+            id,
+            None,
+            &engine.translation_target,
+            video_budget,
+        ),
     );
 
     // Syndication repost/görüntülenme/alıntı vermez: paralel istenen yanıttan tamamlanır.
@@ -302,10 +318,18 @@ async fn fetch_fx_fast(
     id: &str,
     source: TwitterSource,
     translate: bool,
+    translation_target: &str,
     max_video_bytes: u64,
 ) -> Result<BuiltinPost, String> {
-    let language = translate.then_some(TARGET_LANGUAGE_CODE);
-    let fx = from_fxtwitter(client, original_url, id, language, max_video_bytes);
+    let language = translate.then_some(translation_target);
+    let fx = from_fxtwitter(
+        client,
+        original_url,
+        id,
+        language,
+        translation_target,
+        max_video_bytes,
+    );
     tokio::pin!(fx);
 
     match tokio::time::timeout(HEDGE_DELAY, &mut fx).await {
@@ -314,7 +338,15 @@ async fn fetch_fx_fast(
             warn!("FxTwitter isteği başarısız ({id}): {err}");
             if source == TwitterSource::Fxtwitter {
                 // Dil ekli uç sorun çıkarmış olabilir: bir kez dil olmadan denenir.
-                return from_fxtwitter(client, original_url, id, None, max_video_bytes).await;
+                return from_fxtwitter(
+                    client,
+                    original_url,
+                    id,
+                    None,
+                    translation_target,
+                    max_video_bytes,
+                )
+                .await;
             }
             return from_syndication(client, original_url, id, max_video_bytes)
                 .await
@@ -945,6 +977,7 @@ async fn from_fxtwitter(
     original_url: &str,
     id: &str,
     language: Option<&str>,
+    translation_target: &str,
     max_video_bytes: u64,
 ) -> Result<BuiltinPost, String> {
     // Dil eki (`/tr`) verildiğinde yanıt orijinal metinle birlikte X'in çevirisini de içerir.
@@ -967,13 +1000,14 @@ async fn from_fxtwitter(
         .tweet
         .ok_or_else(|| format!("fxtwitter yanıtında gönderi yok: {id}"))?;
 
-    fx_to_post(&tweet, original_url, max_video_bytes)
+    fx_to_post_with_target(&tweet, original_url, max_video_bytes, translation_target)
 }
 
-fn fx_to_post(
+fn fx_to_post_with_target(
     tweet: &FxTweet,
     fallback_url: &str,
     max_video_bytes: u64,
+    translation_target: &str,
 ) -> Result<BuiltinPost, String> {
     let user = tweet.author.as_ref();
     let handle = user.and_then(|a| a.screen_name.clone()).unwrap_or_default();
@@ -1039,14 +1073,15 @@ fn fx_to_post(
             })
             .unwrap_or_default();
         if !quoted_url.is_empty()
-            && let Ok(quoted_post) = fx_to_post(quoted, &quoted_url, max_video_bytes)
+            && let Ok(quoted_post) =
+                fx_to_post_with_target(quoted, &quoted_url, max_video_bytes, translation_target)
         {
             post.quote = Some(Box::new(quoted_post));
         }
     }
 
     // Alıntılanan gönderi de kendi `fx_to_post` çağrısında çevrilir.
-    apply_fx_translation(&mut post, tweet);
+    apply_fx_translation(&mut post, tweet, translation_target);
 
     Ok(post)
 }
@@ -1057,8 +1092,8 @@ fn fx_to_post(
 /// (X'in kendi çeviri servisi). FxEmbed, X çevirisi yoksa kendi yedek servisine (ör. DeepL)
 /// düşer; o çeviri **kullanılmaz** — gönderi orijinal metniyle ve çeviri notu olmadan
 /// gönderilir (bayrak reaksiyonuyla istenirse proxy linki üzerinden çevrilebilir).
-fn apply_fx_translation(post: &mut BuiltinPost, tweet: &FxTweet) {
-    if !needs_turkish_translation(post.language.as_deref()) {
+fn apply_fx_translation(post: &mut BuiltinPost, tweet: &FxTweet, translation_target: &str) {
+    if !needs_translation(post.language.as_deref(), translation_target) {
         return;
     }
 
@@ -1205,8 +1240,13 @@ mod tests {
     fn post_from(json: &serde_json::Value) -> BuiltinPost {
         let tweet: FxTweet =
             serde_json::from_value(json.clone()).expect("örnek JSON geçerli olmalı");
-        fx_to_post(&tweet, "https://x.com/kullanici/status/1", 8 * 1024 * 1024)
-            .expect("gönderi üretilmeli")
+        fx_to_post_with_target(
+            &tweet,
+            "https://x.com/kullanici/status/1",
+            8 * 1024 * 1024,
+            "tr",
+        )
+        .expect("gönderi üretilmeli")
     }
 
     #[test]

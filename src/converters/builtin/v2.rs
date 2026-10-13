@@ -172,6 +172,11 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         Some(custom) => custom.components.clone(),
         None => generic_children(card),
     };
+    // Custom cards are cached as source data and must receive the same per-send decision as
+    // generic cards. This covers Spotify title/body text and thumbnail/media components.
+    if hidden(card) && card.post.custom_card.is_some() {
+        apply_spoiler_to_components(&mut children);
+    }
 
     enforce_cumulative_text_limit(&mut top, &mut children);
 
@@ -273,7 +278,7 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             .map(str::trim)
             .filter(|n| !n.is_empty())
     {
-        children.push(text(format!("-# 🔎 Topluluk Notu\n{}", note)));
+        children.push(text(community_note_content(card.post.platform, note)));
     }
     if let Some(preview) = link_preview_component(card) {
         children.push(preview);
@@ -291,14 +296,15 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             None
         };
 
-        if let Some(component) = quote_component(quote, card.emojis) {
+        if let Some(component) = quote_component(quote, card.emojis, hidden(card)) {
             // Hiyerarşi: alıntı bloğundan önce ince bir ayraç çizgisi ve büyük bir dikey
             // boşluk bırakılır, böylece alıntı kartın gövdesinden ayrı okunur.
             children.push(separator());
             children.push(component);
         }
         if let Some(nested) = nested
-            && let Some(component) = quote_component(nested, card.emojis)
+            && let Some(component) =
+                quote_component(nested, card.emojis, hidden(card) || quote.sensitive)
         {
             // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
             // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
@@ -340,6 +346,26 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     }
 
     children
+}
+
+fn community_note_content(platform: Platform, note: &str) -> String {
+    if platform != Platform::Twitter {
+        return format!("-# 🔎 Topluluk Notu\n{note}");
+    }
+
+    let quoted_note = note
+        .lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                ">".to_string()
+            } else {
+                format!("> {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("> 👥 **Readers added context**\n>\n{quoted_note}")
 }
 
 /// `{"type": 10, "content": ...}` — markdown destekli metin bileşeni.
@@ -396,7 +422,7 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
 /// Alıntılanan gönderi: tek satırlık başlık
 /// `[Quote](link) from **Ad** ([**@kullanici**](profil))` ve alıntılanan metin, **aynı blok
 /// alıntının** içinde ve başlığın hemen ardından gelir (X/fxembed düzeni).
-fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value> {
+fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings, spoiler: bool) -> Option<Value> {
     let body = quote.text.trim();
     let has_media = !quote.media.is_empty();
     if body.is_empty() && !has_media {
@@ -451,7 +477,7 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings) -> Option<Value>
         }
     }
 
-    Some(text(lines.join("\n")))
+    Some(text(spoiler_wrap(&lines.join("\n"), spoiler)))
 }
 
 /// İnce ayraç çizgisi + büyük dikey boşluk: alıntı bloğu kartın gövdesinden ayrı bir bölüm
@@ -604,6 +630,11 @@ fn meta_line(card: &V2Card<'_>) -> String {
             .map(str::to_string)
             .unwrap_or_else(|| post.platform.display_name().to_string()),
         Platform::Bluesky => "<:bluesky:1558392427729920100>".to_string(),
+        Platform::Twitch
+        | Platform::Pixiv
+        | Platform::Tumblr
+        | Platform::Facebook
+        | Platform::YouTube => post.platform.display_name().to_string(),
         _ => post.platform.display_name().to_string(),
     });
 
@@ -653,6 +684,37 @@ fn spoiler_wrap(text: &str, spoiler: bool) -> String {
 /// `||link||` davranışının modern kart karşılığı).
 fn hidden(card: &V2Card<'_>) -> bool {
     card.post.sensitive || card.spoiler
+}
+
+/// Applies native Discord spoiler markers to an already-built custom component tree without
+/// mutating the cached `CustomCard`. Components V2 uses `content` for text and `media` for
+/// thumbnails/gallery items, so walking the JSON tree also covers future Spotify card details.
+fn apply_spoiler_to_components(components: &mut [Value]) {
+    for component in components {
+        apply_spoiler_to_value(component);
+    }
+}
+
+fn apply_spoiler_to_value(value: &mut Value) {
+    if let Some(object) = value.as_object_mut() {
+        if let Some(content) = object.get("content").and_then(Value::as_str) {
+            let content = content.to_string();
+            object.insert(
+                "content".to_string(),
+                Value::String(spoiler_wrap(&content, true)),
+            );
+        }
+        if object.contains_key("media") {
+            object.insert("spoiler".to_string(), Value::Bool(true));
+        }
+        for child in object.values_mut() {
+            apply_spoiler_to_value(child);
+        }
+    } else if let Some(array) = value.as_array_mut() {
+        for child in array {
+            apply_spoiler_to_value(child);
+        }
+    }
 }
 
 /// Yüklenen dosyalar `attachment://<dosya adı>` ile referans verildiği için
@@ -769,6 +831,33 @@ mod tests {
         container(payload)["components"]
             .as_array()
             .expect("bileşen listesi")
+    }
+
+    #[test]
+    fn sensitive_custom_card_hides_text_and_media_without_mutating_source_card() {
+        let mut post = sample_post();
+        let source_components = vec![json!({
+            "type": TYPE_SECTION,
+            "components": [{"type": TYPE_TEXT_DISPLAY, "content": "Spotify başlık"}],
+            "accessory": {"type": TYPE_THUMBNAIL, "media": {"url": "https://cdn/cover.jpg"}}
+        })];
+        post.custom_card = Some(crate::converters::builtin::CustomCard {
+            components: source_components.clone(),
+            accent_color: None,
+        });
+        post.sensitive = true;
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let container = container(&payload);
+        let section = &container["components"][0];
+        assert_eq!(section["components"][0]["content"], "||Spotify başlık||");
+        assert_eq!(section["accessory"]["spoiler"], true);
+        assert_eq!(
+            post.custom_card.as_ref().unwrap().components,
+            source_components,
+            "cached custom card is not mutated"
+        );
     }
 
     fn texts(payload: &Value) -> Vec<String> {
@@ -958,6 +1047,36 @@ mod tests {
             "kart marka satırı içermemeli: {meta}"
         );
         assert!(!meta.contains("<https://"), "link hilesi olmamalı: {meta}");
+    }
+
+    #[test]
+    fn twitter_community_note_matches_the_readers_context_layout() {
+        let mut post = sample_post();
+        post.community_note =
+            Some("İlk satır.\nİkinci satır: https://example.com/note\nÜçüncü satır.".to_string());
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        assert!(texts(&payload).iter().any(|text| {
+            text == "> 👥 **Readers added context**\n>\n> İlk satır.\n> İkinci satır: https://example.com/note\n> Üçüncü satır."
+        }));
+    }
+
+    #[test]
+    fn non_twitter_community_note_keeps_the_existing_layout() {
+        let mut post = sample_post();
+        post.platform = Platform::Reddit;
+        post.community_note = Some("Reddit notu\nİkinci satır".to_string());
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        assert!(
+            texts(&payload)
+                .iter()
+                .any(|text| text == "-# 🔎 Topluluk Notu\nReddit notu\nİkinci satır")
+        );
     }
 
     #[test]

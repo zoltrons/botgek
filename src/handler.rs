@@ -1,6 +1,7 @@
 use serenity::all::{
-    Context, CreateAllowedMentions, CreateMessage, EditMessage, EventHandler, GuildId, Message,
-    Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
+    Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EditMessage,
+    EventHandler, GuildId, Message, MessageId, MessageType, Permissions, Reaction, ReactionType,
+    Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,6 +12,9 @@ use tracing::{error, info, warn};
 
 static AI_COOLDOWNS: LazyLock<Mutex<HashMap<UserId, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static BOT_SOURCE_GUARD: LazyLock<Mutex<HashMap<MessageId, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const BOT_SOURCE_TTL: Duration = Duration::from_secs(300);
 
 const AI_BUDGET_WINDOW: Duration = Duration::from_secs(10);
 const AI_GLOBAL_REQUESTS_PER_WINDOW: u32 = 20;
@@ -132,12 +136,13 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
-        // Botların kendi mesajlarını ve diğer botları yok say
-        if msg.author.bot {
+        let current_user_id = ctx.cache.current_user().id;
+        if msg.author.id == current_user_id || msg.webhook_id.is_some() {
             return;
         }
-
-        let current_user_id = ctx.cache.current_user().id;
+        if !matches!(msg.kind, MessageType::Regular | MessageType::InlineReply) {
+            return;
+        }
 
         // Kendi dönüştürme kartlarımız (bot adına veya taklit webhook'u ile gönderilenler)
         // gelen mesaj olarak işlenmez: modern kartın içeriği boştur ama kartın metni
@@ -147,7 +152,34 @@ impl EventHandler for Handler {
             return;
         }
 
-        let current_settings = self.settings.read().await.get_guild_settings(msg.guild_id);
+        let parent_id = discord_thread_parent(&ctx, msg.guild_id, msg.channel_id).await;
+        let current_settings = self.settings.read().await.get_message_settings(
+            msg.guild_id,
+            msg.channel_id,
+            parent_id,
+        );
+
+        // Bot kaynakları yalnızca açıkça etkinleştirilmiş dönüşüme girebilir. AI akışı aşağıda
+        // bot girdileri için hiç çalıştırılmaz; taklit de botlar için zorla kapatılır.
+        if msg.author.bot {
+            if !current_settings.engine.respond_to_bots
+                || !has_supported_bot_input(&msg.content)
+                || !claim_bot_source(msg.id).await
+            {
+                return;
+            }
+            let mut bot_settings = current_settings.clone();
+            bot_settings.engine.impersonate_user = false;
+            let _ = converters::enqueue_message(
+                &ctx,
+                &msg,
+                &self.http_client,
+                &self.config,
+                &bot_settings,
+            )
+            .await;
+            return;
+        }
 
         // 1. Sosyal Medya Link Dönüştürme Kontrolü
         let _conversion_accepted = converters::enqueue_message(
@@ -410,11 +442,12 @@ impl EventHandler for Handler {
         }
 
         // 2. Bayrak Emojisi ile Çeviri (🇹🇷, 🇬🇧, 🇩🇪 vb.)
-        let guild_settings = self
-            .settings
-            .read()
-            .await
-            .get_guild_settings(reaction.guild_id);
+        let parent_id = discord_thread_parent(&ctx, reaction.guild_id, reaction.channel_id).await;
+        let guild_settings = self.settings.read().await.get_message_settings(
+            reaction.guild_id,
+            reaction.channel_id,
+            parent_id,
+        );
         if !guild_settings.modules.translation {
             return;
         }
@@ -479,11 +512,12 @@ impl EventHandler for Handler {
             return;
         }
 
-        let settings = self
-            .settings
-            .read()
-            .await
-            .get_guild_settings(reaction.guild_id);
+        let parent_id = discord_thread_parent(&ctx, reaction.guild_id, reaction.channel_id).await;
+        let settings = self.settings.read().await.get_message_settings(
+            reaction.guild_id,
+            reaction.channel_id,
+            parent_id,
+        );
         let Some(user_id) = reaction.user_id else {
             return;
         };
@@ -543,6 +577,81 @@ impl EventHandler for Handler {
             }
         }
     }
+}
+
+async fn discord_thread_parent(
+    ctx: &Context,
+    guild_id: Option<GuildId>,
+    channel_id: ChannelId,
+) -> Option<ChannelId> {
+    let cached = guild_id
+        .and_then(|gid| ctx.cache.guild(gid))
+        .and_then(|guild| {
+            guild
+                .channels
+                .get(&channel_id)
+                .or_else(|| guild.threads.iter().find(|thread| thread.id == channel_id))
+                .map(|channel| (channel.kind, channel.parent_id))
+        });
+    if let Some((kind, parent)) = cached {
+        return if matches!(
+            kind,
+            ChannelType::NewsThread | ChannelType::PublicThread | ChannelType::PrivateThread
+        ) {
+            parent
+        } else {
+            None
+        };
+    }
+    let fetched = tokio::time::timeout(Duration::from_secs(3), ctx.http.get_channel(channel_id))
+        .await
+        .ok()?
+        .ok()?;
+    match fetched {
+        Channel::Guild(channel)
+            if matches!(
+                channel.kind,
+                ChannelType::NewsThread | ChannelType::PublicThread | ChannelType::PrivateThread
+            ) =>
+        {
+            channel.parent_id
+        }
+        _ => None,
+    }
+}
+
+fn has_supported_bot_input(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    is_link_conversion_message(content)
+        || [
+            "twitter.com/",
+            "x.com/",
+            "t.co/",
+            "tiktok.com/",
+            "instagram.com/",
+            "reddit.com/",
+            "redd.it/",
+            "bsky.app/",
+            "spotify.com/",
+            "twitch.tv/",
+            "pixiv.net/",
+            "tumblr.com/",
+            "facebook.com/",
+            "youtube.com/",
+        ]
+        .iter()
+        .any(|host| lower.contains(host))
+}
+
+async fn claim_bot_source(message_id: MessageId) -> bool {
+    let now = Instant::now();
+    let mut guard = BOT_SOURCE_GUARD.lock().await;
+    guard.retain(|_, seen| now.duration_since(*seen) < BOT_SOURCE_TTL);
+    if guard.contains_key(&message_id) {
+        return false;
+    }
+    guard.insert(message_id, now);
+    true
 }
 
 /// Mesaj başındaki <@123456789> veya <@!123456789> formatından kullanıcı ID'sini çıkarır
@@ -760,6 +869,35 @@ mod tests {
 
         // 5. Normal mesaj (etiket yok, yanıt yok -> tetiklenmemeli)
         assert!(!should_trigger_ai_chat(false, None, None, false, bot_id));
+    }
+
+    #[test]
+    fn bot_conversion_policy_requires_opt_in_supported_plain_input() {
+        assert!(has_supported_bot_input("https://x.com/user/status/1"));
+        assert!(has_supported_bot_input("https://clips.twitch.tv/Ab_C-123"));
+        assert!(has_supported_bot_input(
+            "https://www.pixiv.net/en/artworks/12345"
+        ));
+        assert!(has_supported_bot_input(
+            "https://artist.tumblr.com/post/987654321"
+        ));
+        assert!(has_supported_bot_input(
+            "https://www.facebook.com/example/posts/123456"
+        ));
+        assert!(has_supported_bot_input(
+            "https://www.youtube.com/post/UCabc_123"
+        ));
+        assert!(has_supported_bot_input(
+            "<@1> [Twitter](https://x.com/user/status/1)"
+        ));
+        assert!(!has_supported_bot_input("hello from an integration"));
+    }
+
+    #[tokio::test]
+    async fn bot_duplicate_guard_is_bounded_and_idempotent() {
+        let id = MessageId::new(987654321);
+        assert!(claim_bot_source(id).await);
+        assert!(!claim_bot_source(id).await);
     }
 
     /// Kart imzası → AI kararı entegrasyonu: modern kartta mesaj içeriği boştur,

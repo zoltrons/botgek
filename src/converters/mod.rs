@@ -4,7 +4,7 @@ pub mod translation;
 
 use serenity::all::{Context, CreateMessage, Message, ReactionType};
 use std::sync::OnceLock;
-use tokio::sync::mpsc::{self, Sender, TrySendError};
+use tokio::sync::mpsc::{self, Sender, error::TrySendError};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
@@ -29,7 +29,7 @@ static CONVERSION_QUEUE: OnceLock<Sender<ConversionJob>> = OnceLock::new();
 
 fn conversion_sender() -> &'static Sender<ConversionJob> {
     CONVERSION_QUEUE.get_or_init(|| {
-        let (sender, mut receiver) = mpsc::channel(CONVERSION_QUEUE_CAPACITY);
+        let (sender, mut receiver) = mpsc::channel::<ConversionJob>(CONVERSION_QUEUE_CAPACITY);
         tokio::spawn(async move {
             while let Some(job) = receiver.recv().await {
                 crate::telemetry::CONVERSION_QUEUE_DEPTH
@@ -57,6 +57,22 @@ fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::Platform
         tiktok: engine.domain_for("tiktok", config),
         bluesky: engine.domain_for("bluesky", config),
         spotify: engine.domain_for("spotify", config),
+    }
+}
+
+fn module_enabled(settings: &GuildSettings, platform: parser::Platform) -> (bool, &'static str) {
+    match platform {
+        parser::Platform::Twitter => (settings.modules.twitter, "twitter"),
+        parser::Platform::TikTok => (settings.modules.tiktok, "tiktok"),
+        parser::Platform::Instagram => (settings.modules.instagram, "instagram"),
+        parser::Platform::Reddit => (settings.modules.reddit, "reddit"),
+        parser::Platform::Bluesky => (settings.modules.bluesky, "bluesky"),
+        parser::Platform::Spotify => (settings.modules.spotify, "spotify"),
+        parser::Platform::Twitch => (settings.modules.twitch, "twitch"),
+        parser::Platform::Pixiv => (settings.modules.pixiv, "pixiv"),
+        parser::Platform::Tumblr => (settings.modules.tumblr, "tumblr"),
+        parser::Platform::Facebook => (settings.modules.facebook, "facebook"),
+        parser::Platform::YouTube => (settings.modules.youtube, "youtube"),
     }
 }
 
@@ -150,14 +166,7 @@ async fn prepare_job(
     };
 
     // 1. Modül Etkinlik Kontrolü
-    let (module_enabled, module_key) = match parsed.platform {
-        parser::Platform::Twitter => (settings.modules.twitter, "twitter"),
-        parser::Platform::TikTok => (settings.modules.tiktok, "tiktok"),
-        parser::Platform::Instagram => (settings.modules.instagram, "instagram"),
-        parser::Platform::Reddit => (settings.modules.reddit, "reddit"),
-        parser::Platform::Bluesky => (settings.modules.bluesky, "bluesky"),
-        parser::Platform::Spotify => (settings.modules.spotify, "spotify"),
-    };
+    let (module_enabled, module_key) = module_enabled(settings, parsed.platform);
 
     if !module_enabled {
         return None;

@@ -64,6 +64,16 @@
             <button class="btn btn-quiet btn-xs" type="button" id="btn-toggle-custom" hidden>özelleştir</button>
         </div>
         <p class="note mono" id="server-inherit-notice" hidden>miras · bu sunucuda genel ayarlar geçerli</p>
+        <div class="channel-scope" id="channel-scope-wrap" hidden>
+            <label class="micro" for="channel-select">kanal kapsamı</label>
+            <select class="select" id="channel-select" autocomplete="off" aria-describedby="channel-fetch-status">
+                <option value="">Tüm sunucu (kanal seçilmedi)</option>
+            </select>
+            <div class="channel-status-row">
+                <p class="note mono" id="channel-fetch-status" role="status">Kanal listesi yükleniyor…</p>
+                <button class="btn btn-quiet btn-xs" type="button" id="btn-retry-channels">Tekrar dene</button>
+            </div>
+        </div>
     </div>
 
     <div class="rail-block rail-block--actions">
@@ -179,6 +189,41 @@
             </label>
         </div>
         <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">TW</span>
+            <div class="mod-body"><span class="mod-name">Twitch</span><span class="mod-host mono">native clip</span></div>
+            <span class="mod-state mono" id="status-twitch">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="twitch" aria-label="Twitch rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-twitch" data-module-key="twitch" role="switch" aria-label="Twitch modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">PX</span>
+            <div class="mod-body"><span class="mod-name">Pixiv</span><span class="mod-host mono">native artwork</span></div>
+            <span class="mod-state mono" id="status-pixiv">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="pixiv" aria-label="Pixiv rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-pixiv" data-module-key="pixiv" role="switch" aria-label="Pixiv modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">TB</span>
+            <div class="mod-body"><span class="mod-name">Tumblr</span><span class="mod-host mono">native post</span></div>
+            <span class="mod-state mono" id="status-tumblr">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="tumblr" aria-label="Tumblr rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-tumblr" data-module-key="tumblr" role="switch" aria-label="Tumblr modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">FB</span>
+            <div class="mod-body"><span class="mod-name">Facebook</span><span class="mod-host mono">native post/video</span></div>
+            <span class="mod-state mono" id="status-facebook">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="facebook" aria-label="Facebook rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-facebook" data-module-key="facebook" role="switch" aria-label="Facebook modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">YT</span>
+            <div class="mod-body"><span class="mod-name">YouTube Posts</span><span class="mod-host mono">community post</span></div>
+            <span class="mod-state mono" id="status-youtube">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="youtube" aria-label="YouTube Posts rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-youtube" data-module-key="youtube" role="switch" aria-label="YouTube Posts modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
             <span class="mod-key mono" aria-hidden="true">TR</span>
             <div class="mod-body">
                 <span class="mod-name">Bayrak çevirisi</span>
@@ -250,6 +295,11 @@
                 <span class="studio-name">Spotify</span>
                 <span class="studio-badge mono" id="badge-spotify">filtre yok</span>
             </button>
+            <button class="studio-item" type="button" role="tab" id="modtab-twitch" aria-selected="false" aria-controls="studio-panel" data-studio-module="twitch" tabindex="-1"><span class="studio-name">Twitch</span><span class="studio-badge mono" id="badge-twitch">filtre yok</span></button>
+            <button class="studio-item" type="button" role="tab" id="modtab-pixiv" aria-selected="false" aria-controls="studio-panel" data-studio-module="pixiv" tabindex="-1"><span class="studio-name">Pixiv</span><span class="studio-badge mono" id="badge-pixiv">filtre yok</span></button>
+            <button class="studio-item" type="button" role="tab" id="modtab-tumblr" aria-selected="false" aria-controls="studio-panel" data-studio-module="tumblr" tabindex="-1"><span class="studio-name">Tumblr</span><span class="studio-badge mono" id="badge-tumblr">filtre yok</span></button>
+            <button class="studio-item" type="button" role="tab" id="modtab-facebook" aria-selected="false" aria-controls="studio-panel" data-studio-module="facebook" tabindex="-1"><span class="studio-name">Facebook</span><span class="studio-badge mono" id="badge-facebook">filtre yok</span></button>
+            <button class="studio-item" type="button" role="tab" id="modtab-youtube" aria-selected="false" aria-controls="studio-panel" data-studio-module="youtube" tabindex="-1"><span class="studio-name">YouTube Posts</span><span class="studio-badge mono" id="badge-youtube">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-translation" aria-selected="false" aria-controls="studio-panel" data-studio-module="translation" tabindex="-1">
                 <span class="studio-name">Bayrak çevirisi</span>
                 <span class="studio-badge mono" id="badge-translation">filtre yok</span>
@@ -411,6 +461,11 @@
             </div>
             <input class="input mono" type="text" id="engine-domain-spotify" data-domain-key="spotify" aria-label="Spotify yedek alan adı" spellcheck="false" autocomplete="off">
         </div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">Twitch</span><span class="engine-note mono" id="engine-note-twitch">—</span></div><p class="engine-fixed mono">native embed (sabit) · clip preview</p></div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">Pixiv</span><span class="engine-note mono" id="engine-note-pixiv">—</span></div><p class="engine-fixed mono">native embed (sabit) · artwork preview</p></div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">Tumblr</span><span class="engine-note mono" id="engine-note-tumblr">—</span></div><p class="engine-fixed mono">native embed (sabit) · post preview</p></div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">Facebook</span><span class="engine-note mono" id="engine-note-facebook">—</span></div><p class="engine-fixed mono">native embed (sabit) · post/video preview</p></div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">YouTube Posts</span><span class="engine-note mono" id="engine-note-youtube">—</span></div><p class="engine-fixed mono">native embed (sabit) · community post preview</p></div>
     </div>
 
     <div class="field">
@@ -427,7 +482,8 @@
 
     <p class="micro">kart içeriği</p>
     <div class="tile-grid">
-        <label class="tile"><span class="tile-body"><span class="tile-name">Otomatik Türkçe çeviri</span><span class="tile-hint">Türkçe/İngilizce dışı X gönderileri X'in kendi çevirisiyle gelir</span></span><span class="switch"><input type="checkbox" data-engine-switch="auto_translate" role="switch" aria-label="Otomatik Türkçe çeviri"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Otomatik X çevirisi</span><span class="tile-hint">Hedef dil alanında seçilen dile uygun X gönderileri X'in kendi çevirisiyle gelir</span></span><span class="switch"><input type="checkbox" data-engine-switch="auto_translate" role="switch" aria-label="Otomatik X çevirisi"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <div class="field"><div class="field-head"><label class="field-label" for="engine-translation-target">Otomatik çeviri hedef dili</label><span class="micro">ISO / BCP-47</span></div><input class="input mono" type="text" id="engine-translation-target" maxlength="16" placeholder="tr" spellcheck="false" autocomplete="off"><p class="tile-hint">X'in otomatik çevirisinde kullanılacak hedef dil. Örnek: <span class="mono">en</span>, <span class="mono">de</span>, <span class="mono">pt-BR</span>.</p></div>
         <label class="tile"><span class="tile-body"><span class="tile-name">Etkileşim metrikleri</span><span class="tile-hint">Beğeni, repost, yanıt ve görüntülenme satırı</span></span><span class="switch"><input type="checkbox" data-engine-switch="show_metrics" role="switch" aria-label="Etkileşim metrikleri"><span class="switch-track" aria-hidden="true"></span></span></label>
         <label class="tile"><span class="tile-body"><span class="tile-name">Gönderi tarihi</span><span class="tile-hint">Discord'un göreli zaman gösterimi (ör. 2 sa önce)</span></span><span class="switch"><input type="checkbox" data-engine-switch="show_timestamp" role="switch" aria-label="Gönderi tarihi"><span class="switch-track" aria-hidden="true"></span></span></label>
         <label class="tile"><span class="tile-body"><span class="tile-name">Topluluk notu</span><span class="tile-hint">Varsa X'in topluluk notu ayrı alan olarak eklenir</span></span><span class="switch"><input type="checkbox" data-engine-switch="show_community_note" role="switch" aria-label="Topluluk notu"><span class="switch-track" aria-hidden="true"></span></span></label>
@@ -438,6 +494,19 @@
     <div class="tile-grid">
         <label class="tile"><span class="tile-body"><span class="tile-name">Kullanıcıyı taklit et</span><span class="tile-hint">Mesaj kullanıcının adı ve avatarıyla webhook olarak gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_user" role="switch" aria-label="Kullanıcıyı taklit et"><span class="switch-track" aria-hidden="true"></span></span></label>
         <label class="tile"><span class="tile-body"><span class="tile-name">Yanıtlarda yanıtı koru</span><span class="tile-hint">Yalnızca Kullanıcıyı taklit et açıkken geçerlidir; webhook mesajı yanıt olamadığı için yanıt olarak atılan linkler bot adına gider</span></span><span class="switch"><input type="checkbox" data-engine-switch="impersonate_skip_replies" role="switch" aria-label="Yanıtlarda yanıtı koru"><span class="switch-track" aria-hidden="true"></span></span></label>
+        <label class="tile"><span class="tile-body"><span class="tile-name">Bot mesajlarına yanıt ver</span><span class="tile-hint">Açıkken başka botların mesajları da işlenir. Varsayılan olarak kapalıdır.</span></span><span class="switch"><input type="checkbox" data-engine-switch="respond_to_bots" role="switch" aria-label="Bot mesajlarına yanıt ver"><span class="switch-track" aria-hidden="true"></span></span></label>
+    </div>
+
+    <div class="field">
+        <div class="field-head">
+            <label class="field-label" for="engine-sensitive-mode">Hassas içerik politikası</label>
+            <span class="micro">kanalın NSFW işareti</span>
+        </div>
+        <select class="select" id="engine-sensitive-mode" aria-describedby="sensitive-mode-hint">
+            <option value="hide_always">Her zaman gizle</option>
+            <option value="allow_in_nsfw">Yalnızca NSFW kanalda göster</option>
+        </select>
+        <p class="tile-hint" id="sensitive-mode-hint">Hassas içerik NSFW olmayan kanallarda gösterilmez. Bilinmeyen kanal güvenli kabul edilmez.</p>
     </div>
 
     <p class="micro">medya</p>

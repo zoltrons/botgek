@@ -71,7 +71,8 @@ mod tests {
 
     #[test]
     fn snapshot_exposes_bounded_conversion_queue_metrics() {
-        let queue = snapshot()
+        let snapshot = snapshot();
+        let queue = snapshot
             .get("conversion_queue")
             .expect("conversion queue metrics should be present");
         assert_eq!(

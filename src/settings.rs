@@ -14,6 +14,11 @@ pub struct PlatformModules {
     pub reddit: bool,
     pub bluesky: bool,
     pub spotify: bool,
+    pub twitch: bool,
+    pub pixiv: bool,
+    pub tumblr: bool,
+    pub facebook: bool,
+    pub youtube: bool,
     pub translation: bool,
     pub ai_chat: bool,
 }
@@ -27,6 +32,11 @@ impl Default for PlatformModules {
             reddit: true,
             bluesky: true,
             spotify: true,
+            twitch: true,
+            pixiv: true,
+            tumblr: true,
+            facebook: true,
+            youtube: true,
             translation: true,
             ai_chat: true,
         }
@@ -95,7 +105,16 @@ pub enum ConversionMode {
 /// Twitter/X, Instagram ve Reddit için native embed motoru çalışır durumdadır (sesli video
 /// dâhil eksiksiz kart üretir); bu yüzden bu platformlarda **proxy modu** ve **proxy yedeği**
 /// tamamen kaldırılmıştır: motor modu daima native'dir, yedek alan adı yoktur.
-pub const NATIVE_ONLY_PLATFORMS: [&str; 3] = ["twitter", "instagram", "reddit"];
+pub const NATIVE_ONLY_PLATFORMS: [&str; 8] = [
+    "twitter",
+    "instagram",
+    "reddit",
+    "twitch",
+    "pixiv",
+    "tumblr",
+    "facebook",
+    "youtube",
+];
 
 /// Verilen platform yalnızca native motorla mı çalışır (proxy desteklenmez)?
 pub fn is_native_only(platform_key: &str) -> bool {
@@ -475,6 +494,10 @@ pub const MAX_VIDEO_MB_RANGE: std::ops::RangeInclusive<u8> = 1..=50;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct EngineSettings {
+    #[serde(default)]
+    pub respond_to_bots: bool,
+    #[serde(default)]
+    pub sensitive_mode: SensitiveMode,
     /// Platform → motor modu (proxy / builtin).
     pub modes: PlatformEngineModes,
     /// Proxy modunda kullanılacak alan adları (boş = .env).
@@ -493,8 +516,10 @@ pub struct EngineSettings {
     pub show_community_note: bool,
     /// Alıntılanan gönderiyi ikinci embed olarak göster.
     pub show_quote: bool,
-    /// Türkçe/İngilizce dışındaki X gönderilerini X'in kendi çevirisiyle Türkçeye çevir.
+    /// X gönderilerini X'in kendi çevirisiyle hedef dile çevir.
     pub auto_translate: bool,
+    /// Otomatik X çevirisinin hedef dili (BCP-47 primary language kodu veya bölgesel kod).
+    pub translation_target: String,
     /// Native embed üretilemezse otomatik olarak proxy linkine düş.
     pub fallback_to_proxy: bool,
     /// Mesajı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönder ("taklit").
@@ -511,6 +536,8 @@ pub struct EngineSettings {
 impl Default for EngineSettings {
     fn default() -> Self {
         Self {
+            respond_to_bots: false,
+            sensitive_mode: SensitiveMode::HideAlways,
             modes: PlatformEngineModes::default(),
             domains: ProxyDomains::default(),
             twitter_source: TwitterSource::default(),
@@ -521,12 +548,21 @@ impl Default for EngineSettings {
             show_community_note: true,
             show_quote: true,
             auto_translate: true,
+            translation_target: "tr".to_string(),
             fallback_to_proxy: true,
             impersonate_user: true,
             impersonate_skip_replies: true,
             emojis: EmojiSettings::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SensitiveMode {
+    #[default]
+    HideAlways,
+    AllowInNsfw,
 }
 
 impl EngineSettings {
@@ -574,6 +610,22 @@ impl EngineSettings {
             self.max_video_mb = self.max_video_mb.clamp(1, 50);
         }
 
+        let target = self.translation_target.trim().to_ascii_lowercase();
+        if target.len() < 2
+            || target.len() > 16
+            || !target
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || !target
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            self.translation_target = "tr".to_string();
+        } else {
+            self.translation_target = target;
+        }
+
         self.emojis.sanitize();
     }
 }
@@ -609,6 +661,16 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub spotify: RoleFilterSettings,
     #[serde(default)]
+    pub twitch: RoleFilterSettings,
+    #[serde(default)]
+    pub pixiv: RoleFilterSettings,
+    #[serde(default)]
+    pub tumblr: RoleFilterSettings,
+    #[serde(default)]
+    pub facebook: RoleFilterSettings,
+    #[serde(default)]
+    pub youtube: RoleFilterSettings,
+    #[serde(default)]
     pub translation: RoleFilterSettings,
     #[serde(default)]
     pub ai_chat: RoleFilterSettings,
@@ -635,6 +697,11 @@ impl ModuleRoleFilters {
             &mut self.reddit,
             &mut self.bluesky,
             &mut self.spotify,
+            &mut self.twitch,
+            &mut self.pixiv,
+            &mut self.tumblr,
+            &mut self.facebook,
+            &mut self.youtube,
             &mut self.translation,
             &mut self.ai_chat,
         ] {
@@ -655,6 +722,11 @@ impl GuildSettings {
             "reddit" => &self.role_filters.reddit,
             "bluesky" => &self.role_filters.bluesky,
             "spotify" => &self.role_filters.spotify,
+            "twitch" => &self.role_filters.twitch,
+            "pixiv" => &self.role_filters.pixiv,
+            "tumblr" => &self.role_filters.tumblr,
+            "facebook" => &self.role_filters.facebook,
+            "youtube" => &self.role_filters.youtube,
             "translation" => &self.role_filters.translation,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
@@ -670,7 +742,9 @@ impl GuildSettings {
 ///   bölümler saklanır. Göç (`migrate_legacy_guild_overrides`) **bir kez** çalışır ve
 ///   sürüm damgalanır; böylece sonraki açılışlarda kullanıcının bilerek sabitlediği bir
 ///   bölüm, genelle geçici olarak aynı olduğu için sessizce mirasa dönmez.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+/// - `3`: sparse kayıtlar kanal override'larını da destekler. `2` dosyaları okunurken
+///   destructive eşit-blok göçü tekrar çalıştırılmaz.
+pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 /// Sunucuya özel ayarların **sparse (bölüm bazlı) override** biçimi.
 ///
@@ -697,6 +771,43 @@ pub struct GuildOverride {
     pub ai: Option<AiSettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<EngineSettings>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub channels: HashMap<String, ChannelOverride>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ChannelOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modules: Option<PlatformModules>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_filters: Option<ModuleRoleFilters>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineSettings>,
+}
+
+impl ChannelOverride {
+    pub fn is_empty(&self) -> bool {
+        self.modules.is_none()
+            && self.role_filters.is_none()
+            && self.ai.is_none()
+            && self.engine.is_none()
+    }
+
+    pub fn sanitize(&mut self) {
+        if let Some(filters) = self.role_filters.as_mut() {
+            filters.sanitize();
+        }
+        if let Some(ai) = self.ai.as_mut() {
+            ai.model = ai.model.chars().take(128).collect();
+            ai.system_prompt = ai.system_prompt.chars().take(4000).collect();
+        }
+        if let Some(engine) = self.engine.as_mut() {
+            engine.sanitize();
+        }
+    }
 }
 
 impl GuildOverride {
@@ -706,6 +817,7 @@ impl GuildOverride {
             && self.role_filters.is_none()
             && self.ai.is_none()
             && self.engine.is_none()
+            && self.channels.values().all(ChannelOverride::is_empty)
     }
 }
 
@@ -745,6 +857,18 @@ pub fn resolve_settings(global: &AppSettings, guild: Option<&GuildOverride>) -> 
         ),
         ai: merge_ai(&global.ai, guild.and_then(|g| g.ai.as_ref())),
         engine: pick(&global.engine, guild.and_then(|g| g.engine.as_ref())),
+    }
+}
+
+fn resolve_channel_layer(base: &GuildSettings, layer: Option<&ChannelOverride>) -> GuildSettings {
+    let Some(layer) = layer else {
+        return base.clone();
+    };
+    GuildSettings {
+        modules: pick(&base.modules, layer.modules.as_ref()),
+        role_filters: pick(&base.role_filters, layer.role_filters.as_ref()),
+        ai: merge_ai(&base.ai, layer.ai.as_ref()),
+        engine: pick(&base.engine, layer.engine.as_ref()),
     }
 }
 
@@ -797,6 +921,49 @@ impl AppSettings {
     pub fn get_guild_settings(&self, guild_id: Option<serenity::all::GuildId>) -> GuildSettings {
         let over = guild_id.and_then(|gid| self.guilds.get(&gid.to_string()));
         resolve_settings(self, over)
+    }
+
+    /// Global → guild → parent(thread only) → channel. DM, category and unknown parent
+    /// values deliberately do not inherit channel settings.
+    pub fn get_message_settings(
+        &self,
+        guild_id: Option<serenity::all::GuildId>,
+        channel_id: serenity::all::ChannelId,
+        parent_id: Option<serenity::all::ChannelId>,
+    ) -> GuildSettings {
+        let Some(guild_id) = guild_id else {
+            return self.get_guild_settings(None);
+        };
+        let Some(guild) = self.guilds.get(&guild_id.to_string()) else {
+            return self.get_guild_settings(Some(guild_id));
+        };
+        let mut resolved = resolve_settings(self, Some(guild));
+        resolved = resolve_channel_layer(
+            &resolved,
+            parent_id.and_then(|id| guild.channels.get(&id.to_string())),
+        );
+        resolve_channel_layer(&resolved, guild.channels.get(&channel_id.to_string()))
+    }
+
+    /// Normalize sparse channel entries and discard malformed/non-positive Discord IDs.
+    pub fn sanitize_channels(&mut self) {
+        self.guilds
+            .retain(|id, _| id.parse::<u64>().is_ok_and(|n| n > 0));
+        for guild in self.guilds.values_mut() {
+            if let Some(filters) = guild.role_filters.as_mut() {
+                filters.sanitize();
+            }
+            if let Some(engine) = guild.engine.as_mut() {
+                engine.sanitize();
+            }
+            guild
+                .channels
+                .retain(|id, _| id.parse::<u64>().is_ok_and(|n| n > 0));
+            for channel in guild.channels.values_mut() {
+                channel.sanitize();
+            }
+            guild.channels.retain(|_, channel| !channel.is_empty());
+        }
     }
 
     /// **Göç (bir kez):** eski **tam kopya** sunucu kayıtlarını sparse override'a indirger.
@@ -882,6 +1049,11 @@ impl AppSettings {
         self.role_filters.reddit = legacy.clone();
         self.role_filters.bluesky = legacy.clone();
         self.role_filters.spotify = legacy.clone();
+        self.role_filters.twitch = legacy.clone();
+        self.role_filters.pixiv = legacy.clone();
+        self.role_filters.tumblr = legacy.clone();
+        self.role_filters.facebook = legacy.clone();
+        self.role_filters.youtube = legacy.clone();
         self.role_filters.translation = legacy.clone();
         self.role_filters.ai_chat = legacy;
     }
@@ -1007,6 +1179,7 @@ impl AppSettings {
                     // Eski tek `role_filter` alanı modül filtresine taşınır (bir kez).
                     settings.migrate_legacy_role_filter();
                     settings.role_filters.sanitize();
+                    settings.sanitize_channels();
 
                     // Göç (bir kez): eski **tam kopya** sunucu kayıtları sparse override'a
                     // indirgenir. Öncesinde tarih damgalı yedek alınır, sonuç diske yazılır;
@@ -1014,9 +1187,12 @@ impl AppSettings {
                     // `schema_version` damgalanmasa göç her açılışta yeniden çalışır ve
                     // kullanıcının bilerek sabitlediği bir bölüm, genelle geçici olarak aynı
                     // olduğu için sessizce mirasa dönebilirdi.
-                    if settings.schema_version < SETTINGS_SCHEMA_VERSION {
+                    // Schema 2 already completed the destructive equal-block reduction.
+                    // Only pre-sparse files may run that migration; upgrading 2 → 3 merely
+                    // records the new channel-aware format and must never unpin blocks again.
+                    if settings.schema_version < 2 {
                         let reduced = settings.migrate_legacy_guild_overrides();
-                        settings.schema_version = SETTINGS_SCHEMA_VERSION;
+                        settings.schema_version = 2;
                         match backup_settings_file(path) {
                             Ok(backup) => {
                                 info!("Göç öncesi ayar yedeği alındı: {}", backup.display())
@@ -1033,6 +1209,17 @@ impl AppSettings {
                                 path.display(),
                                 err
                             ),
+                        }
+                    }
+                    if settings.schema_version < SETTINGS_SCHEMA_VERSION {
+                        settings.sanitize_channels();
+                        settings.schema_version = SETTINGS_SCHEMA_VERSION;
+                        if let Err(err) = settings.save_to(path) {
+                            warn!(
+                                "Schema 3 ayarları '{}' dosyasına yazılamadı: {}",
+                                path.display(),
+                                err
+                            );
                         }
                     }
 
@@ -1979,6 +2166,7 @@ mod tests {
                     max_images: 2,
                     ..settings.engine.clone()
                 }),
+                channels: HashMap::new(),
             },
         );
 
@@ -2002,6 +2190,7 @@ mod tests {
                 role_filters: Some(settings.role_filters.clone()),
                 ai: Some(settings.ai.clone()),
                 engine: Some(settings.engine.clone()),
+                channels: HashMap::new(),
             },
         );
 
@@ -2081,6 +2270,87 @@ mod tests {
         assert!(
             json.contains(&format!("\"schema_version\":{SETTINGS_SCHEMA_VERSION}")),
             "sürüm kalıcı olmalı: {json}"
+        );
+    }
+
+    #[test]
+    fn message_settings_resolve_thread_parent_then_channel_and_dm_is_global() {
+        let guild_id = serenity::all::GuildId::new(7);
+        let parent = serenity::all::ChannelId::new(70);
+        let channel = serenity::all::ChannelId::new(71);
+        let mut settings = AppSettings::default();
+        settings.modules.twitter = true;
+        let mut over = GuildOverride::default();
+        over.modules = Some(PlatformModules {
+            twitter: false,
+            ..settings.modules.clone()
+        });
+        over.channels.insert(
+            parent.to_string(),
+            ChannelOverride {
+                modules: Some(PlatformModules {
+                    twitter: true,
+                    ..settings.modules.clone()
+                }),
+                ai: Some(AiSettings {
+                    model: String::new(),
+                    system_prompt: "parent".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        over.channels.insert(
+            channel.to_string(),
+            ChannelOverride {
+                engine: Some(EngineSettings {
+                    max_images: 2,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        settings.guilds.insert(guild_id.to_string(), over);
+
+        let resolved = settings.get_message_settings(Some(guild_id), channel, Some(parent));
+        assert!(resolved.modules.twitter);
+        assert_eq!(resolved.ai.system_prompt, "parent");
+        assert_eq!(resolved.engine.max_images, 2);
+        // No parent means a normal channel does not inherit the category/thread entry.
+        let normal = settings.get_message_settings(Some(guild_id), channel, None);
+        assert!(!normal.modules.twitter);
+        assert_eq!(normal.engine.max_images, 2);
+        let dm = settings.get_message_settings(None, channel, Some(parent));
+        assert!(dm.modules.twitter);
+    }
+
+    #[test]
+    fn schema_two_is_upgraded_without_equal_block_unpin() {
+        let mut settings = AppSettings::default();
+        settings.schema_version = 2;
+        settings.guilds.insert(
+            "7".into(),
+            GuildOverride {
+                modules: Some(settings.modules.clone()),
+                ..Default::default()
+            },
+        );
+        let before = settings.guilds["7"].modules.clone();
+        // The loader's 2 → 3 path intentionally does not call the destructive legacy reducer.
+        assert_eq!(settings.schema_version, 2);
+        assert_eq!(before, settings.guilds["7"].modules);
+    }
+
+    #[test]
+    fn sensitive_mode_uses_stable_wire_names_and_safe_default() {
+        let engine = EngineSettings::default();
+        assert_eq!(engine.sensitive_mode, SensitiveMode::HideAlways);
+        assert_eq!(
+            serde_json::to_value(&engine.sensitive_mode).unwrap(),
+            "hide_always"
+        );
+        assert_eq!(
+            serde_json::to_value(SensitiveMode::AllowInNsfw).unwrap(),
+            "allow_in_nsfw"
         );
     }
 }

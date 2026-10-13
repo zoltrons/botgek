@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "modules": {
     "twitter": true,
     "tiktok": true,
@@ -7,6 +7,11 @@
     "reddit": true,
     "bluesky": true,
     "spotify": true,
+    "twitch": true,
+    "pixiv": true,
+    "tumblr": true,
+    "facebook": true,
+    "youtube": true,
     "translation": true,
     "ai_chat": true
   },
@@ -35,6 +40,26 @@
       "mode": "disabled",
       "roles": []
     },
+    "twitch": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "pixiv": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "tumblr": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "facebook": {
+      "mode": "disabled",
+      "roles": []
+    },
+    "youtube": {
+      "mode": "disabled",
+      "roles": []
+    },
     "translation": {
       "mode": "disabled",
       "roles": []
@@ -49,6 +74,8 @@
     "system_prompt": "Sen Botgek adında zeki, hazırcevap ve hafif alaycı bir Discord botusun. Sadece Botgek olduğunu bil. Cevapların kısa (maksimum 1-2 cümle), zeki ve lafı gediğine koyan türden olsun. Asla robotik konuşma, gevezelik yapma. Sadece Türkçe konuş."
   },
   "engine": {
+    "respond_to_bots": false,
+    "sensitive_mode": "hide_always",
     "modes": {
       "tiktok": "proxy",
       "bluesky": "builtin",
@@ -67,6 +94,7 @@
     "show_community_note": true,
     "show_quote": true,
     "auto_translate": true,
+    "translation_target": "tr",
     "fallback_to_proxy": true,
     "impersonate_user": true,
     "impersonate_skip_replies": true,

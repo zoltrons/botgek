@@ -23,7 +23,9 @@ use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use super::{Author, BuiltinPost, MAX_BODY_BYTES, Media, MediaKind, REQUEST_TIMEOUT, Stats};
+use super::{
+    Author, BuiltinPost, LinkPreview, MAX_BODY_BYTES, Media, MediaKind, REQUEST_TIMEOUT, Stats,
+};
 use crate::converters::parser::{ParsedPost, Platform};
 
 /// Reddit, tarayıcı dışı istekleri 403 ile engeller. fxreddit servisinin de kullandığı,
@@ -38,6 +40,13 @@ static COMMENTS_ID_REGEX: LazyLock<Regex> =
 /// `redd.it/{id}` biçimindeki kısa linkteki gönderi kimliğini yakalar.
 static SHORT_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"redd\.it/([A-Za-z0-9]+)").expect("geçerli reddit regex"));
+
+static COMMENT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"/comments/[A-Za-z0-9]+/[^/?#]+/([A-Za-z0-9]+)")
+        .expect("geçerli reddit yorum regex")
+});
+
+const MAX_COMMENT_CONTEXT_CHARS: usize = 1_200;
 
 // =====================================================================================
 // OAUTH (installed_client)
@@ -172,9 +181,9 @@ pub async fn fetch(
 
     // 1) OAuth: Reddit'in kimliksiz istekleri engellediği (403) durumlarda da çalışır.
     if let Some(token) = oauth_token(client, client_id).await {
-        let url = format!("{OAUTH_API_BASE}/comments/{id}?raw_json=1&limit=1");
+        let url = format!("{OAUTH_API_BASE}/comments/{id}?raw_json=1&depth=2&limit=20");
         match get_json_with_bearer(client, &url, &token).await {
-            Ok(value) => match listings_to_post(value) {
+            Ok(value) => match listings_to_post(value, comment_id_from_url(&parsed.original_url)) {
                 Ok(post) => return Ok(post),
                 Err(err) => debug!("Reddit OAuth yanıtı kullanılamadı ({id}): {err}"),
             },
@@ -183,13 +192,16 @@ pub async fn fetch(
     }
 
     // 2) Kimliksiz yol: engellenmemiş IP'lerde (ör. ev bağlantısı) çalışır.
-    let url = format!("https://www.reddit.com/comments/{id}.json?raw_json=1&limit=1");
+    let url = format!("https://www.reddit.com/comments/{id}.json?raw_json=1&depth=2&limit=20");
     let value = get_reddit_json(client, &url).await?;
-    listings_to_post(value)
+    listings_to_post(value, comment_id_from_url(&parsed.original_url))
 }
 
 /// JSON gönderi listesini karta çevirir (crosspost ise asıl içerik ebeveyn gönderdedir).
-fn listings_to_post(value: serde_json::Value) -> Result<BuiltinPost, String> {
+fn listings_to_post(
+    value: serde_json::Value,
+    comment_id: Option<&str>,
+) -> Result<BuiltinPost, String> {
     let listings: Vec<RedditListing> =
         serde_json::from_value(value).map_err(|e| format!("Reddit yanıtı çözümlenemedi: {e}"))?;
 
@@ -205,7 +217,11 @@ fn listings_to_post(value: serde_json::Value) -> Result<BuiltinPost, String> {
         .and_then(|parents| parents.first())
         .unwrap_or(post);
 
-    Ok(reddit_to_post(post, content))
+    let mut built = reddit_to_post(post, content);
+    if let Some(comment_id) = comment_id.and_then(|id| find_comment(&listings, id)) {
+        append_comment_context(&mut built, comment_id);
+    }
+    Ok(built)
 }
 
 /// Gönderi kimliğini linkten çıkarır; kimlik adres üzerinde yoksa (mobil paylaşım linki)
@@ -256,6 +272,73 @@ fn post_id_from_url(original_url: &str) -> Option<String> {
         .captures(original_url)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
+}
+
+fn comment_id_from_url(original_url: &str) -> Option<&str> {
+    COMMENT_ID_REGEX
+        .captures(original_url)
+        .and_then(|captures| captures.get(1))
+        .map(|match_| match_.as_str())
+}
+
+/// Finds only the requested direct comment in the bounded comments listing. Reddit replies are
+/// represented as nested `replies.data.children`; no extra request or unbounded traversal occurs.
+fn find_comment<'a>(listings: &'a [RedditListing], comment_id: &str) -> Option<&'a RedditPost> {
+    listings
+        .iter()
+        .flat_map(|listing| listing.data.children.iter())
+        .find_map(|child| find_comment_in_post(&child.data, comment_id, 0))
+}
+
+fn find_comment_in_post<'a>(
+    post: &'a RedditPost,
+    comment_id: &str,
+    depth: usize,
+) -> Option<&'a RedditPost> {
+    if depth > 4 {
+        return None;
+    }
+    if post.id.as_deref() == Some(comment_id) && post.body.is_some() {
+        return Some(post);
+    }
+    post.replies
+        .as_ref()
+        .and_then(RedditReplies::listing)
+        .and_then(|data| {
+            data.children
+                .iter()
+                .find_map(|child| find_comment_in_post(&child.data, comment_id, depth + 1))
+        })
+}
+
+fn append_comment_context(post: &mut BuiltinPost, comment: &RedditPost) {
+    let Some(body) = comment
+        .body
+        .as_deref()
+        .map(str::trim)
+        .filter(|body| !body.is_empty() && *body != "[removed]" && *body != "[deleted]")
+    else {
+        return;
+    };
+    let body = truncate_chars(&super::unescape_html(body), MAX_COMMENT_CONTEXT_CHARS);
+    if body.is_empty() {
+        return;
+    }
+    let author = comment
+        .author
+        .as_deref()
+        .filter(|author| !author.trim().is_empty())
+        .map(|author| format!("u/{author}"))
+        .unwrap_or_else(|| "silinmiş kullanıcı".to_string());
+    if !post.text.is_empty() {
+        post.text.push_str("\n\n");
+    }
+    post.text
+        .push_str(&format!("**Yorum bağlamı — {author}:**\n> {body}"));
+}
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
 }
 
 /// Kimliksiz JSON isteği. Tarayıcı kılığındaki User-Agent, Reddit'in bot isteklerine
@@ -383,7 +466,8 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
     built.created_at = content
         .created_utc
         .and_then(|secs| (secs > 0.0).then_some(secs as i64));
-    built.sensitive = content.over_18.unwrap_or(false) || content.spoiler.unwrap_or(false);
+    built.sensitive = content.over_18.unwrap_or(false);
+    built.source_spoiler = content.spoiler.unwrap_or(false);
     built.stats = Stats {
         replies: content.num_comments.unwrap_or(0),
         reposts: 0,
@@ -395,6 +479,17 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
         views: None,
     };
     built.media = reddit_media(content);
+    if built.media.is_empty()
+        && let Some(redgifs_url) = redgifs_source_url(content).and_then(|url| redgifs_link(&url))
+    {
+        built.link_preview = Some(LinkPreview {
+            url: redgifs_url,
+            title: built.title.clone(),
+            description: (!built.text.is_empty()).then(|| built.text.clone()),
+            image: preview_image(content),
+            site_name: Some("Redgifs".to_string()),
+        });
+    }
     built.extra_label = reddit_extra_label(content);
 
     built
@@ -425,6 +520,10 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
         && !gallery.is_empty()
     {
         return gallery;
+    }
+
+    if let Some(media) = redgifs_media(post) {
+        return vec![media];
     }
 
     // Gönderinin videosu `media` **veya** `secure_media` altında olabilir (fxreddit de ikisini
@@ -471,6 +570,103 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
     }
 
     Vec::new()
+}
+
+/// Redgifs embeds are accepted only from the service's HTTPS host family. Page links become a
+/// canonical link preview; direct mp4/HLS URLs already present in the payload can be rendered.
+fn redgifs_media(post: &RedditPost) -> Option<Media> {
+    let candidate = post
+        .media
+        .as_ref()
+        .and_then(|media| media.redgifs.as_ref().or(media.oembed.as_ref()))
+        .and_then(|media| {
+            media
+                .video_url
+                .as_deref()
+                .or(media.url.as_deref())
+                .or(media.hls_url.as_deref())
+        })
+        .or_else(|| {
+            post.secure_media
+                .as_ref()
+                .and_then(|media| media.redgifs.as_ref().or(media.oembed.as_ref()))
+                .and_then(|media| {
+                    media
+                        .video_url
+                        .as_deref()
+                        .or(media.url.as_deref())
+                        .or(media.hls_url.as_deref())
+                })
+        })?;
+    allowed_redgifs_asset(candidate).map(|url| Media {
+        kind: MediaKind::Video,
+        url,
+        poster: post
+            .media
+            .as_ref()
+            .and_then(|media| media.redgifs.as_ref().or(media.oembed.as_ref()))
+            .and_then(|media| media.thumbnail_url.clone()),
+        width: None,
+        height: None,
+        duration: None,
+    })
+}
+
+fn redgifs_source_url(post: &RedditPost) -> Option<String> {
+    post.url_overridden_by_dest.clone().or_else(|| {
+        post.media
+            .as_ref()
+            .and_then(|media| media.oembed.as_ref())
+            .and_then(|media| media.url.clone())
+    })
+}
+
+fn redgifs_link(raw: &str) -> Option<String> {
+    let (scheme, remainder) = raw.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let (host, path) = remainder.split_once('/').unwrap_or((remainder, ""));
+    let host = host.split(':').next()?.to_ascii_lowercase();
+    if host != "redgifs.com" && host != "www.redgifs.com" {
+        return None;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+    let kind = segments.next()?;
+    if !kind.eq_ignore_ascii_case("watch") && !kind.eq_ignore_ascii_case("ifr") {
+        return None;
+    }
+    let id = segments.next()?;
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        return None;
+    }
+    Some(format!("https://www.redgifs.com/watch/{id}"))
+}
+
+fn allowed_redgifs_asset(raw: &str) -> Option<String> {
+    let (scheme, remainder) = raw.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let (host, path) = remainder.split_once('/').unwrap_or((remainder, ""));
+    let host = host.split(':').next()?.to_ascii_lowercase();
+    if host != "redgifs.com" && !host.ends_with(".redgifs.com") {
+        return None;
+    }
+    let path = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    [".mp4", ".m3u8", ".webm"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+        .then(|| raw.to_string())
 }
 
 /// `url_overridden_by_dest` doğrudan bir görsel dosyasıysa onu döndürür.
@@ -635,6 +831,8 @@ struct RedditPost {
     id: Option<String>,
     title: Option<String>,
     selftext: Option<String>,
+    /// Comment bodies share the listing item model with posts.
+    body: Option<String>,
     author: Option<String>,
     subreddit_name_prefixed: Option<String>,
     link_flair_text: Option<String>,
@@ -654,12 +852,41 @@ struct RedditPost {
     secure_media: Option<RedditMedia>,
     preview: Option<RedditPreview>,
     crosspost_parent_list: Option<Vec<RedditPost>>,
+    replies: Option<RedditReplies>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RedditReplies {
+    Listing { data: Option<RedditListingData> },
+    Empty(serde_json::Value),
+}
+
+impl RedditReplies {
+    fn listing(&self) -> Option<&RedditListingData> {
+        match self {
+            Self::Listing { data } => data.as_ref(),
+            Self::Empty(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct RedditMedia {
     reddit_video: Option<RedditVideo>,
+    redgifs: Option<RedgifsMedia>,
+    oembed: Option<RedgifsMedia>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RedgifsMedia {
+    #[serde(alias = "content_url", alias = "download_url")]
+    video_url: Option<String>,
+    url: Option<String>,
+    hls_url: Option<String>,
+    thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -863,6 +1090,22 @@ mod tests {
             Some("https://preview.redd.it/vid1.jpg")
         );
         assert_eq!(post.media[0].duration, Some(42));
+    }
+
+    #[test]
+    fn reddit_source_spoiler_is_distinct_from_nsfw_metadata() {
+        let post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "spoiler1",
+                "title": "Spoiler",
+                "author": "writer",
+                "permalink": "/r/test/comments/spoiler1/spoiler/",
+                "over_18": false,
+                "spoiler": true
+            }}] }}]"#,
+        );
+        assert!(!post.sensitive, "spoiler alone is not NSFW metadata");
+        assert!(post.source_spoiler, "Reddit spoiler metadata is retained");
     }
 
     #[test]
@@ -1076,6 +1319,55 @@ mod tests {
         assert_eq!(post.media[0].duration, Some(30));
         assert_eq!(post.media[0].width, Some(720));
         assert_eq!(post.media[0].height, Some(1280));
+    }
+
+    #[test]
+    fn direct_comment_context_is_bounded_and_deleted_comments_are_safe() {
+        let body = "x".repeat(MAX_COMMENT_CONTEXT_CHARS + 100);
+        let json = format!(
+            r#"[
+                {{"data":{{"children":[{{"data":{{"id":"post1","title":"Gönderi","author":"op","permalink":"/r/test/comments/post1/baslik/"}}}}]}}}},
+                {{"data":{{"children":[{{"data":{{"id":"comment1","author":"yorumcu","body":"{body}"}}}},{{"data":{{"id":"deleted","author":null,"body":"[deleted]"}}}}]}}}}
+            ]"#
+        );
+        let post = listings_to_post(
+            serde_json::from_str(&json).expect("listing geçerli olmalı"),
+            Some("comment1"),
+        )
+        .expect("gönderi dönüşmeli");
+        assert!(post.text.contains("Yorum bağlamı — u/yorumcu:"));
+        assert!(post.text.chars().count() < MAX_COMMENT_CONTEXT_CHARS + 100);
+
+        let deleted = listings_to_post(
+            serde_json::from_str(&json).expect("listing geçerli olmalı"),
+            Some("deleted"),
+        )
+        .expect("silinmiş yorum kartı bozmaz");
+        assert!(!deleted.text.contains("Yorum bağlamı"));
+    }
+
+    #[test]
+    fn redgifs_uses_canonical_link_and_rejects_untrusted_redirects() {
+        assert_eq!(
+            redgifs_link("https://redgifs.com/ifr/AbC_12?param=ignored"),
+            Some("https://www.redgifs.com/watch/AbC_12".to_string())
+        );
+        assert_eq!(redgifs_link("https://evil.example/watch/abc"), None);
+        assert_eq!(redgifs_link("http://redgifs.com/watch/abc"), None);
+
+        let post = parse(
+            r#"[{"data":{"children":[{"data":{
+                "id":"rg1", "title":"Redgifs bağlantısı", "author":"biri",
+                "url_overridden_by_dest":"https://redgifs.com/watch/AbC123",
+                "permalink":"/r/test/comments/rg1/redgifs/"
+            }}]}}]"#,
+        );
+        assert_eq!(
+            post.link_preview
+                .as_ref()
+                .map(|preview| preview.url.as_str()),
+            Some("https://www.redgifs.com/watch/AbC123")
+        );
     }
 
     /// Canlı test: `installed_client` OAuth akışı Reddit API'sinden veri getirmeli.

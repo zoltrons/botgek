@@ -18,6 +18,8 @@ use crate::settings::AppSettings;
 
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
 type RolesCache = Arc<tokio::sync::Mutex<Option<(std::time::Instant, Vec<DiscordGuildRolesDto>)>>>;
+type ChannelsCache =
+    Arc<tokio::sync::Mutex<Option<(std::time::Instant, Vec<DiscordGuildChannelsDto>)>>>;
 
 /// WebUI'ın kendini tanıtması için gereken bilgiler: sürüm, port ve `.env` kaynaklı
 /// yedek alan adları (WebUI'daki alan boş bırakıldığında geçerli olan değerler).
@@ -90,6 +92,7 @@ pub struct WebState {
     pub save_lock: Arc<tokio::sync::Mutex<()>>,
     pub settings_path: Arc<std::path::PathBuf>,
     pub roles_cache: RolesCache,
+    pub channels_cache: ChannelsCache,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -105,6 +108,22 @@ pub struct DiscordGuildRolesDto {
     pub guild_id: String,
     pub guild_name: String,
     pub roles: Vec<DiscordRoleDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DiscordChannelDto {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub parent_id: Option<String>,
+    pub nsfw: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DiscordGuildChannelsDto {
+    pub guild_id: String,
+    pub guild_name: String,
+    pub channels: Vec<DiscordChannelDto>,
 }
 
 pub async fn start_web_server(
@@ -141,6 +160,7 @@ pub async fn start_web_server(
         save_lock: Arc::new(tokio::sync::Mutex::new(())),
         settings_path: Arc::new(crate::settings::resolve_settings_path()),
         roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
+        channels_cache: Arc::new(tokio::sync::Mutex::new(None)),
     };
 
     let app = build_router(state);
@@ -168,6 +188,7 @@ fn build_router(state: WebState) -> Router {
         .route("/api/settings", get(get_settings).post(save_settings))
         .route("/api/info", get(get_info))
         .route("/api/discord/roles", get(get_discord_roles))
+        .route("/api/discord/channels", get(get_discord_channels))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/ready", get(readiness))
         .route("/api/metrics", get(metrics))
@@ -328,6 +349,66 @@ async fn get_discord_roles(State(state): State<WebState>) -> impl IntoResponse {
     Json(result)
 }
 
+fn supported_channel_kind(kind: serenity::all::ChannelType) -> bool {
+    matches!(
+        kind,
+        serenity::all::ChannelType::Text
+            | serenity::all::ChannelType::News
+            | serenity::all::ChannelType::Forum
+            | serenity::all::ChannelType::NewsThread
+            | serenity::all::ChannelType::PublicThread
+            | serenity::all::ChannelType::PrivateThread
+    )
+}
+
+fn channel_dto(channel: &serenity::all::GuildChannel) -> Option<DiscordChannelDto> {
+    if !supported_channel_kind(channel.kind) {
+        return None;
+    }
+    let kind = match channel.kind {
+        serenity::all::ChannelType::Text => "text",
+        serenity::all::ChannelType::News => "news",
+        serenity::all::ChannelType::Forum => "forum",
+        serenity::all::ChannelType::NewsThread => "news_thread",
+        serenity::all::ChannelType::PublicThread => "public_thread",
+        serenity::all::ChannelType::PrivateThread => "private_thread",
+        _ => return None,
+    };
+    Some(DiscordChannelDto {
+        id: channel.id.to_string(),
+        name: channel.name.clone(),
+        kind: kind.to_string(),
+        parent_id: channel.parent_id.map(|id| id.to_string()),
+        nsfw: channel.nsfw,
+    })
+}
+
+async fn get_discord_channels(State(state): State<WebState>) -> impl IntoResponse {
+    let mut cached = state.channels_cache.lock().await;
+    if let Some((created, channels)) = cached.as_ref()
+        && created.elapsed() < std::time::Duration::from_secs(30)
+    {
+        return Json(channels.clone());
+    }
+    let mut result = Vec::new();
+    for guild_id in state.cache.guilds() {
+        let Some(guild) = state.cache.guild(guild_id) else {
+            continue;
+        };
+        let mut channels: Vec<_> = guild.channels.values().filter_map(channel_dto).collect();
+        channels.extend(guild.threads.iter().filter_map(channel_dto));
+        channels.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        result.push(DiscordGuildChannelsDto {
+            guild_id: guild.id.to_string(),
+            guild_name: guild.name.clone(),
+            channels,
+        });
+    }
+    result.sort_by(|a, b| a.guild_id.cmp(&b.guild_id));
+    *cached = Some((std::time::Instant::now(), result.clone()));
+    Json(result)
+}
+
 fn role_dto(role: &serenity::all::Role) -> DiscordRoleDto {
     DiscordRoleDto {
         id: role.id.to_string(),
@@ -362,12 +443,13 @@ async fn save_settings(
 
     // Link dönüştürme motoru: alan adları temizlenir, sayısal aralıklar güvenli sınıra çekilir
     new_settings.engine.sanitize();
+    new_settings.sanitize_channels();
 
     // Sunucuya özel (sparse) ayarları doğrula ve temizle. Kayıtta **yalnızca sabitlenmiş
     // bölümler** bulunur; boş kalan kayıt saklanmaz (o sunucu genel ayarları miras alır).
-    new_settings.guilds.retain(|gid, _| {
-        !gid.is_empty() && gid.len() <= 25 && gid.chars().all(|c| c.is_ascii_digit())
-    });
+    new_settings
+        .guilds
+        .retain(|gid, _| gid.parse::<u64>().is_ok_and(|id| id > 0));
 
     for guild_cfg in new_settings.guilds.values_mut() {
         if let Some(filters) = guild_cfg.role_filters.as_mut() {
@@ -623,6 +705,7 @@ mod tests {
             "/api/settings",
             "/api/info",
             "/api/discord/roles",
+            "/api/discord/channels",
             "/api/health",
             "/api/auth/logout",
             "/api/ready",
@@ -823,6 +906,7 @@ mod tests {
             save_lock: Arc::new(tokio::sync::Mutex::new(())),
             settings_path: Arc::new(settings_path.clone()),
             roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            channels_cache: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))

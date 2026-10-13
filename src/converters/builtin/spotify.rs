@@ -104,8 +104,10 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     post.title = view.title.clone();
     post.text = view.subtitle.clone().unwrap_or_default();
     post.extra_label = Some("Spotify".to_string());
-    post.sensitive = parsed.is_spoiler;
-    post.custom_card = Some(build_card(&view, &target.open_url, parsed.is_spoiler));
+    // `||url||` is a per-message presentation choice, not source metadata.  Keeping the
+    // fetched card plain is important because the post is cached and may be requested both
+    // with and without a user spoiler.
+    post.custom_card = Some(build_card(&view, &target.open_url, false));
     Ok(post)
 }
 
@@ -294,14 +296,8 @@ impl EntityView {
 ///
 /// Buton satırı: Spotify (asıl) + Apple Music ve YouTube Music aramaları. Discord V2
 /// mesajlarında 30 sn önizleme satır içi oynatılamadığı için harici müzik servisleri sunulur.
-fn build_card(view: &EntityView, open_url: &str, spoiler: bool) -> CustomCard {
-    let wrap = |text: String| {
-        if spoiler && !text.is_empty() {
-            format!("||{text}||")
-        } else {
-            text
-        }
-    };
+fn build_card(view: &EntityView, open_url: &str, _spoiler: bool) -> CustomCard {
+    let wrap = |text: String| text;
     let title = wrap(escape_markdown(view.title.as_deref().unwrap_or("Spotify")));
     let subtitle_line = match view
         .subtitle
@@ -577,12 +573,12 @@ mod tests {
     }
 
     #[test]
-    fn spoiler_wraps_card_text() {
+    fn cached_spotify_card_stays_plain_for_per_send_spoilers() {
         let entity = json!({ "name": "Gizli parça", "artists": [{ "name": "Biri" }] });
         let view = EntityView::from(&entity, "track");
-        let card = build_card(&view, "https://open.spotify.com/track/x", true);
+        let card = build_card(&view, "https://open.spotify.com/track/x", false);
         assert!(
-            card.components[0]["components"][0]["content"]
+            !card.components[0]["components"][0]["content"]
                 .as_str()
                 .unwrap()
                 .contains("||")
