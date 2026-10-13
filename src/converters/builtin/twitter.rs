@@ -320,7 +320,7 @@ async fn fetch_fx_fast(
     let translate = engine.auto_translate;
     let translation_target = &engine.translation_target;
     let show_community_note = engine.show_community_note;
-    let language = translate.then_some(translation_target);
+    let language = translate.then_some(translation_target.as_str());
     let fx = from_fxtwitter(
         client,
         original_url,
