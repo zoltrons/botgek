@@ -215,17 +215,7 @@ async fn fetch_post_internal(
 
     // 1) Hızlı yol: tek FxTwitter isteği (çeviri açıksa dil ekli uç orijinal + çeviri verir).
     if source == TwitterSource::Fxtwitter || translate {
-        return fetch_fx_fast(
-            client,
-            original_url,
-            id,
-            source,
-            translate,
-            &engine.translation_target,
-            video_budget,
-            engine.show_community_note,
-        )
-        .await;
+        return fetch_fx_fast(client, original_url, id, engine, video_budget).await;
     }
 
     // 2) X syndication + FxTwitter aynı anda: biri hata verse de diğeri kullanılır.
@@ -323,12 +313,13 @@ async fn fetch_fx_fast(
     client: &reqwest::Client,
     original_url: &str,
     id: &str,
-    source: TwitterSource,
-    translate: bool,
-    translation_target: &str,
+    engine: &EngineSettings,
     max_video_bytes: u64,
-    show_community_note: bool,
 ) -> Result<BuiltinPost, String> {
+    let source = engine.twitter_source;
+    let translate = engine.auto_translate;
+    let translation_target = &engine.translation_target;
+    let show_community_note = engine.show_community_note;
     let language = translate.then_some(translation_target);
     let fx = from_fxtwitter(
         client,
