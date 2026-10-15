@@ -183,9 +183,9 @@ impl PlatformEngineModes {
         }
     }
 
-    /// Programatik kullanım (testler/varsayılanlar) içindir; WebUI değerleri JSON ile yazar.
+    /// Yalnızca testlerin kullandığı programatik ayar; WebUI değerleri JSON ile yazar.
     /// Native-only platformlarda ve bilinmeyen anahtarlarda sessizce yok sayılır.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set(&mut self, platform_key: &str, mode: ConversionMode) {
         match platform_key {
             "tiktok" => self.tiktok = mode,

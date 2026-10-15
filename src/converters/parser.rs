@@ -34,11 +34,6 @@ impl Platform {
             Platform::YouTube => "YouTube",
         }
     }
-
-    #[allow(dead_code)]
-    pub fn supports_translation(&self) -> bool {
-        matches!(self, Platform::Twitter | Platform::Bluesky)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,8 +279,8 @@ impl From<&Config> for PlatformDomains {
     }
 }
 
-/// `.env` değerleriyle dönüştürme yapar (geriye dönük uyumlu giriş noktası; testler kullanır).
-#[allow(dead_code)]
+/// `.env` değerleriyle dönüştürme yapar (yalnızca testlerin kullandığı giriş noktası).
+#[cfg(test)]
 pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
     parse_message_with_domains(raw_content, &PlatformDomains::from(config))
 }
