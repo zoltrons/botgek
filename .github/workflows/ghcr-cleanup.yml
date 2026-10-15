@@ -14,8 +14,8 @@ name: GHCR paket temizliği
 #      #162 · "delete-only-untagged-versions seems to eat also manifests of tagged versions" ve
 #      #189). `dataaxiom/ghcr-cleanup-action` alt manifestleri çocuk olarak tanıyıp korur,
 #      yalnızca gerçekten yetim kalan sürümleri siler ve bir üst sürüm silinince çocuklarını da
-#      birlikte götürür. `older-than: 1 day` devam eden bir derlemenin taze manifestlerini
-#      yetim sanıp silmeyi engeller.
+#      birlikte götürür. `older-than: 1 hour` devam eden bir derlemenin taze manifestlerini
+#      yetim sanıp silmeyi engeller; ondan eski tüm yetim artıklar (yüzlerce sürüm) budanır.
 #   3. **Yayın** sürümleri (`X.Y.Z` etiketi) **son 10 tanesi** kalacak şekilde budanır
 #      (`release_keep`). 2026-10-15'ten itibaren `docker-publish` yalnızca **sürüm
 #      etiketlerinde** çalışır ve `type=sha` etiketi kaldırıldı: yeni `sha-*` anlık görüntüsü
@@ -47,6 +47,11 @@ on:
         description: "Silinecek sürüm etiketleri için regex (varsayılan: sha-* anlık görüntüleri)"
         required: false
         default: "^sha-"
+        type: string
+      older_than:
+        description: "Etiketsiz temizlikte bu süreden taze sürümlere dokunulmaz (ör. 1 hour, 1 day)"
+        required: false
+        default: "1 hour"
         type: string
       release_keep:
         description: "Yayın (`X.Y.Z`) imajlarından korunacak en yeni sürüm sayısı"
@@ -120,7 +125,10 @@ jobs:
           package: ${{ github.event.repository.name || 'botgek' }}
           # Yalnızca etiketsizler; etiketli imajlar (latest, semver, sha) bu adımda dokunulmaz.
           delete-untagged: true
-          # Devam eden bir derlemenin manifestleri "yetim" görünmesin diye taze sürümlere
-          # dokunulmaz; dün ve öncesine ait artıklar bu koşuda temizlenir.
-          older-than: 1 day
+          # Devam eden bir derlemenin taze manifestleri "yetim" görünmesin diye son 1 saatin
+          # sürümlerine dokunulmaz; öncesindeki tüm yetim artıklar budanır. (Süre `human-interval`
+          # ile ayrıştırılır: `1 hour`, `1 day`, `15 days` …)
+          older-than: ${{ github.event_name == 'workflow_dispatch' && inputs.older_than || '1 hour' }}
+          # Silme sonrası etiketli multi-arch imajların manifestleri/halkaları yeniden doğrulanır.
+          validate: true
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
