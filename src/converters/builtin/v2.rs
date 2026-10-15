@@ -402,10 +402,19 @@ fn community_note_content(platform: Platform, note: &str) -> String {
 }
 
 /// `{"type": 10, "content": ...}` — markdown destekli metin bileşeni.
+///
+/// Sınıra sığan içerik **kopyalanmaz** (kart başına onlarca bileşen üretildiği için ikinci
+/// ayırmadan kaçınılır); yalnızca gerçekten uzun içerik kısaltılır.
 fn text(content: impl Into<String>) -> Value {
+    let content = content.into();
+    let content = if content.len() <= TEXT_DISPLAY_LIMIT {
+        content
+    } else {
+        truncate_chars(&content, TEXT_DISPLAY_LIMIT)
+    };
     json!({
         "type": TYPE_TEXT_DISPLAY,
-        "content": truncate_chars(&content.into(), TEXT_DISPLAY_LIMIT),
+        "content": content,
     })
 }
 

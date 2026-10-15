@@ -5,11 +5,25 @@ pub const DISCORD_CONTENT_LIMIT: usize = 2000;
 
 /// Truncates to `max` characters (not bytes) on a `char` boundary and marks the
 /// cut with an ellipsis.
+/// Metni `max` **karaktere** kısaltır; kısaltıldıysa sonuna `…` ekler.
+///
+/// Hızlı yol: bayt uzunluğu sınırı aşmıyorsa hiç tarama yapılmaz (karakter sayısı bayt
+/// sayısından büyük olamaz) — kart bileşenleri her gönderimde bu fonksiyondan geçtiği için
+/// asıl kazanç buradadır. Kısaltma yolunda metin **tek geçişte** (`char_indices`) kesilir.
 pub fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
+    if max == 0 {
+        return String::new();
+    }
+    if text.len() <= max || text.chars().count() <= max {
         return text.to_string();
     }
-    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    let cut = text
+        .char_indices()
+        .nth(max - 1)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    let mut out = text[..cut].to_string();
+    // Sondaki boşlukları at, kesildiğini `…` ile belli et (toplam uzunluk `max`'ı aşmaz).
     out.truncate(out.trim_end().len());
     out.push('…');
     out

@@ -75,9 +75,17 @@ assets = [
     [".env.example", "etc/botgek/botgek.env.example", "640"],
 ]
 
+# Geliştirme/test derlemeleri: hata ayıklama bilgisi **yalnızca satır tabloları** ile sınırlanır.
+# Geri izlemeler (backtrace) dosya/satır bilgisiyle çalışmaya devam eder, ama `target/` hacmi
+# ve bağlama (link) süresi belirgin biçimde küçülür (tam debug bilgisi gigabaytlara çıkıyordu).
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
+# İnce LTO: çalışma zamanı hızı ile CI derleme süresi arasında dengeli seçim.
 lto = "thin"
 codegen-units = 16
+# Panik = abort: ikili küçülür, yığın açma (unwind) maliyeti kalkar.
 panic = "abort"
 strip = true
