@@ -3,19 +3,28 @@ name: GHCR paket temizliği
 # `build-release.yml` → `docker-publish` her `main` push'unda (`latest` + `sha-xxxxxxx`) ve her
 # sürüm etiketinde (`vX.Y.Z` → `0.1.0`) yeni bir **paket sürümü** yayınlar. Depo özel olduğu için
 # GHCR paketi de özeldir: GitHub Packages kotası özel paketlerde **500 MB**'tır ve multi-arch
-# (amd64/arm64/armv7) tek bir imaj bunun önemli bir bölümünü tutar. Bu iş **günlük** olarak
-# yalnızca snapshot sürümlerini budar:
-#   1. `sha-*` etiketli sürümler silinir (her `main` derlemesi bir snapshot üretir),
-#   2. eşleşen en yeni `keep` sürüm korunur — sürüm listesi **en yeniden eskiye** geldiği
-#      için bu, `latest` etiketli güncel imajı ve ondan bir öncekini garanti eder,
+# (amd64/arm64/armv7) tek bir imaj bunun önemli bir bölümünü tutar. Bu iş **günlük** olarak iki
+# aşamada budar:
+#   1. `sha-*` etiketli sürümler silinir (her `main` derlemesi bir snapshot üretir); eşleşen en
+#      yeni `keep` sürüm korunur — sürüm listesi **en yeniden eskiye** geldiği için bu, `latest`
+#      etiketli güncel imajı ve ondan bir öncekini garanti eder.
+#   2. Etiketsiz (untagged) **artık** sürümler silinir. Tuzak: bir multi-arch imajın platform
+#      manifestleri ile attestation/sbom referrer'ları etiketsizdir ve bunları körlemesine
+#      silmek etiketli imajı `manifest unknown` ile kırar (bkz. actions/delete-package-versions
+#      #162 · "delete-only-untagged-versions seems to eat also manifests of tagged versions" ve
+#      #189). `dataaxiom/ghcr-cleanup-action` alt manifestleri çocuk olarak tanıyıp korur,
+#      yalnızca gerçekten yetim kalan sürümleri siler ve bir üst sürüm silinince çocuklarını da
+#      birlikte götürür. `older-than: 1 day` devam eden bir derlemenin taze manifestlerini
+#      yetim sanıp silmeyi engeller.
 #   3. `vX.Y.Z` etiketli derlemeler de `sha-*` etiketi taşıdığı için, `keep` sayısından eski
 #      kalan yayın imajları budanır; kalıcı olsunlar istenirse `build-release.yml` içinde
 #      `type=sha` etiketi yalnızca dal derlemelerine verilmeli (`enable={{is_default_branch}}`).
 #      Silinen paket sürümleri 30 gün içinde geri alınabilir.
 # Elle çalıştırma: Actions → "GHCR paket temizliği" → Run workflow (`dry_run` ile önce deneyin).
 #
-# Üçüncü taraf action (GitHub tarafından sertifikalı değildir):
-# https://github.com/marketplace/actions/delete-old-packages
+# Üçüncü taraf action'lar (GitHub tarafından sertifikalı değildir):
+#   - https://github.com/marketplace/actions/delete-old-packages
+#   - https://github.com/marketplace/actions/ghcr-cleanup-action
 on:
   schedule:
     # Her gün 03:47 UTC (TR 06:47) — depolama temizliğinden (03:17) sonra, yoğun olmayan saat.
@@ -54,7 +63,8 @@ jobs:
   prune:
     name: Eski imaj sürümlerini sil
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Soğuk manifest önbelleğinde yüzlerce sürümün manifesti çekilir; 20 dk üst sınır yeterli.
+    timeout-minutes: 20
     steps:
       - name: Snapshot paket sürümlerini buda
         uses: smartsquaregmbh/delete-old-packages@v1.0.0
@@ -73,4 +83,22 @@ jobs:
           # için `latest` daima ayakta kalır. (Gerçek paket: 15 sürümün tamamı `sha-*` taşıyor,
           # `latest` en yeni sürümde — 2026-10-15 dry-run doğrulaması.)
           version-pattern: ${{ github.event_name == 'workflow_dispatch' && inputs.version_pattern || '^sha-' }}
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+
+      # 1. adımın sildiği eski `sha-*` imajlarının **çocuk manifestleri** ve önceki derlemelerden
+      # kalan yüzlerce etiketsiz (untagged) sürüm, depolamayı asıl şişiren kalemdir: her
+      # multi-arch derleme 3 platform manifesti + attestation referrer'ı bırakır. Bu adım
+      # bunların yalnızca **yetim** olanlarını siler; güncel `latest`/sürüm imajlarının alt
+      # manifestleri korunur (körlemesine silme `manifest unknown` hatasına yol açar).
+      - name: Etiketsiz artık sürümleri buda (multi-arch farkındalıklı)
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
+          owner: ${{ github.repository_owner }}
+          package: ${{ github.event.repository.name || 'botgek' }}
+          # Yalnızca etiketsizler; etiketli imajlar (latest, semver, sha) bu adımda dokunulmaz.
+          delete-untagged: true
+          # Devam eden bir derlemenin manifestleri "yetim" görünmesin diye taze sürümlere
+          # dokunulmaz; dün ve öncesine ait artıklar bu koşuda temizlenir.
+          older-than: 1 day
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
