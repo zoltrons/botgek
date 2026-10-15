@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 use serenity::all::{ChannelId, MessageId, UserId};
 use std::sync::LazyLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Kayıt dosyasının varsayılan adı (çalışma dizinine göre).
 pub const DEFAULT_DB_FILE: &str = "botgek.db";
@@ -44,10 +44,26 @@ pub enum PersistencePolicy {
     AllowEphemeral,
 }
 
+/// Başlatma politikası: üretimde kalıcılık **zorunludur**; testler bellek içi yedeğe izin verir
+/// (testler zaten `:memory:` yolunu kullanır, gerçek dosyaya dokunmaz).
+fn startup_policy() -> PersistencePolicy {
+    if cfg!(test) {
+        PersistencePolicy::AllowEphemeral
+    } else {
+        PersistencePolicy::RequirePersistent
+    }
+}
+
 /// Tek paylaşılan veritabanı bağlantısı.
-static DB: LazyLock<Db> = LazyLock::new(|| {
-    Db::open_with_policy(&default_path(), PersistencePolicy::RequirePersistent)
-        .expect("persistent SQLite database is required")
+///
+/// Açılış **hata döndürebilir** ve bu hata `LazyLock` içinde panikletilmez: release profilinde
+/// `panic = "abort"` olduğu için bir panik, startup tanılamasını (ve `exit(1)`'i) atlayıp süreci
+/// sessizce sonlandırırdı. Hata saklanır; [`init`] onu startup'a **aynen** iletir, kayıt
+/// gerektiren akışlar ise paniklemeden çalışmaya devam eder.
+static DB: LazyLock<Result<Db, String>> = LazyLock::new(|| {
+    Db::open_with_policy(&default_path(), startup_policy()).inspect_err(|err| {
+        error!("Kalıcı kayıt veritabanı açılamadı: {err}");
+    })
 });
 /// Son budamadan bu yana yapılan yazma sayısı.
 static WRITES: AtomicU64 = AtomicU64::new(0);
@@ -74,13 +90,20 @@ pub async fn blocking<T: Send + Default + 'static>(job: impl FnOnce() -> T + Sen
     }
 }
 
+/// Açılabilmiş veritabanı; açılış başarısızsa `None` (hata ilk erişimde bir kez log'lanır).
+fn database() -> Option<&'static Db> {
+    DB.as_ref().ok()
+}
+
 pub fn healthy() -> bool {
-    DB.path() != ":memory:"
-        && DB
-            .with_connection(|connection| {
-                connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-            })
-            .is_ok()
+    DB.as_ref().is_ok_and(|db| {
+        db.path() != ":memory:"
+            && db
+                .with_connection(|connection| {
+                    connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                })
+                .is_ok()
+    })
 }
 
 /// SQLite veritabanı sarmalayıcısı. Sorgular tek satır (birincil anahtar) üzerinde
@@ -254,44 +277,55 @@ impl Db {
 /// Kart kaydı (mesaj → paylaşan kullanıcı) yazar. Her yazmada hafif bir sayaç artar;
 /// sayaç eşiğe gelince en eski kayıtlar budanır.
 pub fn remember_card(message_id: MessageId, channel_id: ChannelId, author_id: UserId) {
-    DB.remember(message_id, channel_id, author_id);
+    let Some(db) = database() else {
+        return;
+    };
+    db.remember(message_id, channel_id, author_id);
 
     if WRITES.fetch_add(1, Ordering::Relaxed) + 1 >= PRUNE_EVERY {
         WRITES.store(0, Ordering::Relaxed);
-        prune_db(&DB);
+        prune_db(db);
     }
 }
 
 /// Kaydı siler (mesaj Discord'dan silindiğinde).
 pub fn forget_card(message_id: MessageId) {
-    DB.forget(message_id);
+    if let Some(db) = database() {
+        db.forget(message_id);
+    }
 }
 
 /// Kartı paylaşan kullanıcı.
 pub fn card_author(message_id: MessageId) -> Option<UserId> {
-    DB.author(message_id)
+    database().and_then(|db| db.author(message_id))
 }
 
 /// Bu mesaj için kayıt var mı?
 pub fn is_card(message_id: MessageId) -> bool {
-    DB.contains(message_id)
+    database().is_some_and(|db| db.contains(message_id))
 }
 
 /// Kayıt veritabanını hazırlar (şema + budama) ve özet bilgiyi log'lar.
-/// Üretim derlemesinde bellek içi fallback tespit edilirse hata döner; çağıran
-/// startup'ı durdurmalıdır.
+///
+/// Açılış başarısızsa **hata döner**; çağıran startup'ı durdurmalıdır (panik/abort yoktur).
 pub fn init() -> Result<(), String> {
-    if DB.path() == ":memory:" && !cfg!(test) {
+    init_with(DB.as_ref())
+}
+
+/// [`init`]'in karar çekirdeği: saf ve test edilebilir (açılış hatası startup'a aynen iletilir).
+fn init_with(database: Result<&Db, &String>) -> Result<(), String> {
+    let db = database.map_err(Clone::clone)?;
+    if db.path() == ":memory:" && !cfg!(test) {
         return Err(
             "kalıcı SQLite açılamadı; ephemeral bellek deposuyla başlatma reddedildi".to_string(),
         );
     }
     info!(
         "Kayıt veritabanı hazır: {} ({} kart kaydı)",
-        DB.path(),
-        DB.count()
+        db.path(),
+        db.count()
     );
-    prune_db(&DB);
+    prune_db(db);
     Ok(())
 }
 
@@ -444,5 +478,20 @@ mod tests {
             db.contains(MessageId::new(5)),
             "bellek içi veritabanı çalışmalı"
         );
+    }
+
+    #[test]
+    fn startup_returns_open_failures_instead_of_aborting() {
+        // Üretimde `RequirePersistent` açılış hatası üretir; `init` bunu startup'a **aynen**
+        // iletmek zorundadır (panik/abort startup tanılamasını gizlerdi).
+        let failure =
+            "kalıcı SQLite veritabanı açılamadı (/olmayan-dizin/x.db): unable to open".to_string();
+        assert_eq!(init_with(Err(&failure)), Err(failure));
+    }
+
+    #[test]
+    fn startup_accepts_the_memory_store_used_by_tests() {
+        let db = open_test(":memory:");
+        assert!(init_with(Ok(&db)).is_ok());
     }
 }
