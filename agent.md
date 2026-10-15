@@ -43,6 +43,17 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-15 13:45] zoltrons — Minimalizasyon ve hız: ölü kod, kullanılmayan fixture, ignore sıkılaştırma, kart yolu optimizasyonu
+- **Commit:** `8c74a28..151964a`
+- **Yapılan:**
+  1. **Minimalizasyon:** hiçbir kod/test tarafından okunmayan `builtin/fixtures/new_platform_previews.json` ve hiç çağrılmayan `Platform::supports_translation()` silindi; **yalnızca testlerden** kullanılan `parse_message()` ve `PlatformEngineModes::set()` `#[allow(dead_code)]` yerine `#[cfg(test)]`'e alındı (üretim ikilisine girmez). İzlenen dosya sayısı 85 → 84.
+  2. **Ignore hijyeni:** `.gitignore` — `.env.*` tamamı yok sayılır (`!.env.example` korunur), kapsam/linker çıktıları (`*.profraw`, `*.profdata`, `lcov.info`), CI paketleme dizinleri (`/dist/`, `/bin/`), `*.tmp`, macOS `._*`, `.fleet/`, `*.swp`, `*~`. `.dockerignore` — `tests/` ve `.clinerules/` yapı bağlamından çıkarıldı (imaj bağlamı küçülür → derleme hızlanır).
+  3. **Hız:** `utils::truncate_chars` bayt uzunluğu yetiyorsa hiç taramıyor ve kısaltmayı tek geçişte (`char_indices`) yapıyor; `v2::text` sınıra sığan içeriği **kopyalamıyor**; `[profile.dev] debug = "line-tables-only"` (geri izlemeler çalışır, `target/` hacmi ve link süresi küçülür). Ölçüm (`offline_card_baseline`, 10.000 örnek, 3 kolun medyanı): p50 **4041ns → 3833ns**, p95 **4584ns → 4250ns**.
+  4. **Doğrulama:** 288 Rust + 13 panel testi geçiyor; `cargo check` · `clippy -D warnings` · `fmt --check` temiz. Kullanılmayan bağımlılık taraması yapıldı — `native-tls` **bilinçli** bırakıldı (serenity TLS yedeği + vendored OpenSSL ile çapraz derleme bağımsızlığı).
+  5. **Not:** paralel yürüyen GHCR paket temizliği işleri (`1ac1c25`, `1ad41f0`) korunarak bu commit'lerin üzerine eklendi; onların dosyalarına dokunulmadı.
+- **Etkilenen:** `src/utils/mod.rs`, `src/converters/builtin/v2.rs`, `src/converters/parser.rs`, `src/settings.rs`, `Cargo.toml`, `.gitignore`, `.dockerignore`
+
+
 ### [2026-10-15 13:15] zoltrons — Kartlar yerleşik Reddit/X düzenine hizalandı; WebUI kayıt hatası, topluluk notu ve Actions depolama sorunu çözüldü
 - **Commit:** `b5ae905..f88c784`
 - **Yapılan:**
