@@ -29,7 +29,15 @@ jobs:
         with:
           toolchain: 1.98.1
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Depolama kotası (dahil 0,5 GB) hedef (`target/`) dizinlerini tutmaya yetmiyor:
+          # yalnızca cargo kayıt defteri/git önbelleği alınır. Derleme yeniden yapılır ama
+          # depolama **onlarca MB**'ta kalır (tek bir target cache'i 300-600 MB tutuyordu).
+          cache-targets: "false"
+          # Yeni cache yalnızca ana dal/etiket çalışmalarında oluşturulur; PR'lar geri yükler.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.6.16
@@ -38,3 +46,5 @@ jobs:
         with:
           name: coverage-lcov
           path: lcov.info
+          # Varsayılan 90 gün yerine 1 gün: kapsam raporu yalnızca koşu sonrası incelenir.
+          retention-days: 1

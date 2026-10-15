@@ -1,0 +1,119 @@
+name: Actions depolama temizliği
+
+# Ücretsiz planda Actions depolaması 0,5 GB; bu kota tek bir Rust `target/` cache'i
+# (300-600 MB) veya birkaç günlük artefakt birikimiyle dolar ("You have used 100% of the
+# Actions storage" uyarısı). Bu iş **günlük** olarak:
+#   1. eski artefaktları siler (varsayılan: 2 günden eski),
+#   2. uzun süredir erişilmeyen cache'leri siler (varsayılan: 3 gün),
+#   3. kalan cache'leri **bütçeye** (varsayılan: 300 MB, en yeniler korunur) indirir.
+#
+# Workflow'lar zaten `cache-targets: "false"` (yalnızca cargo kayıt defteri) ve
+# `retention-days: 1` kullanır; bu iş kotayı **garanti altına alır**.
+# Elle çalıştırma: Actions → "Actions depolama temizliği" → Run workflow.
+on:
+  schedule:
+    # Her gün 03:17 UTC (TR 06:17) — yoğun olmayan saat.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      artifact_retention_days:
+        description: "Bu günden eski artefaktlar silinir"
+        required: false
+        default: "2"
+        type: string
+      cache_retention_days:
+        description: "Bu günden uzun süredir erişilmeyen cache'ler silinir"
+        required: false
+        default: "3"
+        type: string
+      cache_budget_mb:
+        description: "Cache'ler için üst sınır (MB) — en yeni girdiler korunur"
+        required: false
+        default: "300"
+        type: string
+
+# En az yetki: yalnızca artefakt/cache silmek için yazma gerekir.
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ci-storage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Eski artefakt ve cache'leri buda
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Artefakt ve cache temizliği
+        uses: actions/github-script@v7
+        env:
+          ARTIFACT_RETENTION_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_retention_days || '2' }}
+          CACHE_RETENTION_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.cache_retention_days || '3' }}
+          CACHE_BUDGET_MB: ${{ github.event_name == 'workflow_dispatch' && inputs.cache_budget_mb || '300' }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const DAY = 24 * 60 * 60 * 1000;
+            const now = Date.now();
+            const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+            const artifactCutoff = now - Number(process.env.ARTIFACT_RETENTION_DAYS) * DAY;
+            const cacheCutoff = now - Number(process.env.CACHE_RETENTION_DAYS) * DAY;
+            const cacheBudget = Number(process.env.CACHE_BUDGET_MB) * 1024 * 1024;
+
+            // 1) Eski artefaktlar. Eşik gün cinsinden olduğu için **çalışan** bir koşunun
+            //    artefaktlarına dokunulmaz (release/docker işleri aynı koşuda tüketir).
+            let removedArtifacts = 0;
+            let freedArtifactBytes = 0;
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner, repo, per_page: 100 },
+              (response) => response.data.artifacts
+            );
+            for (const artifact of artifacts) {
+              if (new Date(artifact.created_at).getTime() >= artifactCutoff) continue;
+              await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: artifact.id });
+              removedArtifacts += 1;
+              freedArtifactBytes += artifact.size_in_bytes;
+            }
+
+            // 2) + 3) Cache'ler: en yeni erişilen önce gelir; bütçe dolana kadar yeniler
+            //    korunur, kalanlar (ve süresi geçenler) silinir.
+            const caches = await github.paginate(
+              github.rest.actions.getActionsCacheList,
+              { owner, repo, per_page: 100 },
+              (response) => response.data.actions_caches
+            );
+            caches.sort((a, b) => new Date(b.last_accessed_at) - new Date(a.last_accessed_at));
+            let keptBytes = 0;
+            let removedCaches = 0;
+            let freedCacheBytes = 0;
+            for (const cache of caches) {
+              const stale = new Date(cache.last_accessed_at).getTime() < cacheCutoff;
+              const overBudget = keptBytes + cache.size_in_bytes > cacheBudget;
+              if (!stale && !overBudget) {
+                keptBytes += cache.size_in_bytes;
+                continue;
+              }
+              await github.rest.actions.deleteActionsCacheById({ owner, repo, cache_id: cache.id });
+              removedCaches += 1;
+              freedCacheBytes += cache.size_in_bytes;
+            }
+
+            await core.summary
+              .addHeading('Actions depolama temizliği')
+              .addTable([
+                [{ data: 'Kalem', header: true }, { data: 'Silinen', header: true }, { data: 'Boşaltılan', header: true }],
+                ['Artefakt', String(removedArtifacts), mb(freedArtifactBytes)],
+                ['Cache', String(removedCaches), mb(freedCacheBytes)],
+                ['Korunan cache', String(caches.length - removedCaches), mb(keptBytes)],
+              ])
+              .write();
+            core.info(
+              `artefakt: ${removedArtifacts} silindi (${mb(freedArtifactBytes)}) · ` +
+              `cache: ${removedCaches} silindi (${mb(freedCacheBytes)}) · ` +
+              `kalan cache ${mb(keptBytes)} / bütçe ${mb(cacheBudget)}`
+            );

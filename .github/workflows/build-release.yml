@@ -44,6 +44,11 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # Depolama kotası (dahil 0,5 GB) hedef dizinlerini tutmaya yetmiyor: yalnızca
+          # cargo kayıt defteri/git önbelleği alınır (bkz. build-and-package açıklaması).
+          cache-targets: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Run Cargo Test
         run: cargo test --verbose --locked
@@ -123,7 +128,12 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
+          # Depolama kotası (dahil 0,5 GB) hedef dizinlerini tutmaya yetmiyor: yalnızca
+          # cargo kayıt defteri/git önbelleği alınır (hedef başına 400-600 MB'lık target
+          # cache'i birikiyordu). Derleme yeniden yapılır, depolama onlarca MB'ta kalır.
+          cache-targets: "false"
           key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Install build tools (cross, cargo-deb)
         uses: taiki-e/install-action@v2
@@ -186,7 +196,9 @@ jobs:
         with:
           name: botgek-${{ matrix.name }}
           path: dist/*
-          retention-days: 30
+          # Artefaktlar yalnızca **aynı koşu içinde** (release + docker işleri) tüketilir:
+          # 30 günlük saklama kotayı dolduruyordu (219 artefakt ≈ 1,7 GB).
+          retention-days: 1
 
   # 3. GitHub Release Yayınlama (Tüm mimariler derlendikten sonra tekil ve yarış durumsuz çalışır)
   release:
@@ -284,5 +296,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
+          # Buildx GHA cache'i **kapalı**: `type=gha,mode=max` depolamanın en büyük kalemiydi
+          # (70 buildkit cache girdisi). İmaj hazır ikililerden ~30 sn'de derlendiği için
+          # cache'e gerek yok; imaj katmanları GHCR'de (Paketler) tutulur, Actions kotasında değil.
