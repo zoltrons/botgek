@@ -36,6 +36,9 @@ jobs:
           # yalnızca cargo kayıt defteri/git önbelleği alınır. Derleme yeniden yapılır ama
           # depolama **onlarca MB**'ta kalır (tek bir target cache'i 300-600 MB tutuyordu).
           cache-targets: "false"
+          # Tüm işler tek paylaşımlı kayıt defteri cache'ini kullanır (bkz. build-release.yml).
+          add-job-id-key: "false"
+          shared-key: "rust-registry"
           # Yeni cache yalnızca ana dal/etiket çalışmalarında oluşturulur; PR'lar geri yükler.
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
       - uses: taiki-e/install-action@v2

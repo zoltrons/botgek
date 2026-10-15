@@ -48,6 +48,10 @@ jobs:
           # Depolama kotası (dahil 0,5 GB) hedef dizinlerini tutmaya yetmiyor: yalnızca
           # cargo kayıt defteri/git önbelleği alınır (bkz. build-and-package açıklaması).
           cache-targets: "false"
+          # Tüm işler **tek** kayıt defteri cache'ini paylaşır: iş kimliği anahtara girmezse
+          # (ve `shared-key` sabitse) 5 iş × ~400 MB yerine 1 cache oluşur.
+          add-job-id-key: "false"
+          shared-key: "rust-registry"
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Run Cargo Test
@@ -132,7 +136,10 @@ jobs:
           # cargo kayıt defteri/git önbelleği alınır (hedef başına 400-600 MB'lık target
           # cache'i birikiyordu). Derleme yeniden yapılır, depolama onlarca MB'ta kalır.
           cache-targets: "false"
-          key: ${{ matrix.target }}
+          # Matris hedefi (`key`) **kaldırıldı**: `target/` cache'lenmediği için ayrıştırmaya
+          # gerek yok; üç hedef + test + kapsam işleri tek paylaşımlı cache kullanır.
+          add-job-id-key: "false"
+          shared-key: "rust-registry"
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Install build tools (cross, cargo-deb)

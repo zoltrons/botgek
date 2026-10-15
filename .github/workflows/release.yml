@@ -61,6 +61,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-targets: "false"
+          # Tüm işler tek paylaşımlı kayıt defteri cache'ini kullanır (bkz. build-release.yml).
+          add-job-id-key: "false"
+          shared-key: "rust-registry"
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Sürümü bump'la, test et, etiketle ve push'la
