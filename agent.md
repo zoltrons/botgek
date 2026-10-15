@@ -43,6 +43,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-15 13:15] zoltrons — Kartlar yerleşik Reddit/X düzenine hizalandı; WebUI kayıt hatası, topluluk notu ve Actions depolama sorunu çözüldü
+- **Commit:** `b5ae905..f88c784`
+- **Yapılan:**
+  1. **Kart düzeni (referans görseller):** üst satır **tüm platformlarda** soluk/küçük (`-# `) — X'te `Ad <:verified:> ([@kullanıcı](profil))`, Reddit'te `r/alt • flair • Posted by [u/kullanıcı](profil)` (profil bağlantısı yeni). Reddit metrikleri `⬆ N upvotes • 💬 M comments` (aşağı oy kaldırıldı), topluluk etiketi alt bilgiden üst satıra taşındı, harici bağlantı **tek satır** (`Site | Başlık`, OG 2,5 sn bütçe, alınamazsa alan adı), çeviri notu Türkçe (`🌐 Japonca'dan çevrildi`; `translate.rs`'e kod → Türkçe dil adı tablosu + ünlü uyumlu ek). Sağ üstte profil resmi/görsel yuvası **yok**; özel emojiler, `Gönderen:` ve `[Link]` korunur.
+  2. **Hata düzeltmeleri:** (a) WebUI'da bir bölüm ilk kez sabitlenirken rol listesi düzenlemesi kayboluyordu (`ensureBlockOverridden` sabitlemeden önce `getActiveConfig()` çağırıyordu) ve elle girilen rol kimlikleri sunucu kuralıyla uyuşmadığı için kaydetmede sessizce düşüyordu; (b) topluluk notunda ve proxy alıntısında **çıplak `>`** satırı kartta fazladan işaret olarak görünüyordu (2026-09-27 kararının ihlali); (c) `store::init()`'in fail-fast sözleşmesi erişilemezdi: kalıcı DB açılamazsa panik/abort oluyordu, artık hata startup'a iletilir; (d) preview'da `_` kaçışı ve `plan_media`/`spotify` içindeki ölü kod temizlendi.
+  3. **CI depolama:** Actions kotası dolmuştu (**113 cache ≈ 8,2 GB**, **219 artefakt ≈ 1,7 GB**). Hedef cache'leri kapatıldı (`cache-targets: "false"`), `save-if` ile cache üretimi ana dal/etiketle sınırlandı, artefakt saklama 30 → **1 gün**, buildx `type=gha,mode=max` kaldırıldı ve **günlük** `ci-storage.yml` (artefakt/cache budama, 300 MB bütçe) eklendi; mevcut birikim REST API ile silindi.
+- **Test:** **288 Rust testi** + **13 panel testi** geçiyor; `cargo check` · `clippy -D warnings` · `fmt --check` temiz.
+- **Etkilenen:** `src/converters/builtin/{v2,reddit,translate,preview,render,spotify}.rs`, `src/converters/mod.rs`, `src/store.rs`, `src/web/ui/app.js`, `tests/web-ui.test.cjs`, `.github/workflows/*`
+
+
 ### [2026-10-09 19:20] zoltrons — X "link kartı": medyasız gönderide harici bağlantı önizlemesi karta eklendi
 - **Commit:** `5a35305`
 - **Sorun:** X, metninde harici bağlantı olan **medyasız** gönderilerde hedef sayfanın önizleme kartını (başlık + açıklama + görsel + site adı) gösterir; botun kartı bunu göstermiyordu.

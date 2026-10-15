@@ -494,8 +494,14 @@ pub const MAX_VIDEO_MB_RANGE: std::ops::RangeInclusive<u8> = 1..=50;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct EngineSettings {
+    /// Başka botların paylaştığı desteklenen linkler de dönüştürülsün mü? Varsayılan olarak
+    /// **kapalıdır**. Açıldığında bot kaynağı yine de taklit edilmez ve bot mesajları AI
+    /// sohbetini tetiklemez (yalnızca link dönüşümü yapılır).
     #[serde(default)]
     pub respond_to_bots: bool,
+    /// Hassas (NSFW) içeriğin kartta nasıl gösterileceği: her zaman spoiler veya yalnızca
+    /// NSFW kanallarda açık. Kaynak spoiler'ı ve elle `||...||` işaretlenen içerik NSFW
+    /// kanalda da gizli kalır (bkz. `render::VisibilityDecision`).
     #[serde(default)]
     pub sensitive_mode: SensitiveMode,
     /// Platform → motor modu (proxy / builtin).
