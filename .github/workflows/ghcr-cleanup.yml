@@ -1,0 +1,70 @@
+name: GHCR paket temizliği
+
+# `build-release.yml` → `docker-publish` her `main` push'unda (`latest` + `sha-xxxxxxx`) ve her
+# sürüm etiketinde (`vX.Y.Z` → `0.1.0`) yeni bir **paket sürümü** yayınlar. Depo özel olduğu için
+# GHCR paketi de özeldir: GitHub Packages kotası özel paketlerde **500 MB**'tır ve multi-arch
+# (amd64/arm64/armv7) tek bir imaj bunun önemli bir bölümünü tutar. Bu iş **günlük** olarak
+# yalnızca snapshot sürümlerini budar:
+#   1. `sha-*` etiketli sürümler silinir (her `main` derlemesi bir snapshot üretir),
+#   2. `latest` ve sürüm etiketleri (`0.1.0` gibi) **hiçbir zaman** silinmez,
+#   3. eşleşen en yeni `keep` sürüm güvenlik payı olarak korunur.
+# Elle çalıştırma: Actions → "GHCR paket temizliği" → Run workflow (`dry_run` ile önce deneyin).
+#
+# Üçüncü taraf action (GitHub tarafından sertifikalı değildir):
+# https://github.com/marketplace/actions/delete-old-packages
+on:
+  schedule:
+    # Her gün 03:47 UTC (TR 06:47) — depolama temizliğinden (03:17) sonra, yoğun olmayan saat.
+    - cron: "47 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Yalnızca neyin silineceğini yazdır (silme yapılmaz)"
+        required: false
+        default: false
+        type: boolean
+      keep:
+        description: "Eşleşen sürümlerden korunacak en yeni sürüm sayısı (0-100)"
+        required: false
+        default: "2"
+        type: string
+      version_pattern:
+        description: "Silinecek sürüm etiketleri için regex (varsayılan: sha-* anlık görüntüleri)"
+        required: false
+        default: "^sha-"
+        type: string
+
+# En az yetki: paket sürümü silmek için `packages: write` gerekir. İmajı yayınlayan depo,
+# yayınladığı paket üzerinde varsayılan olarak admin yetkisine sahiptir; `latest`/sürüm
+# etiketleri ise hiç hedeflenmediği için yanlışlıkla silinme riski yoktur.
+permissions:
+  contents: read
+  packages: write
+
+# Eşzamanlı koşular aynı paket sürümleri üzerinde yarışmasın.
+concurrency:
+  group: ghcr-cleanup-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Eski imaj sürümlerini sil
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Snapshot paket sürümlerini buda
+        uses: smartsquaregmbh/delete-old-packages@v1.0.0
+        with:
+          # Paket sahibi kişisel hesap: action `user`/`organization` alanlarından **yalnızca
+          # birini** kabul eder; `github.repository_owner` her iki durumda da doğrudur.
+          user: ${{ github.repository_owner }}
+          type: container
+          names: ${{ github.event.repository.name || 'botgek' }}
+          # Varsayılan `github.token` imajı yayınlayan depo için yeterlidir. Paket başka bir
+          # hesaba taşınır ya da izin hatası alınırsa, klasik PAT (`delete:packages` +
+          # `read:packages`) `GHCR_CLEANUP_TOKEN` adıyla gizli değişken olarak eklenir.
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
+          keep: ${{ github.event_name == 'workflow_dispatch' && inputs.keep || '2' }}
+          # `sha-*` filtresi sayesinde `latest` ve semver etiketli yayınlar hiç eşleşmez.
+          version-pattern: ${{ github.event_name == 'workflow_dispatch' && inputs.version_pattern || '^sha-' }}
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
