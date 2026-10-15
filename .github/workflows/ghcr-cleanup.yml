@@ -6,8 +6,12 @@ name: GHCR paket temizliği
 # (amd64/arm64/armv7) tek bir imaj bunun önemli bir bölümünü tutar. Bu iş **günlük** olarak
 # yalnızca snapshot sürümlerini budar:
 #   1. `sha-*` etiketli sürümler silinir (her `main` derlemesi bir snapshot üretir),
-#   2. `latest` ve sürüm etiketleri (`0.1.0` gibi) **hiçbir zaman** silinmez,
-#   3. eşleşen en yeni `keep` sürüm güvenlik payı olarak korunur.
+#   2. eşleşen en yeni `keep` sürüm korunur — sürüm listesi **en yeniden eskiye** geldiği
+#      için bu, `latest` etiketli güncel imajı ve ondan bir öncekini garanti eder,
+#   3. `vX.Y.Z` etiketli derlemeler de `sha-*` etiketi taşıdığı için, `keep` sayısından eski
+#      kalan yayın imajları budanır; kalıcı olsunlar istenirse `build-release.yml` içinde
+#      `type=sha` etiketi yalnızca dal derlemelerine verilmeli (`enable={{is_default_branch}}`).
+#      Silinen paket sürümleri 30 gün içinde geri alınabilir.
 # Elle çalıştırma: Actions → "GHCR paket temizliği" → Run workflow (`dry_run` ile önce deneyin).
 #
 # Üçüncü taraf action (GitHub tarafından sertifikalı değildir):
@@ -65,6 +69,8 @@ jobs:
           # `read:packages`) `GHCR_CLEANUP_TOKEN` adıyla gizli değişken olarak eklenir.
           token: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
           keep: ${{ github.event_name == 'workflow_dispatch' && inputs.keep || '2' }}
-          # `sha-*` filtresi sayesinde `latest` ve semver etiketli yayınlar hiç eşleşmez.
+          # Yalnızca `sha-*` etiketli sürümler eşleşir; `keep` en yeni eşleşmeleri koruduğu
+          # için `latest` daima ayakta kalır. (Gerçek paket: 15 sürümün tamamı `sha-*` taşıyor,
+          # `latest` en yeni sürümde — 2026-10-15 dry-run doğrulaması.)
           version-pattern: ${{ github.event_name == 'workflow_dispatch' && inputs.version_pattern || '^sha-' }}
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
