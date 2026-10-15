@@ -43,6 +43,17 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-15 14:00] zoltrons — GHCR paket kotası: imajlar yalnızca sürüm etiketinde yayınlanır, paket geçmişi son 10 sürümde tutulur
+- **Commit:** `79e1dff`
+- **Sorun:** Depolama tüketiminin kaynağı Actions cache'i değil **GHCR paket sürümleriydi**: `docker-publish` her `main` push'unda çalışıyor, `docker/metadata-action` her derleme için `sha-xxxxxxx` etiketi üretiyordu; `latest`/`sha` taşındıkça eski paket sürümleri **etiketsiz** kalıyor ve hiç silinmediği için özel paket kotasını (500 MB) dolduruyordu.
+- **Yapılan:**
+  1. `docker-publish` artık yalnızca **sürüm etiketlerinde** (`v*`) yayınlar: PR'lar imajı yalnızca derler (push yok), `main` push'unda imaj üretilmez → `latest` = **son yayın sürümü**.
+  2. `docker/metadata-action` etiketleri `latest` + `X.Y.Z` ile sınırlandı; `type=sha` **kaldırıldı** → her yayın **tek** paket sürümü olur, yeni etiketsiz artık birikmez.
+  3. `ghcr-cleanup.yml`'e **yayın sürümlerini son 10'da tutan** adım eklendi (`release_keep`, varsayılan 10); `sha-*` adımı yalnızca eski birikimi temizler.
+- **Uygulanan temizlik:** önce kuru koşumla doğrulandı (`78 manifest`), sonra gerçek koşu çalıştırıldı: **90 yetim etiketsiz manifest silindi**, yayın sürümlerinin hiçbiri budanmadı (pakette 10'un altında sürüm var).
+- **Etkilenen:** `.github/workflows/build-release.yml`, `.github/workflows/ghcr-cleanup.yml`
+
+
 ### [2026-10-15 13:45] zoltrons — Minimalizasyon ve hız: ölü kod, kullanılmayan fixture, ignore sıkılaştırma, kart yolu optimizasyonu
 - **Commit:** `8c74a28..a495563`
 - **Yapılan:**
