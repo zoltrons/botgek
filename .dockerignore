@@ -13,6 +13,9 @@ README.md
 *.log
 deploy-rpi.sh
 botgek.service
+# Yalnızca `cargo test` için gerekenler ve ajan kuralları imaja girmez (küçük ama temiz kalır)
+tests/
+.clinerules/
 
 # Ortam değişkenleri ve yapılandırma
 .env

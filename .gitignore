@@ -1,30 +1,44 @@
-# Rust derleme dizini
+# ── Rust derleme ve ölçüm çıktıları ───────────────────────────────────────────
 target/
 **/*.rs.bk
+# Kapsam/linker çıktıları (CI'da üretilir, yerele düşebilir)
+*.profraw
+*.profdata
+lcov.info
 
-# HASSAS DOSYALAR - Kesinlikle depoya eklenmez!
+# ── HASSAS DOSYALAR - Kesinlikle depoya eklenmez! ─────────────────────────────
+# `.env*` tamamı (ör. `.env.production`) yok sayılır; yalnızca örnek dosya izlenir.
 .env
+.env.*
+!.env.example
 *.env.local
 *.env.*.local
 
-# Yerel test ortamı (token, settings.json, yerel SQLite) - depoya eklenmez
+# ── Yerel test/çalışma ortamı (token, ayar, yerel SQLite) ─────────────────────
 /local-test/
+# CI'nın koşu içinde ürettiği paketleme dizinleri (yerelde çalıştırılırsa kirlilik olmasın)
+/dist/
+/bin/
 
-# Loglar ve geçici dosyalar
+# ── Loglar ve geçici dosyalar ─────────────────────────────────────────────────
 *.log
-lcov.info
+*.tmp
 settings.json.bak-*
 .botgek-settings-*.tmp
 
-# Kalıcı kayıt veritabanı (SQLite) - her kurulumda kendi verisi oluşur
+# ── Kalıcı kayıt veritabanı (SQLite) - her kurulumda kendi verisi oluşur ──────
 botgek.db
 botgek.db-wal
 botgek.db-shm
 *.db-shm
 *.db-wal
 
-# Editör ve işletim sistemi
+# ── Editör ve işletim sistemi ─────────────────────────────────────────────────
 .DS_Store
+._*
 Thumbs.db
 .vscode/
 .idea/
+.fleet/
+*.swp
+*~
