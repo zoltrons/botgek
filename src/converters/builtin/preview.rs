@@ -242,6 +242,32 @@ fn plain_text(raw: &str) -> String {
         .to_string()
 }
 
+/// Önizleme metni için kaçış: paylaşılan `escape_markdown` sözleşmesi + **yalnızca satır
+/// başındaki** `#`.
+///
+/// `_` bilerek kaçırılmaz: Discord (CommonMark) kelime içi alt çizgiyi vurgu başlatıcı saymadığı
+/// için kaçış gereksizdir ve kartta kaynakta olmayan bir `\` gösterir
+/// (`world_record_egg` → `world\_record\_egg`, bkz. `render::escape_markdown` ve 2026-10-09
+/// kararı). Aynı nedenle satır ortasındaki `#` de kaçırılmaz; ancak satır başındaki (en fazla
+/// üç boşluk girintili) `#` kartta başlık oluşturabildiği için kaçırılır.
+fn escape_preview_markdown(raw: &str) -> String {
+    let escaped = super::render::escape_markdown(&plain_text(raw));
+    let mut out = String::with_capacity(escaped.len());
+    for (index, line) in escaped.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let (leading, rest) = line.split_at(indent);
+        out.push_str(leading);
+        if indent <= 3 && rest.starts_with('#') {
+            out.push('\\');
+        }
+        out.push_str(rest);
+    }
+    out
+}
+
 fn generic(raw: &str, platform: Platform) -> bool {
     let lower = raw.trim().to_lowercase();
     lower.is_empty()
@@ -315,11 +341,7 @@ pub(super) fn from_html(
     let title = title.map(|value| plain_text(&value));
     let description = description
         .filter(|value| !generic(value, platform))
-        .map(|value| {
-            super::render::escape_markdown(&plain_text(&value))
-                .replace('_', "\\_")
-                .replace('#', "\\#")
-        });
+        .map(|value| escape_preview_markdown(&value));
     let canonical = link_url(&final_url);
     let mut post = BuiltinPost::new(
         platform,
@@ -435,6 +457,31 @@ mod tests {
         assert!(public_url("https://user:pass@cdn.example.com/a.jpg").is_none());
         assert!(public_url("http://127.0.0.1/a.jpg").is_none());
         assert!(public_url("https://cdn.example.com/a.jpg?name=.mp4").is_some());
+    }
+
+    #[test]
+    fn preview_text_follows_the_shared_markdown_contract() {
+        // Kelime içi/kenar alt çizgi kaçırılmaz: kaçış kartta kaynakta olmayan bir `\` gösterir.
+        assert_eq!(
+            escape_preview_markdown("world_record_egg"),
+            "world_record_egg"
+        );
+        assert_eq!(escape_preview_markdown("_öne çıkan_"), "_öne çıkan_");
+        // Biçimi gerçekten bozabilecek karakterler yine kaçırılır.
+        assert_eq!(
+            escape_preview_markdown("**kalın** [link]"),
+            "\\*\\*kalın\\*\\* \\[link\\]"
+        );
+        // Yalnızca satır başındaki `#` başlık oluşturabilir (satır ortasındaki kaçırılmaz).
+        assert_eq!(escape_preview_markdown("# Başlık"), "\\# Başlık");
+        assert_eq!(escape_preview_markdown("C# dili"), "C# dili");
+        assert_eq!(escape_preview_markdown("a\n# b"), "a\n\\# b");
+        assert_eq!(
+            escape_preview_markdown("a\n    # girinti"),
+            "a\n    # girinti"
+        );
+        // Bahsetme enjeksiyonu ve açılı parantezler etkisizleştirilir.
+        assert_eq!(escape_preview_markdown("@everyone"), "@\u{200b}everyone");
     }
 
     #[test]

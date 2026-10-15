@@ -178,12 +178,6 @@ pub fn plan_media(post: &BuiltinPost, options: &RenderOptions) -> MediaPlan {
         {
             break;
         }
-        // Do not let a hidden quoted post (or any child below it) leak its media into the
-        // parent card's fallback gallery. The parent may still render its own media as a
-        // spoiler-marked item.
-        if candidate.sensitive {
-            break;
-        }
         for media in &candidate.media {
             push_media(&mut plan, media, max_images);
         }

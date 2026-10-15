@@ -107,7 +107,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     // `||url||` is a per-message presentation choice, not source metadata.  Keeping the
     // fetched card plain is important because the post is cached and may be requested both
     // with and without a user spoiler.
-    post.custom_card = Some(build_card(&view, &target.open_url, false));
+    post.custom_card = Some(build_card(&view, &target.open_url));
     Ok(post)
 }
 
@@ -294,18 +294,21 @@ impl EntityView {
 
 /// Components V2 kart gövdesini (bölüm + ayraç + buton satırı) üretir.
 ///
+/// Kart **kaynak verisi** olarak üretilir ve önbelleğe alınır: spoiler görünümü gönderim başına
+/// `render::apply_visibility` tarafından uygulanır (aynı gönderi hem spoiler'lı hem spoiler'sız
+/// kanalda gösterilebilir).
+///
 /// Buton satırı: Spotify (asıl) + Apple Music ve YouTube Music aramaları. Discord V2
 /// mesajlarında 30 sn önizleme satır içi oynatılamadığı için harici müzik servisleri sunulur.
-fn build_card(view: &EntityView, open_url: &str, _spoiler: bool) -> CustomCard {
-    let wrap = |text: String| text;
-    let title = wrap(escape_markdown(view.title.as_deref().unwrap_or("Spotify")));
+fn build_card(view: &EntityView, open_url: &str) -> CustomCard {
+    let title = escape_markdown(view.title.as_deref().unwrap_or("Spotify"));
     let subtitle_line = match view
         .subtitle
         .as_deref()
         .map(str::trim)
         .filter(|sub| !sub.is_empty())
     {
-        Some(sub) => format!("\nby {}", wrap(escape_markdown(sub))),
+        Some(sub) => format!("\nby {}", escape_markdown(sub)),
         None => String::new(),
     };
     let header = format!("### [{title}]({open_url}){subtitle_line}");
@@ -516,7 +519,6 @@ mod tests {
         let card = build_card(
             &view,
             "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
-            false,
         );
         assert_eq!(card.accent_color, Some(0x1DB954));
         assert_eq!(card.components.len(), 3);
@@ -562,7 +564,7 @@ mod tests {
         assert_eq!(view.title.as_deref(), Some("Keşfet"));
         assert!(view.subtitle.is_none());
 
-        let card = build_card(&view, "https://open.spotify.com/playlist/x", false);
+        let card = build_card(&view, "https://open.spotify.com/playlist/x");
         // Görsel yoksa bölüm erişilebilirliği bir bağlantı butonu olur.
         assert_eq!(card.components[0]["accessory"]["type"], 2);
         // Müzik butonları her zaman vardır (Spotify + Apple Music + YouTube Music).
@@ -576,7 +578,7 @@ mod tests {
     fn cached_spotify_card_stays_plain_for_per_send_spoilers() {
         let entity = json!({ "name": "Gizli parça", "artists": [{ "name": "Biri" }] });
         let view = EntityView::from(&entity, "track");
-        let card = build_card(&view, "https://open.spotify.com/track/x", false);
+        let card = build_card(&view, "https://open.spotify.com/track/x");
         assert!(
             !card.components[0]["components"][0]["content"]
                 .as_str()
