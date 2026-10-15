@@ -8,7 +8,8 @@
 //! ```text
 //! kullanıcının yazdığı metin                                     ← kartın DIŞINDA (üstünde)
 //! ┌────────────────────────────────────────────────────────────┐
-//! │ **Ad <:verified:...> ([@kullanici](https://x.com/kullanici))**   ← profil resmi yok
+//! │ -# Ad <:verified:...> ([@kullanici](https://x.com/kullanici))  ← soluk üst satır
+//! │    (Reddit: `r/alt • flair • Posted by u/kullanici`)           ← profil resmi yok
 //! │ gönderi metni
 //! │ ────────────────────── (varsa) ince ayraç çizgisi ─────────
 //! │ > <:qutoe:...> [Quote](link) from **Ad** ([**@kullanici**](profil))
@@ -223,6 +224,32 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
         .as_ref()
         .filter(|preview| !preview.is_empty())?;
 
+    // Reddit: Discord'un yerleşik önizlemesi dış bağlantıyı kartın ortasında **tek satırda**
+    // `Site | Başlık` olarak gösterir (açıklama/görsel/görsel yuvası yok).
+    if card.post.platform == Platform::Reddit {
+        let site = preview
+            .site_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|site| !site.is_empty());
+        let title = preview
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty());
+        // Parçalar ayrı ayrı kaçırılır; ayırıcı ` | ` düz kalır (kaçış kartta ters bölü gösterir).
+        let label = match (site, title) {
+            (Some(site), Some(title)) if site != title => {
+                format!("{} | {}", escape_markdown(site), escape_markdown(title))
+            }
+            (Some(site), _) => escape_markdown(site),
+            (None, Some(title)) => escape_markdown(title),
+            (None, None) => escape_markdown(&preview.url),
+        };
+        let line = format!("**🔗 [{label}]({})**", preview.url);
+        return Some(text(spoiler_wrap(&line, hidden(card))));
+    }
+
     let mut lines: Vec<String> = Vec::new();
     let label = preview.title.as_deref().unwrap_or(preview.url.as_str());
     lines.push(format!(
@@ -252,7 +279,11 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
 /// medya galerisi, metrikler ve alt bilgi. Platforma özel kartı olmayan tüm gönderiler
 /// bu yolu kullanır.
 fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
-    let mut children: Vec<Value> = vec![author_component(card.post, card.emojis)];
+    let mut children: Vec<Value> = Vec::new();
+    let header = header_line(card.post, card.emojis);
+    if !header.is_empty() {
+        children.push(text(header));
+    }
 
     if card.post.platform == Platform::Reddit
         && let Some(title) = card
@@ -348,24 +379,26 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     children
 }
 
+/// X'in "Readers added context" bloğu (topluluk notu).
+///
+/// Notun tamamı **tek blok alıntı** içinde durur ve her satır `> ` ile üretilir. **Hiçbir
+/// satır çıplak `>` ya da boş alıntı satırı olmaz**: Discord bunları kartta ayrı/boş bir şerit
+/// — kullanıcının gördüğü fazladan `>` işareti — olarak çiziyor (aynı gerekçeyle
+/// `quote_component` başlıktan sonra boş alıntı satırı eklemez). Notun kendi boş satırları
+/// paragraf aralığı olarak değil, süzülerek atlanır (bkz. `link_preview_component`).
 fn community_note_content(platform: Platform, note: &str) -> String {
     if platform != Platform::Twitter {
         return format!("-# 🔎 Topluluk Notu\n{note}");
     }
 
-    let quoted_note = note
-        .lines()
-        .map(|line| {
-            if line.trim().is_empty() {
-                ">".to_string()
-            } else {
-                format!("> {line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!("> 👥 **Readers added context**\n>\n{quoted_note}")
+    let mut lines = vec!["> 👥 **Readers added context**".to_string()];
+    lines.extend(
+        note.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| format!("> {line}")),
+    );
+    lines.join("\n")
 }
 
 /// `{"type": 10, "content": ...}` — markdown destekli metin bileşeni.
@@ -376,15 +409,66 @@ fn text(content: impl Into<String>) -> Value {
     })
 }
 
-/// Yazar satırı: `**Ad <:verified:...> ([@kullanici](profil))**`.
+/// Kartın **üst satırı**.
 ///
-/// Profil resmi kartta gösterilmez: Discord Components V2 küçük resmi yalnızca bölümün
-/// sağına koyabildiği için modelin solunda küçük avatar mümkün değildir.
-fn author_component(post: &BuiltinPost, emojis: &EmojiSettings) -> Value {
-    text(author_line(post, emojis))
+/// Discord'un yerleşik Reddit/X önizlemelerinde bu satır **küçük ve soluktur** (`-# `):
+/// X'te `Ad (@kullanıcı)`, Reddit'te topluluk + gönderen bilgisi
+/// (`r/alt • flair • Posted by [u/x](profil)`) taşır. Aynı düzen **tüm platformlarda**
+/// uygulanır.
+///
+/// Profil resmi (avatar) hiçbir platformda gösterilmez: Discord kartın sağ üstünde ayrı bir
+/// görsel yuvası açar ve bu alan istenmiyor.
+fn header_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
+    let body = if post.platform == Platform::Reddit {
+        reddit_header_body(post)
+    } else {
+        author_line(post, emojis)
+    };
+    if body.trim().is_empty() {
+        return String::new();
+    }
+    format!("-# {body}")
 }
 
-/// `**Ad <:verified:...> ([@kullanici](profil))**` biçimindeki yazar satırı.
+/// Reddit üst satırının gövdesi:
+/// `r/alt • <flair> • Posted by [u/kullanici](profil)` (yerleşik Reddit önizlemesi düzeni).
+///
+/// Topluluk etiketi (`extra_label`) ve flair **burada** gösterilir; bu yüzden alt bilgide
+/// tekrarlanmaz. Profil bağlantısı biliniyorsa `u/kullanici` tıklanabilir olur.
+fn reddit_header_body(post: &BuiltinPost) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(label) = post
+        .extra_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        parts.push(label.to_string());
+    }
+    let name = post.author.name.trim();
+    let author = if name.is_empty() {
+        post.author.handle.trim()
+    } else {
+        name
+    };
+    if !author.is_empty() {
+        let author = escape_markdown(author);
+        let profile = post
+            .author
+            .profile_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty());
+        parts.push(match profile {
+            Some(url) => format!("Posted by [u/{author}]({url})"),
+            None => format!("Posted by u/{author}"),
+        });
+    }
+    parts.join(" • ")
+}
+
+/// `Ad <:verified:...> ([@kullanici](profil))` biçimindeki yazar metni (kalınlık/ölçek çağıran
+/// katmanda belirlenir).
 fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
     let name = post.author.name.trim();
     let name = if name.is_empty() {
@@ -400,23 +484,20 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
     }
 
     let handle = post.author.handle.trim();
-    let body = if handle.is_empty() {
-        inner
-    } else {
-        let handle = escape_markdown(handle);
-        match post
-            .author
-            .profile_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            Some(url) => format!("{inner} ([@{handle}]({url}))"),
-            None => format!("{inner} (@{handle})"),
-        }
-    };
-
-    format!("**{body}**")
+    if handle.is_empty() {
+        return inner;
+    }
+    let handle = escape_markdown(handle);
+    match post
+        .author
+        .profile_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        Some(url) => format!("{inner} ([@{handle}]({url}))"),
+        None => format!("{inner} (@{handle})"),
+    }
 }
 
 /// Alıntılanan gönderi: tek satırlık başlık
@@ -558,14 +639,38 @@ fn metrics_line(
     }
 
     let stats = &post.stats;
+
+    // Reddit: Discord'un yerleşik önizlemesiyle aynı düzen — `⬆ N upvotes • 💬 M comments`
+    // (oy önce, yorum sonra; aşağı oy sayısı gösterilmez). Emojiler bizim özel setimizdir.
+    if post.platform == Platform::Reddit {
+        const REDDIT_UPVOTE: &str = "<:upvote:1558392173311823973>";
+        const REDDIT_COMMENTS: &str = "<:redditcomments:1558393193018564718>";
+        let mut reddit_parts: Vec<String> = Vec::new();
+        if stats.likes > 0 {
+            reddit_parts.push(format!(
+                "{REDDIT_UPVOTE} {} upvotes",
+                format_count(stats.likes)
+            ));
+        }
+        if stats.replies > 0 {
+            reddit_parts.push(format!(
+                "{REDDIT_COMMENTS} {} comments",
+                format_count(stats.replies)
+            ));
+        }
+        if reddit_parts.is_empty() {
+            return None;
+        }
+        return Some(format!("-# {}", reddit_parts.join(" • ")));
+    }
+
     let mut parts: Vec<String> = Vec::new();
     if stats.replies > 0 {
-        let replies = if post.platform == Platform::Reddit {
-            "<:redditcomments:1558393193018564718>"
-        } else {
-            emojis.replies()
-        };
-        parts.push(format!("{} {}", replies, format_count(stats.replies)));
+        parts.push(format!(
+            "{} {}",
+            emojis.replies(),
+            format_count(stats.replies)
+        ));
     }
     if stats.reposts > 0 {
         parts.push(format!(
@@ -575,14 +680,7 @@ fn metrics_line(
         ));
     }
     if stats.likes > 0 {
-        if post.platform == Platform::Reddit {
-            parts.push(format!(
-                "<:upvote:1558392173311823973> {} <:downvote:1558392196233695242>",
-                format_count(stats.likes)
-            ));
-        } else {
-            parts.push(format!("{} {}", emojis.likes(), format_count(stats.likes)));
-        }
+        parts.push(format!("{} {}", emojis.likes(), format_count(stats.likes)));
     }
     if let Some(views) = stats.views.filter(|views| *views > 0) {
         parts.push(format!("{} {}", emojis.views(), format_count(views)));
@@ -605,11 +703,13 @@ fn meta_line(card: &V2Card<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(translation) = &post.translation {
-        let marker = card.emojis.translation();
-        parts.push(match translation.source.as_deref() {
-            Some(source) => format!("{marker} {source} → tr"),
-            None => format!("{marker} Türkçeye çevrildi"),
-        });
+        // Türkçe not: `🌐 Japonca'dan çevrildi` (kaynak dili bilinmiyorsa `🌐 Çevrildi`).
+        // Emoji bizim özel çeviri emojimizdir (ayarlardan özelleştirilebilir).
+        parts.push(format!(
+            "{} {}",
+            card.emojis.translation(),
+            super::translate::translated_from_note(translation.source.as_deref())
+        ));
     }
 
     // Platform göstergesi: X, Instagram, Reddit ve Bluesky için özel emoji, diğerlerinde adı yazılır.
@@ -638,11 +738,14 @@ fn meta_line(card: &V2Card<'_>) -> String {
         _ => post.platform.display_name().to_string(),
     });
 
-    if let Some(extra) = post
-        .extra_label
-        .as_deref()
-        .map(str::trim)
-        .filter(|e| !e.is_empty())
+    // Topluluk etiketi (`extra_label`) Reddit'te **üst satırda** gösterilir (bkz.
+    // `reddit_header_line`); alt bilgide tekrarlanmaz.
+    if post.platform != Platform::Reddit
+        && let Some(extra) = post
+            .extra_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
     {
         parts.push(extra.to_string());
     }
@@ -921,9 +1024,10 @@ mod tests {
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
 
+        // Discord'un yerleşik X önizlemesi gibi üst satır **soluk/küçük** (`-# `) olur.
         assert_eq!(
             texts(&payload)[0],
-            "**Culture Base <:verified:1553709836859084841> ([@Culture3ase](https://x.com/Culture3ase))**"
+            "-# Culture Base <:verified:1553709836859084841> ([@Culture3ase](https://x.com/Culture3ase))"
         );
         // Avatar/görsel bileşeni (Section/Thumbnail) kullanılmaz
         assert!(
@@ -967,7 +1071,7 @@ mod tests {
         let options = options();
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
-        assert_eq!(texts(&payload)[0], "**Culture Base (@Culture3ase)**");
+        assert_eq!(texts(&payload)[0], "-# Culture Base (@Culture3ase)");
     }
 
     #[test]
@@ -1052,15 +1156,39 @@ mod tests {
     #[test]
     fn twitter_community_note_matches_the_readers_context_layout() {
         let mut post = sample_post();
-        post.community_note =
-            Some("İlk satır.\nİkinci satır: https://example.com/note\nÜçüncü satır.".to_string());
+        // Notun kendi boş satırı ("aralarda > karakteri" hatasının kaynağı) dahil edilir.
+        post.community_note = Some(
+            "İlk satır.\n\nİkinci satır: https://example.com/note\n   \nÜçüncü satır.".to_string(),
+        );
         let options = options();
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
 
-        assert!(texts(&payload).iter().any(|text| {
-            text == "> 👥 **Readers added context**\n>\n> İlk satır.\n> İkinci satır: https://example.com/note\n> Üçüncü satır."
-        }));
+        let notes: Vec<String> = texts(&payload)
+            .into_iter()
+            .filter(|text| text.contains("Readers added context"))
+            .collect();
+        assert_eq!(
+            notes.len(),
+            1,
+            "tek topluluk notu bileşeni olmalı: {notes:?}"
+        );
+        let note = &notes[0];
+        assert_eq!(
+            note,
+            "> 👥 **Readers added context**\n> İlk satır.\n> İkinci satır: https://example.com/note\n> Üçüncü satır."
+        );
+        // Çıplak `>` ve boş alıntı satırı **üretilmez**: Discord bunları kartta fazladan `>`
+        // işareti / ayrı boş şerit olarak çiziyordu (bkz. `quote_component` ile aynı kural).
+        assert!(
+            !note.lines().any(|line| line.trim() == ">"),
+            "çıplak/boş alıntı satırı üretilmemeli: {note}"
+        );
+        // Notun tamamı tek blok alıntı kalır (satırların hepsi `> ` ile başlar).
+        assert!(
+            note.lines().all(|line| line.starts_with("> ")),
+            "notun tamamı blok alıntı olmalı: {note}"
+        );
     }
 
     #[test]
@@ -1188,13 +1316,120 @@ mod tests {
             meta.contains("<:reddit:1558112156195495956>"),
             "Reddit kendi emojisini kullanmalı: {meta}"
         );
-        assert!(meta.contains("r/rust • 128 yorum"), "ek bilgi: {meta}");
+        // Topluluk etiketi (r/alt • flair) **üst satıra** taşındı: alt bilgide tekrarlanmaz.
+        assert!(
+            !meta.contains("r/rust • 128 yorum"),
+            "ek bilgi üst satırda olmalı, alt bilgide tekrarlanmamalı: {meta}"
+        );
         assert!(
             !meta.contains("twitter:"),
             "X emojisi kullanılmamalı: {meta}"
         );
+        assert!(
+            meta.contains("[Link]("),
+            "gönderi bağlantısı korunur: {meta}"
+        );
+        // Üst satır: `r/alt • flair • Posted by u/kullanici` (yerleşik Reddit önizlemesi düzeni).
+        assert_eq!(
+            texts(&payload)[0],
+            "-# r/rust • 128 yorum • Posted by u/rustfan"
+        );
+        // Metrikler: oy önce, yorum sonra; aşağı oy gösterilmez (yerleşik düzen).
         assert!(texts(&payload).iter().any(|line| line
-            == "-# <:redditcomments:1558393193018564718> 128  <:upvote:1558392173311823973> 42 <:downvote:1558392196233695242>"));
+            == "-# <:upvote:1558392173311823973> 42 upvotes • <:redditcomments:1558393193018564718> 128 comments"));
+    }
+
+    #[test]
+    fn reddit_external_link_line_is_compact_and_carries_no_image() {
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/GlobalOffensive/comments/abc/x/",
+            Author::new("walk3", "walk3"),
+        );
+        post.title = Some("Release Note for 3/8/2024".to_string());
+        post.extra_label = Some("r/GlobalOffensive".to_string());
+        post.link_preview = Some(LinkPreview {
+            url: "https://blog.counter-strike.net/index.php/2024/03/steam-event/".to_string(),
+            title: Some("Steam event".to_string()),
+            description: None,
+            image: None,
+            site_name: Some("Counter-Strike.net".to_string()),
+        });
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let lines = texts(&payload);
+
+        assert!(
+            lines.iter().any(|line| line
+                == "**🔗 [Counter-Strike.net | Steam event](https://blog.counter-strike.net/index.php/2024/03/steam-event/)**"),
+            "harici bağlantı tek satırda gösterilmeli: {lines:?}"
+        );
+        // Site adı ayrı satırda tekrarlanmaz ve link satırı görsel galerisi üretmez.
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("-# Counter-Strike.net")),
+            "site adı ayrı satırda olmamalı: {lines:?}"
+        );
+        assert!(
+            !components(&payload)
+                .iter()
+                .any(|component| component["type"] == TYPE_MEDIA_GALLERY),
+            "link satırı görsel yuvası/galerisi üretmemeli"
+        );
+    }
+
+    #[test]
+    fn every_platform_uses_the_muted_header_line() {
+        let options = options();
+        let emojis = emojis();
+        for platform in [
+            Platform::Twitter,
+            Platform::TikTok,
+            Platform::Instagram,
+            Platform::Reddit,
+            Platform::Bluesky,
+            Platform::Spotify,
+            Platform::Twitch,
+            Platform::Pixiv,
+            Platform::Tumblr,
+            Platform::Facebook,
+            Platform::YouTube,
+        ] {
+            let post = BuiltinPost::new(
+                platform,
+                "https://example.com/gonderi",
+                Author::new("Ad", "kullanici"),
+            );
+            let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+            let header = texts(&payload).first().cloned().unwrap_or_default();
+            assert!(
+                header.starts_with("-# ") && !header.starts_with("**"),
+                "{platform:?} üst satırı soluk/küçük olmalı: {header}"
+            );
+        }
+    }
+
+    #[test]
+    fn reddit_header_links_the_profile_and_stays_muted() {
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/rust/comments/abc/x/",
+            Author::new("rustfan", "rustfan"),
+        );
+        post.extra_label = Some("r/rust".to_string());
+        post.author.profile_url = Some("https://www.reddit.com/user/rustfan".to_string());
+
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        assert_eq!(
+            texts(&payload)[0],
+            "-# r/rust • Posted by [u/rustfan](https://www.reddit.com/user/rustfan)"
+        );
     }
 
     #[test]
@@ -1211,13 +1446,19 @@ mod tests {
         post.stats.likes = 42;
         assert_eq!(
             metrics_line(&post, &options, &emojis).as_deref(),
-            Some("-# <:upvote:1558392173311823973> 42 <:downvote:1558392196233695242>")
+            Some("-# <:upvote:1558392173311823973> 42 upvotes")
         );
-        post.stats.likes = 0;
         post.stats.replies = 128;
         assert_eq!(
             metrics_line(&post, &options, &emojis).as_deref(),
-            Some("-# <:redditcomments:1558393193018564718> 128")
+            Some(
+                "-# <:upvote:1558392173311823973> 42 upvotes • <:redditcomments:1558393193018564718> 128 comments"
+            )
+        );
+        post.stats.likes = 0;
+        assert_eq!(
+            metrics_line(&post, &options, &emojis).as_deref(),
+            Some("-# <:redditcomments:1558393193018564718> 128 comments")
         );
         post.stats.likes = 42;
         options.show_metrics = false;
@@ -1279,7 +1520,7 @@ mod tests {
 
         assert!(
             meta.starts_with(
-                "-# <:translation:1476614397249061056> pt → tr • <:twitter:1476642012072920355> • "
+                "-# <:translation:1476614397249061056> Portekizce'den çevrildi • <:twitter:1476642012072920355> • "
             ),
             "çeviri işareti: {meta}"
         );
@@ -1306,7 +1547,7 @@ mod tests {
 
         assert_eq!(
             lines[0],
-            "**Culture Base ☑ ([@Culture3ase](https://x.com/Culture3ase))**"
+            "-# Culture Base ☑ ([@Culture3ase](https://x.com/Culture3ase))"
         );
         assert!(
             lines.iter().any(|t| t.contains("💬 6")),
@@ -1321,12 +1562,7 @@ mod tests {
         // Emoji kapalıysa yalnızca istatistik alanları ile çeviri notu Unicode'a düşer
         post.translation = Some(Translation { source: None });
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
-        assert!(
-            texts(&payload)
-                .last()
-                .unwrap()
-                .contains("🌐 Türkçeye çevrildi")
-        );
+        assert!(texts(&payload).last().unwrap().contains("🌐 Çevrildi"));
     }
 
     #[test]

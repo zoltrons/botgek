@@ -47,6 +47,142 @@ pub fn needs_translation(language: Option<&str>, target: &str) -> bool {
     }
 }
 
+/// Yaygın dil kodları → Türkçe dil adı (kart alt bilgisindeki "…'dan çevrildi" notu için).
+///
+/// X'in `source_lang` alanı BCP-47 birincil kodu verir (`ja`, `de`, `zh-Hans` → `zh`).
+/// Tabloda olmayan kod için ad **uydurulmaz**: çağıran ham kodu gösterir.
+const TURKISH_LANGUAGE_NAMES: &[(&str, &str)] = &[
+    ("ar", "Arapça"),
+    ("az", "Azerice"),
+    ("be", "Belarusça"),
+    ("bg", "Bulgarca"),
+    ("bn", "Bengalce"),
+    ("bs", "Boşnakça"),
+    ("ca", "Katalanca"),
+    ("cs", "Çekçe"),
+    ("da", "Danca"),
+    ("de", "Almanca"),
+    ("el", "Yunanca"),
+    ("en", "İngilizce"),
+    ("es", "İspanyolca"),
+    ("et", "Estonca"),
+    ("eu", "Baskça"),
+    ("fa", "Farsça"),
+    ("fi", "Fince"),
+    ("fr", "Fransızca"),
+    ("ga", "İrlandaca"),
+    ("gl", "Galiçyaca"),
+    ("he", "İbranice"),
+    ("hi", "Hintçe"),
+    ("hr", "Hırvatça"),
+    ("hu", "Macarca"),
+    ("hy", "Ermenice"),
+    ("id", "Endonezce"),
+    ("is", "İzlandaca"),
+    ("it", "İtalyanca"),
+    ("ja", "Japonca"),
+    ("ka", "Gürcüce"),
+    ("kk", "Kazakça"),
+    ("km", "Kmerce"),
+    ("ko", "Korece"),
+    ("ku", "Kürtçe"),
+    ("ky", "Kırgızca"),
+    ("lo", "Laoca"),
+    ("lt", "Litvanca"),
+    ("lv", "Letonca"),
+    ("mk", "Makedonca"),
+    ("ml", "Malayalamca"),
+    ("mn", "Moğolca"),
+    ("mr", "Marathice"),
+    ("ms", "Malayca"),
+    ("mt", "Maltaca"),
+    ("my", "Birmanca"),
+    ("ne", "Nepalce"),
+    ("nl", "Felemenkçe"),
+    ("no", "Norveççe"),
+    ("pa", "Pencapça"),
+    ("pl", "Lehçe"),
+    ("ps", "Peştuca"),
+    ("pt", "Portekizce"),
+    ("ro", "Rumence"),
+    ("ru", "Rusça"),
+    ("si", "Seylanca"),
+    ("sk", "Slovakça"),
+    ("sl", "Slovence"),
+    ("so", "Somalice"),
+    ("sq", "Arnavutça"),
+    ("sr", "Sırpça"),
+    ("sv", "İsveççe"),
+    ("sw", "Svahili"),
+    ("ta", "Tamilce"),
+    ("te", "Teluguca"),
+    ("tg", "Tacikçe"),
+    ("th", "Tayca"),
+    ("tl", "Tagalogca"),
+    ("tk", "Türkmence"),
+    ("tr", "Türkçe"),
+    ("uk", "Ukraynaca"),
+    ("ur", "Urduca"),
+    ("uz", "Özbekçe"),
+    ("vi", "Vietnamca"),
+    ("yi", "Yidiş"),
+    ("zh", "Çince"),
+];
+
+/// Dil kodunu Türkçe adına çevirir (`ja` → `Japonca`); kod tanınmıyorsa `None`.
+pub fn turkish_language_name(language: &str) -> Option<&'static str> {
+    let code = normalize_language(Some(language))?;
+    TURKISH_LANGUAGE_NAMES
+        .iter()
+        .find(|(candidate, _)| *candidate == code)
+        .map(|(_, name)| *name)
+}
+
+/// Kart alt bilgisindeki Türkçe çeviri notu: `Japonca'dan çevrildi`.
+///
+/// Kaynak dili bilinmiyorsa yalnızca `Çevrildi` yazılır; kod tanınmıyorsa ham kod korunur
+/// (ad uydurulmaz) ve ek yine ünlü uyumuna göre seçilir.
+pub fn translated_from_note(language: Option<&str>) -> String {
+    let Some(raw) = language.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "Çevrildi".to_string();
+    };
+    // Belirsiz/geçersiz kod (`und`, `zxx`, `12`) için ad uydurulmaz: yalnızca "Çevrildi".
+    let Some(normalized) = normalize_language(Some(raw)) else {
+        return "Çevrildi".to_string();
+    };
+    let label = turkish_language_name(&normalized).unwrap_or(normalized.as_str());
+    format!("{label}{} çevrildi", ablative_suffix(label))
+}
+
+/// Türkçe ünlü uyumuna göre ablatif eki (`-dan/-den/-don/-dön`, kesme işaretli).
+///
+/// Dil adları `…ca`/`…ce` bittiği için pratikte `'dan`/`'den` olur; fonksiyon yine de son
+/// ünlüye göre karar verir, böylece tanınmayan ham kodlar da doğru eki alır.
+fn ablative_suffix(word: &str) -> &'static str {
+    match word.chars().rev().find_map(turkish_vowel) {
+        Some('a') | Some('ı') => "'dan",
+        Some('e') | Some('i') => "'den",
+        Some('o') | Some('u') => "'don",
+        Some('ö') | Some('ü') => "'dön",
+        _ => "'den",
+    }
+}
+
+/// Türkçe ünlüyü küçük harfe indirger (`İ`/`I` dahil); ünsüzde `None`.
+fn turkish_vowel(ch: char) -> Option<char> {
+    match ch.to_lowercase().next()? {
+        'a' => Some('a'),
+        'e' => Some('e'),
+        'ı' => Some('ı'),
+        'i' => Some('i'),
+        'o' => Some('o'),
+        'ö' => Some('ö'),
+        'u' => Some('u'),
+        'ü' => Some('ü'),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +218,33 @@ mod tests {
         assert!(needs_translation(Some("ja"), "tr"));
         assert!(needs_translation(Some("ru"), "tr"));
         assert!(needs_translation(Some("ar-SA"), "tr"));
+    }
+
+    #[test]
+    fn common_language_codes_have_turkish_names() {
+        assert_eq!(turkish_language_name("ja"), Some("Japonca"));
+        assert_eq!(turkish_language_name("de-DE"), Some("Almanca"));
+        assert_eq!(turkish_language_name("PT"), Some("Portekizce"));
+        assert_eq!(turkish_language_name("zh-Hans"), Some("Çince"));
+        // Bilinmeyen/belirsiz kodda ad uydurulmaz.
+        assert_eq!(turkish_language_name("xx"), None);
+        assert_eq!(turkish_language_name("und"), None);
+    }
+
+    #[test]
+    fn translation_note_is_turkish_with_vowel_harmony() {
+        assert_eq!(translated_from_note(Some("ja")), "Japonca'dan çevrildi");
+        assert_eq!(translated_from_note(Some("de")), "Almanca'dan çevrildi");
+        assert_eq!(translated_from_note(Some("pt")), "Portekizce'den çevrildi");
+        assert_eq!(translated_from_note(Some("en")), "İngilizce'den çevrildi");
+        assert_eq!(translated_from_note(Some("ru")), "Rusça'dan çevrildi");
+        assert_eq!(translated_from_note(Some("zh")), "Çince'den çevrildi");
+        assert_eq!(translated_from_note(Some("sw")), "Svahili'den çevrildi");
+        // Tanınmayan ama geçerli kod: ham kod korunur, ek ünlü uyumuna göre seçilir.
+        assert_eq!(translated_from_note(Some("xyz")), "xyz'den çevrildi");
+        // Belirsiz/boş kaynak: yalnızca "Çevrildi".
+        assert_eq!(translated_from_note(Some("und")), "Çevrildi");
+        assert_eq!(translated_from_note(Some("   ")), "Çevrildi");
+        assert_eq!(translated_from_note(None), "Çevrildi");
     }
 }

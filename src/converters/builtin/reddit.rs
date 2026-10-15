@@ -27,6 +27,8 @@ use super::{
     Author, BuiltinPost, LinkPreview, MAX_BODY_BYTES, Media, MediaKind, REQUEST_TIMEOUT, Stats,
 };
 use crate::converters::parser::{ParsedPost, Platform};
+use crate::utils::truncate_chars;
+use url::Url;
 
 /// Reddit, tarayıcı dışı istekleri 403 ile engeller. fxreddit servisinin de kullandığı,
 /// gerçek bir Firefox istemcisi kılığındaki User-Agent gönderilir.
@@ -47,6 +49,13 @@ static COMMENT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 const MAX_COMMENT_CONTEXT_CHARS: usize = 1_200;
+
+/// Harici bağlantı önizlemesi için toplam süre: kart **asla** bağlantı için bekletilmez.
+const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(2_500);
+/// Harici bağlantı satırındaki başlık sınırı (Discord'un yerleşik önizlemesi gibi tek satır).
+const LINK_PREVIEW_TITLE_LIMIT: usize = 180;
+/// Alan adı etiketi sınırı.
+const LINK_PREVIEW_SITE_LIMIT: usize = 80;
 
 // =====================================================================================
 // OAUTH (installed_client)
@@ -184,7 +193,10 @@ pub async fn fetch(
         let url = format!("{OAUTH_API_BASE}/comments/{id}?raw_json=1&depth=2&limit=20");
         match get_json_with_bearer(client, &url, &token).await {
             Ok(value) => match listings_to_post(value, comment_id_from_url(&parsed.original_url)) {
-                Ok(post) => return Ok(post),
+                Ok(mut post) => {
+                    fill_link_preview(&mut post).await;
+                    return Ok(post);
+                }
                 Err(err) => debug!("Reddit OAuth yanıtı kullanılamadı ({id}): {err}"),
             },
             Err(err) => debug!("Reddit OAuth isteği başarısız ({id}): {err}"),
@@ -194,7 +206,9 @@ pub async fn fetch(
     // 2) Kimliksiz yol: engellenmemiş IP'lerde (ör. ev bağlantısı) çalışır.
     let url = format!("https://www.reddit.com/comments/{id}.json?raw_json=1&depth=2&limit=20");
     let value = get_reddit_json(client, &url).await?;
-    listings_to_post(value, comment_id_from_url(&parsed.original_url))
+    let mut post = listings_to_post(value, comment_id_from_url(&parsed.original_url))?;
+    fill_link_preview(&mut post).await;
+    Ok(post)
 }
 
 /// JSON gönderi listesini karta çevirir (crosspost ise asıl içerik ebeveyn gönderdedir).
@@ -335,10 +349,6 @@ fn append_comment_context(post: &mut BuiltinPost, comment: &RedditPost) {
     }
     post.text
         .push_str(&format!("**Yorum bağlamı — {author}:**\n> {body}"));
-}
-
-fn truncate_chars(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
 }
 
 /// Kimliksiz JSON isteği. Tarayıcı kılığındaki User-Agent, Reddit'in bot isteklerine
@@ -488,6 +498,19 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
             description: (!built.text.is_empty()).then(|| built.text.clone()),
             image: preview_image(content),
             site_name: Some("Redgifs".to_string()),
+        });
+    }
+    // Harici bağlantı satırı: Discord'un yerleşik Reddit önizlemesi gönderinin dış bağlantısını
+    // `Site | Başlık` olarak tek satırda gösterir. Başlık/site **async** katmanda (`fetch`)
+    // gönderinin kendi sayfasından (OG) doldurulur; burada yalnızca adres işaretlenir.
+    // `image` **bilerek boş bırakılır**: kart sağ üstünde/galerisinde ek görsel istemiyoruz.
+    if built.media.is_empty()
+        && built.link_preview.is_none()
+        && let Some(url) = external_link_url(content)
+    {
+        built.link_preview = Some(LinkPreview {
+            url,
+            ..Default::default()
         });
     }
     built.extra_label = reddit_extra_label(content);
@@ -667,6 +690,86 @@ fn allowed_redgifs_asset(raw: &str) -> Option<String> {
         .iter()
         .any(|ext| path.ends_with(ext))
         .then(|| raw.to_string())
+}
+
+/// Gönderinin **harici** hedef adresi: Reddit dışı ve `http(s)`.
+///
+/// Reddit'in kendi sayfaları (yorum/galeri bağlantıları) dış bağlantı sayılmaz; medya olarak
+/// işlenen adresler zaten galeriye girer.
+fn external_link_url(post: &RedditPost) -> Option<String> {
+    let raw = post.url_overridden_by_dest.as_deref()?.trim();
+    let url = Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let is_reddit = host == "reddit.com"
+        || host.ends_with(".reddit.com")
+        || host == "redd.it"
+        || host.ends_with(".redd.it");
+    (!is_reddit).then(|| raw.to_string())
+}
+
+/// Adresin alan adı (`www.` atılmış); ayrıştırılamazsa `None`.
+fn host_label(raw: &str) -> Option<String> {
+    let host = Url::parse(raw)
+        .ok()?
+        .host_str()?
+        .trim_start_matches("www.")
+        .to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// OG değerini tek satıra indirip sınıra kısaltır.
+fn meta_value(value: Option<String>, limit: usize) -> Option<String> {
+    value
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|text| !text.is_empty())
+        .map(|text| truncate_chars(&text, limit))
+}
+
+/// Harici bağlantı satırının başlık/site alanlarını hedef sayfanın OG verisinden doldurur.
+///
+/// Kart **bekletilmez** ([`LINK_PREVIEW_TIMEOUT`]) ve önizleme alınamazsa hata verilmez:
+/// satır alan adına düşer (`v2::link_preview_component`), böylece bağlantı kartta görünür kalır.
+async fn fill_link_preview(post: &mut BuiltinPost) {
+    let Some(url) = post
+        .link_preview
+        .as_ref()
+        .map(|preview| preview.url.clone())
+        .filter(|url| !url.is_empty())
+    else {
+        return;
+    };
+
+    let host = host_label(&url);
+    let graph =
+        match tokio::time::timeout(LINK_PREVIEW_TIMEOUT, super::safe_http::preview(&url)).await {
+            Ok(Ok((_final_url, html))) => Some(super::opengraph::parse_open_graph(&html)),
+            Ok(Err(err)) => {
+                debug!("Harici bağlantı önizlemesi alınamadı ({url}): {err}");
+                None
+            }
+            Err(_elapsed) => {
+                debug!(
+                    "Harici bağlantı önizlemesi {} ms içinde gelmedi: {url}",
+                    LINK_PREVIEW_TIMEOUT.as_millis()
+                );
+                None
+            }
+        };
+
+    let Some(preview) = post.link_preview.as_mut() else {
+        return;
+    };
+    preview.site_name = graph
+        .as_ref()
+        .and_then(|graph| meta_value(graph.site_name.clone(), LINK_PREVIEW_SITE_LIMIT))
+        .or_else(|| host.clone());
+    // Başlık yoksa alan adına düşülür: satır yine de gösterilir (bağlantı kaybolmaz).
+    preview.title = graph
+        .and_then(|graph| meta_value(graph.title, LINK_PREVIEW_TITLE_LIMIT))
+        .or(host);
 }
 
 /// `url_overridden_by_dest` doğrudan bir görsel dosyasıysa onu döndürür.
@@ -977,6 +1080,71 @@ mod tests {
             .and_then(|parents| parents.first())
             .unwrap_or(post);
         reddit_to_post(post, content)
+    }
+
+    #[test]
+    fn external_link_posts_are_marked_for_the_link_line() {
+        let post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "link1",
+                "title": "Release Note for 3/8/2024",
+                "author": "walk3",
+                "subreddit_name_prefixed": "r/GlobalOffensive",
+                "permalink": "/r/GlobalOffensive/comments/link1/release_note/",
+                "url_overridden_by_dest": "https://blog.counter-strike.net/index.php/2024/03/steam-event/"
+            }}] }}]"#,
+        );
+        let preview = post
+            .link_preview
+            .expect("harici bağlantı, link satırı için işaretlenmeli");
+        assert_eq!(
+            preview.url,
+            "https://blog.counter-strike.net/index.php/2024/03/steam-event/"
+        );
+        // Başlık/site **async** katmanda (OG) doldurulur: burada yalnızca adres işaretlenir.
+        assert!(preview.title.is_none());
+        // Kartta ek görsel istenmez: link satırı görsel taşımaz.
+        assert!(preview.image.is_none());
+    }
+
+    #[test]
+    fn self_posts_and_media_posts_have_no_link_line() {
+        // Reddit'in kendi adresine işaret eden gönderi (self/metin) dış bağlantı değildir.
+        let self_post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "self1",
+                "title": "Sohbet",
+                "selftext": "merhaba",
+                "author": "biri",
+                "permalink": "/r/rust/comments/self1/sohbet/",
+                "url_overridden_by_dest": "https://www.reddit.com/r/rust/comments/self1/sohbet/"
+            }}] }}]"#,
+        );
+        assert!(
+            self_post.link_preview.is_none(),
+            "Reddit'in kendi adresi dış bağlantı sayılmaz"
+        );
+
+        // Medyası olan gönderide harici adres link satırına dönüşmez (medya galeride kalır).
+        let media_post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "img1",
+                "title": "Manzara",
+                "author": "gezgin",
+                "permalink": "/r/EarthPorn/comments/img1/manzara/",
+                "url_overridden_by_dest": "https://blog.counter-strike.net/x",
+                "preview": { "images": [{ "source": { "url": "https://preview.redd.it/x.jpg" } }] }
+            }}] }}]"#,
+        );
+        assert_eq!(
+            media_post.media.len(),
+            1,
+            "önizleme görseli galeriye girmeli"
+        );
+        assert!(
+            media_post.link_preview.is_none(),
+            "medyalı gönderide link satırı olmaz"
+        );
     }
 
     #[test]

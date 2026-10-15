@@ -214,9 +214,17 @@ async fn process_message(
         parsed.original_url
     );
 
-    // 6. Alıntı Formatı (Varsa) - her satır ayrı ayrı blok alıntı olarak işaretlenir
+    // 6. Alıntı Formatı (Varsa) - her satır ayrı ayrı blok alıntı olarak işaretlenir.
+    // Boş satırlar **boş alıntı satırı** (`>`) üretmez: Discord bunu mesajda fazladan bir `>`
+    // işareti/ayrı boş şerit olarak çiziyor (aynı kural `v2::community_note_content` ve
+    // `quote_component` için de geçerlidir).
     let quoted_comment = parsed.user_comment.as_ref().map(|comment| {
-        let quoted: Vec<String> = comment.lines().map(|line| format!("> {line}")).collect();
+        let quoted: Vec<String> = comment
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| format!("> {line}"))
+            .collect();
         format!("\n{}", quoted.join("\n"))
     });
 
