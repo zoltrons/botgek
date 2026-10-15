@@ -59,6 +59,8 @@ jobs:
             const DAY = 24 * 60 * 60 * 1000;
             const now = Date.now();
             const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+            // Sonsuz döngüye karşı üst sınır (100 sayfa × 100 kayıt).
+            const MAX_PAGES = 100;
 
             const artifactCutoff = now - Number(process.env.ARTIFACT_RETENTION_DAYS) * DAY;
             const cacheCutoff = now - Number(process.env.CACHE_RETENTION_DAYS) * DAY;
@@ -66,41 +68,54 @@ jobs:
 
             // 1) Eski artefaktlar. Eşik gün cinsinden olduğu için **çalışan** bir koşunun
             //    artefaktlarına dokunulmaz (release/docker işleri aynı koşuda tüketir).
+            //    Sayfalama açıkça yapılır: `github.paginate` + eşleme fonksiyonu bu GitHub
+            //    Script sürümünde dizi yerine beklenmeyen bir biçim döndürüyor.
+            const artifacts = [];
+            for (let page = 1; page <= MAX_PAGES; page += 1) {
+              const { data } = await github.rest.actions.listArtifactsForRepo({
+                owner, repo, per_page: 100, page,
+              });
+              const batch = Array.isArray(data.artifacts) ? data.artifacts : [];
+              artifacts.push(...batch);
+              if (batch.length < 100) break;
+            }
+
             let removedArtifacts = 0;
             let freedArtifactBytes = 0;
-            const artifacts = await github.paginate(
-              github.rest.actions.listArtifactsForRepo,
-              { owner, repo, per_page: 100 },
-              (response) => response.data.artifacts
-            );
             for (const artifact of artifacts) {
+              if (!artifact || !artifact.id || !artifact.created_at) continue;
               if (new Date(artifact.created_at).getTime() >= artifactCutoff) continue;
               await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: artifact.id });
               removedArtifacts += 1;
-              freedArtifactBytes += artifact.size_in_bytes;
+              freedArtifactBytes += artifact.size_in_bytes || 0;
             }
 
             // 2) + 3) Cache'ler: en yeni erişilen önce gelir; bütçe dolana kadar yeniler
             //    korunur, kalanlar (ve süresi geçenler) silinir.
-            const caches = await github.paginate(
-              github.rest.actions.getActionsCacheList,
-              { owner, repo, per_page: 100 },
-              (response) => response.data.actions_caches
-            );
+            const caches = [];
+            for (let page = 1; page <= MAX_PAGES; page += 1) {
+              const { data } = await github.rest.actions.getActionsCacheList({
+                owner, repo, per_page: 100, page,
+              });
+              const batch = Array.isArray(data.actions_caches) ? data.actions_caches : [];
+              caches.push(...batch);
+              if (batch.length < 100) break;
+            }
             caches.sort((a, b) => new Date(b.last_accessed_at) - new Date(a.last_accessed_at));
             let keptBytes = 0;
             let removedCaches = 0;
             let freedCacheBytes = 0;
             for (const cache of caches) {
+              if (!cache || !cache.id) continue;
               const stale = new Date(cache.last_accessed_at).getTime() < cacheCutoff;
-              const overBudget = keptBytes + cache.size_in_bytes > cacheBudget;
+              const overBudget = keptBytes + (cache.size_in_bytes || 0) > cacheBudget;
               if (!stale && !overBudget) {
-                keptBytes += cache.size_in_bytes;
+                keptBytes += cache.size_in_bytes || 0;
                 continue;
               }
               await github.rest.actions.deleteActionsCacheById({ owner, repo, cache_id: cache.id });
               removedCaches += 1;
-              freedCacheBytes += cache.size_in_bytes;
+              freedCacheBytes += cache.size_in_bytes || 0;
             }
 
             await core.summary
