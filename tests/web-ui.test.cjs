@@ -11,6 +11,10 @@ function functionSource(name) {
     assert.ok(match, name);
     return source.slice(match.index, source.indexOf('\n}', match.index) + 2);
 }
+/* vm bağlamı farklı bir `Array`/`Object` prototipi üretir: strict eşitlik için düz kopya al. */
+function plain(value) {
+    return JSON.parse(JSON.stringify(value));
+}
 
 test('Rust and browser resolve the same settings fixtures', () => {
     const context = vm.createContext({});
@@ -237,4 +241,76 @@ test('whole guild reset removes guild pins but keeps selected channel overrides'
     assert.equal(context.rawOverrides.g.engine, undefined);
     assert.deepEqual(context.rawOverrides.g.channels, { c: { modules: true } });
     assert.equal(context.activeChannel, 'c');
+});
+
+/* Kaydetme aşamasında düzenleme kaybı regresyonu: bir bölümü **sabitlerken** çalışma
+   kopyasının miras değerleriyle tazelenmesi (getActiveConfig), kullanıcının az önce modele
+   yazdığı ve DOM'dan yeniden okunamayan değişikliği (rol listesi) siliyordu; değişiklik
+   kaydetme gövdesine hiç girmiyordu. */
+test('role list edits are pinned and reach the save payload in both scopes', () => {
+    const ENGINE_DEFAULTS = { modes: {}, domains: {}, emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', fallback_to_proxy: true, impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' };
+    const context = vm.createContext({
+        BLOCK_KEYS: ['modules', 'role_filters', 'ai', 'engine'],
+        MODULE_KEYS: ['twitter'], MODULE_DEFAULTS: { twitter: true }, MODULE_LABELS: {}, DIFF_LABELS: {},
+        BLOCK_LABELS: {}, EMOJI_FIELDS: [], ENGINE_DEFAULTS,
+        AI_DEFAULTS: { model: 'global-model', system_prompt: '' },
+        currentModule: 'twitter', activeServer: '7', activeChannel: null, appSettings: { guilds: {} },
+        rawOverrides: {}, rawGuildPayload: {}, channelConfigs: {}, rawChannelsList: [],
+        $: () => null, clone: value => JSON.parse(JSON.stringify(value)),
+        getFilterModeDom: () => 'disabled',
+        readModulesDom: () => ({ twitter: true }),
+        readAiDom: () => ({ model: '', system_prompt: '' }),
+        readEngineDom: () => {},
+        markDirty() {}, refreshScope() {}, renderUI() {}, updateDirtyUI() {}, showToast() {},
+        updateModuleBadges() {}, updateNavCounts() {}, renderRoleChips() {}, renderRolePickerList() {}
+    });
+    vm.runInContext([
+        functionSource('clone'), functionSource('getEngineConfig'), functionSource('ensureConfigShape'),
+        functionSource('resolveSettings'), functionSource('isThreadChannel'), functionSource('normalizeChannel'),
+        functionSource('resolveChannelSettings'), functionSource('channelById'), functionSource('sparseGuildFor'),
+        functionSource('sparseChannelFor'), functionSource('overrideOf'), functionSource('channelOverrideOf'),
+        functionSource('syncConfigObject'), functionSource('getActiveConfig'), functionSource('isBlockOverridden'),
+        functionSource('ensureBlockOverridden'), functionSource('getCurFilter'), functionSource('normalizeFromServer'),
+        functionSource('buildGuildsPayload'), functionSource('buildPayload'),
+        functionSource('commitDomToActiveConfig'), functionSource('onConfigModified')
+    ].join('\n'), context);
+    context.appSettings = context.normalizeFromServer({
+        modules: { twitter: true }, role_filters: { twitter: { mode: 'disabled', roles: [] } },
+        ai: { model: 'global-model', system_prompt: '' }, engine: {},
+        guilds: { '7': { ai: {}, channels: { '70': { engine: { max_images: 3 } } } } }
+    });
+
+    // Sunucu kapsamı: rol eklenince bölüm sabitlenir ve gövdeye girer.
+    context.getCurFilter().roles.push('555');
+    context.onConfigModified('role_filters');
+    let payload = context.buildPayload();
+    assert.deepEqual(plain(payload.guilds['7'].role_filters.twitter.roles), ['555']);
+
+    // Kanal kapsamı: bölüm **bütün olarak** sabitlenir — ekranda görünen (sunucudan miras
+    // alınan) liste, kullanıcının eklediği rolle birlikte kanalın kendi bloğuna yazılır.
+    context.activeChannel = '70';
+    context.getCurFilter().roles.push('777');
+    context.onConfigModified('role_filters');
+    payload = context.buildPayload();
+    assert.deepEqual(plain(payload.guilds['7'].channels['70'].role_filters.twitter.roles), ['555', '777']);
+
+    // Kaydedilmiş gövde yeniden yüklendiğinde de değişiklik durur.
+    context.appSettings = context.normalizeFromServer(payload);
+    assert.deepEqual(plain(context.appSettings.guilds['7'].role_filters.twitter.roles), ['555']);
+    assert.deepEqual(plain(context.appSettings.guilds['7'].channels['70'].role_filters.twitter.roles), ['555', '777']);
+});
+
+/* Elle girilen rol kimlikleri sunucunun `RoleFilterSettings::sanitize` kuralıyla aynı
+   olmalıdır: aksi hâlde panelde görünen bir kimlik kaydetmede sessizce düşer. */
+test('manual role ids follow the server sanitization rule', () => {
+    const context = vm.createContext({});
+    vm.runInContext('const MAX_ROLE_ID = 18446744073709551615n;\n' + functionSource('normalizeRoleId'), context);
+    assert.equal(context.normalizeRoleId(' 42 '), '42');
+    assert.equal(context.normalizeRoleId('00042'), '42');
+    assert.equal(context.normalizeRoleId('18446744073709551615'), '18446744073709551615');
+    assert.equal(context.normalizeRoleId('18446744073709551616'), null);
+    assert.equal(context.normalizeRoleId('0'), null);
+    assert.equal(context.normalizeRoleId('abc'), null);
+    assert.equal(context.normalizeRoleId('1234567890123456789012345'), null);
+    assert.equal(context.normalizeRoleId(''), null);
 });

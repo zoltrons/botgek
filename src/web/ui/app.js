@@ -408,11 +408,15 @@ function isServerCustomized(guildId) {
 
 /* İlk düzenlemede o bölümü sabitler (miras → özel). Değer çalışma kopyasından okunur ve
    blok **tam** yazılır (`GuildOverride` sözleşmesi: eksik alt anahtar kod varsayılanına
-   düşer, genelin o anki değerine değil). */
+   düşer, genelin o anki değerine değil).
+
+   Sıra kritiktir: **önce sabitle, sonra oku.** `getActiveConfig()` sabitlenmemiş bölümleri
+   çözümlenmiş (miras) değerlerle tazeler; sabitlemeden önce çağrılırsa kullanıcının bu
+   düzenlemede modele yazdığı değişiklik (ör. rol listesine eklenen rol — DOM'dan yeniden
+   okunamaz) silinir ve kaydetme gövdesine hiç girmezdi. */
 function ensureBlockOverridden(blockKey) {
     if (activeServer === 'global') return;
     if (isBlockOverridden(blockKey)) return;
-    const cfg = getActiveConfig();
     if (!rawGuildPayload[activeServer]) rawGuildPayload[activeServer] = { channels: {} };
     if (!rawGuildPayload[activeServer].channels) rawGuildPayload[activeServer].channels = {};
     if (!rawOverrides[activeServer]) rawOverrides[activeServer] = {};
@@ -421,9 +425,15 @@ function ensureBlockOverridden(blockKey) {
         if (!rawOverrides[activeServer].channels[activeChannel]) rawOverrides[activeServer].channels[activeChannel] = {};
         rawOverrides[activeServer].channels[activeChannel][blockKey] = true;
         if (!rawGuildPayload[activeServer].channels[activeChannel]) rawGuildPayload[activeServer].channels[activeChannel] = {};
-        if (blockKey === 'ai') rawGuildPayload[activeServer].channels[activeChannel].ai = clone(cfg.ai);
-    } else if (!rawOverrides[activeServer][blockKey]) rawOverrides[activeServer][blockKey] = true;
-    if (!activeChannel && blockKey === 'ai') rawGuildPayload[activeServer].ai = clone(cfg.ai);
+    } else if (!rawOverrides[activeServer][blockKey]) {
+        rawOverrides[activeServer][blockKey] = true;
+    }
+    // Yalnızca AI bloğu başlangıç değerini çalışma kopyasından alır; diğer bölümler
+    // `commitDomToActiveConfig` ile DOM'dan yeniden okunur (tazeleme gerekmez).
+    if (blockKey !== 'ai') return;
+    const cfg = getActiveConfig();
+    if (activeChannel) rawGuildPayload[activeServer].channels[activeChannel].ai = clone(cfg.ai);
+    else rawGuildPayload[activeServer].ai = clone(cfg.ai);
 }
 
 /* Bir bölümü genele sıfırlar: değerler genelden tazelenir, sabitleme kaldırılır. */
@@ -1050,18 +1060,36 @@ function removeRole(index) {
     renderRolePickerList($('role-search-input') ? $('role-search-input').value : '');
 }
 
-/* Elle girilen kimlikler: virgül/boşlukla ayrılabilir, sunucudaki kural kadar
-   (1-25 hane rakam) doğrulanır. */
+/* Rol kimliği doğrulaması **sunucu kuralıyla birebir aynı** (`RoleFilterSettings::sanitize`):
+   yalnızca rakam, `u64` aralığında ve `> 0`. Değer kanonik ondalık biçime çevrilir; böylece
+   panelin gönderdiği kimlik ile sunucunun kaydettiği kimlik aynı olur. Aksi hâlde panel
+   geçersiz bir kimliği (ör. 21+ haneli ya da `0`) çip olarak gösterir ama sunucu kaydetme
+   sırasında onu sessizce düşürürdü. */
+const MAX_ROLE_ID = 18446744073709551615n;
+function normalizeRoleId(raw) {
+    const text = String(raw === undefined || raw === null ? '' : raw).trim();
+    if (!/^\d{1,25}$/.test(text)) return null;
+    let value;
+    try {
+        value = BigInt(text);
+    } catch (err) {
+        return null;
+    }
+    if (value <= 0n || value > MAX_ROLE_ID) return null;
+    return value.toString();
+}
+
+/* Elle girilen kimlikler: virgül/boşlukla ayrılabilir; sunucunun kuralı uygulanır. */
 function addRoleFromInput() {
     const box = $('role-input-box');
     if (!box) return;
     const raw = (box.value || '').trim();
     if (!raw) return;
-    const ids = raw.split(/[\s,]+/).filter(id => /^\d{1,25}$/.test(id));
+    const ids = raw.split(/[\s,]+/).map(normalizeRoleId).filter(id => id !== null);
     const filter = getCurFilter();
     let added = 0;
     ids.forEach(id => {
-        if (/^\d{1,25}$/.test(id) && filter.roles.indexOf(id) === -1) {
+        if (filter.roles.indexOf(id) === -1) {
             filter.roles.push(id);
             added++;
         }
