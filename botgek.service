@@ -7,17 +7,43 @@ Wants=network-online.target
 Type=simple
 User=botgek
 Group=botgek
+# systemd `/var/lib/botgek`'i oluşturur ve `botgek` kullanıcısına verir; `ProtectSystem=strict` altında yazılabilir tek kalıcı dizin budur.
+# Varsayılan `botgek.db` ve `settings.json` (ve göç yedekleri) çalışma dizinine, yani buraya yazılır.
+# `BOTGEK_DB_PATH`/`BOTGEK_SETTINGS_PATH` başka bir dizini gösterecekse o dizini bir drop-in ile `ReadWritePaths=` olarak ekleyin.
+StateDirectory=botgek
+StateDirectoryMode=0750
 WorkingDirectory=/var/lib/botgek
+# Ortam dosyasını systemd root olarak, sandbox kurulmadan önce okur: `root:root 0600` yeterlidir.
 EnvironmentFile=-/etc/botgek/botgek.env
 ExecStart=/usr/bin/botgek
 Restart=always
 RestartSec=5s
+UMask=0077
 
 # Güvenlik ve İzolasyon Ayarları
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
-NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=yes
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# AF_NETLINK, ağ arayüzü sorguları (getifaddrs) için tutulur.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
 
 # Standart çıktıları journald'ye yönlendir
 StandardOutput=journal
