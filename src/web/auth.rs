@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 const SESSION_TTL: Duration = Duration::from_secs(8 * 3600);
 const COOKIE: &str = "botgek_session";
 const MAX_SESSIONS: usize = 64;
+const MAX_TOKEN_LEN: usize = 512;
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const FAILURES_PER_WINDOW: u32 = 20;
 /// Bounds the per-address failure table so many sources cannot grow it without limit.
@@ -34,7 +35,7 @@ pub struct Auth {
 
 impl Auth {
     pub fn new(token: String, secure: bool) -> Result<Arc<Self>, &'static str> {
-        if !(32..=512).contains(&token.len()) || token.trim() != token {
+        if !(32..=MAX_TOKEN_LEN).contains(&token.len()) || token.trim() != token {
             return Err(
                 "ADMIN_TOKEN must contain 32–512 characters without surrounding whitespace",
             );
@@ -54,6 +55,20 @@ impl Auth {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, created| created.elapsed() < SESSION_TTL);
         sessions.contains_key(session)
+    }
+
+    /// Compares in time independent of both the content and the length of the secret.
+    fn token_matches(&self, candidate: &str) -> bool {
+        fn padded(value: &[u8]) -> [u8; MAX_TOKEN_LEN] {
+            let mut buf = [0u8; MAX_TOKEN_LEN];
+            let len = value.len().min(MAX_TOKEN_LEN);
+            buf[..len].copy_from_slice(&value[..len]);
+            buf
+        }
+        let candidate = candidate.as_bytes();
+        let same_len = (self.token.len() as u64).ct_eq(&(candidate.len() as u64));
+        let same_bytes = padded(self.token.as_bytes()).ct_eq(&padded(candidate));
+        bool::from(same_len & same_bytes)
     }
 
     async fn locked_out(&self, ip: IpAddr) -> bool {
@@ -137,7 +152,7 @@ pub async fn login(
     if auth.locked_out(ip).await {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
-    if !bool::from(auth.token.as_bytes().ct_eq(input.token.as_bytes())) {
+    if !auth.token_matches(&input.token) {
         auth.record_failure(ip).await;
         return StatusCode::UNAUTHORIZED.into_response();
     }
@@ -213,6 +228,18 @@ mod tests {
                 && cookie.contains("SameSite=Strict")
                 && cookie.contains("Secure")
         );
+    }
+
+    #[test]
+    fn token_comparison_requires_exact_match() {
+        let token = "a".repeat(32);
+        let auth = Auth::new(token.clone(), false).unwrap();
+        assert!(auth.token_matches(&token));
+        assert!(!auth.token_matches(&"a".repeat(31)));
+        assert!(!auth.token_matches(&"a".repeat(33)));
+        assert!(!auth.token_matches(&format!("{}b", "a".repeat(31))));
+        assert!(!auth.token_matches(&"a".repeat(MAX_TOKEN_LEN * 2)));
+        assert!(!auth.token_matches(""));
     }
 
     /// Yalnızca başarısız denemeler sayılır ve kilit adres başınadır.
