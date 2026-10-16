@@ -32,15 +32,11 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Depolama kotası (dahil 0,5 GB) hedef (`target/`) dizinlerini tutmaya yetmiyor:
-          # yalnızca cargo kayıt defteri/git önbelleği alınır. Derleme yeniden yapılır ama
-          # depolama **onlarca MB**'ta kalır (tek bir target cache'i 300-600 MB tutuyordu).
-          cache-targets: "false"
-          # Tüm işler tek paylaşımlı kayıt defteri cache'ini kullanır (bkz. build-release.yml).
+          # Kapsam derlemesi (`llvm-cov` enstrümantasyonu) testten farklı çıktı üretir: kendi `target/` cache'i vardır.
           add-job-id-key: "false"
-          shared-key: "rust-registry"
-          # Yeni cache yalnızca ana dal/etiket çalışmalarında oluşturulur; PR'lar geri yükler.
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
+          shared-key: "coverage"
+          # Yeni cache yalnızca ana dalda oluşturulur; PR'lar geri yükler.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.6.16

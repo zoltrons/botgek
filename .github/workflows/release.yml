@@ -64,11 +64,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          cache-targets: "false"
-          # Tüm işler tek paylaşımlı kayıt defteri cache'ini kullanır (bkz. build-release.yml).
+          # `release.sh` testleri debug profilinde koşar: `build-release.yml` test işinin cache'ini paylaşır, yalnızca okur.
           add-job-id-key: "false"
-          shared-key: "rust-registry"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
+          shared-key: "test"
+          save-if: "false"
 
       - name: Sürümü bump'la, test et, etiketle ve push'la
         env:

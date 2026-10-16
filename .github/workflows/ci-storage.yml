@@ -1,14 +1,12 @@
 name: Actions depolama temizliği
 
-# Ücretsiz planda Actions depolaması 0,5 GB; bu kota tek bir Rust `target/` cache'i
-# (300-600 MB) veya birkaç günlük artefakt birikimiyle dolar ("You have used 100% of the
-# Actions storage" uyarısı). Bu iş **günlük** olarak:
+# Artefaktlar 0,5 GB'lık hesap depolama kotasına sayılır; Actions cache'i ise sayılmaz, depo başına ayrı 10 GB sınırı vardır.
+# Bu iş **günlük** olarak:
 #   1. eski artefaktları siler (varsayılan: 2 günden eski),
-#   2. uzun süredir erişilmeyen cache'leri siler (varsayılan: 3 gün),
-#   3. kalan cache'leri **bütçeye** (varsayılan: 450 MB, en yeniler korunur) indirir.
+#   2. uzun süredir erişilmeyen cache'leri siler (varsayılan: 7 gün),
+#   3. kalan cache'leri **bütçeye** (varsayılan: 8000 MB, en yeniler korunur) indirir; GitHub 10 GB'ı aşınca kendisi en eskileri atar, bütçe bunun altında kalır.
 #
-# Workflow'lar zaten `cache-targets: "false"` (yalnızca cargo kayıt defteri) ve
-# `retention-days: 1` kullanır; bu iş kotayı **garanti altına alır**.
+# Workflow'lar `target/` dahil cache'ler (iş türü ve hedef başına bir tane) ve `retention-days: 1` kullanır.
 # Elle çalıştırma: Actions → "Actions depolama temizliği" → Run workflow.
 on:
   schedule:
@@ -24,15 +22,13 @@ on:
       cache_retention_days:
         description: "Bu günden uzun süredir erişilmeyen cache'ler silinir"
         required: false
-        default: "3"
+        default: "7"
         type: string
       cache_budget_mb:
         description: "Cache'ler için üst sınır (MB) — en yeni girdiler korunur"
         required: false
-        # Tüm işler tek paylaşımlı cargo kayıt defteri cache'ini kullanır ve o cache ~400 MB
-        # tutuyor; bütçe bunun altında kalırsa cache her gece silinip yeniden indirilirdi.
-        # 0,5 GB'lık kota içinde kalacak şekilde 450 MB bırakıldı.
-        default: "450"
+        # Beş `target/` cache'i (test, kapsam, üç sürüm hedefi) birkaç GB tutar; GitHub'ın depo başına 10 GB sınırının altında kalınır.
+        default: "8000"
         type: string
 
 # En az yetki: yalnızca artefakt/cache silmek için yazma gerekir.
@@ -54,8 +50,8 @@ jobs:
         uses: actions/github-script@v7
         env:
           ARTIFACT_RETENTION_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_retention_days || '2' }}
-          CACHE_RETENTION_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.cache_retention_days || '3' }}
-          CACHE_BUDGET_MB: ${{ github.event_name == 'workflow_dispatch' && inputs.cache_budget_mb || '450' }}
+          CACHE_RETENTION_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.cache_retention_days || '7' }}
+          CACHE_BUDGET_MB: ${{ github.event_name == 'workflow_dispatch' && inputs.cache_budget_mb || '8000' }}
         with:
           script: |
             const { owner, repo } = context.repo;
