@@ -87,8 +87,16 @@ jobs:
             let freedArtifactBytes = 0;
             for (const artifact of artifacts) {
               if (!artifact || !artifact.id || !artifact.created_at) continue;
+              // Süresi dolmuş artefakt depolamada yer tutmaz ve silme isteği 404/410 döner.
+              if (artifact.expired) continue;
               if (new Date(artifact.created_at).getTime() >= artifactCutoff) continue;
-              await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: artifact.id });
+              // Tek bir başarısız silme (yarış, süresi o anda dolan artefakt) tüm temizliği durdurmasın.
+              try {
+                await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: artifact.id });
+              } catch (error) {
+                core.warning(`artefakt ${artifact.id} silinemedi (${error.status ?? 'hata'}): ${error.message}`);
+                continue;
+              }
               removedArtifacts += 1;
               freedArtifactBytes += artifact.size_in_bytes || 0;
             }
@@ -116,7 +124,12 @@ jobs:
                 keptBytes += cache.size_in_bytes || 0;
                 continue;
               }
-              await github.rest.actions.deleteActionsCacheById({ owner, repo, cache_id: cache.id });
+              try {
+                await github.rest.actions.deleteActionsCacheById({ owner, repo, cache_id: cache.id });
+              } catch (error) {
+                core.warning(`cache ${cache.id} silinemedi (${error.status ?? 'hata'}): ${error.message}`);
+                continue;
+              }
               removedCaches += 1;
               freedCacheBytes += cache.size_in_bytes || 0;
             }
