@@ -403,14 +403,29 @@ pub(super) async fn get_json_with_bearer(
         .await
         .map_err(|e| format!("OAuth isteği başarısız ({url}): {e}"))?;
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "Beklenmeyen durum kodu ({url}): {}",
-            response.status()
-        ));
+    let status = response.status();
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        invalidate_token(token).await;
+    }
+    if !status.is_success() {
+        return Err(format!("Beklenmeyen durum kodu ({url}): {status}"));
     }
 
     read_json_response(response, url).await
+}
+
+/// Reddit'in reddettiği token'ı önbellekten atar; aksi hâlde süresi dolana dek (≈1 saat) her istek aynı reddi alırdı.
+///
+/// Yalnızca reddedilen token silinir: bu arada başka bir istek yenisini almışsa o korunur.
+async fn invalidate_token(token: &str) {
+    let mut guard = TOKEN.lock().await;
+    if guard.as_ref().is_some_and(|entry| entry.token == token) {
+        *guard = None;
+        debug!("Reddit OAuth token'ı reddedildi; sonraki istekte yenilenecek");
+    }
 }
 
 /// Yanıt gövdesini `MAX_BODY_BYTES` sınırıyla okuyup JSON'a çevirir.
@@ -1545,6 +1560,22 @@ mod tests {
         .expect("negatif skor yanıtı bozmamalı");
         assert_eq!(post.stats.likes, 0, "negatif skor sıfıra kırpılır");
         assert!(post.text.contains("> eksi"));
+    }
+
+    #[tokio::test]
+    async fn rejected_token_is_dropped_but_a_fresh_one_is_kept() {
+        let entry = |token: &str| TokenEntry {
+            token: token.to_string(),
+            expires_at: Instant::now() + Duration::from_secs(60),
+        };
+        *TOKEN.lock().await = Some(entry("yeni"));
+        invalidate_token("eski").await;
+        assert_eq!(
+            TOKEN.lock().await.as_ref().map(|e| e.token.clone()),
+            Some("yeni".to_string())
+        );
+        invalidate_token("yeni").await;
+        assert!(TOKEN.lock().await.is_none());
     }
 
     #[test]
