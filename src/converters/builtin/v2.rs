@@ -140,8 +140,13 @@ fn enforce_cumulative_text_limit(top: &mut [Value], children: &mut [Value]) {
             if current_len == 0 {
                 break;
             }
-            let new_len = current_len.saturating_sub(overflow);
-            comp["content"] = json!(truncate_chars(current, new_len));
+            // Discord boş metin bileşenini reddeder: en kısa hâli spoiler + `…` sığacak kadardır.
+            let new_len = current_len.saturating_sub(overflow).max(5);
+            let shortened = truncate_display(current, new_len);
+            if shortened.chars().count() >= current_len {
+                break;
+            }
+            comp["content"] = json!(shortened);
         } else {
             break;
         }
@@ -410,7 +415,7 @@ fn text(content: impl Into<String>) -> Value {
     let content = if content.len() <= TEXT_DISPLAY_LIMIT {
         content
     } else {
-        truncate_chars(&content, TEXT_DISPLAY_LIMIT)
+        truncate_display(&content, TEXT_DISPLAY_LIMIT)
     };
     json!({
         "type": TYPE_TEXT_DISPLAY,
@@ -782,9 +787,28 @@ fn meta_line(card: &V2Card<'_>) -> String {
 }
 
 /// Hassas gönderilerde metni spoiler içine alır.
+/// Metni kısaltır; `||...||` ile gizlenmiş metinde kapanış işaretini korur.
+///
+/// Kısaltma `||`'yi kesseydi gizli (hassas/spoiler) metin kartta açıkça görünürdü.
+fn truncate_display(content: &str, max: usize) -> String {
+    match content
+        .strip_prefix("||")
+        .and_then(|rest| rest.strip_suffix("||"))
+    {
+        Some(inner) if content.chars().count() > max => {
+            format!(
+                "||{}||",
+                truncate_chars(inner, max.saturating_sub(4).max(1))
+            )
+        }
+        _ => truncate_chars(content, max),
+    }
+}
+
 fn spoiler_wrap(text: &str, spoiler: bool) -> String {
     if spoiler && !text.is_empty() {
-        format!("||{text}||")
+        // Metindeki `||` gizlemeyi erken kapatıp devamını açığa çıkarmasın.
+        format!("||{}||", text.replace("||", "|\u{200b}|"))
     } else {
         text.to_string()
     }
@@ -2283,5 +2307,26 @@ mod tests {
             !texts(&payload).iter().any(|text| text.contains("🔗")),
             "gösterilecek veri yoksa link kartı eklenmez"
         );
+    }
+
+    /// Uzun gizli metin kısaltılınca kapanış `||` korunmalı; aksi hâlde metin açığa çıkar.
+    #[test]
+    fn truncating_hidden_text_keeps_the_spoiler_closed() {
+        let wrapped = spoiler_wrap(&"a".repeat(TEXT_DISPLAY_LIMIT * 2), true);
+        let component = text(wrapped);
+        let content = component["content"].as_str().unwrap();
+        assert!(content.starts_with("||") && content.ends_with("||"));
+        assert!(content.chars().count() <= TEXT_DISPLAY_LIMIT);
+
+        let short = truncate_display(&spoiler_wrap(&"b".repeat(50), true), 10);
+        assert!(short.starts_with("||") && short.ends_with("||"));
+        assert!(short.chars().count() <= 10);
+    }
+
+    /// Gizli metnin içindeki `||` gizlemeyi erken kapatmamalı.
+    #[test]
+    fn inner_spoiler_bars_cannot_close_the_spoiler_early() {
+        let wrapped = spoiler_wrap("a || gizli", true);
+        assert_eq!(wrapped.matches("||").count(), 2);
     }
 }
