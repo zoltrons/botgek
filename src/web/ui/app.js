@@ -1563,6 +1563,14 @@ async function checkHealth() {
     }
 }
 
+/* Birincil düğmenin özgün etiketi bir kez yakalanır: art arda kayıtlar ("Kaydediliyor…" /
+   "Kaydedildi") geçici etiketi kalıcı etiket sanmasın. */
+let saveButtonLabel = null;
+
+function restoreSaveButton(button) {
+    if (saveButtonLabel !== null) button.innerHTML = saveButtonLabel;
+}
+
 function setSaving(busy) {
     ['btn-save', 'btn-save-dock'].forEach(id => {
         const el = $(id);
@@ -1576,12 +1584,13 @@ function setSaving(busy) {
     }
     const button = $('btn-save');
     if (!button) return;
+    if (saveButtonLabel === null) saveButtonLabel = button.innerHTML;
     if (busy) {
-        button.dataset.restore = button.innerHTML;
+        clearTimeout(saveConfirmTimer);
+        delete button.dataset.confirmed;
         button.textContent = 'Kaydediliyor…';
-    } else if (button.dataset.restore) {
-        button.innerHTML = button.dataset.restore;
-        delete button.dataset.restore;
+    } else {
+        restoreSaveButton(button);
     }
 }
 
@@ -1637,12 +1646,11 @@ function confirmSaveInPlace() {
     const button = $('btn-save');
     if (!button) return;
     clearTimeout(saveConfirmTimer);
-    const original = button.innerHTML;
     button.dataset.confirmed = 'true';
     button.textContent = 'Kaydedildi';
     saveConfirmTimer = setTimeout(() => {
         delete button.dataset.confirmed;
-        button.innerHTML = original;
+        restoreSaveButton(button);
     }, 2400);
 }
 
