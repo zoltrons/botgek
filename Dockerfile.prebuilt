@@ -5,9 +5,8 @@
 FROM debian:bookworm-slim
 
 # ffmpeg kullanılmaz; video birleştirme saf Rust ile yapılır.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
+# apt cache mount'u kullanılmaz: `docker-clean` ayarı ve `rm -rf lists` onu boşaltıyordu, CI'da buildx cache'i de kapalı.
+RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates tzdata && \
     rm -rf /var/lib/apt/lists/*
 

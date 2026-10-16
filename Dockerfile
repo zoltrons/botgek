@@ -7,9 +7,8 @@ FROM rust:1.98.1-bookworm AS builder
 WORKDIR /usr/src/botgek
 
 # LLD bağlayıcısını kurarak devasa Rust bağlama (linking) süresini 5-10 kat hızlandır
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends clang lld perl make && rm -rf /var/lib/apt/lists/*
+# apt cache mount'u kullanılmaz: imajdaki `docker-clean` ayarı ve `rm -rf lists` onu her seferinde boşaltıyordu; katman önbelleği yeterli.
+RUN apt-get update && apt-get install -y --no-install-recommends clang lld perl make && rm -rf /var/lib/apt/lists/*
 ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
 # 1. Adım: Bağımlılıkları önbelleğe al
@@ -49,11 +48,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # =========================================================
 FROM debian:bookworm-slim
 
-# HTTPS istekleri için CA sertifikaları ve zaman dilimi paketi (önbellekli)
+# HTTPS istekleri için CA sertifikaları ve zaman dilimi paketi
 # ffmpeg yolu yoktur: Reddit birleştirme Rust, GIF gösterimi uzak CDN kullanır.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates tzdata && \
     rm -rf /var/lib/apt/lists/*
 
