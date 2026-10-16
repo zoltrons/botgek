@@ -293,10 +293,16 @@ fn apply_link_facets(text: &str, facets: Option<&[Facet]>) -> String {
         }
     }
 
-    ranges.sort_by_key(|a| std::cmp::Reverse(a.0));
+    ranges.sort_by_key(|range| std::cmp::Reverse((range.0, range.1)));
 
+    // Aralıklar özgün metne göre doğrulandığından yeniden yazılmış metne yalnızca daha önce uygulanmış aralıkla çakışmayanlar dokunabilir; yinelenen ya da iç içe facet'ler çok baytlı metinde karakter sınırı dışında dilimlemeye yol açar.
     let mut out = text.to_string();
+    let mut applied_start = usize::MAX;
     for (start, end, uri) in ranges {
+        if end > applied_start {
+            continue;
+        }
+        applied_start = start;
         let label = out[start..end].replace(']', "\\]");
         let uri = uri.replace(['<', '>'], "");
         out.replace_range(start..end, &format!("[{label}](<{uri}>)"));
@@ -824,6 +830,50 @@ mod tests {
         assert_eq!(
             repost_post.extra_label.as_deref(),
             Some("Repost • @resharer.bsky.social")
+        );
+    }
+
+    fn link_facet(start: usize, end: usize, uri: &str) -> Facet {
+        Facet {
+            index: Some(FacetIndex {
+                byte_start: Some(start),
+                byte_end: Some(end),
+            }),
+            features: Some(vec![FacetFeature {
+                kind: Some("app.bsky.richtext.facet#link".to_string()),
+                uri: Some(uri.to_string()),
+            }]),
+        }
+    }
+
+    #[test]
+    fn duplicate_and_overlapping_facets_do_not_panic_on_multibyte_text() {
+        let text = "abcde日日日";
+        let duplicate = [
+            link_facet(5, 14, "https://a.example"),
+            link_facet(5, 14, "https://a.example"),
+        ];
+        assert_eq!(
+            apply_link_facets(text, Some(&duplicate)),
+            "abcde[日日日](<https://a.example>)"
+        );
+
+        let overlapping = [
+            link_facet(5, 14, "https://a.example"),
+            link_facet(0, 8, "https://b.example"),
+        ];
+        assert_eq!(
+            apply_link_facets(text, Some(&overlapping)),
+            "abcde[日日日](<https://a.example>)"
+        );
+
+        let disjoint = [
+            link_facet(0, 2, "https://b.example"),
+            link_facet(5, 14, "https://a.example"),
+        ];
+        assert_eq!(
+            apply_link_facets(text, Some(&disjoint)),
+            "[ab](<https://b.example>)cde[日日日](<https://a.example>)"
         );
     }
 }
