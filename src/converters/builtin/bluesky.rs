@@ -195,11 +195,13 @@ fn thread_view_to_post(thread: &ThreadView, fallback_handle: &str) -> BuiltinPos
         built.extra_label = Some("Yanıt".to_string());
     }
 
-    let reply_count = thread
-        .replies
-        .as_ref()
-        .map(|replies| replies.len().min(32))
-        .unwrap_or(0);
+    // Sınırlı derinlikte çekilen iplik yanıtların yalnızca bir kısmını döndürür; gerçek sayı `replyCount` alanındadır.
+    let reply_count = post.reply_count.unwrap_or_else(|| {
+        thread
+            .replies
+            .as_ref()
+            .map_or(0, |replies| replies.len() as u64)
+    });
     if reply_count > 0 {
         let suffix = format!("+{reply_count} yanıt");
         built.extra_label = Some(match built.extra_label.take() {
@@ -967,5 +969,25 @@ mod tests {
         assert!(quote.text.is_empty());
         assert_eq!(quote.media.len(), 2);
         assert_eq!(quote.media[1].url, "https://cdn.bsky.app/img/b.jpg");
+    }
+
+    #[test]
+    fn reply_label_uses_reply_count_over_returned_replies() {
+        let json = r#"{
+            "thread": {
+                "post": {
+                    "uri": "at://did:plc:main/app.bsky.feed.post/main1",
+                    "author": { "handle": "main.bsky.social" },
+                    "record": { "text": "Ana gönderi" },
+                    "replyCount": 87
+                },
+                "replies": [
+                    { "post": { "uri": "at://did:plc:reply/app.bsky.feed.post/reply1", "record": { "text": "yanıt" } } }
+                ]
+            }
+        }"#;
+        let response: ThreadResponse = serde_json::from_str(json).expect("thread fixture geçerli");
+        let post = thread_view_to_post(&response.thread, "main.bsky.social");
+        assert_eq!(post.extra_label.as_deref(), Some("+87 yanıt"));
     }
 }
