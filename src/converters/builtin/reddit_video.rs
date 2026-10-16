@@ -42,6 +42,7 @@ use super::{REQUEST_TIMEOUT, USER_AGENT};
 /// HLS parçaları genelde birkaç yüz KB'dir; BYTERANGE kullanılmayan listelerde parça tek dosyanın
 /// tamamı olabilir — bu yüzden kart medya sınırından (`MAX_BODY_BYTES` = 2 MB) geniş tutulur.
 const MAX_PART_BYTES: usize = 16 * 1024 * 1024;
+const MERGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 static MERGE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 
@@ -508,6 +509,7 @@ impl ContinuousWait for Waiter {
 /// sessiz kart videosuna (Reddit'in video-only mp4'ü) düşer, akış bozulmaz.
 pub async fn merge(client: &reqwest::Client, video_url: &str, max_bytes: u64) -> Option<MediaFile> {
     let video_id = video_id_from_url(video_url)?;
+    // Çağıranın istemcisi kullanılmaz: bağlantı havuzu bu iş parçacığının ömrü kısa runtime'ına bağlanırdı, ayrıca burada yalnızca v.redd.it'e izin veren yönlendirme kuralı gerekir.
     let _ = client;
     // Reject overload rather than creating an unbounded queue of native threads.
     let permit = MERGE_SLOTS.clone().try_acquire_owned().ok()?;
@@ -524,6 +526,8 @@ pub async fn merge(client: &reqwest::Client, video_url: &str, max_bytes: u64) ->
                 attempt.follow()
             }
         }))
+        // Yanıt vermeyen bir CDN düğümü 5 sn'lik birleştirme bütçesinin tamamını bağlantı kurmaya harcamasın.
+        .connect_timeout(MERGE_CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
         .ok()?;
