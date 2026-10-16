@@ -377,44 +377,18 @@ impl EventHandler for Handler {
             };
             let is_author = original_author_id == Some(user_id);
 
-            let is_admin_or_mod = if let Some(guild_id) = reaction.guild_id {
-                match guild_id.member(&ctx.http, user_id).await {
-                    Ok(member) => {
-                        match ctx.cache.guild(guild_id) {
-                            Some(guild) => {
-                                // Discord kanal izin ezmelerini (channel overwrites) hesaba katan kanonik izin kontrolü
-                                if let Some(channel) = guild.channels.get(&reaction.channel_id) {
-                                    let perms = guild.user_permissions_in(channel, &member);
-                                    perms.contains(Permissions::MANAGE_MESSAGES)
-                                        || perms.contains(Permissions::ADMINISTRATOR)
-                                } else {
-                                    #[allow(deprecated)]
-                                    member
-                                        .permissions(&ctx.cache)
-                                        .map(|perms| {
-                                            perms.contains(Permissions::MANAGE_MESSAGES)
-                                                || perms.contains(Permissions::ADMINISTRATOR)
-                                        })
-                                        .unwrap_or(false)
-                                }
-                            }
-                            _ =>
-                            {
-                                #[allow(deprecated)]
-                                member
-                                    .permissions(&ctx.cache)
-                                    .map(|perms| {
-                                        perms.contains(Permissions::MANAGE_MESSAGES)
-                                            || perms.contains(Permissions::ADMINISTRATOR)
-                                    })
-                                    .unwrap_or(false)
-                            }
-                        }
-                    }
-                    _ => false,
+            // Yazar zaten yetkili: üye/izin sorgusu yapılmaz.
+            let is_admin_or_mod = match reaction.guild_id {
+                Some(guild_id) if !is_author => {
+                    let member = match reaction.member.clone() {
+                        Some(member) => Ok(member),
+                        None => guild_id.member(&ctx.http, user_id).await,
+                    };
+                    member.is_ok_and(|member| {
+                        can_manage_messages(&ctx, guild_id, reaction.channel_id, &member)
+                    })
                 }
-            } else {
-                false
+                _ => false,
             };
 
             if is_author || is_admin_or_mod {
@@ -627,6 +601,35 @@ async fn discord_thread_parent(
         }
         _ => None,
     }
+}
+
+/// Üyenin bu kanalda mesaj yönetme (veya yönetici) izni var mı?
+///
+/// Thread'ler önbellekte `guild.threads` içindedir ve izinlerini üst kanaldan alır; yalnızca `guild.channels`'a bakmak thread'lerde kanal ezmelerini yok sayıp sunucu geneli izne düşüyordu.
+fn can_manage_messages(
+    ctx: &Context,
+    guild_id: GuildId,
+    channel_id: ChannelId,
+    member: &serenity::all::Member,
+) -> bool {
+    let allowed = |perms: Permissions| {
+        perms.contains(Permissions::MANAGE_MESSAGES) || perms.contains(Permissions::ADMINISTRATOR)
+    };
+    if let Some(guild) = ctx.cache.guild(guild_id) {
+        let channel = guild.channels.get(&channel_id).or_else(|| {
+            guild
+                .threads
+                .iter()
+                .find(|thread| thread.id == channel_id)
+                .and_then(|thread| thread.parent_id)
+                .and_then(|parent| guild.channels.get(&parent))
+        });
+        if let Some(channel) = channel {
+            return allowed(guild.user_permissions_in(channel, member));
+        }
+    }
+    #[allow(deprecated)]
+    member.permissions(&ctx.cache).is_ok_and(allowed)
 }
 
 /// Yanıt referansı: hedef mesaj silinmişse (ör. `DELETE_ORIGINAL` ile dönüştürülen bağlantı)
