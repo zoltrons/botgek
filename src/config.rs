@@ -78,6 +78,28 @@ pub fn clean_domain(raw: &str) -> Option<String> {
     Some(cleaned.to_ascii_lowercase())
 }
 
+/// Ortam değişkenindeki mantıksal değeri yorumlar; tanınmayan değer `None` döner.
+///
+/// `yes/no`, `on/off`, `1/0`, `true/false` büyük/küçük harf ve boşluk duyarsız kabul edilir.
+pub fn parse_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Mantıksal ortam değişkenini okur; yoksa veya geçersizse `default` (geçersizse uyarı ile).
+pub fn env_bool(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(raw) => parse_bool(&raw).unwrap_or_else(|| {
+            tracing::warn!("{name}={raw:?} tanınmadı; varsayılan {default} kullanılıyor");
+            default
+        }),
+        Err(_) => default,
+    }
+}
+
 fn sanitize_domain(raw: Result<String, env::VarError>, default: &str) -> String {
     match raw {
         Ok(val) => clean_domain(&val).unwrap_or_else(|| default.to_string()),
@@ -97,9 +119,7 @@ impl Config {
         let bluesky_domain = sanitize_domain(env::var("BLUESKY_DOMAIN"), "fxbsky.app");
         let spotify_domain = sanitize_domain(env::var("SPOTIFY_DOMAIN"), "open.fixspotify.com");
 
-        let delete_original = env::var("DELETE_ORIGINAL")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(true);
+        let delete_original = env_bool("DELETE_ORIGINAL", true);
 
         let openrouter_api_key = env::var("OPENROUTER_API_KEY")
             .ok()
@@ -160,6 +180,17 @@ mod tests {
             clean_domain("localhost:8080").as_deref(),
             Some("localhost:8080")
         );
+    }
+
+    #[test]
+    fn booleans_accept_common_spellings_and_reject_unknown() {
+        for raw in ["1", "true", " TRUE ", "yes", "On"] {
+            assert_eq!(parse_bool(raw), Some(true), "{raw}");
+        }
+        for raw in ["0", "false", "no", " off", "FALSE"] {
+            assert_eq!(parse_bool(raw), Some(false), "{raw}");
+        }
+        assert_eq!(parse_bool("belki"), None);
     }
 
     #[test]

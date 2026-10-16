@@ -133,7 +133,7 @@ pub async fn start_web_server(
     cache: Arc<serenity::all::Cache>,
 ) {
     let port = config.web_port;
-    let secure = std::env::var("WEB_SECURE_COOKIE").is_ok_and(|v| v == "true");
+    let secure = crate::config::env_bool("WEB_SECURE_COOKIE", false);
     let auth = match auth::Auth::new(std::env::var("ADMIN_TOKEN").unwrap_or_default(), secure) {
         Ok(auth) => auth,
         Err(reason) => {
