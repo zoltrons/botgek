@@ -483,8 +483,8 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
         reposts: 0,
         likes: content
             .score
-            .or_else(|| content.ups.map(|ups| ups.max(0) as u64))
-            .unwrap_or(0),
+            .or(content.ups)
+            .map_or(0, |score| score.max(0) as u64),
         quotes: 0,
         views: None,
     };
@@ -941,7 +941,8 @@ struct RedditPost {
     link_flair_text: Option<String>,
     permalink: Option<String>,
     url_overridden_by_dest: Option<String>,
-    score: Option<u64>,
+    /// Yorumlarda skor sıklıkla negatiftir; `u64` olsaydı tek bir eksi yorum tüm yanıtın çözümünü bozardı.
+    score: Option<i64>,
     ups: Option<i64>,
     num_comments: Option<u64>,
     created_utc: Option<f64>,
@@ -1515,6 +1516,21 @@ mod tests {
         )
         .expect("silinmiş yorum kartı bozmaz");
         assert!(!deleted.text.contains("Yorum bağlamı"));
+    }
+
+    #[test]
+    fn negative_comment_scores_do_not_break_the_listing() {
+        let json = r#"[
+            {"data":{"children":[{"data":{"id":"post1","title":"Gönderi","author":"op","score":-3,"permalink":"/r/test/comments/post1/baslik/"}}]}},
+            {"data":{"children":[{"data":{"id":"c1","author":"yorumcu","body":"eksi","score":-42,"ups":-42}}]}}
+        ]"#;
+        let post = listings_to_post(
+            serde_json::from_str(json).expect("listing geçerli olmalı"),
+            Some("c1"),
+        )
+        .expect("negatif skor yanıtı bozmamalı");
+        assert_eq!(post.stats.likes, 0, "negatif skor sıfıra kırpılır");
+        assert!(post.text.contains("> eksi"));
     }
 
     #[test]
