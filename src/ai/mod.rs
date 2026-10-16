@@ -15,6 +15,8 @@ pub const MAX_RESPONSE_BYTES: usize = 1_048_576;
 pub const MAX_REPLY_CHARS: usize = 8_000;
 const MAX_MODEL_CHARS: usize = 256;
 const MAX_IN_FLIGHT_REQUESTS: usize = 2;
+/// İstek başına üst sınır: birincil + yedek çağrı birlikte iki yuvadan birini en fazla ~40 sn tutar (genel istemci zaman aşımı 30 sn idi, iki çağrıda 60 sn).
+const PROVIDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Do not queue an unbounded number of provider calls. The handler already has
 /// a per-user cooldown; this guard protects the whole process from a burst of
@@ -299,6 +301,7 @@ pub async fn query_openrouter(
         .header("HTTP-Referer", "https://github.com/botgek")
         .header("X-Title", "Botgek Discord Bot")
         .json(&payload)
+        .timeout(PROVIDER_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("OpenRouter HTTP bağlantı hatası: {:?}", e))?;
@@ -367,6 +370,7 @@ pub async fn query_openrouter(
         .header("HTTP-Referer", "https://github.com/botgek")
         .header("X-Title", "Botgek Discord Bot")
         .json(&fallback_payload)
+        .timeout(PROVIDER_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("OpenRouter yedek HTTP bağlantı hatası: {:?}", e))?;
