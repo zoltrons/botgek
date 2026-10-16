@@ -528,7 +528,7 @@ pub async fn merge(client: &reqwest::Client, video_url: &str, max_bytes: u64) ->
     // Reject overload rather than creating an unbounded queue of native threads.
     let permit = MERGE_SLOTS.clone().try_acquire_owned().ok()?;
     let client = reqwest::Client::builder()
-        .use_rustls_tls()
+        .tls_backend_rustls()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 3

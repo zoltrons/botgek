@@ -70,7 +70,7 @@ pub async fn preview(raw: &str) -> Result<(String, String), String> {
         }
         // Pin exactly the addresses checked above: a second DNS lookup would allow rebinding.
         let client = reqwest::Client::builder()
-            .use_rustls_tls()
+            .tls_backend_rustls()
             .no_proxy()
             .redirect(Policy::none())
             .resolve_to_addrs(host, &addresses)

@@ -147,7 +147,7 @@ async fn main() {
     // HTTP/2 + bağlantı havuzu: paralel istekler tek bağlantıda çoğullanır, TLS el sıkışması
     // tekrarlanmaz → dönüşüm gecikmesi düşer.
     let http_client = reqwest::Client::builder()
-        .use_rustls_tls()
+        .tls_backend_rustls()
         .timeout(std::time::Duration::from_secs(30))
         .connect_timeout(std::time::Duration::from_secs(8))
         .pool_idle_timeout(std::time::Duration::from_secs(90))

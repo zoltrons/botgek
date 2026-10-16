@@ -29,9 +29,10 @@ regex = "1.10"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = { version = "0.12", default-features = false, features = [
+# 0.13: serenity de aynı sürümü kullanır, tek bir reqwest derlenir. `rustls` özelliği sistem kök sertifikalarını (ca-certificates) kullanır.
+reqwest = { version = "0.13", default-features = false, features = [
     "json",
-    "rustls-tls",
+    "rustls",
     "http2",
     "gzip",
     "stream"
