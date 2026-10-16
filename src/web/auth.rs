@@ -1,7 +1,7 @@
 //! Environment-backed administrator login. The master token never leaves this module.
 use axum::{
     Json,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::Next,
     response::{Html, IntoResponse, Redirect, Response},
@@ -9,6 +9,7 @@ use axum::{
 use serde::Deserialize;
 use std::{
     collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -17,12 +18,18 @@ use tokio::sync::Mutex;
 
 const SESSION_TTL: Duration = Duration::from_secs(8 * 3600);
 const COOKIE: &str = "botgek_session";
+const MAX_SESSIONS: usize = 64;
+const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const FAILURES_PER_WINDOW: u32 = 20;
+/// Bounds the per-address failure table so many sources cannot grow it without limit.
+const MAX_TRACKED_ADDRESSES: usize = 1024;
 
 pub struct Auth {
     token: String,
     secure: bool,
     sessions: Mutex<HashMap<String, Instant>>,
-    attempts: Mutex<(Instant, u32)>,
+    /// Failed logins per client address: only failures count, so neither successful logins nor another address can lock the administrator out.
+    failures: Mutex<HashMap<IpAddr, (Instant, u32)>>,
 }
 
 impl Auth {
@@ -36,7 +43,7 @@ impl Auth {
             token,
             secure,
             sessions: Mutex::new(HashMap::new()),
-            attempts: Mutex::new((Instant::now(), 0)),
+            failures: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -47,6 +54,23 @@ impl Auth {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, created| created.elapsed() < SESSION_TTL);
         sessions.contains_key(session)
+    }
+
+    async fn locked_out(&self, ip: IpAddr) -> bool {
+        let mut failures = self.failures.lock().await;
+        failures.retain(|_, (started, _)| started.elapsed() < FAILURE_WINDOW);
+        failures
+            .get(&ip)
+            .is_some_and(|(_, count)| *count >= FAILURES_PER_WINDOW)
+    }
+
+    async fn record_failure(&self, ip: IpAddr) {
+        let mut failures = self.failures.lock().await;
+        if failures.len() >= MAX_TRACKED_ADDRESSES && !failures.contains_key(&ip) {
+            return;
+        }
+        let entry = failures.entry(ip).or_insert((Instant::now(), 0));
+        entry.1 = entry.1.saturating_add(1);
     }
 
     fn cookie(&self, value: &str, age: u64) -> String {
@@ -101,19 +125,20 @@ pub struct Login {
     token: String,
 }
 
-pub async fn login(State(state): State<super::WebState>, Json(input): Json<Login>) -> Response {
+pub async fn login(
+    State(state): State<super::WebState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Json(input): Json<Login>,
+) -> Response {
     let auth = &state.auth;
-    {
-        let mut attempts = auth.attempts.lock().await;
-        if attempts.0.elapsed() >= Duration::from_secs(60) {
-            *attempts = (Instant::now(), 0);
-        }
-        if attempts.1 >= 20 {
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-        attempts.1 += 1;
+    let ip = peer.map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |ConnectInfo(addr)| {
+        addr.ip()
+    });
+    if auth.locked_out(ip).await {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     if !bool::from(auth.token.as_bytes().ct_eq(input.token.as_bytes())) {
+        auth.record_failure(ip).await;
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut random = [0u8; 32];
@@ -123,7 +148,7 @@ pub async fn login(State(state): State<super::WebState>, Json(input): Json<Login
     let session: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let mut sessions = auth.sessions.lock().await;
     sessions.retain(|_, created| created.elapsed() < SESSION_TTL);
-    if sessions.len() >= 64 {
+    if sessions.len() >= MAX_SESSIONS {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     sessions.insert(session.clone(), Instant::now());
@@ -188,5 +213,19 @@ mod tests {
                 && cookie.contains("SameSite=Strict")
                 && cookie.contains("Secure")
         );
+    }
+
+    /// Yalnızca başarısız denemeler sayılır ve kilit adres başınadır.
+    #[tokio::test]
+    async fn failures_lock_out_only_the_offending_address() {
+        let auth = Auth::new("a".repeat(32), false).unwrap();
+        let attacker: IpAddr = "203.0.113.7".parse().unwrap();
+        let admin: IpAddr = "127.0.0.1".parse().unwrap();
+        for _ in 0..FAILURES_PER_WINDOW {
+            assert!(!auth.locked_out(attacker).await);
+            auth.record_failure(attacker).await;
+        }
+        assert!(auth.locked_out(attacker).await);
+        assert!(!auth.locked_out(admin).await);
     }
 }

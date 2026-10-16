@@ -170,7 +170,9 @@ pub async fn start_web_server(
 
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
-            if let Err(e) = axum::serve(listener, app).await {
+            // Peer addresses key the login failure limiter (`auth::login`).
+            let service = app.into_make_service_with_connect_info::<SocketAddr>();
+            if let Err(e) = axum::serve(listener, service).await {
                 error!("WebUI sunucusunda hata oluştu: {:?}", e);
             }
         }
