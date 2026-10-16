@@ -10,16 +10,40 @@ use std::sync::LazyLock;
 
 use super::unescape_html;
 
-static META_TAG_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<meta\s+[^>]*>").expect("geçerli meta regex"));
-static KEY_ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)(?:property|name)\s*=\s*["']([^"']+)["']"#).expect("geçerli attribute regex")
+// Tırnaklı değerler bir bütün olarak geçilir: değer içindeki `>` etiketi erken bitirmez.
+// Tırnaklı parça `<` geçemez ve eşi olmayan tırnak tek karakter sayılır; bozuk bir etiket sonraki etiketleri yutmaz.
+pub(super) static META_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<meta\s(?:[^>"']|"[^"<]*"|'[^'<]*'|["'])*>"#).expect("geçerli meta regex")
 });
-static CONTENT_ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)content\s*=\s*["']([^"']*)["']"#).expect("geçerli content regex")
+// Öznitelikler soldan sağa sırayla tüketilir; böylece bir değerin içindeki `name=...` metni ya da `data-content=` gibi önekli adlar ayrı öznitelik sanılmaz.
+// Çift tırnaklı değer kesme işareti (`Don't`), tek tırnaklı değer çift tırnak içerebilir.
+static ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)([a-z0-9_:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#)
+        .expect("geçerli attribute regex")
 });
 static TITLE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("geçerli title regex"));
+
+/// Etiketin `property`/`name` anahtarını (küçük harfle) ve ham `content` değerini döndürür.
+fn meta_key_and_content(tag: &str) -> (Option<String>, Option<&str>) {
+    let mut key = None;
+    let mut content = None;
+    for captures in ATTR_REGEX.captures_iter(tag) {
+        let value = captures
+            .get(2)
+            .or_else(|| captures.get(3))
+            .or_else(|| captures.get(4))
+            .map_or("", |m| m.as_str());
+        match captures[1].to_ascii_lowercase().as_str() {
+            "property" | "name" if key.is_none() && !value.is_empty() => {
+                key = Some(value.to_ascii_lowercase());
+            }
+            "content" if content.is_none() => content = Some(value),
+            _ => {}
+        }
+    }
+    (key, content)
+}
 
 /// Sayfadan çıkarılan OpenGraph verisi.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -38,21 +62,10 @@ pub fn parse_open_graph(html: &str) -> OpenGraph {
     let mut graph = OpenGraph::default();
 
     for tag in META_TAG_REGEX.find_iter(html) {
-        let tag = tag.as_str();
-        let key = match KEY_ATTR_REGEX.captures(tag) {
-            Some(captures) => captures
-                .get(1)
-                .map(|m| m.as_str().to_ascii_lowercase())
-                .unwrap_or_default(),
-            None => continue,
+        let (Some(key), Some(content)) = meta_key_and_content(tag.as_str()) else {
+            continue;
         };
-        let content = match CONTENT_ATTR_REGEX.captures(tag) {
-            Some(captures) => {
-                unescape_html(captures.get(1).map(|m| m.as_str()).unwrap_or_default())
-            }
-            None => continue,
-        };
-        let content = content.trim().to_string();
+        let content = unescape_html(content).trim().to_string();
         if content.is_empty() {
             continue;
         }
@@ -143,5 +156,35 @@ mod tests {
         let graph = parse_open_graph(html);
         assert_eq!(graph.title.as_deref(), Some("Sadece başlık"));
         assert!(graph.image.is_none());
+    }
+
+    #[test]
+    fn quote_characters_inside_values_do_not_end_the_value() {
+        let html = r#"<meta property="og:title" content="Don't stop">
+            <meta property='og:description' content='Say "hi" > bye'>
+            <meta name=og:site_name content=Örnek>"#;
+        let graph = parse_open_graph(html);
+        assert_eq!(graph.title.as_deref(), Some("Don't stop"));
+        assert_eq!(graph.description.as_deref(), Some("Say \"hi\" > bye"));
+        assert_eq!(graph.site_name.as_deref(), Some("Örnek"));
+    }
+
+    #[test]
+    fn prefixed_or_embedded_attribute_names_are_not_matched() {
+        let html = r#"<meta data-content="sahte" property="og:title" content="Gerçek">
+            <meta data-property="og:image" content="https://evil.example/a.jpg">
+            <meta content="x name='og:description'" property="og:site_name">"#;
+        let graph = parse_open_graph(html);
+        assert_eq!(graph.title.as_deref(), Some("Gerçek"));
+        assert!(graph.image.is_none());
+        assert!(graph.description.is_none());
+        assert_eq!(graph.site_name.as_deref(), Some("x name='og:description'"));
+    }
+
+    #[test]
+    fn a_stray_quote_does_not_swallow_following_tags() {
+        let html = r#"<meta name=x content=Don't>
+            <meta property="og:title" content="Sonraki">"#;
+        assert_eq!(parse_open_graph(html).title.as_deref(), Some("Sonraki"));
     }
 }

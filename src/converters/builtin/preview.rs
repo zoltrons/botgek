@@ -2,16 +2,12 @@
 //! The page transport validates/pins DNS at every redirect. Media is not downloaded here;
 //! its syntax and DNS are checked before publication, not a promise of future playability.
 
-use std::{net::IpAddr, sync::LazyLock};
+use std::net::IpAddr;
 
-use regex::Regex;
 use url::{Host, Url};
 
 use super::{Author, BuiltinPost, LinkPreview, Media, MediaKind, opengraph};
 use crate::converters::parser::{ParsedPost, Platform};
-
-static META: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<meta\s+[^>]*>").expect("meta tags"));
 
 /// Wrap DNS, redirects, streaming and optional media DNS checks in one total budget.
 pub(super) async fn fetch(parsed: &ParsedPost, platform: Platform) -> Result<BuiltinPost, String> {
@@ -311,7 +307,7 @@ pub(super) fn from_html(
     let mut description = None;
     let mut images = Vec::new();
     let mut video = None;
-    for tag in META.find_iter(html).take(512) {
+    for tag in opengraph::META_TAG_REGEX.find_iter(html).take(512) {
         let graph = opengraph::parse_open_graph(tag.as_str());
         if let Some(value) = graph.title {
             title = Some(value);
@@ -482,6 +478,22 @@ mod tests {
         );
         // Bahsetme enjeksiyonu ve açılı parantezler etkisizleştirilir.
         assert_eq!(escape_preview_markdown("@everyone"), "@\u{200b}everyone");
+    }
+
+    #[test]
+    fn apostrophes_and_angle_brackets_inside_values_survive() {
+        let html = r#"<meta property="og:title" content="Don't > stop">
+            <meta property="og:description" content="It's here">"#;
+        let post = from_html(
+            "https://www.youtube.com/post/abc_123",
+            "https://www.youtube.com/post/abc_123",
+            Platform::YouTube,
+            html,
+        )
+        .expect("meaningful metadata");
+        let preview = post.link_preview.unwrap();
+        assert_eq!(preview.title.as_deref(), Some("Don't › stop"));
+        assert_eq!(preview.description.as_deref(), Some("It's here"));
     }
 
     #[test]
