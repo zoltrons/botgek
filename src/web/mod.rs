@@ -428,12 +428,10 @@ async fn save_settings(
 ) -> impl IntoResponse {
     new_settings.role_filters.sanitize();
 
-    fn safe_truncate_str(s: &mut String, max_bytes: usize) {
-        if s.len() > max_bytes {
-            let mut end = max_bytes;
-            while end > 0 && !s.is_char_boundary(end) {
-                end -= 1;
-            }
+    // Sınır **karakter** sayısıdır: panel sayacı (`value.length`) ve kanal ayarlarının
+    // `sanitize`'ı da karakter sayar; bayt sınırı Türkçe istemleri sessizce kırpıyordu.
+    fn safe_truncate_str(s: &mut String, max_chars: usize) {
+        if let Some((end, _)) = s.char_indices().nth(max_chars) {
             s.truncate(end);
         }
     }
