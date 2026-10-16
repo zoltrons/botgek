@@ -25,6 +25,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
+    # Varsayılan json-file sürücüsü sınırsız büyür; Raspberry Pi SD kartını doldurmasın.
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       # WebUI port eşlemesi (.env içindeki WEB_PORT veya varsayılan 3000)
       - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
