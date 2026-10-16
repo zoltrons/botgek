@@ -152,6 +152,15 @@ impl EventHandler for Handler {
             return;
         }
 
+        // Bağlantı içermeyen, botu etiketlemeyen ve yanıt olmayan sıradan sohbet mesajı hiçbir
+        // akışı tetikleyemez: ayar çözümleme (tam kopya) ve kanal sorgusu atlanır.
+        let could_convert = msg.content.contains("://");
+        let could_chat =
+            msg.message_reference.is_some() || msg.mentions.iter().any(|u| u.id == current_user_id);
+        if !could_convert && !could_chat {
+            return;
+        }
+
         let parent_id = discord_thread_parent(&ctx, msg.guild_id, msg.channel_id).await;
         let current_settings = self.settings.read().await.get_message_settings(
             msg.guild_id,
