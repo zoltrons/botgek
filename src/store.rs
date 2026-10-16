@@ -266,10 +266,12 @@ impl Db {
         &self,
         query: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>,
     ) -> Result<T, String> {
-        let connection = match self.connection.lock() {
-            Ok(connection) => connection,
-            Err(err) => return Err(format!("kilit alınamadı: {err}")),
-        };
+        // Zehirlenmiş kilit kurtarılır: SQLite bağlantısı bir sorgunun ortasında panik olsa
+        // bile tutarlıdır; aksi hâlde tek bir panik depoyu yeniden başlatmaya dek kapatırdı.
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         query(&connection).map_err(|err| err.to_string())
     }
 }
