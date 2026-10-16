@@ -178,6 +178,20 @@ fn variant_ladder(variants: &[Variant]) -> Vec<&Variant> {
     ladder
 }
 
+/// Medya playlist'indeki `#EXTINF` sürelerinin toplamı (saniye).
+fn playlist_duration_secs(text: &str) -> f64 {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("#EXTINF:"))
+        .filter_map(|rest| rest.split(',').next()?.trim().parse::<f64>().ok())
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+        .sum()
+}
+
+/// `BANDWIDTH` (bps) ve süreden tahmini çıktı boyutu (bayt).
+fn estimated_bytes(bandwidth_bps: u64, duration_secs: f64) -> u64 {
+    (bandwidth_bps as f64 / 8.0 * duration_secs) as u64
+}
+
 /// Konumdan URL üretir (yerel dosya konumları desteklenmez).
 fn location_url(location: &SourceLocation) -> Result<Url, HlsError> {
     match location {
@@ -588,19 +602,24 @@ async fn merge_inner(
         client: client.clone(),
     });
 
-    for variant in ladder {
+    let last = ladder.len() - 1;
+    for (index, variant) in ladder.into_iter().enumerate() {
         let video_uri = variant.video.clone();
         let audio_uri = variant.audio.clone();
+        // `BANDWIDTH` tepe değerdir ve boyutu abartabilir; bu yüzden son (en küçük) varyant tahmine bakılmadan yine de denenir.
+        let size_guard = (index < last && variant.bandwidth > 0).then_some(variant.bandwidth);
         match render_variant(
             &master_url,
             &video_uri,
             audio_uri.as_deref(),
             source.clone(),
             max_bytes,
+            size_guard,
         )
         .await
         {
-            Ok(bytes) if bytes.len() as u64 <= max_bytes => {
+            Ok(None) => {}
+            Ok(Some(bytes)) if bytes.len() as u64 <= max_bytes => {
                 debug!(
                     "Reddit videosu sesli MP4 olarak birleştirildi ({} bayt): {video_id}",
                     bytes.len()
@@ -611,7 +630,7 @@ async fn merge_inner(
                     mime: "video/mp4".to_string(),
                 });
             }
-            Ok(bytes) => debug!(
+            Ok(Some(bytes)) => debug!(
                 "Reddit videosu ek limitini aşıyor ({} bayt > {max_bytes}), daha küçük varyant deneniyor: {video_id}",
                 bytes.len()
             ),
@@ -623,18 +642,31 @@ async fn merge_inner(
 }
 
 /// Tek bir varyantı (video medya playlist'i + varsa ses medya playlist'i) tek MP4'e birleştirir.
+///
+/// `size_guard` (bps) verilmişse ve tahmini boyut `max_bytes`'ı aşıyorsa parçalar indirilmeden `Ok(None)` döner: 5 sn'lik bütçe sığmayacak bir varyanta harcanmaz, küçük varyant sıra bulur.
 async fn render_variant(
     master_url: &Url,
     video_uri: &str,
     audio_uri: Option<&str>,
     source: Arc<ReqwestSource>,
     max_bytes: u64,
-) -> Result<Vec<u8>, HlsError> {
+    size_guard: Option<u64>,
+) -> Result<Option<Vec<u8>>, HlsError> {
     let video_url = master_url.join(video_uri).map_err(hls_err)?;
     let video_text = source
         .read_text(&SourceLocation::Url(video_url.clone()))
         .await?
         .content;
+
+    if let Some(bandwidth) = size_guard {
+        let estimate = estimated_bytes(bandwidth, playlist_duration_secs(&video_text));
+        if estimate > max_bytes {
+            debug!(
+                "Reddit varyantı tahmini boyutu ek limitini aşıyor ({estimate} bayt > {max_bytes}), atlanıyor: {video_uri}"
+            );
+            return Ok(None);
+        }
+    }
 
     let video_id_input = InputId::new("video").map_err(hls_err)?;
     let video_snapshot = parse_playlist_snapshot(
@@ -720,7 +752,7 @@ async fn render_variant(
         report.tracks().len()
     );
 
-    Ok(bytes)
+    Ok(Some(bytes))
 }
 
 #[cfg(test)]
@@ -894,6 +926,16 @@ CMAF_720.m3u8"#;
             uris,
             vec!["CMAF_720.m3u8", "CMAF_480.m3u8", "CMAF_270.m3u8"]
         );
+    }
+
+    #[test]
+    fn playlist_duration_and_size_estimate() {
+        let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.000,\nCMAF_720_0.m4s\n#EXTINF:2.5,\nCMAF_720_1.m4s\n#EXTINF:bozuk,\nx.m4s\n#EXT-X-ENDLIST";
+        assert_eq!(playlist_duration_secs(playlist), 6.5);
+        assert_eq!(playlist_duration_secs("#EXTM3U"), 0.0);
+        // 2 Mbps × 6,5 sn = 1,625 MB.
+        assert_eq!(estimated_bytes(2_000_000, 6.5), 1_625_000);
+        assert_eq!(estimated_bytes(0, 6.5), 0);
     }
 
     /// Canlı liste üzerinden video gönderisi bulup kimliğini döner (yoksa `None`).
