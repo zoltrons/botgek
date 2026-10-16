@@ -1191,8 +1191,21 @@ impl AppSettings {
     }
 
     fn load_from(path: &Path) -> Result<Self, String> {
+        let seed = std::env::var_os("BOTGEK_SETTINGS_SEED")
+            .map(PathBuf::from)
+            .filter(|seed| {
+                // Ana makinede dosya yoksa Docker bağlama noktasına boş bir **dizin** açar; bu durumda açılış döngüye girmesin, tohum yok sayılır.
+                let usable = seed.is_file();
+                if !usable && !path.exists() {
+                    warn!(
+                        "BOTGEK_SETTINGS_SEED ('{}') bir dosya değil; tohum yok sayılıyor.",
+                        seed.display()
+                    );
+                }
+                usable
+            });
         if !path.exists()
-            && let Some(seed) = std::env::var_os("BOTGEK_SETTINGS_SEED")
+            && let Some(seed) = seed
         {
             let content = fs::read_to_string(seed).map_err(|e| format!("settings seed: {e}"))?;
             let imported: AppSettings =
