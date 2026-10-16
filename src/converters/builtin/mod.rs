@@ -163,6 +163,9 @@ pub async fn fetch(
         debug!("Gönderi önbellekten alındı: {}", parsed.original_url);
         return Ok(cached);
     }
+    if let Some(reason) = cache::recent_failure(&key).await {
+        return Err(reason);
+    }
 
     let post = match parsed.platform {
         Platform::Twitter => twitter::fetch(client, parsed, engine).await,
@@ -178,7 +181,14 @@ pub async fn fetch(
         Platform::Tumblr => tumblr::fetch(client, parsed).await,
         Platform::Facebook => facebook::fetch(client, parsed).await,
         Platform::YouTube => youtube::fetch(client, parsed).await,
-    }?;
+    };
+    let post = match post {
+        Ok(post) => post,
+        Err(reason) => {
+            cache::put_failure(key, reason.clone()).await;
+            return Err(reason);
+        }
+    };
 
     let post = std::sync::Arc::new(post);
     cache::put(key, post.clone()).await;

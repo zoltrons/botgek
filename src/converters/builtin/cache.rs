@@ -56,6 +56,36 @@ pub async fn put(key: String, post: Arc<BuiltinPost>) {
     cache.insert(key, (Instant::now(), post));
 }
 
+/// Başarısız çekimin hatırlanma süresi. Ölü/yavaş bir link aynı anda birçok kez paylaşıldığında bekleyen her görev kilidi sırayla alıp tam çekimi (zaman aşımıyla) yeniden yapıyordu.
+const FAILURE_TTL: Duration = Duration::from_secs(30);
+
+type FailureMap = Mutex<HashMap<String, (Instant, String)>>;
+static FAILURES: LazyLock<FailureMap> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Yakın zamanda başarısız olmuş anahtarın hata metnini döndürür.
+pub async fn recent_failure(key: &str) -> Option<String> {
+    let mut failures = FAILURES.lock().await;
+    match failures.get(key) {
+        Some((at, reason)) if at.elapsed() < FAILURE_TTL => Some(reason.clone()),
+        Some(_) => {
+            failures.remove(key);
+            None
+        }
+        None => None,
+    }
+}
+
+/// Başarısız çekimi kısa süre için kaydeder (boyut sınırlı).
+pub async fn put_failure(key: String, reason: String) {
+    let mut failures = FAILURES.lock().await;
+    if failures.len() >= MAX_ENTRIES {
+        failures.retain(|_, (at, _)| at.elapsed() < FAILURE_TTL);
+    }
+    if failures.len() < MAX_ENTRIES {
+        failures.insert(key, (Instant::now(), reason));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
