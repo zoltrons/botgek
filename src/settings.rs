@@ -1251,6 +1251,7 @@ impl AppSettings {
                     // Schema 2 already completed the destructive equal-block reduction.
                     // Only pre-sparse files may run that migration; upgrading 2 → 3 merely
                     // records the new channel-aware format and must never unpin blocks again.
+                    let mut persist = true;
                     if settings.schema_version < 2 {
                         let reduced = settings.migrate_legacy_guild_overrides();
                         settings.schema_version = 2;
@@ -1258,24 +1259,32 @@ impl AppSettings {
                             Ok(backup) => {
                                 info!("Göç öncesi ayar yedeği alındı: {}", backup.display())
                             }
-                            Err(err) => return Err(format!("migration backup failed: {err}")),
+                            // Yedeksiz göç sonucu özgün dosyanın üzerine yazılmaz; salt okunur bağlamada bot bellekteki ayarlarla açılır.
+                            Err(err) => {
+                                warn!(
+                                    "Göç öncesi yedek alınamadı ({err}); dosya değiştirilmeden bellekteki ayarlarla devam ediliyor."
+                                );
+                                persist = false;
+                            }
                         }
-                        match settings.save_to(path) {
-                            Ok(()) => info!(
-                                "Sunucu ayarları sparse override modeline göç etti: {} kayıt indirgendi/sadeleşti.",
-                                reduced
-                            ),
-                            Err(err) => warn!(
-                                "Göç sonucu '{}' dosyasına yazılamadı: {} — bellekteki ayarlarla devam ediliyor.",
-                                path.display(),
-                                err
-                            ),
+                        if persist {
+                            match settings.save_to(path) {
+                                Ok(()) => info!(
+                                    "Sunucu ayarları sparse override modeline göç etti: {} kayıt indirgendi/sadeleşti.",
+                                    reduced
+                                ),
+                                Err(err) => warn!(
+                                    "Göç sonucu '{}' dosyasına yazılamadı: {} — bellekteki ayarlarla devam ediliyor.",
+                                    path.display(),
+                                    err
+                                ),
+                            }
                         }
                     }
                     if settings.schema_version < SETTINGS_SCHEMA_VERSION {
                         settings.sanitize_channels();
                         settings.schema_version = SETTINGS_SCHEMA_VERSION;
-                        if let Err(err) = settings.save_to(path) {
+                        if persist && let Err(err) = settings.save_to(path) {
                             warn!(
                                 "Schema 3 ayarları '{}' dosyasına yazılamadı: {}",
                                 path.display(),
