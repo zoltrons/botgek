@@ -6,6 +6,7 @@ on:
     tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master" ]
+  # `release.yml` bu workflow'u etiket ref'inde (`--ref vX.Y.Z`) başlatır: `github.ref` yine `refs/tags/v...` olduğundan etiket koşulları push'taki gibi çalışır.
   workflow_dispatch:
 
 # Gereksiz tekrar eden çalıştırmaları iptal et (main, master ve release tag'leri hariç)
