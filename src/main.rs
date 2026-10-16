@@ -200,8 +200,7 @@ async fn main() {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            // panic=abort profiline karşı: SIGTERM kaydı başarısız olsa da süreç
-            // abort edilmemeli, en azından Ctrl+C ile temiz kapanabilmeli
+            // SIGTERM kaydı başarısız olsa da süreç en azından Ctrl+C ile temiz kapanabilmeli
             match signal(SignalKind::terminate()) {
                 Ok(mut sigterm) => {
                     tokio::select! {

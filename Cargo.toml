@@ -86,6 +86,6 @@ opt-level = 3
 # İnce LTO: çalışma zamanı hızı ile CI derleme süresi arasında dengeli seçim.
 lto = "thin"
 codegen-units = 16
-# Panik = abort: ikili küçülür, yığın açma (unwind) maliyeti kalkar.
-panic = "abort"
+# Panik = unwind (varsayılan): uzun ömürlü bir botta harici bir yanıttaki tek bir panik
+# yalnızca o tokio görevini düşürür; `abort` tüm süreci (gateway + WebUI) öldürüyordu.
 strip = true
