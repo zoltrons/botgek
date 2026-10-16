@@ -143,6 +143,7 @@ pub struct Login {
 pub async fn login(
     State(state): State<super::WebState>,
     peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> Response {
     let auth = &state.auth;
@@ -163,8 +164,17 @@ pub async fn login(
     let session: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let mut sessions = auth.sessions.lock().await;
     sessions.retain(|_, created| created.elapsed() < SESSION_TTL);
-    if sessions.len() >= MAX_SESSIONS {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    if let Some(previous) = session_cookie(&headers) {
+        sessions.remove(previous);
+    }
+    // A full table evicts the oldest session instead of refusing the administrator.
+    if sessions.len() >= MAX_SESSIONS
+        && let Some(oldest) = sessions
+            .iter()
+            .min_by_key(|(_, created)| **created)
+            .map(|(id, _)| id.clone())
+    {
+        sessions.remove(&oldest);
     }
     sessions.insert(session.clone(), Instant::now());
     (
