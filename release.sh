@@ -13,7 +13,8 @@
 #   * Sürümün **tek kaynağı** `Cargo.toml` (`[package] version`) + `vX.Y.Z` etiketidir.
 #     Derleme sırasında `build.rs` tam künyeyi etiketten türetir (`0.2.0+5.g8fc2692`).
 #   * Çalışma ağacı **temiz** olmalıdır; aksi hâlde yayın commit'i ilgisiz değişiklikleri alır.
-#   * Ön sürüm (`1.0.0-rc.1`) artıştan önce atılır (semver: `rc` → `release`).
+#   * Ön sürümden (`1.0.0-rc.1`) artış, sürümün kendisini yayınlar: `patch` → 1.0.0.
+#     `minor`/`major` ise taban zaten o düzeydeyse (`1.1.0-rc.1` → 1.1.0, `2.0.0-rc.1` → 2.0.0) ön eki atar, değilse bir üst sürüme geçer.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
@@ -62,17 +63,39 @@ if [ -z "$current" ]; then
     exit 1
 fi
 
-# Ön sürümü at: 1.0.0-rc.1 → 1.0.0 (artış tabandan yapılır).
+# Ön sürüm, artışın hedefi zaten tabanın kendisi olduğunda yalnızca atılır (npm/semver davranışı).
 base="${current%%-*}"
 major="${base%%.*}"
 rest="${base#*.}"
 minor="${rest%%.*}"
 patch="${rest#*.}"
+prerelease=0
+if [ "$base" != "$current" ]; then
+    prerelease=1
+fi
 
 case "$bump" in
-    major) next="$((major + 1)).0.0" ;;
-    minor) next="$major.$((minor + 1)).0" ;;
-    patch) next="$major.$minor.$((patch + 1))" ;;
+    major)
+        if [ "$prerelease" = 1 ] && [ "$minor" = 0 ] && [ "$patch" = 0 ]; then
+            next="$base"
+        else
+            next="$((major + 1)).0.0"
+        fi
+        ;;
+    minor)
+        if [ "$prerelease" = 1 ] && [ "$patch" = 0 ]; then
+            next="$base"
+        else
+            next="$major.$((minor + 1)).0"
+        fi
+        ;;
+    patch)
+        if [ "$prerelease" = 1 ]; then
+            next="$base"
+        else
+            next="$major.$minor.$((patch + 1))"
+        fi
+        ;;
     *) next="$bump" ;;
 esac
 
