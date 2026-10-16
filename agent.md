@@ -44,6 +44,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-16 18:48] Ege Çelikçi — Proje sahibinin kararları: CI cache geri açıldı, AI iç düşünce sızıntısı ve iki sekme çakışması giderildi
+- **Commit:** `0a956f1..4f264fa`
+- **Yapılan:**
+  1. **CI cache:** önceki kayıttaki "Actions cache'i kotaya sayılıyor" varsayımı yanlıştı (cache depo başına ayrı 10 GB; 0,5 GB'lık kota artefakt/paketler için). `target/` cache'leri iş türü (`test`, `coverage`) ve sürüm hedefi (`release-<target>`) başına geri açıldı, kaydetme yalnızca ana dalda; `ci-storage.yml` bütçesi 8000 MB, erişilmeme süresi 7 gün.
+  2. **AI:** içerik boşken modelin `reasoning` metni artık kanala yazılmıyor; yanıt boş sayılıp yedek modele geçiliyor.
+  3. **Panel:** `GET /api/settings` içerikten türetilen `ETag` döner, kayıt `If-Match` ile gönderilir; arada başka sekme kaydettiyse sunucu `412` döner, panel güncel ayarları yükleme önerir ve yerel değişiklikleri kirli tutar.
+  4. **Temizlik:** kullanılmayan `release.ps1` kaldırıldı (zaten `release.sh`'e devrediyordu).
+- **Test:** 314 Rust + 15 panel testi geçiyor; `cargo fmt --check` · `clippy -D warnings` temiz.
+- **Etkilenen:** `.github/workflows/{build-release,quality,release,ci-storage}.yml`, `src/ai/mod.rs`, `src/web/mod.rs`, `src/web/ui/app.js`, `tests/web-ui.test.cjs`, `release.ps1`, `README.md`
+
 ### [2026-10-16 18:31] Ege Çelikçi — Kapsamlı denetim: çökme, güvenlik, doğruluk, hız ve altyapı düzeltmeleri (her düzeltme ayrı commit)
 - **Commit:** `85f4a7b..d1921bc` (68 commit)
 - **Yapılan:**
