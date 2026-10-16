@@ -770,6 +770,9 @@ fn syndication_to_post(
         .and_then(|n| n.text.clone())
         .or_else(|| tweet.text.clone())
         .unwrap_or_default();
+    // X metni `&amp;`/`&lt;`/`&gt;` kaçışlı verir, `display_text_range` ise kaçışsız metnin kod noktalarını sayar (`&` tek karakterdir).
+    // Bu yüzden kesmeden önce çözülür; aksi halde her kaçış aralığı kaydırır ve metnin sonu kırpılır.
+    let raw_text = super::unescape_html(&raw_text);
     let raw_text = if tweet.note_tweet.is_some() {
         raw_text
     } else {
@@ -1873,5 +1876,26 @@ mod tests {
         assert_eq!(link_preview_image(&page, &long), Some(long.clone()));
         let too_long = format!("https://cdn.example.com/{}.png", "a".repeat(2100));
         assert!(link_preview_image(&page, &too_long).is_none());
+    }
+
+    #[test]
+    fn syndication_text_is_unescaped_before_the_display_range_cut() {
+        // `display_text_range` kaçışsız metni sayar: "a & <b>" 7 karakterdir.
+        let tweet: SyndicationTweet = serde_json::from_value(serde_json::json!({
+            "text": "a &amp; &lt;b&gt; https://t.co/medya",
+            "display_text_range": [0, 7],
+            "user": { "name": "Ad", "screen_name": "ad" }
+        }))
+        .unwrap();
+        let post = syndication_to_post(&tweet, "https://x.com/ad/status/1", u64::MAX).unwrap();
+        assert_eq!(post.text, "a & <b>");
+
+        let doubly: SyndicationTweet = serde_json::from_value(serde_json::json!({
+            "text": "&amp;lt;",
+            "user": { "screen_name": "ad" }
+        }))
+        .unwrap();
+        let post = syndication_to_post(&doubly, "https://x.com/ad/status/2", u64::MAX).unwrap();
+        assert_eq!(post.text, "&lt;");
     }
 }
