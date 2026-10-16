@@ -139,10 +139,13 @@ impl Config {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
 
-        let web_port = env::var("WEB_PORT")
-            .ok()
-            .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(3000);
+        let web_port = match env::var("WEB_PORT") {
+            Ok(raw) => raw.trim().parse::<u16>().unwrap_or_else(|_| {
+                tracing::warn!("WEB_PORT={raw:?} geçersiz; 3000 kullanılıyor");
+                3000
+            }),
+            Err(_) => 3000,
+        };
 
         Ok(Self {
             discord_token,
