@@ -55,13 +55,15 @@ jobs:
           shared-key: "rust-registry"
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
 
+      # Biçim denetimi derleme gerektirmez: testlerden önce koşar ki biçim hatası hızlı düşsün.
+      - name: Format check
+        run: cargo fmt --all --check
+
       - name: Run Cargo Test
         run: cargo test --verbose --locked
 
-      - name: Format and lint
-        run: |
-          cargo fmt --all --check
-          cargo clippy --all-targets --locked -- -D warnings
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Setup Node for dependency-free panel tests
         uses: actions/setup-node@v4
