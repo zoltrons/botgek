@@ -1,7 +1,7 @@
 use serenity::all::{
     Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EditMessage,
-    EventHandler, GuildId, Message, MessageId, MessageType, Permissions, Reaction, ReactionType,
-    Ready, UserId, async_trait,
+    EventHandler, GuildId, Message, MessageId, MessageReference, MessageType, Permissions,
+    Reaction, ReactionType, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -297,7 +297,7 @@ impl EventHandler for Handler {
 
                             let builder = CreateMessage::new()
                                 .content(truncate_chars(&safe_reply, DISCORD_CONTENT_LIMIT))
-                                .reference_message(&msg)
+                                .reference_message(soft_reply(&msg))
                                 .allowed_mentions(allowed_mentions);
 
                             if let Err(e) = msg.channel_id.send_message(&ctx.http, builder).await {
@@ -318,8 +318,9 @@ impl EventHandler for Handler {
                             } else {
                                 "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
                             };
-                            let builder =
-                                CreateMessage::new().content(notice).reference_message(&msg);
+                            let builder = CreateMessage::new()
+                                .content(notice)
+                                .reference_message(soft_reply(&msg));
                             if let Err(send_err) =
                                 msg.channel_id.send_message(&ctx.http, builder).await
                             {
@@ -618,6 +619,12 @@ async fn discord_thread_parent(
         }
         _ => None,
     }
+}
+
+/// Yanıt referansı: hedef mesaj silinmişse (ör. `DELETE_ORIGINAL` ile dönüştürülen bağlantı)
+/// Discord isteği "Unknown message" ile reddetmez, yanıtı normal mesaj olarak gönderir.
+fn soft_reply(msg: &Message) -> MessageReference {
+    MessageReference::from(msg).fail_if_not_exists(false)
 }
 
 fn has_supported_bot_input(content: &str) -> bool {

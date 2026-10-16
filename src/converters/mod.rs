@@ -266,7 +266,7 @@ async fn process_message(
 
     // Eğer orijinal mesaj bir yanıtsa, bot da aynı mesaja yanıt versin
     if let Some(ref message_ref) = msg.message_reference {
-        builder = builder.reference_message(message_ref.clone());
+        builder = builder.reference_message(message_ref.clone().fail_if_not_exists(false));
     }
 
     // 7. Mesajı Gönder. Orijinal mesaj burada silinmez: erken silmek, gönderenin istemcisi
