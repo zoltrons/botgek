@@ -42,6 +42,8 @@ jobs:
           tool: cargo-llvm-cov@0.6.16
       - run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
       - uses: actions/upload-artifact@v4
+        # Rapor yalnızca bilgi amaçlıdır: artefakt kotası (GHCR paketleriyle ortak 0,5 GB) dolduğunda testler geçmiş olsa da iş kırmızıya dönmesin.
+        continue-on-error: true
         with:
           name: coverage-lcov
           path: lcov.info
