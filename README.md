@@ -85,7 +85,7 @@ Tokenı döndürmek için `.env` değerini değiştirip botu yeniden başlatın.
 
 | Değişken | Davranış |
 | --- | --- |
-| `BOTGEK_SETTINGS_PATH` | Ayar dosyası; varsayılan çalışma dizinindeki `settings.json` |
+| `BOTGEK_SETTINGS_PATH` | Ayar dosyası; boşsa `BOTGEK_DB_PATH` bir dizin içeriyorsa (ör. `/app/data/botgek.db`) o dizindeki `settings.json`, aksi hâlde çalışma dizinindeki `settings.json` |
 | `BOTGEK_SETTINGS_SEED` | Yalnızca hedef dosya yoksa ilk içe aktarım kaynağı |
 | `BOTGEK_DB_PATH` | Kart–paylaşan kullanıcı kaydı; varsayılan `botgek.db` |
 | `OPENROUTER_API_KEY` | İsteğe bağlı AI erişimi |
@@ -131,9 +131,17 @@ Yedek/geri yükleme işlemlerinde artık `BOTGEK_SETTINGS_PATH` ile gösterilen 
 Kaynak imaj derlemesinde `.git` bulunmaz. Sürüm künyesini `BOTGEK_VERSION` ve `BOTGEK_SHA` build arg'larıyla
 verebilirsiniz. Runtime root olmayan kullanıcıdır; ffmpeg kurulmaz ve kullanılmaz.
 
-Debian paketinde servis: `botgek.service`; çalışma dizini `/var/lib/botgek`, ortam dosyası
-`/etc/botgek/botgek.env`. Bot kullanıcısı/dizini hazırlandıktan sonra `systemctl enable --now botgek`.
-Log: `journalctl -u botgek -f`. Kaynak tarball kurulumu için `deploy-rpi.sh` mevcuttur.
+Debian paketinde servis: `botgek.service`; çalışma dizini `/var/lib/botgek`, ortam dosyası `/etc/botgek/botgek.env`.
+Paketin `postinst` betiği `botgek` sistem kullanıcısını/grubunu ve `/var/lib/botgek`'i oluşturur, ortam dosyası yoksa şablondan `root:root 0600` olarak üretir.
+`DISCORD_TOKEN`'ı girdikten sonra `systemctl enable --now botgek`; paket yükseltmesi çalışan servisi yeniden başlatır.
+Log: `journalctl -u botgek -f`. Kaynak tarball kurulumu (ve güncellemesi) için `deploy-rpi.sh` mevcuttur.
+
+Servis `ProtectSystem=strict` ile çalışır: yalnızca `/var/lib/botgek` (`StateDirectory=`) yazılabilir.
+Varsayılan `botgek.db` ve `settings.json` oraya yazılır; `BOTGEK_DB_PATH`/`BOTGEK_SETTINGS_PATH` başka bir dizini gösterecekse `systemctl edit botgek` ile `ReadWritePaths=` ekleyin.
+
+Ayar yedeği: `./backup-settings.sh` (Windows: `backup-settings.ps1`) önce `BOTGEK_SETTINGS_PATH`'i kullanır.
+systemd kurulumunda dosya `/var/lib/botgek/settings.json`'dır (`sudo ./backup-settings.sh /var/lib/botgek/settings.json`).
+Docker'da dosya volume içindedir: `docker compose exec botgek cat /app/data/settings.json > settings.json.bak` ile dışarı alın.
 
 ## Kontroller ve CI
 
