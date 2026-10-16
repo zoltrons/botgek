@@ -16,6 +16,11 @@ use crate::utils::{DISCORD_CONTENT_LIMIT, truncate_chars};
 /// Kuyruk dolduğunda yeni bağlantı sessizce bekletilmez; özgün mesaj korunarak açıkça reddedilir.
 pub const CONVERSION_QUEUE_CAPACITY: usize = 32;
 
+/// Aynı anda yürüyen dönüşüm sayısı. Tek bir yavaş iş (Reddit videosu, 30 sn zaman aşımı)
+/// diğer sunucuların kartlarını bekletmesin diye işler paralel yürür; sınır, native akışın
+/// kendi kapasitesinin (`builtin::handle`, 16) altında tutulur.
+const CONVERSION_WORKERS: usize = 8;
+
 struct ConversionJob {
     ctx: Context,
     msg: Message,
@@ -30,21 +35,35 @@ static CONVERSION_QUEUE: OnceLock<Sender<ConversionJob>> = OnceLock::new();
 fn conversion_sender() -> &'static Sender<ConversionJob> {
     CONVERSION_QUEUE.get_or_init(|| {
         let (sender, mut receiver) = mpsc::channel::<ConversionJob>(CONVERSION_QUEUE_CAPACITY);
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(CONVERSION_WORKERS));
         tokio::spawn(async move {
-            while let Some(job) = receiver.recv().await {
+            loop {
+                // Kuyruktan yalnızca boş yuva varken alınır: bekleyen işler kanal kapasitesini
+                // tüketmeye devam eder, böylece backpressure (`try_send` → Full) korunur.
+                let Ok(permit) = slots.clone().acquire_owned().await else {
+                    break;
+                };
+                let Some(job) = receiver.recv().await else {
+                    break;
+                };
                 crate::telemetry::CONVERSION_QUEUE_DEPTH
                     .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                process_message(
-                    &job.ctx,
-                    &job.msg,
-                    &job.client,
-                    &job.config,
-                    &job.settings,
-                    &job.parsed,
-                )
-                .await;
-                crate::telemetry::CONVERSION_QUEUE_COMPLETED
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Her iş kendi görevinde yürür: bir işteki panik yalnızca o kartı düşürür,
+                // kuyruk tüketicisini öldürmez.
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    process_message(
+                        &job.ctx,
+                        &job.msg,
+                        &job.client,
+                        &job.config,
+                        &job.settings,
+                        &job.parsed,
+                    )
+                    .await;
+                    crate::telemetry::CONVERSION_QUEUE_COMPLETED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                });
             }
         });
         sender
