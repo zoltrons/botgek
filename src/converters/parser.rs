@@ -354,7 +354,22 @@ pub fn parse_message_with_domains(
 }
 
 fn extract_user_comment(raw_content: &str, regex: &Regex) -> Option<String> {
-    let cleaned = regex.replace(raw_content, "").trim().to_string();
+    let Some(found) = regex.find(raw_content) else {
+        let cleaned = raw_content.trim();
+        return (!cleaned.is_empty()).then(|| cleaned.to_string());
+    };
+    let (mut start, mut end) = (found.start(), found.end());
+    // `<url>` Discord'un önizleme bastırma sözdizimidir; bağlantı yine dönüştürülür ama açılı parantezler yorumda artık kalmamalı.
+    // Sorgu desenleri `>`'yi eşleşmeye katabildiği için kapanış ayrıca aranmaz, yalnızca hemen ardındaysa alınır.
+    if raw_content[..start].ends_with('<') {
+        start -= 1;
+        if raw_content[end..].starts_with('>') {
+            end += 1;
+        }
+    }
+    let cleaned = format!("{}{}", &raw_content[..start], &raw_content[end..])
+        .trim()
+        .to_string();
     if cleaned.is_empty() {
         None
     } else {
@@ -1236,6 +1251,25 @@ mod tests {
             "https://www.instagram.com/kullanici/reels/",
         ] {
             assert!(parse_message(input, &cfg).is_none(), "{input}");
+        }
+    }
+
+    #[test]
+    fn embed_suppressed_links_leave_no_angle_bracket_residue() {
+        let cfg = dummy_config();
+        for (input, comment) in [
+            ("<https://x.com/jack/status/20>", None),
+            (
+                "bak <https://x.com/jack/status/20?s=20> işte",
+                Some("bak  işte"),
+            ),
+            ("<https://www.instagram.com/p/C3abc/>", None),
+            ("<https://www.reddit.com/r/rust/comments/abc123/>", None),
+            ("not <https://www.pixiv.net/artworks/12345>", Some("not")),
+            ("a < b https://x.com/jack/status/20", Some("a < b")),
+        ] {
+            let parsed = parse_message(input, &cfg).unwrap_or_else(|| panic!("{input}"));
+            assert_eq!(parsed.user_comment.as_deref(), comment, "{input}");
         }
     }
 }
