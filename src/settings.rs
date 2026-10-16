@@ -781,6 +781,15 @@ pub struct GuildOverride {
     pub channels: HashMap<String, ChannelOverride>,
 }
 
+/// AI model adını 128, sistem istemini 4000 **karaktere** sınırlar (panel sayacıyla aynı birim).
+fn bound_ai_text(model: &mut String, system_prompt: &mut String) {
+    for (text, max) in [(model, 128), (system_prompt, 4000)] {
+        if let Some((end, _)) = text.char_indices().nth(max) {
+            text.truncate(end);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ChannelOverride {
@@ -807,8 +816,7 @@ impl ChannelOverride {
             filters.sanitize();
         }
         if let Some(ai) = self.ai.as_mut() {
-            ai.model = ai.model.chars().take(128).collect();
-            ai.system_prompt = ai.system_prompt.chars().take(4000).collect();
+            bound_ai_text(&mut ai.model, &mut ai.system_prompt);
         }
         if let Some(engine) = self.engine.as_mut() {
             engine.sanitize();
@@ -955,12 +963,17 @@ impl AppSettings {
     pub fn sanitize_channels(&mut self) {
         self.guilds
             .retain(|id, _| id.parse::<u64>().is_ok_and(|n| n > 0));
+        // Elle düzenlenmiş dosyadaki sınırsız istem her mesajda kopyalanırdı: panelle aynı sınırlar yüklemede de uygulanır.
+        bound_ai_text(&mut self.ai.model, &mut self.ai.system_prompt);
         for guild in self.guilds.values_mut() {
             if let Some(filters) = guild.role_filters.as_mut() {
                 filters.sanitize();
             }
             if let Some(engine) = guild.engine.as_mut() {
                 engine.sanitize();
+            }
+            if let Some(ai) = guild.ai.as_mut() {
+                bound_ai_text(&mut ai.model, &mut ai.system_prompt);
             }
             guild
                 .channels
