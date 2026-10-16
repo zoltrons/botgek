@@ -348,7 +348,7 @@ fn append_comment_context(post: &mut BuiltinPost, comment: &RedditPost) {
     else {
         return;
     };
-    let body = truncate_chars(&super::unescape_html(body), MAX_COMMENT_CONTEXT_CHARS);
+    let body = quote_lines(&truncate_chars(&super::unescape_html(body), MAX_COMMENT_CONTEXT_CHARS));
     if body.is_empty() {
         return;
     }
@@ -362,7 +362,17 @@ fn append_comment_context(post: &mut BuiltinPost, comment: &RedditPost) {
         post.text.push_str("\n\n");
     }
     post.text
-        .push_str(&format!("**Yorum bağlamı — {author}:**\n> {body}"));
+        .push_str(&format!("**Yorum bağlamı — {author}:**\n{body}"));
+}
+
+/// Her dolu satırı `> ` ile alıntılar; boş satırlar atılır çünkü Discord çıplak `>` satırını ayrı, boş bir şerit gibi çizer.
+fn quote_lines(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Kimliksiz JSON isteği. Tarayıcı kılığındaki User-Agent, Reddit'in bot isteklerine
@@ -1545,6 +1555,22 @@ mod tests {
         )
         .expect("silinmiş yorum kartı bozmaz");
         assert!(!deleted.text.contains("Yorum bağlamı"));
+    }
+
+    #[test]
+    fn multiline_comment_context_quotes_every_line_without_bare_markers() {
+        let json = r#"[
+            {"data":{"children":[{"data":{"id":"post1","title":"Gönderi","author":"op","permalink":"/r/test/comments/post1/baslik/"}}]}},
+            {"data":{"children":[{"data":{"id":"c1","author":"yorumcu","body":"ilk satır\n\nikinci satır\nüçüncü"}}]}}
+        ]"#;
+        let post = listings_to_post(
+            serde_json::from_str(json).expect("listing geçerli olmalı"),
+            Some("c1"),
+        )
+        .expect("gönderi dönüşmeli");
+        let quoted: Vec<&str> = post.text.lines().skip(1).collect();
+        assert_eq!(quoted, vec!["> ilk satır", "> ikinci satır", "> üçüncü"]);
+        assert!(!post.text.lines().any(|line| line.trim() == ">"));
     }
 
     #[test]
