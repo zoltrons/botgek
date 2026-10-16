@@ -247,7 +247,7 @@ impl EntityView {
         let release = entity
             .get("releaseDate")
             .and_then(|release| json_str(release, "isoString"))
-            .map(|iso| format!("Çıkış {}", &iso[..iso.len().min(10)]));
+            .map(|iso| format!("Çıkış {}", iso.get(..10).unwrap_or(&iso)));
 
         let total_tracks = entity
             .get("trackList")
