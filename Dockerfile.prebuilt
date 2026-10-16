@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # =========================================================
-# Ultra-Fast Multi-Arch Dockerfile (Pre-built Binaries)
+# Hazır ikiliden arm64 imajı (Pre-built Binaries)
 # =========================================================
 FROM debian:bookworm-slim
 

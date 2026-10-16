@@ -27,7 +27,7 @@ on:
       cache_budget_mb:
         description: "Cache'ler için üst sınır (MB) — en yeni girdiler korunur"
         required: false
-        # Beş `target/` cache'i (test, kapsam, üç sürüm hedefi) birkaç GB tutar; GitHub'ın depo başına 10 GB sınırının altında kalınır.
+        # Üç `target/` cache'i (test, kapsam, arm64 sürüm derlemesi) birkaç GB tutar; GitHub'ın depo başına 10 GB sınırının altında kalınır.
         default: "8000"
         type: string
 

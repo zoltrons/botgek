@@ -167,7 +167,7 @@ cargo test --locked live_ -- --ignored --nocapture
 Bu komut gerçek upstream erişimi ister; Instagram oturum testi ayrıca özel çerez ister. Eksik önkoşul veya
 başarısız birleştirme **başarılı test gibi gösterilmez**. Üretim sırlarını public PR testlerine aktarmayın.
 
-- `build-release.yml`: test, fmt, Clippy, panel testleri; ardından ARM64/ARMv7/x86_64 paket ve imaj.
+- `build-release.yml`: test, fmt, Clippy, panel testleri; ardından arm64 paket ve imaj (imaj sürüm etiketinde veya elle başlatmada yayınlanır).
 - `quality.yml`: RustSec audit ve LCOV artifact. Coverage ilk ölçümden itibaren izlenir; uydurma eşik yoktur.
 - `release.yml`: elle sürüm bump/etiket akışı. Yerelde `./release.sh patch` veya
   `./release.sh minor --push`. Temiz çalışma ağacı gerekir.

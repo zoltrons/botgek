@@ -90,7 +90,7 @@ jobs:
           echo "version_file=$(printf '%s' "$version" | tr '+' '_')" >> "$GITHUB_OUTPUT"
           echo "sürüm: $version"
 
-  # 2. Raspberry Pi (Debian) ve Linux Derleme (üç hedef paralel; testler geçtikten sonra)
+  # 2. Raspberry Pi 64-bit (arm64) derleme ve paketleme (testler geçtikten sonra)
   build-and-package:
     name: Build for ${{ matrix.name }}
     needs: [test]
@@ -107,20 +107,7 @@ jobs:
             name: raspberry-pi-64bit-arm64
             use_cross: true
             runner: ubuntu-latest
-          - target: armv7-unknown-linux-gnueabihf
-            arch: armhf
-            deb_arch: armhf
-            name: raspberry-pi-32bit-armhf
-            use_cross: true
-            runner: ubuntu-latest
-          # Yerel derleme ana makinenin glibc'sine bağlanır: ubuntu-latest (glibc 2.39) ikilisi bookworm imajında (glibc 2.36) `GLIBC_2.38 not found` ile açılmaz.
-          # ubuntu-22.04 (glibc 2.35) bookworm ve daha eski Debian sürümleriyle uyumlu ikili üretir.
-          - target: x86_64-unknown-linux-gnu
-            arch: amd64
-            deb_arch: amd64
-            name: linux-x86_64-amd64
-            use_cross: false
-            runner: ubuntu-22.04
+          # Yalnızca arm64 (Raspberry Pi 64-bit) yayınlanır: imaj tek mimarilidir, armhf ve x86_64 derlemelerini tüketen bir şey yoktur.
 
     steps:
       - name: Checkout repository
@@ -138,7 +125,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Hedef başına ayrı `target/` cache'i: üç mimarinin sürüm derlemeleri (vendored OpenSSL, bundled SQLite, LTO) her koşuda sıfırdan yapılmasın.
+          # Sürüm derlemesinin kendi `target/` cache'i: arm64 sürüm derlemesi (vendored OpenSSL, bundled SQLite, LTO) her koşuda sıfırdan yapılmasın.
           add-job-id-key: "false"
           shared-key: "release-${{ matrix.target }}"
           # Ana dalın cache'i etiket koşularına da açıktır; yayın derlemesi onu geri yükler.
@@ -185,17 +172,6 @@ jobs:
           if [ "$(printf '%s\n%s\n' "$newest" "$MAX_GLIBC" | sort -V | tail -n 1)" != "$MAX_GLIBC" ]; then
             echo "::error::$BIN GLIBC_$newest istiyor; bookworm (glibc $MAX_GLIBC) üzerinde çalışmaz"
             exit 1
-          fi
-
-      - name: Doğrula — sürüm ikiliye gömülmüş (yalnızca ana makine hedefi)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: |
-          set -eu
-          BIN="target/${{ matrix.target }}/release/botgek"
-          "$BIN" --version
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            "$BIN" --version | grep -q "v${{ needs.test.outputs.version }}" \
-              || { echo "hata: etiket sürümü (${{ needs.test.outputs.version }}) ikiliye gömülmemiş" >&2; exit 1; }
           fi
 
       - name: Package Debian (.deb)
@@ -263,9 +239,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 4. Ultra-Hızlı Multi-Arch Docker İmajı Paketleme (QEMU emülasyonsuz ~30sn)
+  # 4. arm64 Docker İmajı Paketleme (hazır ikiliden)
   docker-publish:
-    name: Publish Multi-Arch Docker Image
+    name: Publish Docker Image (arm64)
     needs: [test, build-and-package]
     # Sürüm etiketleri ve **elle başlatma** (Actions → Run workflow) imaj yayınlar; PR'lar imajı yalnızca **derler** (push yok).
     # Sıradan `main` push'unda imaj üretilmez: her push'un sürümü GHCR paket kotasını dolduruyordu (bkz. `ghcr-cleanup.yml`).
@@ -293,18 +269,18 @@ jobs:
         run: |
           set -eu
           VERSION="${{ needs.test.outputs.version_file }}"
-          mkdir -p bin/amd64 bin/arm64 bin/armv7
-
-          tar -xzvf "dist/botgek-${VERSION}-linux-x86_64-amd64.tar.gz"
-          cp botgek-linux-x86_64-amd64/botgek bin/amd64/
+          mkdir -p bin/arm64
 
           tar -xzvf "dist/botgek-${VERSION}-raspberry-pi-64bit-arm64.tar.gz"
           cp botgek-raspberry-pi-64bit-arm64/botgek bin/arm64/
 
-          tar -xzvf "dist/botgek-${VERSION}-raspberry-pi-32bit-armhf.tar.gz"
-          cp botgek-raspberry-pi-32bit-armhf/botgek bin/armv7/
+          chmod +x bin/arm64/botgek
 
-          chmod +x bin/amd64/botgek bin/arm64/botgek bin/armv7/botgek
+      # `Dockerfile.prebuilt` arm64 imajında `apt-get` çalıştırır: x86 runner'da bunun için QEMU emülasyonu gerekir.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -334,12 +310,12 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
             type=semver,pattern={{version}}
 
-      - name: Build and push Multi-Arch Docker Image
+      - name: Build and push Docker Image (arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.prebuilt
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
