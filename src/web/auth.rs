@@ -201,10 +201,12 @@ pub async fn logout(State(state): State<super::WebState>, headers: HeaderMap) ->
 pub async fn page() -> Html<&'static str> {
     Html(include_str!("ui/login.html"))
 }
+pub const LOGIN_JS: &str = include_str!("ui/login.js");
+
 pub async fn script() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("ui/login.js"),
+        LOGIN_JS,
     )
 }
 

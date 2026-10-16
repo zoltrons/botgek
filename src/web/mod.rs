@@ -206,8 +206,39 @@ fn build_router(state: WebState) -> Router {
         .with_state(state)
 }
 
+/// Gömülü statik varlığın içerik özetinden türetilen ETag'i (yalnızca bu yollar için).
+fn asset_etag(path: &str) -> Option<&'static str> {
+    use std::hash::{Hash, Hasher};
+    use std::sync::LazyLock;
+    fn tag(content: &str) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        format!("\"{:016x}\"", hasher.finish())
+    }
+    static CSS: LazyLock<String> = LazyLock::new(|| tag(APP_CSS));
+    static JS: LazyLock<String> = LazyLock::new(|| tag(APP_JS));
+    static LOGIN_JS: LazyLock<String> = LazyLock::new(|| tag(auth::LOGIN_JS));
+    match path {
+        "/app.css" => Some(CSS.as_str()),
+        "/app.js" => Some(JS.as_str()),
+        "/login.js" => Some(LOGIN_JS.as_str()),
+        _ => None,
+    }
+}
+
 async fn add_security_headers(req: Request, next: Next) -> Response {
+    let etag = asset_etag(req.uri().path());
+    let revalidated = etag.is_some_and(|etag| {
+        req.headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|candidate| candidate.trim() == etag))
+    });
     let mut response = next.run(req).await;
+    // Kimlik doğrulama (ör. `/app.js`) önce çalışır; yalnızca başarılı yanıt 304'e çevrilir.
+    if revalidated && response.status() == StatusCode::OK {
+        response = StatusCode::NOT_MODIFIED.into_response();
+    }
     let headers = response.headers_mut();
     headers.insert(
         "X-Content-Type-Options",
@@ -223,7 +254,18 @@ async fn add_security_headers(req: Request, next: Next) -> Response {
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
     // Yönetim paneli (rol ID'leri, sistem istemi) önbelleğe alınmamalı
-    headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
+    // Statik varlıklar (gizli veri taşımaz) ETag ile yeniden doğrulanır: her açılışta ~170 KB tekrar indirilmez, sürüm değişince ETag de değişir.
+    match etag {
+        Some(etag) => {
+            headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+            if let Ok(value) = HeaderValue::from_str(etag) {
+                headers.insert(header::ETAG, value);
+            }
+        }
+        None => {
+            headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
+        }
+    }
     // Panel kendi varlıklarını (/app.css, /app.js) servis eder ve **satır içi olay
     // yöneticisi kullanmaz**: bu yüzden script-src yalnızca 'self' olabilir, enjekte
     // edilen bir metin çalıştırılamaz. style-src'teki 'unsafe-inline' yalnızca
@@ -514,7 +556,7 @@ const INDEX_HTML: &str = include_str!("ui/index.html");
 const APP_CSS: &str = include_str!("ui/app.css");
 const APP_JS: &str = include_str!("ui/app.js");
 
-/// Panelin stil dosyası (gömülü). Önbellek başlığı ara katmandan (`no-store`) gelir.
+/// Panelin stil dosyası (gömülü). Önbellek başlığı ve ETag ara katmandan gelir.
 async fn app_css_handler() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
 }
@@ -1107,11 +1149,24 @@ mod tests {
                 "{path} içerik türü: {:?}",
                 header("content-type")
             );
-            assert_eq!(
-                header("cache-control"),
-                Some("no-store"),
-                "{path} önbelleğe alınmamalı"
-            );
+            if path == "/" {
+                assert_eq!(
+                    header("cache-control"),
+                    Some("no-store"),
+                    "{path} önbelleğe alınmamalı"
+                );
+            } else {
+                // Statik varlık: yeniden doğrulanır, aynı ETag ile 304 döner.
+                assert_eq!(header("cache-control"), Some("no-cache"), "{path}");
+                let etag = header("etag").expect("ETag olmalı").to_string();
+                let again = client
+                    .get(format!("{base}{path}"))
+                    .header("if-none-match", &etag)
+                    .send()
+                    .await
+                    .expect("yeniden doğrulama");
+                assert_eq!(again.status(), reqwest::StatusCode::NOT_MODIFIED, "{path}");
+            }
             assert_eq!(header("x-content-type-options"), Some("nosniff"), "{path}");
             assert_eq!(header("x-frame-options"), Some("DENY"), "{path}");
             assert_eq!(
