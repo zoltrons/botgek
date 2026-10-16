@@ -330,50 +330,61 @@ pub fn encode_component(value: &str) -> String {
 }
 
 /// HTML varlıklarını (`&amp;`, `&#39;`, `&quot;` ...) düz metne çevirir.
+///
+/// Tek geçişte soldan sağa çözülür: çözülen bir varlığın çıktısı yeniden taranmaz, böylece `&amp;lt;` kaynakta olduğu gibi `&lt;` kalır (çift çözme yok).
 pub fn unescape_html(text: &str) -> String {
-    let mut out = text
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&apos;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ");
+    // En uzun desteklenen varlık `&#x10FFFF;` / `&#1114111;`; daha uzak `;` aranmaz.
+    const MAX_ENTITY_LEN: usize = 10;
 
-    // Sayısal varlıklar (&#8217; gibi)
-    if out.contains("&#") {
-        let mut decoded = String::with_capacity(out.len());
-        let mut rest = out.as_str();
-        while let Some(start) = rest.find("&#") {
-            decoded.push_str(&rest[..start]);
-            let tail = &rest[start + 2..];
-            let end = tail.find(';');
-            match end {
-                Some(end) => {
-                    let digits = &tail[..end];
-                    let code = if let Some(hex) = digits.strip_prefix(['x', 'X']) {
-                        u32::from_str_radix(hex, 16).ok()
-                    } else {
-                        digits.parse::<u32>().ok()
-                    };
-                    match code.and_then(char::from_u32) {
-                        Some(ch) => decoded.push(ch),
-                        None => decoded.push_str(&rest[start..start + 2 + end + 1]),
-                    }
-                    rest = &tail[end + 1..];
-                }
-                None => {
-                    decoded.push_str(&rest[start..]);
-                    rest = "";
-                }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + 1..];
+        let decoded = tail
+            .char_indices()
+            .take(MAX_ENTITY_LEN)
+            .find(|&(_, ch)| ch == ';')
+            .and_then(|(end, _)| decode_entity(&tail[..end]).map(|ch| (ch, end)));
+        match decoded {
+            Some((ch, end)) => {
+                out.push(ch);
+                rest = &tail[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = tail;
             }
         }
-        decoded.push_str(rest);
-        out = decoded;
     }
-
+    out.push_str(rest);
     out
+}
+
+/// `&` ile `;` arasındaki varlık adını çözer; tanınmayan veya geçersiz kod noktası `None` döner.
+fn decode_entity(name: &str) -> Option<char> {
+    match name {
+        "amp" => Some('&'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "nbsp" => Some(' '),
+        _ => {
+            let digits = name.strip_prefix('#')?;
+            let code = match digits.strip_prefix(['x', 'X']) {
+                Some(hex) if !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                    u32::from_str_radix(hex, 16).ok()
+                }
+                Some(_) => None,
+                None if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+                    digits.parse::<u32>().ok()
+                }
+                None => None,
+            }?;
+            char::from_u32(code)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -393,6 +404,23 @@ mod encoding_tests {
         assert_eq!(unescape_html("B&#x27;lue"), "B'lue");
         assert_eq!(unescape_html("fiyat &#8378; 10"), "fiyat ₺ 10");
         assert_eq!(unescape_html("kapanmamış &#"), "kapanmamış &#");
+    }
+
+    #[test]
+    fn html_entities_are_decoded_once_left_to_right() {
+        assert_eq!(unescape_html("&amp;lt;b&amp;gt;"), "&lt;b&gt;");
+        assert_eq!(unescape_html("&amp;#39;"), "&#39;");
+        assert_eq!(
+            unescape_html("&lt;a&gt; &quot;b&quot; &apos;c&#x27; d&nbsp;e"),
+            "<a> \"b\" 'c' d e"
+        );
+        assert_eq!(unescape_html("&#X41;&#66;"), "AB");
+        assert_eq!(
+            unescape_html("AT&T &bilinmeyen; &#xZZ; &#55296; &#+65;"),
+            "AT&T &bilinmeyen; &#xZZ; &#55296; &#+65;"
+        );
+        assert_eq!(unescape_html("çok &ğ; ünlü &amp"), "çok &ğ; ünlü &amp");
+        assert_eq!(unescape_html("&&amp;;"), "&&;");
     }
 }
 
