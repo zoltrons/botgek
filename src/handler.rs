@@ -257,6 +257,13 @@ impl EventHandler for Handler {
                 return;
             }
             if let Some(ref api_key) = self.config.openrouter_api_key {
+                if !crate::ai::has_capacity() {
+                    warn!(
+                        "AI sağlayıcı yuvaları dolu, istek atlandı: {}",
+                        msg.author.id
+                    );
+                    return;
+                }
                 // Hız sınırı (Rate limiting): Kullanıcı başına 3 saniye bekleme süresi
                 {
                     let mut cooldowns = AI_COOLDOWNS.lock().await;

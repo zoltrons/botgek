@@ -226,6 +226,11 @@ fn extract_reply(body_text: &str) -> Result<String, String> {
 
 pub const AUTO_FALLBACK_MODEL: &str = "openrouter/free";
 
+/// Boş sağlayıcı yuvası var mı? Çağıran taraf kullanıcı/sunucu bütçesini harcamadan önce sorar; dolu yuvaya giden istek bütçeyi boşa tüketip hata bildirimi gönderiyordu.
+pub fn has_capacity() -> bool {
+    AI_IN_FLIGHT.available_permits() > 0
+}
+
 /// OpenRouter API'si üzerinden kullanıcı mesajına laf sokucu / esprili yanıt üretir.
 pub async fn query_openrouter(
     client: &reqwest::Client,
