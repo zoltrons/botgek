@@ -1,0 +1,18 @@
+#!/bin/sh
+# @file prerm
+# @brief botgek paketinin kaldırma öncesi betiği.
+# @description
+#   Paket kaldırılırken servisi durdurur; yükseltmede servis çalışmaya devam eder ve `postinst` onu yeniden başlatır.
+#   Debian maintainer betikleri `/bin/sh` (dash) ile çalışır; `pipefail` bilinçli olarak kullanılmaz.
+set -eu
+
+case "${1:-}" in
+    remove)
+        if [ -d /run/systemd/system ]; then
+            systemctl stop botgek.service || true
+            systemctl disable botgek.service || true
+        fi
+        ;;
+esac
+
+exit 0

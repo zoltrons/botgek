@@ -66,9 +66,12 @@ copyright = "2026 Eray"
 extended-description = """\
 Modern Discord link converter bot for Twitter/X, TikTok, Instagram, Reddit, Bluesky \
 with WebUI control panel, role filtering, and sarcastic OpenRouter AI chat."""
-depends = "libc6, ca-certificates"
+# `passwd`: `postinst` sistem kullanıcısını `useradd`/`groupadd` ile açar.
+depends = "libc6, ca-certificates, passwd"
 section = "net"
 priority = "optional"
+# `postinst` birimin istediği `botgek` kullanıcısını ve `/var/lib/botgek`'i hazırlar; yoksa servis `217/USER` ile düşer.
+maintainer-scripts = "debian/"
 assets = [
     ["target/release/botgek", "usr/bin/botgek", "755"],
     ["botgek.service", "lib/systemd/system/botgek.service", "644"],
