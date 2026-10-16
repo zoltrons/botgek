@@ -35,6 +35,7 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 | ---- | ---- | -------------- | --- |
 | `eray` | insan | (repo sahibi) | Kurucu; el ile commit'ler |
 | `zoltrons` | bot | `18362677+zoltrons@users.noreply.github.com` | Cline/agent; GitHub `zoltrons` hesabıyla commit atar |
+| `Ege Çelikçi` | insan + Claude Code | `ege@celikci.me` | Claude Code oturumları bu kimlikle commit atar |
 
 > Yeni bir bot kimliği ortaya çıktığında bu tabloya satır ekle.
 
@@ -43,6 +44,18 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-16 18:31] Ege Çelikçi — Kapsamlı denetim: çökme, güvenlik, doğruluk, hız ve altyapı düzeltmeleri (her düzeltme ayrı commit)
+- **Commit:** `85f4a7b..d1921bc` (68 commit)
+- **Yapılan:**
+  1. **Dayanıklılık ve hız:** dönüşüm kuyruğu tek tüketiciden 8 eşzamanlı işe geçti (bir yavaş iş tüm sunucuları bekletmiyor, panik yalnızca o kartı düşürüyor); sürüm profilindeki `panic = "abort"` kaldırıldı; Bluesky facet ve Spotify tarih dilimi panikleri giderildi; zehirlenen SQLite kilidi kurtarılıyor; başarısız çekimler 30 sn negatif önbellekte; bayraksız reaksiyonlar, DM'ler, AI kapalıyken yanıtlar ve bağlantısız sohbet mesajları REST/ayar çözümlemesine girmiyor.
+  2. **Doğruluk:** silinmiş mesaja yanıtta AI/proxy kartı düşmüyor (`fail_if_not_exists=false`); eksi skorlu Reddit yorumu fetch'i bozmuyor; spoiler kısaltmada açılmıyor; OG değerleri kesme işaretinde kesilmiyor; HTML varlıkları tek geçişte çözülüyor; X hedge yarışında hızlı hata FxTwitter'ı düşürmüyor; Bluesky görselli alıntılar korunuyor; yeni URL biçimleri (mobile/i-web/kullanıcı önekli/büyük harf) tanınıyor; thread'lerde 🗑️ yetkisi üst kanaldan hesaplanıyor.
+  3. **Güvenlik:** X link önizlemesinde sayfa kaynaklı Markdown/maskeli bağlantı enjeksiyonu kapatıldı; WebUI giriş sınırlayıcısı adres başına ve yalnızca başarısızlıkları sayıyor (yöneticiyi kilitleyen DoS giderildi); belirteç karşılaştırması uzunluk sızdırmıyor; oturum tablosu dolunca en eski oturum çıkarılıyor.
+  4. **Panel:** sistem istemi karakterle kısaltılıyor; kaydet düğmesi geçici etikette takılmıyor; eşzamanlı ikinci kayıt yok sayılıyor; rol listesi hatası "yükleniyor"da kalmıyor; statik varlıklar ETag ile yeniden doğrulanıyor.
+  5. **Altyapı:** `release.yml` zinciri `workflow_dispatch` ile gerçekten başlıyor; x86_64 bookworm glibc'siyle uyumlu derleniyor ve denetleniyor; ön sürüm `latest`'i taşımıyor; `.deb` kullanıcı/dizin hazırlıyor; systemd sandbox'ı sıkılaştı; `deploy-rpi.sh` çalışan kurulumu güncelleyebiliyor; Compose log döndürme + yetkisiz/salt okunur kök; yedek betikleri canlı dosyayı atomik yedekliyor; `release.sh` başarısızlıkta geri alıyor.
+- **Test:** 314 Rust + 14 panel testi geçiyor; `cargo fmt --check` · `clippy -D warnings` temiz; her commit tek başına `cargo check` ile doğrulandı.
+- **Bilinçli olarak yapılmadı:** hedef cache'lerinin yeniden açılması (kota kararı), distroless imaj, aksiyonların SHA'ya sabitlenmesi, healthcheck alt komutu, ayarlarda revizyon/409 çakışma denetimi, AI'ın `reasoning` alanına düşmesi (test edilmiş tasarım), `release.ps1`.
+- **Etkilenen:** `src/**`, `tests/web-ui.test.cjs`, `.github/workflows/*`, `Cargo.toml`, `debian/`, `botgek.service`, `docker-compose.yml`, `Dockerfile*`, `deploy-rpi.sh`, `release.sh`, `backup-settings.*`, `.env.example`, `README.md`
+
 ### [2026-10-15 14:00] zoltrons — GHCR paket kotası: imajlar yalnızca sürüm etiketinde yayınlanır, paket geçmişi son 10 sürümde tutulur
 - **Commit:** `79e1dff`
 - **Sorun:** Depolama tüketiminin kaynağı Actions cache'i değil **GHCR paket sürümleriydi**: `docker-publish` her `main` push'unda çalışıyor, `docker/metadata-action` her derleme için `sha-xxxxxxx` etiketi üretiyordu; `latest`/`sha` taşındıkça eski paket sürümleri **etiketsiz** kalıyor ve hiç silinmediği için özel paket kotasını (500 MB) dolduruyordu.
