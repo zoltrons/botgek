@@ -94,7 +94,7 @@ jobs:
   build-and-package:
     name: Build for ${{ matrix.name }}
     needs: [test]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     strategy:
@@ -106,16 +106,21 @@ jobs:
             deb_arch: arm64
             name: raspberry-pi-64bit-arm64
             use_cross: true
+            runner: ubuntu-latest
           - target: armv7-unknown-linux-gnueabihf
             arch: armhf
             deb_arch: armhf
             name: raspberry-pi-32bit-armhf
             use_cross: true
+            runner: ubuntu-latest
+          # Yerel derleme ana makinenin glibc'sine bağlanır: ubuntu-latest (glibc 2.39) ikilisi bookworm imajında (glibc 2.36) `GLIBC_2.38 not found` ile açılmaz.
+          # ubuntu-22.04 (glibc 2.35) bookworm ve daha eski Debian sürümleriyle uyumlu ikili üretir.
           - target: x86_64-unknown-linux-gnu
             arch: amd64
             deb_arch: amd64
             name: linux-x86_64-amd64
             use_cross: false
+            runner: ubuntu-22.04
 
     steps:
       - name: Checkout repository
@@ -158,6 +163,32 @@ jobs:
             cross build --locked --release --target ${{ matrix.target }}
           else
             cargo build --locked --release --target ${{ matrix.target }}
+          fi
+
+      - name: Doğrula — glibc sembol sürümleri bookworm (2.36) ile uyumlu
+        env:
+          MAX_GLIBC: "2.36"
+          BIN: target/${{ matrix.target }}/release/botgek
+        run: |
+          set -euo pipefail
+          # `readelf` mimariden bağımsızdır (çapraz derlenmiş arm ikililerini de okur); yoksa ana makinenin `objdump`'ı denenir.
+          if command -v readelf >/dev/null 2>&1; then
+            dump="$(readelf -W --version-info --dyn-syms "$BIN")"
+          elif command -v objdump >/dev/null 2>&1; then
+            dump="$(objdump -T "$BIN")"
+          else
+            echo "::warning::readelf/objdump bulunamadı; glibc denetimi atlandı"
+            exit 0
+          fi
+          newest="$(printf '%s\n' "$dump" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/^GLIBC_//' | sort -uV | tail -n 1 || true)"
+          if [ -z "$newest" ]; then
+            echo "::error::$BIN içinde GLIBC sembol sürümü bulunamadı (statik ya da okunamayan ikili?)"
+            exit 1
+          fi
+          echo "en yeni glibc sembolü: GLIBC_$newest (üst sınır: GLIBC_$MAX_GLIBC)"
+          if [ "$(printf '%s\n%s\n' "$newest" "$MAX_GLIBC" | sort -V | tail -n 1)" != "$MAX_GLIBC" ]; then
+            echo "::error::$BIN GLIBC_$newest istiyor; bookworm (glibc $MAX_GLIBC) üzerinde çalışmaz"
+            exit 1
           fi
 
       - name: Doğrula — sürüm ikiliye gömülmüş (yalnızca ana makine hedefi)
