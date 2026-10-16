@@ -229,6 +229,8 @@ async fn main() {
 
     if let Err(err) = client.start().await {
         error!("Bot çalışırken kritik hata oluştu: {:?}", err);
+        // Sıfır olmayan çıkış: systemd/Docker yeniden başlatma politikası devreye girsin.
+        std::process::exit(1);
     }
 }
 
