@@ -1,6 +1,6 @@
 //! Environment-backed administrator login. The master token never leaves this module.
 use axum::{
-    Json,
+    Extension, Json,
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::Next,
@@ -142,14 +142,16 @@ pub struct Login {
 
 pub async fn login(
     State(state): State<super::WebState>,
-    peer: Option<ConnectInfo<SocketAddr>>,
+    // axum 0.8: `ConnectInfo` isteğe bağlı çıkarılamaz; sunucunun eklediği istek uzantısından okunur (testlerde yoktur).
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> Response {
     let auth = &state.auth;
-    let ip = peer.map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |ConnectInfo(addr)| {
-        addr.ip()
-    });
+    let ip = peer.map_or(
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        |Extension(ConnectInfo(addr))| addr.ip(),
+    );
     if auth.locked_out(ip).await {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
