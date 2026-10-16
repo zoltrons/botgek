@@ -44,6 +44,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-16 19:20] Ege Çelikçi — Crate güncellemeleri: rustls güvenlik açıkları kapandı, reqwest 0.13 ve axum 0.8
+- **Commit:** `5155401..0004f1c`
+- **Yapılan:**
+  1. `cargo update`: `rustls` 0.23.45 → 0.23.46 (RUSTSEC-2026-0346/0347/0348/0349; CI `cargo audit` bu yüzden kırmızıydı), `tokio` 1.53.3, `zerocopy` 0.8.63.
+  2. `reqwest` 0.12 → 0.13: serenity zaten 0.13 kullandığı için iki ayrı reqwest derleniyordu, artık tek. 0.13'ün `rustls` özelliği `aws-lc-rs` sağlayıcısı ve sistem kök sertifikalarıyla (`ca-certificates`, imajlarda ve `.deb` bağımlılığında var) çalışır; armv7 için `aws-lc-sys` hazır "universal" bağlamaları + cc derleyicisini kullanır (CMake/bindgen gerekmez). `use_rustls_tls()` → `tls_backend_rustls()`.
+  3. `axum` 0.7 → 0.8: `Option<ConnectInfo>` artık isteğe bağlı çıkarılamadığından giriş sınırlayıcısı adresi `Option<Extension<ConnectInfo>>` ile okur.
+  4. CI: kapsam raporu yüklemesi artefakt kotası dolunca işi düşürmez (`continue-on-error`).
+- **Test:** 314 Rust testi geçiyor; `cargo audit --deny warnings` · `clippy -D warnings` · `fmt --check` temiz. armv7/arm64 çapraz derlemesi yerelde denenmedi, CI'da doğrulanacak.
+- **Etkilenen:** `Cargo.toml`, `Cargo.lock`, `src/main.rs`, `src/converters/builtin/{safe_http,reddit_video}.rs`, `src/web/auth.rs`, `.github/workflows/quality.yml`
+
 ### [2026-10-16 18:48] Ege Çelikçi — Proje sahibinin kararları: CI cache geri açıldı, AI iç düşünce sızıntısı ve iki sekme çakışması giderildi
 - **Commit:** `0a956f1..4f264fa`
 - **Yapılan:**
