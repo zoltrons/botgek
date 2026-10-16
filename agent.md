@@ -44,6 +44,11 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-16 20:15] Ege Çelikçi — main push'u imaj yayınlar
+- **Commit:** `458d158`
+- **Yapılan:** `docker-publish` koşulu kaldırıldı: `main` push'u ve elle başlatma `latest`'i, sürüm etiketi `X.Y.Z` + `latest`'i yayınlar, PR yalnızca derler. Tek mimarili imajda her push'ta etiketsiz kalan eski sürümü `ghcr-cleanup.yml` günlük siler (`79e1dff` kota kaygısının yerine).
+- **Etkilenen:** `.github/workflows/build-release.yml`
+
 ### [2026-10-16 20:00] Ege Çelikçi — İmaj elle başlatmada da yayınlanır; derleme ve imaj yalnızca arm64
 - **Commit:** `d821b50..809763c`
 - **Sorun:** `main`'den elle başlatılan `build-release.yml` koşusunda (`workflow_dispatch`) imaj işi atlanıyordu: `docker-publish` yalnızca `v*` etiketlerinde çalışıyordu (`79e1dff` kuralı).
