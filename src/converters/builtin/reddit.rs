@@ -348,7 +348,7 @@ fn append_comment_context(post: &mut BuiltinPost, comment: &RedditPost) {
     else {
         return;
     };
-    let body = quote_lines(&truncate_chars(&super::unescape_html(body), MAX_COMMENT_CONTEXT_CHARS));
+    let body = quote_lines(&truncate_chars(body, MAX_COMMENT_CONTEXT_CHARS));
     if body.is_empty() {
         return;
     }
@@ -489,13 +489,13 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
         .title
         .clone()
         .or_else(|| post.title.clone())
-        .map(|title| super::unescape_html(title.trim()));
+        .map(|title| title.trim().to_string());
     built.text = content
         .selftext
         .as_deref()
         .map(str::trim)
         .filter(|text| !text.is_empty() && *text != "[removed]" && *text != "[deleted]")
-        .map(super::unescape_html)
+        .map(str::to_string)
         .unwrap_or_default();
     // Galeri görsellerinin kendi açıklamaları (görsel üstüne yazılan metin) karta girer:
     // galeri bileşeni yalnızca görsel taşıdığı için açıklamalar metne numaralı eklenir.
@@ -885,12 +885,14 @@ fn gallery_captions(post: &RedditPost) -> Vec<String> {
         .collect()
 }
 
-/// Açıklamayı karta uygun hâle getirir: HTML varlıkları çözülür, boş/boşluk girdi `""` olur.
+/// Açıklamayı karta uygun hâle getirir: boş/boşluk girdi `""` olur.
+///
+/// HTML varlıkları çözülmez: `raw_json=1` metni zaten çözülmüş verir, ikinci çözüm metindeki gerçek `&lt;` yazısını `<` yapardı.
 fn clean_caption(caption: Option<&str>) -> String {
     caption
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(super::unescape_html)
+        .map(str::to_string)
         .unwrap_or_default()
 }
 
@@ -1558,6 +1560,33 @@ mod tests {
     }
 
     #[test]
+    fn negative_comment_scores_do_not_break_the_listing() {
+        let json = r#"[
+            {"data":{"children":[{"data":{"id":"post1","title":"Gönderi","author":"op","score":-3,"permalink":"/r/test/comments/post1/baslik/"}}]}},
+            {"data":{"children":[{"data":{"id":"c1","author":"yorumcu","body":"eksi","score":-42,"ups":-42}}]}}
+        ]"#;
+        let post = listings_to_post(
+            serde_json::from_str(json).expect("listing geçerli olmalı"),
+            Some("c1"),
+        )
+        .expect("negatif skor yanıtı bozmamalı");
+        assert_eq!(post.stats.likes, 0, "negatif skor sıfıra kırpılır");
+        assert!(post.text.contains("> eksi"));
+    }
+
+    #[test]
+    fn comment_links_request_the_comment_as_listing_root() {
+        assert_eq!(comments_query(None), "raw_json=1&depth=2&limit=20");
+        let cid =
+            comment_id_from_url("https://www.reddit.com/r/rust/comments/1abc2x/bir_baslik/kx9z1q/");
+        assert_eq!(cid, Some("kx9z1q"));
+        assert_eq!(
+            comments_query(cid),
+            "raw_json=1&depth=2&limit=20&comment=kx9z1q&context=0"
+        );
+    }
+
+    #[test]
     fn multiline_comment_context_quotes_every_line_without_bare_markers() {
         let json = r#"[
             {"data":{"children":[{"data":{"id":"post1","title":"Gönderi","author":"op","permalink":"/r/test/comments/post1/baslik/"}}]}},
@@ -1574,18 +1603,16 @@ mod tests {
     }
 
     #[test]
-    fn negative_comment_scores_do_not_break_the_listing() {
-        let json = r#"[
-            {"data":{"children":[{"data":{"id":"post1","title":"Gönderi","author":"op","score":-3,"permalink":"/r/test/comments/post1/baslik/"}}]}},
-            {"data":{"children":[{"data":{"id":"c1","author":"yorumcu","body":"eksi","score":-42,"ups":-42}}]}}
-        ]"#;
-        let post = listings_to_post(
-            serde_json::from_str(json).expect("listing geçerli olmalı"),
-            Some("c1"),
-        )
-        .expect("negatif skor yanıtı bozmamalı");
-        assert_eq!(post.stats.likes, 0, "negatif skor sıfıra kırpılır");
-        assert!(post.text.contains("> eksi"));
+    fn raw_json_text_is_not_html_decoded_twice() {
+        // `raw_json=1` yanıtında `&amp;lt;` metindeki gerçek `&lt;` yazısıdır.
+        let post = parse(
+            r#"[{"data":{"children":[{"data":{
+                "id":"esc1", "title":"a &amp;lt; b", "selftext":"x &lt;tag&gt;", "author":"biri",
+                "permalink":"/r/test/comments/esc1/esc/"
+            }}]}}]"#,
+        );
+        assert_eq!(post.title.as_deref(), Some("a &amp;lt; b"));
+        assert_eq!(post.text, "x &lt;tag&gt;");
     }
 
     #[tokio::test]
@@ -1602,18 +1629,6 @@ mod tests {
         );
         invalidate_token("yeni").await;
         assert!(TOKEN.lock().await.is_none());
-    }
-
-    #[test]
-    fn comment_links_request_the_comment_as_listing_root() {
-        assert_eq!(comments_query(None), "raw_json=1&depth=2&limit=20");
-        let cid =
-            comment_id_from_url("https://www.reddit.com/r/rust/comments/1abc2x/bir_baslik/kx9z1q/");
-        assert_eq!(cid, Some("kx9z1q"));
-        assert_eq!(
-            comments_query(cid),
-            "raw_json=1&depth=2&limit=20&comment=kx9z1q&context=0"
-        );
     }
 
     #[test]
