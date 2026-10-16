@@ -187,12 +187,14 @@ pub async fn fetch(
     client_id: &str,
 ) -> Result<BuiltinPost, String> {
     let id = extract_post_id(client, &parsed.original_url).await?;
+    let comment_id = comment_id_from_url(&parsed.original_url);
+    let query = comments_query(comment_id);
 
     // 1) OAuth: Reddit'in kimliksiz istekleri engellediği (403) durumlarda da çalışır.
     if let Some(token) = oauth_token(client, client_id).await {
-        let url = format!("{OAUTH_API_BASE}/comments/{id}?raw_json=1&depth=2&limit=20");
+        let url = format!("{OAUTH_API_BASE}/comments/{id}?{query}");
         match get_json_with_bearer(client, &url, &token).await {
-            Ok(value) => match listings_to_post(value, comment_id_from_url(&parsed.original_url)) {
+            Ok(value) => match listings_to_post(value, comment_id) {
                 Ok(mut post) => {
                     fill_link_preview(&mut post).await;
                     return Ok(post);
@@ -204,11 +206,23 @@ pub async fn fetch(
     }
 
     // 2) Kimliksiz yol: engellenmemiş IP'lerde (ör. ev bağlantısı) çalışır.
-    let url = format!("https://www.reddit.com/comments/{id}.json?raw_json=1&depth=2&limit=20");
+    let url = format!("https://www.reddit.com/comments/{id}.json?{query}");
     let value = get_reddit_json(client, &url).await?;
-    let mut post = listings_to_post(value, comment_id_from_url(&parsed.original_url))?;
+    let mut post = listings_to_post(value, comment_id)?;
     fill_link_preview(&mut post).await;
     Ok(post)
+}
+
+/// Yorum listesi sorgusu; `raw_json=1` her zaman bulunur çünkü metin alanları bir daha HTML çözülmez.
+///
+/// Yorum bağlantısında `comment` + `context=0` istenir: varsayılan ilk 20 yorumda bulunmayan yorum da `listings[1]`'in kökü olarak gelir.
+fn comments_query(comment_id: Option<&str>) -> String {
+    match comment_id {
+        Some(comment_id) => {
+            format!("raw_json=1&depth=2&limit=20&comment={comment_id}&context=0")
+        }
+        None => "raw_json=1&depth=2&limit=20".to_string(),
+    }
 }
 
 /// JSON gönderi listesini karta çevirir (crosspost ise asıl içerik ebeveyn gönderdedir).
@@ -1531,6 +1545,18 @@ mod tests {
         .expect("negatif skor yanıtı bozmamalı");
         assert_eq!(post.stats.likes, 0, "negatif skor sıfıra kırpılır");
         assert!(post.text.contains("> eksi"));
+    }
+
+    #[test]
+    fn comment_links_request_the_comment_as_listing_root() {
+        assert_eq!(comments_query(None), "raw_json=1&depth=2&limit=20");
+        let cid =
+            comment_id_from_url("https://www.reddit.com/r/rust/comments/1abc2x/bir_baslik/kx9z1q/");
+        assert_eq!(cid, Some("kx9z1q"));
+        assert_eq!(
+            comments_query(cid),
+            "raw_json=1&depth=2&limit=20&comment=kx9z1q&context=0"
+        );
     }
 
     #[test]
