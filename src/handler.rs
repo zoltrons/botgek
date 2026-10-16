@@ -443,6 +443,11 @@ impl EventHandler for Handler {
         }
 
         // 2. Bayrak Emojisi ile Çeviri (🇹🇷, 🇬🇧, 🇩🇪 vb.)
+        // Bayrak olmayan reaksiyonlar ayar/rol/kanal sorgusuna hiç girmez (her reaksiyon
+        // olayında REST çağrısı yapılmasın).
+        let Some(lang_code) = translation::emoji_to_lang_code(&reaction.emoji) else {
+            return;
+        };
         let parent_id = discord_thread_parent(&ctx, reaction.guild_id, reaction.channel_id).await;
         let guild_settings = self.settings.read().await.get_message_settings(
             reaction.guild_id,
@@ -455,11 +460,14 @@ impl EventHandler for Handler {
 
         // Modüle özel rol kontrolü (translation)
         let role_filter = guild_settings.get_role_filter("translation");
-        if !crate::policy::allows(&ctx, reaction.guild_id, user_id, None, role_filter).await {
+        // Gateway, sunucu reaksiyonlarında üyeyi de taşır: rol bilgisi REST'e gitmeden okunur.
+        let known_roles = reaction.member.as_ref().map(|m| m.roles.as_slice());
+        if !crate::policy::allows(&ctx, reaction.guild_id, user_id, known_roles, role_filter).await
+        {
             return;
         }
 
-        if let Some(lang_code) = translation::emoji_to_lang_code(&reaction.emoji) {
+        {
             // Native embed mesajları çeviri durumunu kendi kartında taşır ve proxy linki
             // içermez; bayrak reaksiyonu yalnızca proxy mesajlarını günceller.
             if crate::converters::builtin::is_native_message(reaction.message_id).await {
