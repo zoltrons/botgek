@@ -35,7 +35,6 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 | ---- | ---- | -------------- | --- |
 | `eray` | insan | (repo sahibi) | Kurucu; el ile commit'ler |
 | `zoltrons` | bot | `18362677+zoltrons@users.noreply.github.com` | Cline/agent; GitHub `zoltrons` hesabıyla commit atar |
-| `Ege Çelikçi` | insan + Claude Code | `ege@celikci.me` | Claude Code oturumları bu kimlikle commit atar |
 
 > Yeni bir bot kimliği ortaya çıktığında bu tabloya satır ekle.
 
