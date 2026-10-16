@@ -15,6 +15,16 @@ services:
     restart: unless-stopped
     # Güvenlik: Container'ı root olmayan host standart kullanıcısı (1000:1000) ile çalıştırır:
     user: "1000:1000"
+    # Bot ayrıcalık gerektirmez: tüm yetenekler bırakılır, setuid ile yükselme kapatılır.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Uygulama yalnızca `/app/data` volume'una yazar (SQLite + WAL, settings.json, göç yedekleri); kök dosya sistemi salt okunur.
+    # `/tmp`, SQLite'ın büyük sorgularda kullanabileceği geçici dosyalar için bellekte tutulur.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     ports:
       # WebUI port eşlemesi (.env içindeki WEB_PORT veya varsayılan 3000)
       - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
