@@ -191,7 +191,11 @@ impl EventHandler for Handler {
         )
         .await;
 
-        // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü
+        // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü.
+        // Modül kapalıysa yanıtlanan mesaj için REST/kayıt sorgusu hiç yapılmaz.
+        if !current_settings.modules.ai_chat {
+            return;
+        }
         let referenced_info = if let Some(ref ref_msg) = msg.referenced_message {
             Some((
                 ref_msg.author.id,
