@@ -154,16 +154,13 @@ pub fn translated_from_note(language: Option<&str>) -> String {
     format!("{label}{} çevrildi", ablative_suffix(label))
 }
 
-/// Türkçe ünlü uyumuna göre ablatif eki (`-dan/-den/-don/-dön`, kesme işaretli).
+/// Türkçe ünlü uyumuna göre ablatif eki (`-dan/-den`, kesme işaretli).
 ///
-/// Dil adları `…ca`/`…ce` bittiği için pratikte `'dan`/`'den` olur; fonksiyon yine de son
-/// ünlüye göre karar verir, böylece tanınmayan ham kodlar da doğru eki alır.
+/// Ablatif iki biçimlidir: son ünlü kalınsa (`a ı o u`) `'dan`, inceyse (`e i ö ü`) `'den`.
+/// Dil adları `…ca`/`…ce` ile bittiği için pratikte bu iki ek yeter; son ünlüye bakılması tanınmayan ham kodların da doğru eki almasını sağlar.
 fn ablative_suffix(word: &str) -> &'static str {
     match word.chars().rev().find_map(turkish_vowel) {
-        Some('a') | Some('ı') => "'dan",
-        Some('e') | Some('i') => "'den",
-        Some('o') | Some('u') => "'don",
-        Some('ö') | Some('ü') => "'dön",
+        Some('a' | 'ı' | 'o' | 'u') => "'dan",
         _ => "'den",
     }
 }
@@ -242,6 +239,10 @@ mod tests {
         assert_eq!(translated_from_note(Some("sw")), "Svahili'den çevrildi");
         // Tanınmayan ama geçerli kod: ham kod korunur, ek ünlü uyumuna göre seçilir.
         assert_eq!(translated_from_note(Some("xyz")), "xyz'den çevrildi");
+        assert_eq!(ablative_suffix("Urdu"), "'dan");
+        assert_eq!(ablative_suffix("Kongo"), "'dan");
+        assert_eq!(ablative_suffix("Türkü"), "'den");
+        assert_eq!(ablative_suffix("Börö"), "'den");
         // Belirsiz/boş kaynak: yalnızca "Çevrildi".
         assert_eq!(translated_from_note(Some("und")), "Çevrildi");
         assert_eq!(translated_from_note(Some("   ")), "Çevrildi");
