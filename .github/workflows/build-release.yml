@@ -243,10 +243,8 @@ jobs:
   docker-publish:
     name: Publish Docker Image (arm64)
     needs: [test, build-and-package]
-    # Sürüm etiketleri ve **elle başlatma** (Actions → Run workflow) imaj yayınlar; PR'lar imajı yalnızca **derler** (push yok).
-    # Sıradan `main` push'unda imaj üretilmez: her push'un sürümü GHCR paket kotasını dolduruyordu (bkz. `ghcr-cleanup.yml`).
-    # Daldan elle başlatma `latest`'i o dalın derlemesine taşır; etikette `X.Y.Z` + `latest` yayınlanır.
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    # Her tetikleyici imaj üretir: `main` push'u ve elle başlatma `latest`'i taşır, sürüm etiketi `X.Y.Z` + `latest` yayınlar; PR'lar imajı yalnızca **derler** (push yok).
+    # Tek mimarili imaj küçüktür; her push'ta etiketsiz kalan eski `latest` sürümünü `ghcr-cleanup.yml` günlük olarak siler, paket kotası birikmez.
     runs-on: ubuntu-latest
     permissions:
       contents: read
