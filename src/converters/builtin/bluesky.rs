@@ -345,16 +345,12 @@ fn embed_to_parts(embed: &EmbedView) -> EmbedParts {
             parts.media.extend(nested.media);
             parts.external = nested.external;
         }
-        if let Some(record) = embed.record.as_deref() {
-            parts.quote = quote_from_post_view(record);
-        }
+        parts.quote = embed.record.as_ref().and_then(quote_from_embed_record);
         return parts;
     }
 
     if record_only {
-        if let Some(record) = embed.record.as_deref() {
-            parts.quote = quote_from_post_view(record);
-        }
+        parts.quote = embed.record.as_ref().and_then(quote_from_embed_record);
         return parts;
     }
 
@@ -403,11 +399,31 @@ fn aspect_dimensions(ratio: Option<&AspectRatio>) -> (Option<u32>, Option<u32>) 
     }
 }
 
+/// Embed'in `record` alanını alıntıya çevirir.
+///
+/// `record#view` içinde bu alan doğrudan `viewRecord`'dur; `recordWithMedia#view` içinde ise `{ "record": viewRecord }` biçiminde bir `record#view` sarmalayıcısıdır.
+fn quote_from_embed_record(value: &serde_json::Value) -> Option<BuiltinPost> {
+    let view_record = value
+        .get("record")
+        .filter(|inner| inner.is_object())
+        .unwrap_or(value);
+    let view = PostView::deserialize(view_record).ok()?;
+    quote_from_post_view(&view)
+}
+
 /// Alıntılanan gönderiyi (embed kaydı) gönderi modeline çevirir.
 fn quote_from_post_view(view: &PostView) -> Option<BuiltinPost> {
     let record = view.record.as_ref().or(view.value.as_ref())?;
     let text = record.text.clone().unwrap_or_default();
-    if text.trim().is_empty() {
+
+    // `viewRecord` medyayı `embeds` dizisinde, `postView` ise tekil `embed` alanında taşır.
+    let media: Vec<Media> = view
+        .embed
+        .iter()
+        .chain(view.embeds.iter().flatten())
+        .flat_map(|embed| embed_to_parts(embed).media)
+        .collect();
+    if text.trim().is_empty() && media.is_empty() {
         return None;
     }
 
@@ -437,10 +453,7 @@ fn quote_from_post_view(view: &PostView) -> Option<BuiltinPost> {
 
     let mut quote = BuiltinPost::new(Platform::Bluesky, web_url(view, &handle), author);
     quote.text = apply_link_facets(&text, record.facets.as_deref());
-
-    if let Some(embed) = view.embed.as_ref() {
-        quote.media = embed_to_parts(embed).media;
-    }
+    quote.media = media;
 
     Some(quote)
 }
@@ -475,6 +488,8 @@ struct PostView {
     /// Alıntı embed'lerinde içerik `value` alanında gelir (ham kayıt).
     value: Option<PostRecord>,
     embed: Option<EmbedView>,
+    /// Alıntı kayıtlarında (`viewRecord`) gömülü içerik dizi olarak gelir.
+    embeds: Option<Vec<EmbedView>>,
     labels: Option<Vec<Label>>,
     #[serde(rename = "replyCount")]
     reply_count: Option<u64>,
@@ -577,7 +592,8 @@ struct EmbedView {
     images: Option<Vec<EmbedImage>>,
     video: Option<EmbedVideo>,
     external: Option<EmbedExternal>,
-    record: Option<Box<PostView>>,
+    /// Embed türüne göre `viewRecord` ya da `record#view` sarmalayıcısı olduğundan ham tutulur.
+    record: Option<serde_json::Value>,
     media: Option<Box<EmbedView>>,
 }
 
@@ -875,5 +891,81 @@ mod tests {
             apply_link_facets(text, Some(&disjoint)),
             "[ab](<https://b.example>)cde[日日日](<https://a.example>)"
         );
+    }
+
+    #[test]
+    fn record_with_media_keeps_quote_and_quoted_images() {
+        let json = r#"{
+            "thread": { "post": {
+                "uri": "at://did:plc:abc/app.bsky.feed.post/main",
+                "author": { "handle": "ana.bsky.social" },
+                "record": { "text": "Fotoğraflı alıntı", "createdAt": "2024-05-06T12:34:56Z" },
+                "embed": {
+                    "$type": "app.bsky.embed.recordWithMedia#view",
+                    "media": {
+                        "$type": "app.bsky.embed.images#view",
+                        "images": [{ "thumb": "https://cdn.bsky.app/t/1.jpg", "fullsize": "https://cdn.bsky.app/img/1.jpg", "alt": "" }]
+                    },
+                    "record": {
+                        "$type": "app.bsky.embed.record#view",
+                        "record": {
+                            "$type": "app.bsky.embed.record#viewRecord",
+                            "uri": "at://did:plc:def/app.bsky.feed.post/alinti",
+                            "cid": "bafyreia",
+                            "author": { "did": "did:plc:def", "handle": "alintilanan.bsky.social", "displayName": "Alıntı" },
+                            "value": { "$type": "app.bsky.feed.post", "text": "alıntılanan metin", "createdAt": "2024-05-05T10:00:00Z" },
+                            "labels": [],
+                            "indexedAt": "2024-05-05T10:00:01Z",
+                            "embeds": [{
+                                "$type": "app.bsky.embed.images#view",
+                                "images": [{ "thumb": "https://cdn.bsky.app/t/q.jpg", "fullsize": "https://cdn.bsky.app/img/q.jpg", "alt": "" }]
+                            }]
+                        }
+                    }
+                }
+            }}}
+        "#;
+
+        let post = post_view_to_post(&thread_from(json), "ana.bsky.social");
+        assert_eq!(post.media.len(), 1);
+        assert_eq!(post.media[0].url, "https://cdn.bsky.app/img/1.jpg");
+        let quote = post.quote.expect("recordWithMedia alıntısı korunmalı");
+        assert_eq!(quote.text, "alıntılanan metin");
+        assert_eq!(quote.author.label(), "Alıntı (@alintilanan.bsky.social)");
+        assert_eq!(quote.media.len(), 1);
+        assert_eq!(quote.media[0].url, "https://cdn.bsky.app/img/q.jpg");
+    }
+
+    #[test]
+    fn quote_with_only_images_is_kept() {
+        let json = r#"{
+            "thread": { "post": {
+                "uri": "at://did:plc:abc/app.bsky.feed.post/main",
+                "author": { "handle": "ana.bsky.social" },
+                "record": { "text": "Bakın", "createdAt": "2024-05-06T12:34:56Z" },
+                "embed": {
+                    "$type": "app.bsky.embed.record#view",
+                    "record": {
+                        "$type": "app.bsky.embed.record#viewRecord",
+                        "uri": "at://did:plc:def/app.bsky.feed.post/foto",
+                        "author": { "handle": "foto.bsky.social" },
+                        "value": { "$type": "app.bsky.feed.post", "text": "", "createdAt": "2024-05-05T10:00:00Z" },
+                        "embeds": [{
+                            "$type": "app.bsky.embed.images#view",
+                            "images": [
+                                { "fullsize": "https://cdn.bsky.app/img/a.jpg" },
+                                { "fullsize": "https://cdn.bsky.app/img/b.jpg" }
+                            ]
+                        }]
+                    }
+                }
+            }}}
+        "#;
+
+        let post = post_view_to_post(&thread_from(json), "ana.bsky.social");
+        let quote = post.quote.expect("yalnızca görselli alıntı korunmalı");
+        assert!(quote.text.is_empty());
+        assert_eq!(quote.media.len(), 2);
+        assert_eq!(quote.media[1].url, "https://cdn.bsky.app/img/b.jpg");
     }
 }
