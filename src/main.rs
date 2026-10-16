@@ -153,8 +153,15 @@ async fn main() {
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .pool_max_idle_per_host(8)
         .tcp_nodelay(true)
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+        .build();
+    // Zaman aşımsız bir yedek istemci, takılan her isteği sonsuza dek bekletirdi.
+    let http_client = match http_client {
+        Ok(client) => client,
+        Err(err) => {
+            error!("HTTP istemcisi kurulamadı: {err}");
+            std::process::exit(1);
+        }
+    };
 
     // Işık hızı: ilk dönüşümde DNS + TLS el sıkışması beklemesin diye bağlantılar ısıtılır.
     prewarm_connections(&http_client);
