@@ -307,9 +307,29 @@ async fn metrics() -> impl IntoResponse {
     Json(crate::telemetry::snapshot())
 }
 
+/// Ayarların içerik revizyonu (`ETag` biçiminde, tırnaklı).
+///
+/// Panel kaydederken bunu `If-Match` ile geri gönderir; arada başka bir sekme kaydettiyse revizyon değişmiştir ve eski görünümden yapılan kayıt reddedilir.
+/// İçerikten türetildiği için bot yeniden başlasa da aynı ayarlar aynı revizyonu verir.
+fn settings_revision(settings: &AppSettings) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(settings)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    format!("\"{:016x}\"", hasher.finish())
+}
+
+fn revision_header(revision: &str) -> [(header::HeaderName, HeaderValue); 1] {
+    [(
+        header::ETAG,
+        HeaderValue::from_str(revision).unwrap_or(HeaderValue::from_static("\"\"")),
+    )]
+}
+
 async fn get_settings(State(state): State<WebState>) -> impl IntoResponse {
     let s = state.settings.read().await;
-    Json((*s).clone())
+    (revision_header(&settings_revision(&s)), Json((*s).clone()))
 }
 
 /// Panelin başlık bilgileri: sürüm, gerçek WebUI portu ve `.env` kaynaklı alan adları.
@@ -466,10 +486,23 @@ fn role_dto(role: &serenity::all::Role) -> DiscordRoleDto {
     }
 }
 
+/// Kayıt işleminin başarısızlık nedeni.
+#[derive(Debug)]
+enum SaveFailure {
+    /// `If-Match` güncel revizyonla uyuşmuyor: ayarlar bu görünüm yüklendikten sonra değişti.
+    Conflict,
+    Write(String),
+}
+
 async fn save_settings(
     State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
     Json(mut new_settings): Json<AppSettings>,
-) -> impl IntoResponse {
+) -> Response {
+    let expected_revision = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string());
     new_settings.role_filters.sanitize();
 
     // Sınır **karakter** sayısıdır: panel sayacı (`value.length`) ve kanal ayarlarının
@@ -517,30 +550,57 @@ async fn save_settings(
     // The owned task completes disk + memory publication even if the HTTP caller disconnects.
     let update = tokio::spawn(async move {
         let _writer = state.save_lock.lock_owned().await;
-        new_settings.schema_version = state.settings.read().await.schema_version;
+        {
+            // Revizyon kilidin altında karşılaştırılır: iki sekme aynı anda kaydetse de yalnızca ilki geçer.
+            let current = state.settings.read().await;
+            if expected_revision
+                .as_deref()
+                .is_some_and(|expected| expected != settings_revision(&current))
+            {
+                return Err(SaveFailure::Conflict);
+            }
+            new_settings.schema_version = current.schema_version;
+        }
         let persisted = new_settings.clone();
         let settings_path = state.settings_path.clone();
         tokio::task::spawn_blocking(move || persisted.save_to(&settings_path))
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| SaveFailure::Write(e.to_string()))?
+            .map_err(|e| SaveFailure::Write(e.to_string()))?;
         *state.settings.write().await = new_settings.clone();
-        Ok::<_, String>(new_settings)
+        Ok::<_, SaveFailure>(new_settings)
     })
     .await;
     match update {
         Ok(Ok(settings)) => (
             StatusCode::OK,
+            revision_header(&settings_revision(&settings)),
             Json(serde_json::json!({"success": true, "settings": settings})),
-        ),
-        result => {
-            error!("Settings transaction failed: {result:?}");
+        )
+            .into_response(),
+        Ok(Err(SaveFailure::Conflict)) => (
+            StatusCode::PRECONDITION_FAILED,
+            Json(serde_json::json!({
+                "success": false,
+                "conflict": true,
+                "error": "Ayarlar başka bir sekmede değiştirildi"
+            })),
+        )
+            .into_response(),
+        failure => {
+            match failure {
+                Ok(Err(SaveFailure::Write(reason))) => {
+                    error!("Settings transaction failed: {reason}")
+                }
+                other => error!("Settings transaction failed: {other:?}"),
+            }
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(
                     serde_json::json!({"success": false, "error": "Ayarlar kaydedilemedi; sunucu logunu kontrol edin"}),
                 ),
             )
+                .into_response()
         }
     }
 }
@@ -1264,6 +1324,63 @@ mod tests {
             published, persisted,
             "concurrent writes publish the same state to memory and disk"
         );
+
+        // İki sekme aynı revizyonu yükler; ilk kayıt geçer, eski görünümden yapılan ikinci kayıt 412 ile reddedilir ve ilkini ezmez.
+        let loaded = client
+            .get(format!("{base}/api/settings"))
+            .send()
+            .await
+            .unwrap();
+        let revision = loaded
+            .headers()
+            .get("etag")
+            .expect("ayarlar revizyon taşımalı")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let tab_a = client
+            .post(format!("{base}/api/settings"))
+            .header("x-botgek-request", "1")
+            .header("if-match", &revision)
+            .json(&serde_json::json!({"modules":{"reddit":false}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tab_a.status(), StatusCode::OK);
+        let new_revision = tab_a
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(new_revision, revision, "kayıt revizyonu değiştirmeli");
+        let tab_b = client
+            .post(format!("{base}/api/settings"))
+            .header("x-botgek-request", "1")
+            .header("if-match", &revision)
+            .json(&serde_json::json!({"modules":{"tiktok":false}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tab_b.status(), StatusCode::PRECONDITION_FAILED);
+        let current: serde_json::Value = client
+            .get(format!("{base}/api/settings"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            current["modules"]["reddit"], false,
+            "ilk sekmenin kaydı korunmalı"
+        );
+        assert_eq!(
+            current["modules"]["tiktok"], true,
+            "eski sekmenin kaydı uygulanmamalı"
+        );
+        let published = current;
         std::fs::remove_file(&settings_path).unwrap();
         std::fs::create_dir(&settings_path).unwrap();
         let failed = client

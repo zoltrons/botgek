@@ -168,6 +168,8 @@ let modalAction = null;
 let modalReturnFocus = null;
 /* "Kaydedildi" onayının geri alma zamanlayıcısı (yerinde onay, bildirim değil). */
 let saveConfirmTimer = null;
+/* Sunucudaki ayarların yüklendiği andaki revizyonu (`ETag`): kayıt `If-Match` ile gönderir, başka sekme arada kaydettiyse sunucu 412 döner. */
+let settingsRevision = null;
 let toastTimer = null;
 let editRevision = 0;
 
@@ -1491,6 +1493,7 @@ async function fetchSettings() {
     try {
         const res = await apiFetch('/api/settings');
         if (!res.ok) throw new Error('HTTP ' + res.status);
+        settingsRevision = res.headers.get('ETag');
         appSettings = normalizeFromServer(await res.json());
         savedSnapshot = JSON.stringify(buildPayload());
         dirty = false;
@@ -1607,11 +1610,14 @@ async function saveSettingsToServer() {
     try {
         const res = await apiFetch('/api/settings', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: settingsRevision
+                ? { 'Content-Type': 'application/json', 'If-Match': settingsRevision }
+                : { 'Content-Type': 'application/json' },
             body: submitted
         });
         if (res.ok) {
             const result = await res.json();
+            settingsRevision = (res.headers && res.headers.get('ETag')) || settingsRevision;
             const editedWhileSaving = submittedRevision !== null && editRevision !== submittedRevision;
             const unchanged = !editedWhileSaving && JSON.stringify(buildPayload()) === submitted;
             if (unchanged && result.settings) {
@@ -1626,6 +1632,17 @@ async function saveSettingsToServer() {
             updateDirtyUI();
             refreshScope();
             showToast('ayarlar kaydedildi · ' + new Date().toLocaleTimeString('tr-TR'));
+        } else if (res.status === 412) {
+            // Başka bir sekme arada kaydetti: bu sekmenin değişiklikleri onun üzerine yazılmadı, yerel düzenlemeler kirli kalır.
+            showToast('kaydedilmedi · ayarlar başka bir sekmede değiştirildi', true);
+            openModal({
+                kicker: 'çakışma',
+                title: 'Ayarlar başka bir sekmede değiştirildi',
+                body: 'Bu sekmedeki değişiklikler, diğer sekmede kaydedilenlerin üzerine yazılmadı. Güncel ayarları yükleyip değişikliklerini yeniden yapabilirsin; yüklemek bu sekmedeki kaydedilmemiş değişiklikleri atar.',
+                confirmLabel: 'Güncel ayarları yükle',
+                tone: 'primary',
+                onConfirm: reloadSettings
+            });
         } else {
             // Sunucu doğrulama/gövde hatasını döndüyse mesajı kullanıcıya göster
             // (ör. yazma izni yok: "Permission denied").

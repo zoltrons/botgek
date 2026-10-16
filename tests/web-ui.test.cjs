@@ -33,7 +33,7 @@ test('edits made while a save is pending remain dirty', async () => {
     let finish;
     let submitted;
     const context = {
-        state: { value: 1 }, dirty: true, savedSnapshot: '', editRevision: 1, saveInFlight: false,
+        state: { value: 1 }, dirty: true, savedSnapshot: '', editRevision: 1, saveInFlight: false, settingsRevision: null,
         commitDomToActiveConfig() {}, setSaving() {}, updateDirtyUI() {}, refreshScope() {}, showToast() {}, confirmSaveInPlace() {},
         apiFetch: (_url, request) => { submitted = request.body; return new Promise(resolve => { finish = resolve; }); }
     };
@@ -54,7 +54,7 @@ test('a second save while one is in flight is ignored', async () => {
     let finish;
     let requests = 0;
     const context = {
-        state: { value: 1 }, dirty: true, savedSnapshot: '', editRevision: 1, saveInFlight: false,
+        state: { value: 1 }, dirty: true, savedSnapshot: '', editRevision: 1, saveInFlight: false, settingsRevision: null,
         commitDomToActiveConfig() {}, setSaving() {}, updateDirtyUI() {}, refreshScope() {}, showToast() {}, confirmSaveInPlace() {},
         apiFetch: () => { requests += 1; return new Promise(resolve => { finish = resolve; }); }
     };
@@ -67,6 +67,26 @@ test('a second save while one is in flight is ignored', async () => {
     finish({ ok: true, json: async () => ({ success: true, settings: { value: 1 } }) });
     await first;
     assert.equal(context.saveInFlight, false);
+});
+
+test('a stale revision is sent with the save and a 412 keeps local edits dirty', async () => {
+    let request;
+    let modal = null;
+    const context = {
+        state: { value: 1 }, dirty: true, savedSnapshot: 'old', editRevision: 1, saveInFlight: false, settingsRevision: '"abc"',
+        commitDomToActiveConfig() {}, setSaving() {}, updateDirtyUI() {}, refreshScope() {}, showToast() {}, confirmSaveInPlace() {},
+        reloadSettings() {}, openModal(options) { modal = options; },
+        apiFetch: async (_url, options) => { request = options; return { ok: false, status: 412, json: async () => ({ conflict: true }) }; }
+    };
+    context.buildPayload = () => context.state;
+    vm.createContext(context);
+    vm.runInContext(functionSource('saveSettingsToServer'), context);
+    await context.saveSettingsToServer();
+    assert.equal(request.headers['If-Match'], '"abc"');
+    assert.equal(context.savedSnapshot, 'old');
+    assert.equal(context.dirty, true);
+    assert.ok(modal, 'conflict dialog should open');
+    assert.equal(modal.onConfirm, context.reloadSettings);
 });
 
 test('master token is neither persisted nor echoed by the login script', () => {
