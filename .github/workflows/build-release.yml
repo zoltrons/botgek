@@ -231,6 +231,8 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
           generate_release_notes: true
+          # `v1.0.0-rc.1` gibi tireli etiketler ön sürümdür.
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -293,12 +295,16 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # `latest` yalnızca aşağıdaki açık kuralla gelir; otomatik `latest` kapalı.
+          flavor: |
+            latest=false
           tags: |
             # Yalnızca sürüm etiketi + `latest`. `type=sha` **kaldırıldı**: her `main` push'u
             # yeni bir paket sürümü (`sha-xxxxxxx`) üretiyor, eskiler etiketsiz kalıp hiç
             # silinmediği için GHCR paket kotasını (özel paketlerde 500 MB) dolduruyordu.
             # Artık her yayın **tek** paket sürümü olur: etiketler `X.Y.Z` + `latest`.
-            type=raw,value=latest
+            # Ön sürüm etiketi (`v1.0.0-rc.1`, tire içerir) `latest`'i taşımaz.
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
             type=semver,pattern={{version}}
 
       - name: Build and push Multi-Arch Docker Image
