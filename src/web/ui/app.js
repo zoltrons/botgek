@@ -1506,13 +1506,16 @@ async function fetchSettings() {
 async function fetchDiscordRoles() {
     try {
         const res = await apiFetch('/api/discord/roles');
-        if (!res.ok) return;
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         rawGuildsList = await res.json();
         rolesLoaded = true;
         refreshScope();
         filterDiscordRolesForActiveServer();
     } catch (err) {
+        // "Yükleniyor…" sonsuza dek kalmasın: seçici boş liste mesajına geçer.
+        rolesLoaded = true;
         console.warn('roller okunamadı', err);
+        showToast('sunucu rolleri alınamadı · rol kimliği elle girilebilir', true);
     }
 }
 
