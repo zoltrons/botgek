@@ -51,115 +51,121 @@ pub struct ParsedPost {
 
 // ==================== TWITTER / X ====================
 static TWITTER_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:www\.)?(?:x|twitter)\.com/([^/\s]+)/status/(\d+)(?:/([a-zA-Z0-9_/]+))?/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:(?:(?:www|mobile)\.)?(?:x|twitter)\.com)/(?:i/web|([^/\s]+))/status/(\d+)(?:/([a-zA-Z0-9_/]+))?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Twitter regex deseni")
 });
 static TWITTER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:www\.)?(?:x|twitter)\.com/([^/\s]+)/status/(\d+)(?:/([a-zA-Z0-9_/]+))?/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(?:(?:www|mobile)\.)?(?:x|twitter)\.com)/(?:i/web|([^/\s]+))/status/(\d+)(?:/([a-zA-Z0-9_/]+))?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Twitter regex deseni")
 });
 
 // ==================== TIKTOK ====================
 // TikTok: @user/(video|photo)/id
 static TIKTOK_VIDEO_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:www\.)?tiktok\.com/@([^/\s]+)/(video|photo)/(\d+)/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:(?:www\.)?tiktok\.com)/@([^/\s]+)/(video|photo)/(\d+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler TikTok Video regex deseni")
 });
 static TIKTOK_VIDEO_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:www\.)?tiktok\.com/@([^/\s]+)/(video|photo)/(\d+)/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(?:www\.)?tiktok\.com)/@([^/\s]+)/(video|photo)/(\d+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz TikTok Video regex deseni")
 });
 
 // TikTok: /t/id (Kısa link)
 static TIKTOK_T_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:www\.)?tiktok\.com/t/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
-        .expect("Geçersiz Spoiler TikTok /t/ regex deseni")
+    Regex::new(
+        r"\|\|\s*https?://(?i:(?:www\.)?tiktok\.com)/t/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|",
+    )
+    .expect("Geçersiz Spoiler TikTok /t/ regex deseni")
 });
 static TIKTOK_T_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:www\.)?tiktok\.com/t/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(?:www\.)?tiktok\.com)/t/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz TikTok /t/ regex deseni")
 });
 
 // TikTok: vm.tiktok.com veya vt.tiktok.com
 static TIKTOK_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(vm|vt)\.tiktok\.com/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
-        .expect("Geçersiz Spoiler TikTok VM/VT regex deseni")
+    Regex::new(
+        r"\|\|\s*https?://(?i:(vm|vt)\.tiktok\.com)/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|",
+    )
+    .expect("Geçersiz Spoiler TikTok VM/VT regex deseni")
 });
 static TIKTOK_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(vm|vt)\.tiktok\.com/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(vm|vt)\.tiktok\.com)/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz TikTok VM/VT regex deseni")
 });
 
 // ==================== INSTAGRAM ====================
 static INSTAGRAM_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:www\.)?instagram\.com/(p|reel|reels|tv)/([a-zA-Z0-9_-]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:(?:www\.)?instagram\.com)/(?:[A-Za-z0-9_.]{1,30}/)?(p|reel|reels|tv)/([a-zA-Z0-9_-]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Instagram regex deseni")
 });
 static INSTAGRAM_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:www\.)?instagram\.com/(p|reel|reels|tv)/([a-zA-Z0-9_-]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(?:www\.)?instagram\.com)/(?:[A-Za-z0-9_.]{1,30}/)?(p|reel|reels|tv)/([a-zA-Z0-9_-]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Instagram regex deseni")
 });
 
 // ==================== REDDIT ====================
 // 1. Standart Gönderi: /r/subreddit/comments/id veya /(u|user)/username/comments/id
 static REDDIT_POST_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:(?:www|old|new|np)\.)?reddit\.com/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Post regex deseni")
 });
 static REDDIT_POST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:(?:www|old|new|np)\.)?reddit\.com/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Reddit Post regex deseni")
 });
 
 // 2. Mobil Paylaşım Linki: /r/subreddit/s/share_id
 static REDDIT_SHARE_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:(?:www|old|new|np)\.)?reddit\.com/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Share regex deseni")
 });
 static REDDIT_SHARE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:(?:www|old|new|np)\.)?reddit\.com/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/r/([^/\s]+)/s/([a-zA-Z0-9_-]+)/?(?:\?[^\s]*)?")
         .expect("Geçersiz Reddit Share regex deseni")
 });
 
 // 3. Kısa Linkler: redd.it/id veya /comments/id
 static REDDIT_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*(?:https?://redd\.it/([a-zA-Z0-9]+)|https?://(?:(?:www|old|new|np)\.)?reddit\.com/comments/([a-zA-Z0-9]+))(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*(?:https?://(?i:redd\.it)/([a-zA-Z0-9]+)|https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/comments/([a-zA-Z0-9]+))(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Short regex deseni")
 });
 static REDDIT_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:https?://redd\.it/([a-zA-Z0-9]+)|https?://(?:(?:www|old|new|np)\.)?reddit\.com/comments/([a-zA-Z0-9]+))(?:/[^\s]*)?/?(?:\?[^\s]*)?")
+    Regex::new(r"(?:https?://(?i:redd\.it)/([a-zA-Z0-9]+)|https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/comments/([a-zA-Z0-9]+))(?:/[^\s]*)?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Reddit Short regex deseni")
 });
 
 // ==================== BLUESKY ====================
 static BLUESKY_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?:www\.)?bsky\.app/profile/([^/\s]+)/post/([a-zA-Z0-9]+)/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:(?:www\.)?bsky\.app)/profile/([^/\s]+)/post/([a-zA-Z0-9]+)/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Bluesky regex deseni")
 });
 static BLUESKY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:www\.)?bsky\.app/profile/([^/\s]+)/post/([a-zA-Z0-9]+)/?(?:\?[^\s]*)?")
-        .expect("Geçersiz Bluesky regex deseni")
+    Regex::new(
+        r"https?://(?i:(?:www\.)?bsky\.app)/profile/([^/\s]+)/post/([a-zA-Z0-9]+)/?(?:\?[^\s]*)?",
+    )
+    .expect("Geçersiz Bluesky regex deseni")
 });
 
 // ==================== SPOTIFY ====================
 // open.spotify.com/(intl-xx/)?(track|album|playlist|artist|episode|show)/id
 // Spotify kimlikleri base62 (22 karakter) ama geriye dönük uyum için 16-40 aralığı kabul edilir.
 static SPOTIFY_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://open\.spotify\.com/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})[^\s|]*\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:open\.spotify\.com)/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})[^\s|]*\s*\|\|")
         .expect("Geçersiz Spoiler Spotify regex deseni")
 });
 static SPOTIFY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://open\.spotify\.com/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:open\.spotify\.com)/(?:intl-[a-zA-Z-]+/)?(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]{16,40})/?(?:\?[^\s]*)?")
         .expect("Geçersiz Spotify regex deseni")
 });
 
 // spotify.link/token (Branch kısa linki) — native motorda hedefe çözülür.
 static SPOTIFY_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://spotify\.link/([A-Za-z0-9]+)[^\s|]*\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:spotify\.link)/([A-Za-z0-9]+)[^\s|]*\s*\|\|")
         .expect("Geçersiz Spoiler Spotify kısa link regex deseni")
 });
 static SPOTIFY_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://spotify\.link/([A-Za-z0-9]+)")
+    Regex::new(r"https?://(?i:spotify\.link)/([A-Za-z0-9]+)")
         .expect("Geçersiz Spotify kısa link regex deseni")
 });
 
@@ -360,7 +366,7 @@ fn extract_user_comment(raw_content: &str, regex: &Regex) -> Option<String> {
 /// link orijinal linkin kendisidir.
 fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
     if let Some(caps) = TWITTER_SPOILER_REGEX.captures(raw_content) {
-        let username = caps.get(1)?.as_str();
+        let username = caps.get(1).map_or("i", |m| m.as_str());
         let tweet_id = caps.get(2)?.as_str();
         let extra = caps
             .get(3)
@@ -380,7 +386,7 @@ fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
     }
 
     if let Some(caps) = TWITTER_REGEX.captures(raw_content) {
-        let username = caps.get(1)?.as_str();
+        let username = caps.get(1).map_or("i", |m| m.as_str());
         let tweet_id = caps.get(2)?.as_str();
         let extra = caps
             .get(3)
@@ -453,7 +459,7 @@ fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
 
     // 3. vm.tiktok.com veya vt.tiktok.com
     if let Some(caps) = TIKTOK_SHORT_SPOILER_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str();
+        let sub = caps.get(1)?.as_str().to_ascii_lowercase();
         let id = caps.get(2)?.as_str();
         return Some(ParsedPost {
             platform: Platform::TikTok,
@@ -464,7 +470,7 @@ fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
         });
     }
     if let Some(caps) = TIKTOK_SHORT_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str();
+        let sub = caps.get(1)?.as_str().to_ascii_lowercase();
         let id = caps.get(2)?.as_str();
         return Some(ParsedPost {
             platform: Platform::TikTok,
@@ -1155,6 +1161,79 @@ mod tests {
             "https://artist.tumblr.com/",
             "https://www.facebook.com/example",
             "https://www.youtube.com/channel/abc",
+        ] {
+            assert!(parse_message(input, &cfg).is_none(), "{input}");
+        }
+    }
+
+    #[test]
+    fn mobile_web_and_uppercase_host_forms_are_canonicalized() {
+        let cfg = dummy_config();
+        let cases = [
+            (
+                "https://mobile.twitter.com/jack/status/20",
+                Platform::Twitter,
+                "https://x.com/jack/status/20",
+            ),
+            (
+                "https://x.com/i/web/status/1234567890",
+                Platform::Twitter,
+                "https://x.com/i/status/1234567890",
+            ),
+            (
+                "https://X.COM/Jack/status/20?s=1",
+                Platform::Twitter,
+                "https://x.com/Jack/status/20",
+            ),
+            (
+                "https://www.instagram.com/kullanici.adi/p/C3abcXYZ123/?igsh=x",
+                Platform::Instagram,
+                "https://www.instagram.com/p/C3abcXYZ123",
+            ),
+            (
+                "https://www.instagram.com/kullanici_1/reel/C3abcXYZ123/",
+                Platform::Instagram,
+                "https://www.instagram.com/reel/C3abcXYZ123",
+            ),
+            (
+                "https://WWW.Instagram.com/p/C3abc",
+                Platform::Instagram,
+                "https://www.instagram.com/p/C3abc",
+            ),
+            (
+                "https://m.reddit.com/r/rust/comments/abc123/baslik/",
+                Platform::Reddit,
+                "https://www.reddit.com/r/rust/comments/abc123",
+            ),
+            (
+                "https://sh.reddit.com/r/rust/comments/abc123",
+                Platform::Reddit,
+                "https://www.reddit.com/r/rust/comments/abc123",
+            ),
+            (
+                "https://Reddit.com/r/rust/s/AbC123",
+                Platform::Reddit,
+                "https://www.reddit.com/r/rust/s/AbC123",
+            ),
+        ];
+        for (input, platform, url) in cases {
+            let parsed = parse_message(input, &cfg).unwrap_or_else(|| panic!("{input}"));
+            assert_eq!(parsed.platform, platform, "{input}");
+            assert_eq!(parsed.original_url, url, "{input}");
+            assert_eq!(parsed.fixed_url, url, "{input}");
+        }
+
+        let tiktok = parse_message("https://VM.TikTok.com/ZM8abc123/", &cfg).unwrap();
+        assert_eq!(tiktok.original_url, "https://vm.tiktok.com/ZM8abc123");
+        assert_eq!(tiktok.fixed_url, "https://vm.tnktok.com/ZM8abc123");
+    }
+
+    #[test]
+    fn instagram_profile_pages_are_still_ignored() {
+        let cfg = dummy_config();
+        for input in [
+            "https://www.instagram.com/kullanici/",
+            "https://www.instagram.com/kullanici/reels/",
         ] {
             assert!(parse_message(input, &cfg).is_none(), "{input}");
         }
