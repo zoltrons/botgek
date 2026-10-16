@@ -8,8 +8,8 @@
 //! ```text
 //! kullanıcının yazdığı metin                                     ← kartın DIŞINDA (üstünde)
 //! ┌────────────────────────────────────────────────────────────┐
-//! │ -# Ad <:verified:...> ([@kullanici](https://x.com/kullanici))  ← soluk üst satır
-//! │    (Reddit: `r/alt • flair • Posted by u/kullanici`)           ← profil resmi yok
+//! │ **Ad <:verified:...> ([@kullanici](https://x.com/kullanici))**   ← kalın yazar satırı
+//! │    (Reddit: `**r/alt • flair • Posted by [u/kullanici](profil)**`)   ← profil resmi yok
 //! │ gönderi metni
 //! │ ────────────────────── (varsa) ince ayraç çizgisi ─────────
 //! │ > <:qutoe:...> [Quote](link) from **Ad** ([**@kullanici**](profil))
@@ -423,12 +423,12 @@ fn text(content: impl Into<String>) -> Value {
     })
 }
 
-/// Kartın **üst satırı**.
+/// Kartın **üst satırı** (yazar/kimlik satırı).
 ///
-/// Discord'un yerleşik Reddit/X önizlemelerinde bu satır **küçük ve soluktur** (`-# `):
-/// X'te `Ad (@kullanıcı)`, Reddit'te topluluk + gönderen bilgisi
-/// (`r/alt • flair • Posted by [u/x](profil)`) taşır. Aynı düzen **tüm platformlarda**
-/// uygulanır.
+/// Kullanıcı adı **kalın ve büyük** gösterilir (önceki tasarım): X'te
+/// `**Ad <:verified:> ([@kullanıcı](profil))**`, Reddit'te
+/// `**r/alt • flair • Posted by [u/kullanıcı](profil)**`. Dolgu/alt bilgi satırları
+/// (`-# `) yalnızca metrik, çeviri notu ve link için kullanılır.
 ///
 /// Profil resmi (avatar) hiçbir platformda gösterilmez: Discord kartın sağ üstünde ayrı bir
 /// görsel yuvası açar ve bu alan istenmiyor.
@@ -441,7 +441,7 @@ fn header_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
     if body.trim().is_empty() {
         return String::new();
     }
-    format!("-# {body}")
+    format!("**{body}**")
 }
 
 /// Reddit üst satırının gövdesi:
@@ -716,17 +716,8 @@ fn meta_line(card: &V2Card<'_>) -> String {
     let post = card.post;
     let mut parts: Vec<String> = Vec::new();
 
-    if let Some(translation) = &post.translation {
-        // Türkçe not: `🌐 Japonca'dan çevrildi` (kaynak dili bilinmiyorsa `🌐 Çevrildi`).
-        // Emoji bizim özel çeviri emojimizdir (ayarlardan özelleştirilebilir).
-        parts.push(format!(
-            "{} {}",
-            card.emojis.translation(),
-            super::translate::translated_from_note(translation.source.as_deref())
-        ));
-    }
-
-    // Platform göstergesi: X, Instagram, Reddit ve Bluesky için özel emoji, diğerlerinde adı yazılır.
+    // Platform göstergesi **her zaman en solda**: X, Instagram, Reddit ve Bluesky için özel
+    // emoji, diğerlerinde platform adı yazılır.
     parts.push(match post.platform {
         Platform::Twitter => card
             .emojis
@@ -767,6 +758,14 @@ fn meta_line(card: &V2Card<'_>) -> String {
         && let Some(created_at) = post.created_at
     {
         parts.push(format!("<t:{created_at}:R>"));
+    }
+
+    // Çeviri notu **saatin hemen yanında** durur ve saat gibi soluk kalır; başında emoji
+    // **yoktur** (not: `Japonca'dan çevrildi`).
+    if let Some(translation) = &post.translation {
+        parts.push(super::translate::translated_from_note(
+            translation.source.as_deref(),
+        ));
     }
 
     // Gönderi linki kartın içinde durur.
@@ -1060,7 +1059,7 @@ mod tests {
         // Discord'un yerleşik X önizlemesi gibi üst satır **soluk/küçük** (`-# `) olur.
         assert_eq!(
             texts(&payload)[0],
-            "-# Culture Base <:verified:1553709836859084841> ([@Culture3ase](https://x.com/Culture3ase))"
+            "**Culture Base <:verified:1553709836859084841> ([@Culture3ase](https://x.com/Culture3ase))**"
         );
         // Avatar/görsel bileşeni (Section/Thumbnail) kullanılmaz
         assert!(
@@ -1104,7 +1103,7 @@ mod tests {
         let options = options();
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
-        assert_eq!(texts(&payload)[0], "-# Culture Base (@Culture3ase)");
+        assert_eq!(texts(&payload)[0], "**Culture Base (@Culture3ase)**");
     }
 
     #[test]
@@ -1365,7 +1364,7 @@ mod tests {
         // Üst satır: `r/alt • flair • Posted by u/kullanici` (yerleşik Reddit önizlemesi düzeni).
         assert_eq!(
             texts(&payload)[0],
-            "-# r/rust • 128 yorum • Posted by u/rustfan"
+            "**r/rust • 128 yorum • Posted by u/rustfan**"
         );
         // Metrikler: oy önce, yorum sonra; aşağı oy gösterilmez (yerleşik düzen).
         assert!(texts(&payload).iter().any(|line| line
@@ -1415,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn every_platform_uses_the_muted_header_line() {
+    fn every_platform_uses_the_bold_header_line() {
         let options = options();
         let emojis = emojis();
         for platform in [
@@ -1438,15 +1437,20 @@ mod tests {
             );
             let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
             let header = texts(&payload).first().cloned().unwrap_or_default();
+            // Yazar/kullanıcı adı satırı **kalın** olur (dolgu satırları `-# ` ile ayrı kalır).
             assert!(
-                header.starts_with("-# ") && !header.starts_with("**"),
-                "{platform:?} üst satırı soluk/küçük olmalı: {header}"
+                header.starts_with("**") && header.ends_with("**"),
+                "{platform:?} üst satırı kalın olmalı: {header}"
+            );
+            assert!(
+                !header.starts_with("-# "),
+                "{platform:?} üst satırı soluk olmamalı: {header}"
             );
         }
     }
 
     #[test]
-    fn reddit_header_links_the_profile_and_stays_muted() {
+    fn reddit_header_links_the_profile_and_stays_bold() {
         let mut post = BuiltinPost::new(
             Platform::Reddit,
             "https://www.reddit.com/r/rust/comments/abc/x/",
@@ -1461,7 +1465,7 @@ mod tests {
 
         assert_eq!(
             texts(&payload)[0],
-            "-# r/rust • Posted by [u/rustfan](https://www.reddit.com/user/rustfan)"
+            "**r/rust • Posted by [u/rustfan](https://www.reddit.com/user/rustfan)**"
         );
     }
 
@@ -1540,22 +1544,28 @@ mod tests {
     }
 
     #[test]
-    fn translation_marker_is_shown_before_the_platform() {
+    fn translation_note_follows_the_timestamp_without_emoji() {
         let mut post = sample_post();
         post.translation = Some(Translation {
             source: Some("pt".to_string()),
         });
+        post.created_at = Some(1_714_998_896);
 
         let options = options();
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let meta = texts(&payload).last().unwrap().to_string();
 
+        // Platform emojisi **en solda**, çeviri notu **emojisiz** ve saatin hemen yanında.
         assert!(
             meta.starts_with(
-                "-# <:translation:1476614397249061056> Portekizce'den çevrildi • <:twitter:1476642012072920355> • "
+                "-# <:twitter:1476642012072920355> • <t:1714998896:R> • Portekizce'den çevrildi"
             ),
-            "çeviri işareti: {meta}"
+            "çeviri notu saatin yanında ve emojisiz olmalı: {meta}"
+        );
+        assert!(
+            !meta.contains("<:translation:"),
+            "çeviri emojisi artık kullanılmamalı: {meta}"
         );
     }
 
@@ -1580,7 +1590,7 @@ mod tests {
 
         assert_eq!(
             lines[0],
-            "-# Culture Base ☑ ([@Culture3ase](https://x.com/Culture3ase))"
+            "**Culture Base ☑ ([@Culture3ase](https://x.com/Culture3ase))**"
         );
         assert!(
             lines.iter().any(|t| t.contains("💬 6")),
@@ -1595,7 +1605,7 @@ mod tests {
         // Emoji kapalıysa yalnızca istatistik alanları ile çeviri notu Unicode'a düşer
         post.translation = Some(Translation { source: None });
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
-        assert!(texts(&payload).last().unwrap().contains("🌐 Çevrildi"));
+        assert!(texts(&payload).last().unwrap().contains("Çevrildi"));
     }
 
     #[test]

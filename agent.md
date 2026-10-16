@@ -44,6 +44,16 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-15 14:40] zoltrons — Kart: kullanıcı adı yeniden kalın, çeviri notu emojisiz ve saatin yanında
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. **Üst satır (yazar/kimlik) yeniden kalın/büyük:** X'te `**Ad <:verified:> ([@kullanıcı](profil))**`, Reddit'te `**r/alt • flair • Posted by [u/kullanıcı](profil)**`. Dolgu/alt satırlar (`-# `) yalnızca metrik, çeviri notu ve link için kullanılır.
+  2. **Alt bilgi düzeni:** **platform emojisi her zaman en solda**; çeviri notu **emojisiz** (`Japonca'dan çevrildi`) ve **saatin hemen yanında** (`<t:…:R> • Japonca'dan çevrildi`).
+  3. Kullanılmayan `EmojiSettings::translation()` erişimcisi kaldırıldı; `translation` ayar alanı geriye dönük uyumluluk için şemada kaldı (WebUI'daki alan artık etkisiz — kaldırılması ayrı iş).
+- **Test:** **314 Rust** + **13 panel** testi geçiyor; `cargo check` · `clippy -D warnings` · `fmt --check` temiz.
+- **Etkilenen:** `src/converters/builtin/v2.rs`, `src/settings.rs`
+
+
 ### [2026-10-16 20:15] Ege Çelikçi — main push'u imaj yayınlar
 - **Commit:** `458d158`
 - **Yapılan:** `docker-publish` koşulu kaldırıldı: `main` push'u ve elle başlatma `latest`'i, sürüm etiketi `X.Y.Z` + `latest`'i yayınlar, PR yalnızca derler. Tek mimarili imajda her push'ta etiketsiz kalan eski sürümü `ghcr-cleanup.yml` günlük siler (`79e1dff` kota kaygısının yerine).

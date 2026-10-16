@@ -342,15 +342,6 @@ impl EmojiSettings {
         resolve_emoji(&self.views, DEFAULT_VIEWS_EMOJI, "👁️", VIEWS_NAMES)
     }
 
-    pub fn translation(&self) -> &str {
-        resolve_emoji(
-            &self.translation,
-            DEFAULT_TRANSLATION_EMOJI,
-            "🌐",
-            TRANSLATION_NAMES,
-        )
-    }
-
     /// X/Twitter göstergesi; kullanılabilir bir emoji yoksa `None` (yerine platform adı yazılır).
     pub fn twitter(&self) -> Option<&str> {
         let resolved = resolve_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, "", TWITTER_NAMES);
@@ -1865,7 +1856,6 @@ mod tests {
         assert_eq!(empty.reposts(), "🔁");
         assert_eq!(empty.likes(), "❤️");
         assert_eq!(empty.views(), "👁️");
-        assert_eq!(empty.translation(), "🌐");
         assert_eq!(empty.twitter(), None);
         assert_eq!(empty.instagram(), None);
         assert_eq!(empty.reddit(), None);
