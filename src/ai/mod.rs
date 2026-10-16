@@ -108,8 +108,6 @@ struct ChatChoice {
 struct ChatResponseMessage {
     #[serde(default)]
     content: Option<serde_json::Value>,
-    #[serde(default)]
-    reasoning: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -195,12 +193,7 @@ fn choice_text(choice: &ChatChoice) -> Option<String> {
         tracing::warn!("OpenRouter choice-level hata: {}", err.message);
         return None;
     }
-    choice
-        .message
-        .content
-        .as_ref()
-        .and_then(json_to_text)
-        .or_else(|| choice.message.reasoning.as_ref().and_then(json_to_text))
+    choice.message.content.as_ref().and_then(json_to_text)
 }
 
 fn extract_reply(body_text: &str) -> Result<String, String> {
@@ -411,8 +404,9 @@ mod tests {
         );
     }
 
+    /// Modelin iç düşüncesi (`reasoning`) kanala yazılmaz: içerik boşsa yanıt boş sayılır ve yedek modele geçilir.
     #[test]
-    fn test_null_content_falls_back_to_reasoning() {
+    fn null_content_never_leaks_reasoning() {
         let json_str = r#"{
             "choices": [
                 {
@@ -424,7 +418,7 @@ mod tests {
             ]
         }"#;
 
-        assert_eq!(extract_reply(json_str).unwrap(), "Kısa cevap: merhaba.");
+        assert!(extract_reply(json_str).is_err());
     }
 
     #[test]
