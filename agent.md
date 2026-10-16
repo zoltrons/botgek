@@ -44,6 +44,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-16 20:00] Ege Çelikçi — İmaj elle başlatmada da yayınlanır; derleme ve imaj yalnızca arm64
+- **Commit:** `d821b50..809763c`
+- **Sorun:** `main`'den elle başlatılan `build-release.yml` koşusunda (`workflow_dispatch`) imaj işi atlanıyordu: `docker-publish` yalnızca `v*` etiketlerinde çalışıyordu (`79e1dff` kuralı).
+- **Yapılan:**
+  1. `docker-publish` artık elle başlatmada da yayınlar; daldan başlatmada `latest` taşınır, etikette `X.Y.Z` + `latest`. Sıradan `main` push'u hâlâ imaj üretmez (GHCR kotası).
+  2. Derleme matrisi yalnızca `aarch64-unknown-linux-gnu`; armhf ve x86_64 kaldırıldı (kullanan yoktu). İmaj tek platform (`linux/arm64`); imaj içi `apt-get` için `setup-qemu-action` eklendi. Yalnızca x86_64'te koşabilen ikili sürüm doğrulaması kaldırıldı (test işi sürümü zaten ikiliden okur).
+- **Etkilenen:** `.github/workflows/{build-release,release,ci-storage}.yml`, `Dockerfile.prebuilt`, `README.md`
+
 ### [2026-10-16 19:20] Ege Çelikçi — Crate güncellemeleri: rustls güvenlik açıkları kapandı, reqwest 0.13 ve axum 0.8
 - **Commit:** `5155401..0004f1c`
 - **Yapılan:**
