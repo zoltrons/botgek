@@ -361,6 +361,10 @@ async fn fetch_fx_fast(
             warn!("FxTwitter isteği başarısız ({id}): {err}");
             if source == TwitterSource::Fxtwitter {
                 // Dil ekli uç sorun çıkarmış olabilir: bir kez dil olmadan denenir.
+                // Dil yoksa ilk istek zaten dilsizdi; aynı isteği tekrarlamak yalnızca gecikme ekler.
+                if language.is_none() {
+                    return Err(err);
+                }
                 return from_fxtwitter(
                     client,
                     original_url,
