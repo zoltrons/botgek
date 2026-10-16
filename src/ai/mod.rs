@@ -325,7 +325,10 @@ pub async fn query_openrouter(
             status,
             preview(&body_text)
         );
-        if effective_model == AUTO_FALLBACK_MODEL {
+        // İstek/kimlik/kredi hataları (400/401/402/403) yedek modelde de aynen tekrar eder.
+        let retryable =
+            status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error();
+        if effective_model == AUTO_FALLBACK_MODEL || !retryable {
             return Err(format!(
                 "OpenRouter API hatası ({}): {}",
                 status,
