@@ -336,10 +336,11 @@ pub fn format_count(value: u64) -> String {
         format!("{text}{suffix}")
     }
 
+    // Üst sınırlar yuvarlamayı hesaba katar: 999_950 "1000K" değil "1M" yazılır.
     match value {
         0..=999 => value.to_string(),
-        1_000..=999_999 => scaled(value, 1_000.0, "K"),
-        1_000_000..=999_999_999 => scaled(value, 1_000_000.0, "M"),
+        1_000..=999_949 => scaled(value, 1_000.0, "K"),
+        999_950..=999_949_999 => scaled(value, 1_000_000.0, "M"),
         _ => scaled(value, 1_000_000_000.0, "B"),
     }
 }
