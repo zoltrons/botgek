@@ -203,7 +203,7 @@ fn validate_page(raw: &str, platform: Platform) -> Result<Url, String> {
     Ok(url)
 }
 
-fn link_url(url: &Url) -> String {
+pub(super) fn link_url(url: &Url) -> String {
     // The renderer places URLs in Markdown without further escaping.
     let mut result = String::new();
     for ch in url.as_str().chars() {
@@ -226,7 +226,7 @@ fn media_url(raw: &str, video: bool) -> Option<String> {
     Some(link_url(&url))
 }
 
-fn plain_text(raw: &str) -> String {
+pub(super) fn plain_text(raw: &str) -> String {
     raw.chars()
         .filter(|ch| !ch.is_control() || *ch == '\n')
         .take(2000)
@@ -246,7 +246,7 @@ fn plain_text(raw: &str) -> String {
 /// (`world_record_egg` → `world\_record\_egg`, bkz. `render::escape_markdown` ve 2026-10-09
 /// kararı). Aynı nedenle satır ortasındaki `#` de kaçırılmaz; ancak satır başındaki (en fazla
 /// üç boşluk girintili) `#` kartta başlık oluşturabildiği için kaçırılır.
-fn escape_preview_markdown(raw: &str) -> String {
+pub(super) fn escape_preview_markdown(raw: &str) -> String {
     let escaped = super::render::escape_markdown(&plain_text(raw));
     let mut out = String::with_capacity(escaped.len());
     for (index, line) in escaped.split('\n').enumerate() {

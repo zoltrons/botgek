@@ -132,26 +132,50 @@ async fn attach_link_preview(_client: &reqwest::Client, post: &mut BuiltinPost) 
             }
         };
 
-    let graph = super::opengraph::parse_open_graph(&html);
-    // The fetched, validated URL is canonical here; untrusted og:url cannot replace it.
-    let preview = LinkPreview {
-        site_name: meta_value(graph.site_name, 80).or_else(|| host_label(&target)),
-        title: meta_value(graph.title, LINK_PREVIEW_TITLE_LIMIT),
-        description: meta_value(graph.description, LINK_PREVIEW_DESCRIPTION_LIMIT),
-        image: meta_value(graph.image, 500),
-        url: target,
-    };
-
-    if preview.is_empty() {
-        debug!("Link önizlemesinde gösterilecek veri yok: {}", preview.url);
+    let Some(preview) = build_link_preview(&target, &html) else {
+        debug!("Link önizlemesinde gösterilecek veri yok: {target}");
         return;
-    }
+    };
     debug!(
         "Link kartı eklendi: {} ({})",
         preview.url,
         preview.site_name.as_deref().unwrap_or("-")
     );
     post.link_preview = Some(preview);
+}
+
+/// Çekilen sayfanın OG etiketlerinden karta konacak link önizlemesini üretir.
+///
+/// Değerler üçüncü taraf sayfadan geldiği için Markdown'a güvenli hale getirilir: başlık V2 kartında zaten kaçırıldığından yalnızca düz metne indirgenir, açıklama ve site adı ise ham basıldığından burada kaçırılır.
+/// Bağlantı hedefi `[etiket](url)` içinde durduğundan `)`/`[`/`]` yüzde kodlanır; aksi halde sayfa sahte bir maskeli bağlantı enjekte edebilir.
+fn build_link_preview(target: &str, html: &str) -> Option<LinkPreview> {
+    let page = url::Url::parse(target).ok()?;
+    let graph = super::opengraph::parse_open_graph(html);
+    // The fetched, validated URL is canonical here; untrusted og:url cannot replace it.
+    let preview = LinkPreview {
+        site_name: meta_value(graph.site_name, 80)
+            .or_else(|| host_label(target))
+            .map(|site| super::preview::escape_preview_markdown(&site)),
+        title: meta_value(graph.title, LINK_PREVIEW_TITLE_LIMIT)
+            .map(|title| super::preview::plain_text(&title)),
+        description: meta_value(graph.description, LINK_PREVIEW_DESCRIPTION_LIMIT)
+            .map(|description| super::preview::escape_preview_markdown(&description)),
+        image: graph.image.and_then(|raw| link_preview_image(&page, &raw)),
+        url: super::preview::link_url(&page),
+    };
+    (!preview.is_empty()).then_some(preview)
+}
+
+/// `og:image` değerini sayfa adresine göre mutlak bir http(s) adresine çözer.
+///
+/// Göreli (`/x.png`, `//cdn/x.png`) ya da kırpılmış bir adres Discord'un tüm kartı 400 ile reddetmesine yol açar; bu yüzden adresler asla kısaltılmaz, sınırı aşan görsel bırakılır.
+fn link_preview_image(page: &url::Url, raw: &str) -> Option<String> {
+    const MAX_IMAGE_URL_LEN: usize = 2048;
+    let image = page.join(raw.trim()).ok()?;
+    (matches!(image.scheme(), "http" | "https")
+        && image.host_str().is_some()
+        && image.as_str().len() <= MAX_IMAGE_URL_LEN)
+        .then(|| image.to_string())
 }
 
 /// Metindeki ilk **harici** bağlantıyı döndürür (X/Twitter adresleri atlanır).
@@ -1799,5 +1823,43 @@ mod tests {
             Some("ba…"),
             "uzun meta metni karta sığacak şekilde kesilir"
         );
+    }
+
+    #[test]
+    fn link_preview_metadata_cannot_inject_masked_links() {
+        let html = r#"<meta property="og:title" content="Başlık @everyone">
+            <meta property="og:description" content="[Claim](https://phish)">
+            <meta property="og:site_name" content="[Site](https://phish)">"#;
+        let preview = build_link_preview("https://example.com/a_(b)[c]", html).expect("önizleme");
+        assert_eq!(preview.url, "https://example.com/a_%28b%29%5Bc%5D");
+        assert_eq!(
+            preview.description.as_deref(),
+            Some("\\[Claim\\](https://phish)")
+        );
+        assert_eq!(
+            preview.site_name.as_deref(),
+            Some("\\[Site\\](https://phish)")
+        );
+        // Başlık V2 kartında zaten kaçırılır: burada yalnızca bahsetme etkisizleşir (çift kaçış yok).
+        assert_eq!(preview.title.as_deref(), Some("Başlık @\u{200b}everyone"));
+    }
+
+    #[test]
+    fn link_preview_image_is_resolved_and_never_truncated() {
+        let page = url::Url::parse("https://example.com/haber/1").unwrap();
+        assert_eq!(
+            link_preview_image(&page, "/x.png").as_deref(),
+            Some("https://example.com/x.png")
+        );
+        assert_eq!(
+            link_preview_image(&page, "//cdn.example.com/x.png").as_deref(),
+            Some("https://cdn.example.com/x.png")
+        );
+        assert!(link_preview_image(&page, "javascript:alert(1)").is_none());
+        assert!(link_preview_image(&page, "data:image/png;base64,AAAA").is_none());
+        let long = format!("https://cdn.example.com/{}.png", "a".repeat(600));
+        assert_eq!(link_preview_image(&page, &long), Some(long.clone()));
+        let too_long = format!("https://cdn.example.com/{}.png", "a".repeat(2100));
+        assert!(link_preview_image(&page, &too_long).is_none());
     }
 }
