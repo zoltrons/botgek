@@ -408,9 +408,17 @@ async fn fetch_fx_fast(
         };
     }
 
+    // X ucu kazandı ama hata verdiyse FxTwitter'ın kendi zaman aşımı dolana kadar beklenir: hızlı bir syndication hatası, hâlâ yolda olan geçerli yanıtı ek süre bitti diye düşürmemeli.
+    let post = match x_result.expect("select her zaman bir dalı döner") {
+        Ok(post) => post,
+        Err(sy_err) => {
+            debug!("X ucu hedge sonrası hata verdi ({id}): {sy_err}");
+            return fx.await.map_err(|fx_err| format!("{fx_err} | {sy_err}"));
+        }
+    };
+
     // X ucu kazandı: veri hazır. Normalde yalnızca kısa bir ek süre tanınır; topluluk notları
     // açıksa aynı FxTwitter isteği tamamlanana kadar beklenir, aksi halde not kaybolur.
-    let post = x_result.expect("select her zaman bir dalı döner");
     match tokio::time::timeout(HEDGE_MERGE_GRACE, &mut fx).await {
         Ok(Ok(fx_post)) => return Ok(fx_post),
         Ok(Err(err)) => {
@@ -426,7 +434,7 @@ async fn fetch_fx_fast(
         }
         Err(_) => {}
     }
-    post
+    Ok(post)
 }
 
 /// Eksik alanları doldurur; kaynakta 0/`None` olan değerleri taze veriyle değiştirir.
