@@ -103,7 +103,6 @@ jobs:
         include:
           - target: aarch64-unknown-linux-gnu
             arch: arm64
-            deb_arch: arm64
             name: raspberry-pi-64bit-arm64
             use_cross: true
             runner: ubuntu-latest
@@ -131,10 +130,10 @@ jobs:
           # Ana dalın cache'i etiket koşularına da açıktır; yayın derlemesi onu geri yükler.
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
 
-      - name: Install build tools (cross, cargo-deb)
+      - name: Install build tools (cross)
         uses: taiki-e/install-action@v2
         with:
-          tool: cross, cargo-deb
+          tool: cross
 
       - name: Compile Release Binary
         env:
@@ -174,11 +173,6 @@ jobs:
             exit 1
           fi
 
-      - name: Package Debian (.deb)
-        run: |
-          cargo deb --target ${{ matrix.target }} --no-build --no-strip \
-            -o "target/botgek_${{ needs.test.outputs.version_file }}_${{ matrix.deb_arch }}.deb"
-
       - name: Create Tarball Archive (.tar.gz)
         run: |
           set -eu
@@ -186,21 +180,15 @@ jobs:
           BIN_PATH="target/${{ matrix.target }}/release/botgek"
 
           # Paket dizini sürümden **bağımsız** kalır (docker işi bu adı kullanır);
-          # arşiv/deb dosya adları sürümü taşır.
+          # arşiv adı sürümü taşır.
           PKG_DIR="botgek-${{ matrix.name }}"
           mkdir -p "$PKG_DIR"
           cp "$BIN_PATH" "$PKG_DIR/"
-          cp botgek.service "$PKG_DIR/"
           cp .env.example "$PKG_DIR/"
           cp settings.json "$PKG_DIR/"
           cp README.md "$PKG_DIR/"
-          if [ -f "deploy-rpi.sh" ]; then
-            cp deploy-rpi.sh "$PKG_DIR/"
-            chmod +x "$PKG_DIR/deploy-rpi.sh"
-          fi
 
           tar -czvf "dist/botgek-${{ needs.test.outputs.version_file }}-${{ matrix.name }}.tar.gz" "$PKG_DIR"
-          cp "target/botgek_${{ needs.test.outputs.version_file }}_${{ matrix.deb_arch }}.deb" dist/
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -232,7 +220,6 @@ jobs:
         with:
           files: |
             dist/*.tar.gz
-            dist/*.deb
           generate_release_notes: true
           # `v1.0.0-rc.1` gibi tireli etiketler ön sürümdür.
           prerelease: ${{ contains(github.ref_name, '-') }}

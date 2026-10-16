@@ -10,7 +10,6 @@
 #   - `settings.json` ve `settings.json/settings.json` (Docker bind-mount'un klasör olarak açıldığı biçim).
 #
 #   Kurulum türüne göre dosya:
-#   - systemd/`.deb`: `/var/lib/botgek/settings.json` → `sudo ./backup-settings.sh /var/lib/botgek/settings.json`
 #   - Docker Compose: volume içindeki `/app/data/settings.json` → `docker compose exec botgek cat /app/data/settings.json > settings.docker.json`, ardından `./backup-settings.sh settings.docker.json` (hosttaki `settings.json` ilk içe aktarım kaynağıdır, üzerine yazmayın).
 #
 #   Yedek adı `settings.json.bak-YYYYMMDD-HHMMSS`; aynı saniyede ad varsa `-1`, `-2`… eklenir, mevcut yedeğin üzerine asla yazılmaz.
@@ -131,7 +130,6 @@ main() {
         local shown=""
         if [ -n "$target" ]; then shown=" ('$target')"; fi
         echo "hata: ayar dosyası bulunamadı$shown (yolu argüman olarak verin)" >&2
-        echo "  systemd: sudo $0 /var/lib/botgek/settings.json" >&2
         echo "  Docker:  docker compose exec botgek cat /app/data/settings.json > settings.docker.json && $0 settings.docker.json" >&2
         exit 1
     fi

@@ -2,7 +2,7 @@ name: Release (sürüm bump + etiket)
 
 # Elle tetiklenir: sürümü bump'lar, `Cargo.toml` + `Cargo.lock`'u günceller, testleri çalıştırır,
 # `chore(release): vX.Y.Z` commit'i + **annotated tag** atar ve push'lar.
-# Ardından `build-release.yml` zincirini etiket ref'inde `workflow_dispatch` ile başlatır: testler → `.deb`/`.tar.gz` → GitHub Release → arm64 Docker imajı (`ghcr.io/<repo>:X.Y.Z`, ön sürüm değilse `:latest`).
+# Ardından `build-release.yml` zincirini etiket ref'inde `workflow_dispatch` ile başlatır: testler → `.tar.gz` → GitHub Release → arm64 Docker imajı (`ghcr.io/<repo>:X.Y.Z`, ön sürüm değilse `:latest`).
 # Yalnızca `main` dalından çalışır.
 #
 # Sürüm mantığı **tek kaynak**tır: `release.sh` (yerelde de aynı script kullanılır).
@@ -102,4 +102,4 @@ jobs:
           tag="$(git describe --tags --exact-match HEAD)"
           echo "### Yayın: $tag" >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Etiket push edildi; `build-release.yml` zinciri (.deb/.tar.gz → GitHub Release → Docker) `workflow_dispatch` ile başlatıldı.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Etiket push edildi; `build-release.yml` zinciri (.tar.gz → GitHub Release → Docker) `workflow_dispatch` ile başlatıldı.' >> "$GITHUB_STEP_SUMMARY"

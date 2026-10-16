@@ -60,25 +60,6 @@ subtle = "2"
 [target.'cfg(unix)'.dependencies]
 native-tls = { version = "0.2", features = ["vendored"] }
 
-[package.metadata.deb]
-name = "botgek"
-maintainer = "Eray"
-copyright = "2026 Eray"
-extended-description = """\
-Modern Discord link converter bot for Twitter/X, TikTok, Instagram, Reddit, Bluesky \
-with WebUI control panel, role filtering, and sarcastic OpenRouter AI chat."""
-# `passwd`: `postinst` sistem kullanıcısını `useradd`/`groupadd` ile açar.
-depends = "libc6, ca-certificates, passwd"
-section = "net"
-priority = "optional"
-# `postinst` birimin istediği `botgek` kullanıcısını ve `/var/lib/botgek`'i hazırlar; yoksa servis `217/USER` ile düşer.
-maintainer-scripts = "debian/"
-assets = [
-    ["target/release/botgek", "usr/bin/botgek", "755"],
-    ["botgek.service", "lib/systemd/system/botgek.service", "644"],
-    [".env.example", "etc/botgek/botgek.env.example", "640"],
-]
-
 # Geliştirme/test derlemeleri: hata ayıklama bilgisi **yalnızca satır tabloları** ile sınırlanır.
 # Geri izlemeler (backtrace) dosya/satır bilgisiyle çalışmaya devam eder, ama `target/` hacmi
 # ve bağlama (link) süresi belirgin biçimde küçülür (tam debug bilgisi gigabaytlara çıkıyordu).

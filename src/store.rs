@@ -13,8 +13,7 @@
 //! başlatmada siliniyordu).
 //!
 //! Dosya yolu `BOTGEK_DB_PATH` ortam değişkeniyle verilir; tanımlı değilse çalışma
-//! dizinindeki `botgek.db` kullanılır (systemd: `/var/lib/botgek/botgek.db`,
-//! Docker: `BOTGEK_DB_PATH=/app/data/botgek.db` — kalıcı `botgek-data` volume'u).
+//! dizinindeki `botgek.db` kullanılır (Docker: `BOTGEK_DB_PATH=/app/data/botgek.db` — kalıcı `botgek-data` volume'u).
 //! Testler bellek içi veritabanında (`:memory:`) çalışır, gerçek dosyaya dokunmaz.
 
 use std::sync::Mutex;
