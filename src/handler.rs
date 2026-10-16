@@ -567,15 +567,15 @@ async fn discord_thread_parent(
     guild_id: Option<GuildId>,
     channel_id: ChannelId,
 ) -> Option<ChannelId> {
-    let cached = guild_id
-        .and_then(|gid| ctx.cache.guild(gid))
-        .and_then(|guild| {
-            guild
-                .channels
-                .get(&channel_id)
-                .or_else(|| guild.threads.iter().find(|thread| thread.id == channel_id))
-                .map(|channel| (channel.kind, channel.parent_id))
-        });
+    // DM kanallarında alt başlık (thread) yoktur: REST'e gitmeden `None`.
+    let guild_id = guild_id?;
+    let cached = ctx.cache.guild(guild_id).and_then(|guild| {
+        guild
+            .channels
+            .get(&channel_id)
+            .or_else(|| guild.threads.iter().find(|thread| thread.id == channel_id))
+            .map(|channel| (channel.kind, channel.parent_id))
+    });
     if let Some((kind, parent)) = cached {
         return if matches!(
             kind,
