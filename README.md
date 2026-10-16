@@ -170,7 +170,7 @@ başarısız birleştirme **başarılı test gibi gösterilmez**. Üretim sırla
 - `build-release.yml`: test, fmt, Clippy, panel testleri; ardından ARM64/ARMv7/x86_64 paket ve imaj.
 - `quality.yml`: RustSec audit ve LCOV artifact. Coverage ilk ölçümden itibaren izlenir; uydurma eşik yoktur.
 - `release.yml`: elle sürüm bump/etiket akışı. Yerelde `./release.sh patch` veya
-  `./release.sh minor --push`; Windows'ta `release.ps1`. Temiz çalışma ağacı gerekir.
+  `./release.sh minor --push`. Temiz çalışma ağacı gerekir.
 - Sürüm `build.rs` ile git etiketinden gömülür; `SOURCE_DATE_EPOCH` tekrar üretilebilir tarih içindir.
 
 Serenity 0.12'nin Rustls gateway arka ucu eski `rustls-webpki 0.102` sürümünü sabitlediği için
