@@ -1566,6 +1566,7 @@ async function checkHealth() {
 /* Birincil düğmenin özgün etiketi bir kez yakalanır: art arda kayıtlar ("Kaydediliyor…" /
    "Kaydedildi") geçici etiketi kalıcı etiket sanmasın. */
 let saveButtonLabel = null;
+let saveInFlight = false;
 
 function restoreSaveButton(button) {
     if (saveButtonLabel !== null) button.innerHTML = saveButtonLabel;
@@ -1595,6 +1596,9 @@ function setSaving(busy) {
 }
 
 async function saveSettingsToServer() {
+    // Ctrl+S düğmeyi atlar: aynı anda tek kayıt yürür.
+    if (saveInFlight) return;
+    saveInFlight = true;
     commitDomToActiveConfig();
     const submitted = JSON.stringify(buildPayload());
     const submittedRevision = typeof editRevision === 'number' ? editRevision : null;
@@ -1635,6 +1639,7 @@ async function saveSettingsToServer() {
     } catch (err) {
         showToast('sunucuya bağlanılamadı · ' + err.message, true);
     } finally {
+        saveInFlight = false;
         setSaving(false);
         if (saved) confirmSaveInPlace();
     }

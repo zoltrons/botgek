@@ -33,7 +33,7 @@ test('edits made while a save is pending remain dirty', async () => {
     let finish;
     let submitted;
     const context = {
-        state: { value: 1 }, dirty: true, savedSnapshot: '', editRevision: 1,
+        state: { value: 1 }, dirty: true, savedSnapshot: '', editRevision: 1, saveInFlight: false,
         commitDomToActiveConfig() {}, setSaving() {}, updateDirtyUI() {}, refreshScope() {}, showToast() {}, confirmSaveInPlace() {},
         apiFetch: (_url, request) => { submitted = request.body; return new Promise(resolve => { finish = resolve; }); }
     };
@@ -48,6 +48,25 @@ test('edits made while a save is pending remain dirty', async () => {
     assert.equal(JSON.parse(submitted).value, 1);
     assert.equal(JSON.parse(context.savedSnapshot).value, 1);
     assert.equal(context.dirty, true);
+});
+
+test('a second save while one is in flight is ignored', async () => {
+    let finish;
+    let requests = 0;
+    const context = {
+        state: { value: 1 }, dirty: true, savedSnapshot: '', editRevision: 1, saveInFlight: false,
+        commitDomToActiveConfig() {}, setSaving() {}, updateDirtyUI() {}, refreshScope() {}, showToast() {}, confirmSaveInPlace() {},
+        apiFetch: () => { requests += 1; return new Promise(resolve => { finish = resolve; }); }
+    };
+    context.buildPayload = () => context.state;
+    vm.createContext(context);
+    vm.runInContext(functionSource('saveSettingsToServer'), context);
+    const first = context.saveSettingsToServer();
+    await context.saveSettingsToServer();
+    assert.equal(requests, 1);
+    finish({ ok: true, json: async () => ({ success: true, settings: { value: 1 } }) });
+    await first;
+    assert.equal(context.saveInFlight, false);
 });
 
 test('master token is neither persisted nor echoed by the login script', () => {
