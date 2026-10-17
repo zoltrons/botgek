@@ -5,6 +5,7 @@
 //! Discord REST uç noktasına gönderilir. Dosya yüklemeleri için `multipart/form-data`
 //! gövdesi elle oluşturulur (ek crate bağımlılığı yok).
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -60,12 +61,8 @@ pub async fn send_channel_message(
     files: &[CreateAttachment],
 ) -> Result<MessageId, DiscordError> {
     let url = format!("{API_BASE}/channels/{}/messages", channel_id.get());
-    let mut payload = payload.clone();
     // `username`/`avatar_url` yalnızca webhook alanlarıdır: kanal mesajında gönderilmez.
-    if let Some(object) = payload.as_object_mut() {
-        object.remove("username");
-        object.remove("avatar_url");
-    }
+    let payload = payload_without_fields(payload, &["username", "avatar_url"]);
     let request = message_request(client, &url, &payload, files)?
         .header("authorization", format!("Bot {token}"));
     let body = super::transport::send(client, request, format!("channel:{channel_id}")).await?;
@@ -109,16 +106,33 @@ pub async fn execute_webhook(
     files: &[CreateAttachment],
 ) -> Result<Option<MessageId>, DiscordError> {
     let url = execute_webhook_url(webhook_id, token, thread_id);
-    let mut payload = payload.clone();
     // Discord Execute Webhook uç noktası `message_reference` alanını desteklemez (400 Bad Request döner).
-    if let Some(object) = payload.as_object_mut() {
-        object.remove("message_reference");
-    }
+    let payload = payload_without_fields(payload, &["message_reference"]);
     let request = message_request(client, &url, &payload, files)?;
     let body = super::transport::send(client, request, format!("hook:{webhook_id}")).await?;
     parse_message_id(&body)
         .map(Some)
         .map_err(|_| DiscordError::Ambiguous)
+}
+
+fn payload_without_fields<'a>(
+    payload: &'a serde_json::Value,
+    fields: &[&str],
+) -> Cow<'a, serde_json::Value> {
+    let Some(object) = payload.as_object() else {
+        return Cow::Borrowed(payload);
+    };
+    if !fields.iter().any(|field| object.contains_key(*field)) {
+        return Cow::Borrowed(payload);
+    }
+
+    let mut payload = payload.clone();
+    if let Some(object) = payload.as_object_mut() {
+        for field in fields {
+            object.remove(*field);
+        }
+    }
+    Cow::Owned(payload)
 }
 
 /// Kanalın webhook'larını listeler (Manage Webhooks izni gerekir).
@@ -361,6 +375,24 @@ mod tests {
         );
         assert!(parse_message_id("{}").is_err());
         assert!(parse_message_id("gecersiz").is_err());
+    }
+
+    #[test]
+    fn payload_field_filter_avoids_unneeded_clones() {
+        let unchanged = serde_json::json!({"content": "hello"});
+        let filtered = payload_without_fields(&unchanged, &["username", "avatar_url"]);
+        assert!(matches!(&filtered, Cow::Borrowed(_)));
+        assert_eq!(filtered.as_ref(), &unchanged);
+
+        let webhook_payload = serde_json::json!({
+            "content": "hello",
+            "username": "webhook",
+            "avatar_url": "https://example.test/avatar.png"
+        });
+        let filtered = payload_without_fields(&webhook_payload, &["username", "avatar_url"]);
+        assert!(matches!(&filtered, Cow::Owned(_)));
+        assert_eq!(filtered.as_ref(), &serde_json::json!({"content": "hello"}));
+        assert_eq!(webhook_payload["username"], "webhook");
     }
 
     #[test]

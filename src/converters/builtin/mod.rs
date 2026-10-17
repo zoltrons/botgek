@@ -528,6 +528,12 @@ struct WebhookTarget {
     thread_id: Option<ChannelId>,
 }
 
+/// Veri çekilirken başlatılan webhook çözümlemesinin sonucu.
+///
+/// Sonuç gönderim aşamasına taşınır; böylece soğuk thread/forum kanallarında hedef kanal
+/// ikinci kez REST'ten çözülmez ve warmup ile gerçek gönderim arasında yarış oluşmaz.
+type WebhookWarmup = tokio::task::JoinHandle<(WebhookTarget, Option<NamedWebhook>)>;
+
 impl WebhookTarget {
     /// Kanal türü ve üst kanalına göre hedefi belirler.
     ///
@@ -937,14 +943,41 @@ async fn send_via_webhook(
     msg: &Message,
     payload: &serde_json::Value,
     files: &[serenity::all::CreateAttachment],
+    warmup: Option<WebhookWarmup>,
 ) -> Result<MessageId, raw::DiscordError> {
     let mut last_error = raw::DiscordError::Unavailable;
-    let target = webhook_target(ctx, msg).await;
+    let (target, mut warmed) = match warmup {
+        Some(warmup) => match warmup.await {
+            Ok(result) => result,
+            Err(err) => {
+                warn!(
+                    "Webhook warmup görevi başarısız oldu: {err}; gönderim sırasında yeniden çözümlenecek"
+                );
+                let target = webhook_target(ctx, msg).await;
+                let webhook = channel_webhook(ctx, client, config, target.channel_id, false).await;
+                (target, webhook)
+            }
+        },
+        None => {
+            let target = webhook_target(ctx, msg).await;
+            let webhook = channel_webhook(ctx, client, config, target.channel_id, false).await;
+            (target, webhook)
+        }
+    };
 
     for attempt in 0..2 {
-        let Some(webhook) =
-            channel_webhook(ctx, client, config, target.channel_id, attempt > 0).await
-        else {
+        let webhook = if attempt == 0 {
+            // Warmup başarısızsa (ör. geçici ağ hatası) mevcut davranışı koru ve gönderim
+            // anında bir kez daha çözümle; kalıcı negatif önbellek varsa bu yalnızca ucuz bir
+            // cache hit olur.
+            match warmed.take() {
+                Some(webhook) => Some(webhook),
+                None => channel_webhook(ctx, client, config, target.channel_id, false).await,
+            }
+        } else {
+            channel_webhook(ctx, client, config, target.channel_id, true).await
+        };
+        let Some(webhook) = webhook else {
             return Err(last_error);
         };
 
@@ -1062,14 +1095,20 @@ fn delete_wait(id: MessageId) -> Option<Duration> {
 /// eskiden gönderim anında bekleniyordu; artık dönüşümün kritik yolundan çıkar: kart
 /// gönderilirken webhook hazır olur. Başarısızlık önbelleğe yazılır ([`channel_webhook`]),
 /// bu yüzden gönderim yine tek denemede bot mesajına düşer.
-fn spawn_webhook_warmup(ctx: &Context, client: &reqwest::Client, config: &Config, msg: &Message) {
+fn spawn_webhook_warmup(
+    ctx: &Context,
+    client: &reqwest::Client,
+    config: &Config,
+    msg: &Message,
+) -> WebhookWarmup {
     let ctx = ctx.clone();
     let client = client.clone();
     let config = config.clone();
     let msg = msg.clone();
     tokio::spawn(async move {
         let target = webhook_target(&ctx, &msg).await;
-        let _ = channel_webhook(&ctx, &client, &config, target.channel_id, false).await;
+        let webhook = channel_webhook(&ctx, &client, &config, target.channel_id, false).await;
+        (target, webhook)
     });
 }
 
@@ -1097,9 +1136,9 @@ pub async fn handle(
     // çağrısıdır ve eskiden dönüşümün kritik yolunda sırayla bekleniyordu.
     let identity = (!msg.author.bot && should_impersonate(engine, msg.message_reference.is_some()))
         .then(|| Impersonation::from_message(msg));
-    if identity.is_some() {
-        spawn_webhook_warmup(ctx, client, config, msg);
-    }
+    let webhook_warmup = identity
+        .as_ref()
+        .map(|_| spawn_webhook_warmup(ctx, client, config, msg));
 
     // Orijinal mesaj burada **silinmez**: silme, kart gönderildikten sonra yapılır (native
     // akışta `finish()`, hata durumunda proxy akışı). Erken silmek, gönderenin istemcisi
@@ -1157,6 +1196,7 @@ pub async fn handle(
         &resolved,
         &engine.emojis,
         identity.as_ref(),
+        webhook_warmup,
     )
     .await
     {
@@ -1255,6 +1295,7 @@ async fn send_components_v2(
     resolved: &render::ResolvedMedia,
     emojis: &EmojiSettings,
     identity: Option<&Impersonation>,
+    warmup: Option<WebhookWarmup>,
 ) -> Result<(MessageId, bool), raw::DiscordError> {
     if let Some(identity) = identity {
         // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
@@ -1269,7 +1310,17 @@ async fn send_components_v2(
             Some(identity),
             None,
         );
-        match send_via_webhook(ctx, client, config, msg, &payload, &resolved.attachments).await {
+        match send_via_webhook(
+            ctx,
+            client,
+            config,
+            msg,
+            &payload,
+            &resolved.attachments,
+            warmup,
+        )
+        .await
+        {
             Ok(message_id) => return Ok((message_id, true)),
             Err(err) if err.safe_fallback() => warn!(
                 "Components V2 taklit gönderimi başarısız ({}): {}",

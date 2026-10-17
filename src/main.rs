@@ -62,11 +62,17 @@ fn parse_cli_arg(arg: Option<&str>) -> CliAction {
 fn prewarm_connections(client: &reqwest::Client) {
     /// Yanıtı yok sayar: amaç bağlantıyı kurmak (DNS + TLS + HTTP/2 el sıkışması).
     async fn warm(client: &reqwest::Client, url: &str) {
-        let _ = client
+        let Ok(response) = client
             .get(url)
             .header("user-agent", converters::builtin::DISCORD_USER_AGENT)
             .send()
-            .await;
+            .await
+        else {
+            return;
+        };
+        // Gövdeyi tüketmeden Response'u bırakmak HTTP/2 akışını sıfırlayıp bağlantının
+        // sonraki kart gönderiminde yeniden kullanılmasını engelleyebilir.
+        let _ = response.bytes().await;
     }
 
     let client = client.clone();
@@ -152,6 +158,11 @@ async fn main() {
         .connect_timeout(std::time::Duration::from_secs(8))
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .pool_max_idle_per_host(8)
+        // Discord bağlantısını boşta da canlı tut: ilk karttan sonra oluşan TLS/HTTP2
+        // yeniden el sıkışması, gönderim fazının kuyruğa takılmasına neden olmasın.
+        .http2_keep_alive_interval(std::time::Duration::from_secs(30))
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
         .tcp_nodelay(true)
         .build();
     // Zaman aşımsız bir yedek istemci, takılan her isteği sonsuza dek bekletirdi.

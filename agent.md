@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-17 16:03] zoltrons — Discord Components V2 gönderim yolunda webhook ve HTTP/2 gecikmesi azaltıldı
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. Veri çekilirken başlatılan webhook warmup sonucu gerçek gönderime taşındı; thread/forum hedefi ikinci kez çözülmiyor.
+  2. Discord HTTP/2 bağlantısı gövde tüketimi ve keep-alive ile yeniden kullanıma hazır tutuldu.
+  3. REST payload kopyalama yalnızca webhook alanı temizlenecekse yapılıyor.
+- **Etkilenen:** `src/converters/builtin/{mod,raw}.rs`, `src/main.rs`
+
 ### [2026-10-17 11:15] zoltrons — Twitter veri kaynağı vxtwitter'a geçti; çeviri yolu 6-13 sn'den <1 sn'ye
 - **Commit:** `bu-commit`
 - **Yapılan:**
