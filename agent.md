@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-15 15:20] zoltrons — Çeviri notu satır içi koda alındı (saatin yanına)
+- **Commit:** `bu-commit`
+- **Düzeltme:** Önceki turda yanlış anlaşılıp **blok alıntı** yapılan çeviri notu, istenen biçime çevrildi: **satır içi kod** (ters tırnak) ve **saatin hemen yanında** —
+  `-# <:twitter:…> • <t:…:R> • `Portekizce'den çevrildi` • [Link](…) • Gönderen: <@id>`
+- **Etkilenen:** `src/converters/builtin/v2.rs` (+ test beklentisi)
+
+
 ### [2026-10-15 15:05] zoltrons — Çeviri notu blok alıntıya alındı
 - **Commit:** `bu-commit`
 - **Yapılan:** Çeviri notu (`Portekizce'den çevrildi`) artık alt bilgi satırının **hemen altında blok alıntı** olarak gösterilir (`> Portekizce'den çevrildi`); üstteki soluk satırda **platform emojisi (en solda)** ve saat kalır. Not emojisizdir, blok kendi sol şeridiyle ayrılır.
