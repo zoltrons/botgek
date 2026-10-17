@@ -1,9 +1,10 @@
 //! Twitter / X gönderi verisi.
 //!
-//! İki kaynak desteklenir:
+//! Üç kaynak desteklenir:
 //! - **Syndication** (`cdn.syndication.twimg.com/tweet-result`): X'in kendi uç noktası,
 //!   üçüncü taraf yok, API anahtarı yok. Metin/görsel/video/alıntı/metrik verir.
 //! - **FxTwitter** (`api.fxtwitter.com`): görüntülenme, repost, topluluk notu gibi ek alanlar.
+//! - **VxTwitter** (`api.vxtwitter.com`): topluluk notu, alıntı ilişkisi ve X çevirisi.
 
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,13 @@ use super::{
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::settings::{EngineSettings, TwitterSource};
 
+mod pipeline;
+mod plan;
+mod source_cache;
+
+#[cfg(test)]
+mod benchmarks;
+
 const SYNDICATION_URL: &str = "https://cdn.syndication.twimg.com/tweet-result";
 const FXTWITTER_URL: &str = "https://api.fxtwitter.com";
 const VXTWITTER_URL: &str = "https://api.vxtwitter.com";
@@ -33,8 +41,6 @@ static TWEET_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 /// Hızlı yol (FxTwitter) bu süre içinde yanıt vermezse X syndication ucu **paralel**
 /// başlatılır (hedge): yavaş veya askıda kalan uç kartın gelmesini geciktirmez.
 const HEDGE_DELAY: Duration = Duration::from_millis(500);
-/// VxTwitter için syndication hedge'i daha erken başlatılır; FxTwitter'ın bütçesi değişmez.
-const VX_HEDGE_DELAY: Duration = Duration::from_millis(125);
 /// Hedge sonrası X ucu kazandıysa, çeviri/metrikleri tamamlamak için FxTwitter'a tanınan
 /// ek süre (gelmezse X verisiyle devam edilir).
 const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(300);
@@ -61,14 +67,9 @@ static OWN_HOSTS: [&str; 5] = [
 
 /// Gönderi verisini seçilen kaynaktan çeker.
 ///
-/// Hızlı yol (tek istek):
-/// - Çeviri açıkken FxTwitter'ın dil ekli ucu kullanılır: metin, **X'in kendi çevirisi**,
-///   metrikler, topluluk notu ve medya tek yanıtta gelir.
-/// - Kaynak doğrudan `FxTwitter` seçildiyse de tek istek yapılır.
-///
-/// Diğer durumlarda X'in syidication ucu ile FxTwitter **paralel** istenir (toplam gecikme
-/// tek istek kadardır): X verisi esas alınır, eksik metrikler (repost, görüntülenme, alıntı)
-/// ve etkinse topluluk notu FxTwitter yanıtından tamamlanır.
+/// VxTwitter/otomatik çeviri yolunda dil ve alıntı bilgisi gelir gelmez içerik planı
+/// çıkarılır. Yalnızca görünür ve eksik veriler istenir; bağımsız istekler paraleldir.
+/// Açıkça seçilmiş FxTwitter ve çevirisiz syndication yolları korunur.
 pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
@@ -100,7 +101,7 @@ pub async fn fetch(
     // ilk seviye alıntı da medyasızsa, alıntılanan gönderinin kendisi çekilerek içteki
     // alıntı (ve medyası) tamamlanır.
     let nested_started = Instant::now();
-    if engine.show_quote && should_populate_nested_quote(&post) {
+    if !uses_planner(engine) && engine.show_quote && should_populate_nested_quote(&post) {
         populate_nested_quote(client, &mut post, engine, video_budget).await;
     }
     let nested_elapsed = nested_started.elapsed();
@@ -257,11 +258,17 @@ async fn fetch_post_internal(
     let source = engine.twitter_source;
     let translate = engine.auto_translate;
 
-    // 1) Hızlı yol: tek vxtwitter isteği. Çeviri açıksa dil ekli ucu kullanılır: vx yanıtı
-    //    gönderiyi + topluluk notunu + X'in kendi Grok çevirisini **tek cevapta** verir;
-    //    eskiden çeviri yolu FxTwitter'a gidip alıntı beklemeleriyle 6-13 sn'yi buluyordu.
     if translate || source == TwitterSource::Vxtwitter {
-        return fetch_vx_fast(client, original_url, id, engine, video_budget).await;
+        return pipeline::acquire(
+            HttpFetcher {
+                client: client.clone(),
+                video_budget,
+                translation_target: engine.translation_target.clone(),
+            },
+            original_url,
+            engine,
+        )
+        .await;
     }
 
     // 2) Hızlı yol kaynağı açıkça fxtwitter ise tek FxTwitter isteği (çeviri kapalı).
@@ -476,91 +483,84 @@ async fn fetch_fx_fast(
     Ok(post)
 }
 
-/// Hızlı yol: **tek** vxtwitter isteği + gecikme sigortası (hedge).
-///
-/// vx yanıtı gönderi, metrikler, topluluk notu **ve** (dil ekiyle) X'in kendi Grok çevirisini
-/// tek cevapta verir: FX'in aksine not için sınırsız bekleme yoktur — hedge sonrası yalnızca
-/// [`HEDGE_MERGE_GRACE`] kadar ek süre tanınır, sonra syndication verisiyle devam edilir.
-/// Yavaş ya da hata veren uç kartı bekletmez.
-async fn fetch_vx_fast(
-    client: &reqwest::Client,
-    original_url: &str,
-    id: &str,
-    engine: &EngineSettings,
-    max_video_bytes: u64,
-) -> Result<BuiltinPost, String> {
-    let translate = engine.auto_translate;
-    let translation_target = &engine.translation_target;
-    let language = translate.then_some(translation_target.as_str());
-    let vx = from_vxtwitter(
-        client,
-        original_url,
-        id,
-        language,
-        translation_target,
-        max_video_bytes,
-    );
-    tokio::pin!(vx);
+fn uses_planner(engine: &EngineSettings) -> bool {
+    engine.auto_translate || engine.twitter_source == TwitterSource::Vxtwitter
+}
 
-    match tokio::time::timeout(VX_HEDGE_DELAY, &mut vx).await {
-        Ok(Ok(post)) => return Ok(post),
-        Ok(Err(err)) => {
-            warn!("vxTwitter isteği başarısız ({id}): {err}");
-            // Dil eki sorun çıkarmış olabilir: bir kez dil olmadan denenir.
-            // Dil yoksa ilk istek zaten dilsizdi; aynı isteği tekrarlamak gecikme ekler.
-            return if language.is_some() {
-                from_vxtwitter(
-                    client,
-                    original_url,
-                    id,
-                    None,
-                    translation_target,
-                    max_video_bytes,
-                )
-                .await
-            } else {
-                Err(err)
-            };
-        }
-        // Yanıt gecikti: hedge devreye girer (X syndication ucu da istenir).
-        Err(_elapsed) => debug!(
-            "vxTwitter {} ms içinde yanıt vermedi ({id}): X ucu da paralel istendi",
-            VX_HEDGE_DELAY.as_millis()
-        ),
+#[derive(Clone)]
+struct HttpFetcher {
+    client: reqwest::Client,
+    video_budget: u64,
+    translation_target: String,
+}
+
+static SOURCE_RESULTS: LazyLock<source_cache::SourceCache<pipeline::Snapshot>> =
+    LazyLock::new(|| source_cache::SourceCache::new(Duration::from_secs(600), 512));
+
+impl HttpFetcher {
+    fn key(&self, source: &str, id: &str, language: Option<&str>) -> String {
+        format!(
+            "{source}:{id}:{}:{}:{}",
+            language.unwrap_or("original"),
+            self.translation_target,
+            self.video_budget
+        )
     }
+}
 
-    let syndication = from_syndication(client, original_url, id, max_video_bytes);
-    tokio::pin!(syndication);
-
-    // İki uç yarışır; vx tercih edilir (topluluk notu ve çeviri onda).
-    let (vx_result, x_result) = tokio::select! {
-        biased;
-        result = &mut vx => (Some(result), None),
-        result = &mut syndication => (None, Some(result)),
-    };
-
-    if let Some(result) = vx_result {
-        return match result {
-            Ok(post) => Ok(post),
-            Err(err) => {
-                debug!("vxTwitter hedge sonrası hata verdi ({id}): {err}");
-                syndication
-                    .await
-                    .map_err(|sy_err| format!("{err} | {sy_err}"))
-            }
+#[serenity::all::async_trait]
+impl pipeline::Fetcher for HttpFetcher {
+    async fn cached(&self, request: &pipeline::Request) -> Option<pipeline::Snapshot> {
+        let (url, language) = match request {
+            pipeline::Request::Vx { url, language } => (url, language.as_deref()),
+            pipeline::Request::Syndication { .. } => return None,
         };
+        let id = extract_tweet_id(url)?;
+        SOURCE_RESULTS
+            .get(&self.key("vx", &id, language))
+            .await
+            .map(|snapshot| (*snapshot).clone())
     }
 
-    // X ucu kazandı: veri hazır. vx tek yanıttayla not + çeviri sunduğundan yalnızca
-    // kısa bir ek süre tanınır; o da gelmezse syndication sonucu kullanılır (notsuz).
-    match tokio::time::timeout(HEDGE_MERGE_GRACE, &mut vx).await {
-        Ok(Ok(post)) => return Ok(post),
-        Ok(Err(err)) => {
-            debug!("vxTwitter hedge sonrası hata verdi ({id}): {err}");
-        }
-        Err(_) => {}
+    async fn fetch(&self, request: pipeline::Request) -> Result<pipeline::Snapshot, String> {
+        let (source, url, language) = match request {
+            pipeline::Request::Vx { url, language } => ("vx", url, language),
+            pipeline::Request::Syndication { url } => ("syndication", url, None),
+        };
+        let id = extract_tweet_id(&url).ok_or_else(|| "X request has no tweet id".to_string())?;
+        // ID-based keys reuse a standalone tweet when it appears as a quote elsewhere.
+        // Target/source/budget remain isolated; spoiler/NSFW decisions happen only later.
+        let key = self.key(source, &id, language.as_deref());
+        let started = Instant::now();
+        let result = SOURCE_RESULTS
+            .get_or_fetch(key, || async {
+                if source == "vx" {
+                    from_vxtwitter(
+                        &self.client,
+                        &url,
+                        &id,
+                        language.as_deref(),
+                        &self.translation_target,
+                    )
+                    .await
+                } else {
+                    from_syndication(&self.client, &url, &id, self.video_budget)
+                        .await
+                        .map(|post| pipeline::Snapshot {
+                            post,
+                            nested_hint: plan::NestedHint::Unknown,
+                        })
+                }
+            })
+            .await;
+        debug!(
+            "X source={source} id={id} language={} elapsed_ms={} ok={}",
+            language.as_deref().unwrap_or("original"),
+            started.elapsed().as_millis(),
+            result.is_ok(),
+        );
+        result.map(|snapshot| (*snapshot).clone())
     }
-    x_result.expect("select her zaman bir dalı döner")
 }
 
 /// Gönderi verisini vxtwitter API'sinden çeker.
@@ -573,10 +573,7 @@ async fn from_vxtwitter(
     id: &str,
     language: Option<&str>,
     translation_target: &str,
-    max_video_bytes: u64,
-) -> Result<BuiltinPost, String> {
-    // vx tek video varyantı döndürür; kalite/bütçe seçimine gerek yok (FX/Syndication'dan farklı).
-    let _ = max_video_bytes;
+) -> Result<pipeline::Snapshot, String> {
     let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
     let handle = TWEET_URL_REGEX
         .captures(original_url)
@@ -587,6 +584,7 @@ async fn from_vxtwitter(
         .unwrap_or_else(|| "Twitter".to_string());
     let url = format!("{VXTWITTER_URL}/{handle}/status/{id}{language_suffix}");
     let value = super::get_json(client, &url).await?;
+    let nested_hint = vx_nested_hint(&value);
     let tweet: VxTweet = serde_json::from_value(value)
         .map_err(|e| format!("vxtwitter yanıtı çözümlenemedi ({id}): {e}"))?;
 
@@ -594,7 +592,41 @@ async fn from_vxtwitter(
         return Err(format!("vxtwitter yanıtında gönderi kimliği yok: {id}"));
     }
 
-    vx_to_post(&tweet, original_url, translation_target)
+    Ok(pipeline::Snapshot {
+        post: vx_to_post(&tweet, original_url, translation_target)?,
+        nested_hint,
+    })
+}
+
+/// An explicit qrtURL:null is evidence that the inline middle tweet has no quote.
+/// A URL points straight to the third tweet; a missing field is unknown, not absent.
+fn vx_nested_hint(value: &serde_json::Value) -> plan::NestedHint {
+    let tweet = value
+        .get("retweet")
+        .filter(|value| value.is_object())
+        .unwrap_or(value);
+    let Some(quote) = tweet.get("qrt").filter(|value| value.is_object()) else {
+        return plan::NestedHint::Absent;
+    };
+    match quote.get("qrtURL") {
+        Some(serde_json::Value::Null) => plan::NestedHint::Absent,
+        Some(serde_json::Value::String(url)) => {
+            let valid = url::Url::parse(url).ok().is_some_and(|parsed| {
+                matches!(parsed.scheme(), "https" | "http")
+                    && matches!(
+                        parsed.host_str(),
+                        Some("x.com" | "twitter.com" | "www.x.com" | "www.twitter.com")
+                    )
+                    && extract_tweet_id(url).is_some()
+            });
+            if valid {
+                plan::NestedHint::Present(url.clone())
+            } else {
+                plan::NestedHint::Unknown
+            }
+        }
+        _ => plan::NestedHint::Unknown,
+    }
 }
 
 /// vxtwitter JSON gönderi şeması. Şema içeriğe göre değişkendir (görsel/video/alıntı);
@@ -666,6 +698,23 @@ fn vx_to_post(
     let url = tweet
         .tweet_url
         .clone()
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| {
+            let id = tweet
+                .tweet_id
+                .as_deref()
+                .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))?;
+            let handle = if !handle.is_empty()
+                && handle
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                handle.as_str()
+            } else {
+                "i"
+            };
+            Some(format!("https://x.com/{handle}/status/{id}"))
+        })
         .unwrap_or_else(|| fallback_url.to_string());
     let mut post = BuiltinPost::new(Platform::Twitter, url, author);
 
@@ -685,7 +734,7 @@ fn vx_to_post(
     post.media = tweet.media_extended.iter().filter_map(vx_media).collect();
 
     if let Some(quote) = tweet.qrt.as_deref()
-        && let Ok(quote_post) = vx_to_post(quote, fallback_url, translation_target)
+        && let Ok(quote_post) = vx_to_post(quote, "", translation_target)
     {
         post.quote = Some(Box::new(quote_post));
     }
@@ -1837,13 +1886,47 @@ mod tests {
         let quote = post.quote.as_ref().expect("alıntı gömülmeli");
         assert_eq!(quote.author.handle, "alinti_user");
         assert_eq!(quote.text, "iç alıntı metni");
+        assert_eq!(
+            quote.url,
+            "https://x.com/alinti_user/status/999888777666555444"
+        );
     }
 
     #[test]
     fn twitter_hedge_and_nested_quote_budgets_are_separate() {
         assert_eq!(HEDGE_DELAY, Duration::from_millis(500));
-        assert_eq!(VX_HEDGE_DELAY, Duration::from_millis(125));
         assert_eq!(NESTED_QUOTE_TIMEOUT, Duration::from_millis(700));
+    }
+
+    #[test]
+    fn vx_quote_topology_distinguishes_absent_unknown_and_direct_third_post() {
+        assert_eq!(
+            vx_nested_hint(&serde_json::json!({"qrt": null})),
+            plan::NestedHint::Absent
+        );
+        assert_eq!(
+            vx_nested_hint(&serde_json::json!({"qrt": {"qrtURL": null}})),
+            plan::NestedHint::Absent
+        );
+        assert_eq!(
+            vx_nested_hint(&serde_json::json!({"qrt": {}})),
+            plan::NestedHint::Unknown
+        );
+        let url = "https://twitter.com/i/status/3";
+        assert_eq!(
+            vx_nested_hint(&serde_json::json!({"qrt": {"qrtURL": url}})),
+            plan::NestedHint::Present(url.to_string()),
+        );
+        assert_eq!(
+            vx_nested_hint(
+                &serde_json::json!({"qrt": {"qrtURL": "https://untrusted.test/x.com/a/status/3"}})
+            ),
+            plan::NestedHint::Unknown,
+        );
+        assert_eq!(
+            vx_nested_hint(&serde_json::json!({"retweet": {"qrt": {"qrtURL": url}}})),
+            plan::NestedHint::Present(url.to_string()),
+        );
     }
 
     #[test]

@@ -190,3 +190,40 @@ Gerçek Raspberry Pi üzerinde aynı sürüm/derleyiciyle sıcak-soğuk önbelle
 eşzamanlı aynı/farklı URL, yavaş upstream ve 429 senaryolarını ayrıca ölçün. RSS/CPU, upstream istek sayısı,
 timeout sonrası aktif iş ve p95 değerlerini değişiklik öncesi/sonrası karşılaştırın. Donanım üzerinde
 ölçülmeden hızlanma veya bellek tasarrufu yüzdesi iddia edilmez.
+
+### X: içerik farkındalıklı veri planı
+
+VxTwitter/otomatik çeviri yolu gelen veriye göre yeniden planlanır; kart gönderimi veya
+webhook taklidi değişmez. İlk soğuk okumada orijinal Vx verisi, syndication metadatası ve
+çeviri açıksa dil ekli Vx yanıtı paraleldir. Dil ekli yanıt spekülatiftir: İngilizce/Türkçe
+metinde beklenmez; yabancı dilde ise dil tespitinden sonra ikinci bir seri ağ turu oluşmaz.
+Gereksizleşen okumalar iptal edilir. Bunun bedeli, soğuk önbellekte en fazla üç kök GET'tir;
+bu bir hız garantisi değil, kritik yoldaki seri beklemeleri kaldırma tercihidir.
+
+- Yalnızca görünür, boş olmayan ve henüz çevrilmemiş metin için ek çeviri istenir.
+- `qrtURL: null` ile eksik `qrtURL` birbirinden ayrılır. Bilinen üçüncü gönderi doğrudan
+  çekilir; sırf keşif için orta gönderi yeniden istenmez. Bilgi yoksa kısa, best-effort
+  inceleme korunur. İlk alıntının medyalı olması, bilinen üçüncü alıntının metnini düşürmez.
+- Yanıtlar gönderi ID'siyle birleştirilir; boş/geç gelen yanıt mevcut çeviriyi, medyayı,
+  topluluk notunu veya tamamlanmış alıntıyı silmez. Zaman aşımında mevcut orijinal korunur.
+- Kaynak sonuçları ayrıca **600 saniye / 512 girdi** ile önbelleklenir; aynı ID başka bir
+  gönderide alıntılandığında da tekrar kullanılabilir. Kaynak/dil/hedef/video bütçeleri
+  ayrıdır; eşzamanlı aynı istekler tek çekimde birleşir. NSFW/spoiler kararı bu cache'e yazılmaz.
+- Kaynak/çeviri/alıntı işleri tek **6 saniyelik toplam veri bütçesini** paylaşır; ayrı ayrı
+  tam zaman aşımı süreleri birikmez. Harici link önizlemesinin ayrı 500 ms sınırı korunur.
+
+Karar, hata, iptal ve gecikme karşılaştırmalarını tekrarlamak için:
+
+```sh
+cargo test --locked converters::builtin::twitter
+cargo test --locked scripted_latency_comparison -- --ignored --nocapture
+cargo test --locked twitter::benchmarks -- --ignored --nocapture
+cargo test --locked live_fetch_three_level_quote -- --ignored --nocapture
+```
+
+`scripted_latency_comparison`, eski `facfe5a` akışıyla yeni planı aynı gecikmeli uç
+simülasyonlarında, cache'siz ve üçer örnekle karşılaştırır; çıktı eşitliğini de doğrular.
+Canlı testler salt okunurdur, Discord'a mesaj göndermez; upstream cache/konum/ağ etkileri
+nedeniyle bunların süreleri kontrollü karşılaştırmadan ve üretim ölçümlerinden ayrı tutulmalıdır.
+Windows'ta MSVC linker hazır değilse mevcut GNU/LLVM toolchain'iyle aynı kontroller
+`cargo +stable-x86_64-pc-windows-gnullvm ...` şeklinde çalıştırılabilir; global ayar değişmez.

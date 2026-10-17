@@ -135,6 +135,23 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
 // VERİ ÇEKME
 // =====================================================================================
 
+fn post_cache_key(parsed: &ParsedPost, engine: &EngineSettings) -> String {
+    // The content-aware Twitter path may finish from Syndication when neither notes
+    // nor metrics are requested. Do not reuse that result for a richer settings scope.
+    format!(
+        "post:{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        parsed.original_url,
+        engine.twitter_source.key(),
+        engine.auto_translate,
+        engine.translation_target,
+        engine.show_quote,
+        engine.max_video_mb,
+        parsed.is_spoiler,
+        engine.show_community_note,
+        engine.show_metrics,
+    )
+}
+
 /// Paylaşılan gönderinin verisini, platforma uygun kaynaktan çeker.
 /// Platforma göre gönderi verisini çeker. **Önbellek önce** denenir: aynı link kısa süre
 /// içinde tekrar paylaşıldığında ağ isteği yapılmaz (dönüşüm anında tamamlanır).
@@ -144,17 +161,7 @@ pub async fn fetch(
     engine: &EngineSettings,
     config: &Config,
 ) -> Result<std::sync::Arc<BuiltinPost>, String> {
-    // Sonucu etkileyen ayarlar anahtara dahil edilir (kaynak + çeviri).
-    let key = format!(
-        "post:{}|{}|{}|{}|{}|{}|{}",
-        parsed.original_url,
-        engine.twitter_source.key(),
-        engine.auto_translate,
-        engine.translation_target,
-        engine.show_quote,
-        engine.max_video_mb,
-        parsed.is_spoiler
-    );
+    let key = post_cache_key(parsed, engine);
 
     let _single_flight = coordination::lock(key.clone()).await;
 
@@ -1398,6 +1405,31 @@ fn is_discord_rejection(error: &str) -> bool {
 #[cfg(test)]
 mod message_tests {
     use super::*;
+
+    #[test]
+    fn content_requirements_are_isolated_in_the_whole_post_cache_key() {
+        let parsed = ParsedPost {
+            platform: Platform::Twitter,
+            original_url: "https://x.com/test/status/1".to_string(),
+            fixed_url: "https://x.com/test/status/1".to_string(),
+            is_spoiler: false,
+            user_comment: None,
+        };
+        let full = EngineSettings::default();
+        let mut minimal = full.clone();
+        minimal.show_community_note = false;
+        minimal.show_metrics = false;
+        assert_ne!(
+            post_cache_key(&parsed, &full),
+            post_cache_key(&parsed, &minimal)
+        );
+        let minimal_key = post_cache_key(&parsed, &minimal);
+        minimal.show_community_note = true;
+        assert_ne!(minimal_key, post_cache_key(&parsed, &minimal));
+        minimal.show_community_note = false;
+        minimal.show_metrics = true;
+        assert_ne!(minimal_key, post_cache_key(&parsed, &minimal));
+    }
 
     #[test]
     fn is_discord_rejection_treats_transient_rates_and_timeouts_as_non_rejections() {

@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-17 17:56] zoltrons — X veri çekimine içerik farkındalıklı paralel planlayıcı eklendi
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. Dil, hazır medya ve alıntı ilişkisine göre eksik görünür veriler planlanıyor; gereksiz okumalar iptal ediliyor ve kaynak/çeviri/alıntı işleri ortak 6 saniyelik bütçeyi paylaşıyor. Webhook taklidi değişmedi.
+  2. Bilinen üçüncü alıntı doğrudan çekiliyor; yanıtlar ID ile birleştirilerek mevcut çeviri, medya ve notlar korunuyor. Kaynak sonuçları 600 saniye / 512 girdi ile tekrar kullanılıyor; eşzamanlı aynı istekler birleştiriliyor ve ayar kapsamları cache anahtarında ayrılıyor.
+  3. Karar, iptal, hata, cache ve gecikme regresyon testleri ile tekrarlanabilir ölçüm komutları eklendi.
+- **Test:** Rust 1.98.1 GNU/LLVM ile 366 Rust testi başarılı, 9 test varsayılan olarak atlandı; 15 panel testi, Clippy `-D warnings` ve format kontrolü başarılı. Canlı üçlü alıntı/medya testi geçti. Kontrollü uç simülasyonu medyanları (3 tekrar, cache'siz): İngilizce video 247 → 62 ms, üçlü görsel 499 → 140 ms, çevirili üçlü 496 → 372 ms; Japonca video 247 → 249 ms. Bunlar üretim gecikmesi garantisi değildir.
+- **Etkilenen:** `src/converters/builtin/twitter.rs`, `src/converters/builtin/twitter/{plan,pipeline,source_cache,benchmarks}.rs`, `src/converters/builtin/mod.rs`, `README.md`
+
 ### [2026-10-17 16:47] zoltrons — Twitter veri fazındaki gereksiz beklemeler azaltıldı
 - **Commit:** `bu-commit`
 - **Yapılan:**
