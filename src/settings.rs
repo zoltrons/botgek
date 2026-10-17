@@ -130,6 +130,8 @@ pub enum TwitterSource {
     Syndication,
     /// api.fxtwitter.com: repost/alıntı/görüntülenme ve topluluk notu gibi ek veriler içerir.
     Fxtwitter,
+    /// api.vxtwitter.com: tek yanıtta gönderi + topluluk notu + X'in Grok çevirisi.
+    Vxtwitter,
     /// Önce X syndication denenir, yanıt gelmezse fxtwitter'a düşülür.
     Hybrid,
 }
@@ -139,6 +141,7 @@ impl TwitterSource {
         match self {
             TwitterSource::Syndication => "syndication",
             TwitterSource::Fxtwitter => "fxtwitter",
+            TwitterSource::Vxtwitter => "vxtwitter",
             TwitterSource::Hybrid => "hybrid",
         }
     }

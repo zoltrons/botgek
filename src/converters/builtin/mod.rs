@@ -1163,9 +1163,12 @@ pub async fn handle(
         Ok((message_id, impersonated)) => {
             crate::telemetry::record(platform_key(parsed.platform), true, started.elapsed());
             info!(
-                "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}, toplam {} ms): {}",
+                "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}, veri {} ms, medya {} ms, gönderim {} ms, toplam {} ms): {}",
                 parsed.platform,
                 impersonated,
+                fetched.as_millis(),
+                (media_done - fetched).as_millis(),
+                (started.elapsed() - media_done).as_millis(),
                 started.elapsed().as_millis(),
                 parsed.original_url
             );

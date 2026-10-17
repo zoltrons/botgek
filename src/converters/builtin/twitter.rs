@@ -23,6 +23,7 @@ use crate::settings::{EngineSettings, TwitterSource};
 
 const SYNDICATION_URL: &str = "https://cdn.syndication.twimg.com/tweet-result";
 const FXTWITTER_URL: &str = "https://api.fxtwitter.com";
+const VXTWITTER_URL: &str = "https://api.vxtwitter.com";
 
 static TWEET_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]{1,20})/status/(\d{1,25})")
@@ -237,8 +238,15 @@ async fn fetch_post_internal(
     let source = engine.twitter_source;
     let translate = engine.auto_translate;
 
-    // 1) Hızlı yol: tek FxTwitter isteği (çeviri açıksa dil ekli uç orijinal + çeviri verir).
-    if source == TwitterSource::Fxtwitter || translate {
+    // 1) Hızlı yol: tek vxtwitter isteği. Çeviri açıksa dil ekli ucu kullanılır: vx yanıtı
+    //    gönderiyi + topluluk notunu + X'in kendi Grok çevirisini **tek cevapta** verir;
+    //    eskiden çeviri yolu FxTwitter'a gidip alıntı beklemeleriyle 6-13 sn'yi buluyordu.
+    if translate || source == TwitterSource::Vxtwitter {
+        return fetch_vx_fast(client, original_url, id, engine, video_budget).await;
+    }
+
+    // 2) Hızlı yol kaynağı açıkça fxtwitter ise tek FxTwitter isteği (çeviri kapalı).
+    if source == TwitterSource::Fxtwitter {
         return fetch_fx_fast(client, original_url, id, engine, video_budget).await;
     }
 
@@ -435,6 +443,320 @@ async fn fetch_fx_fast(
         Err(_) => {}
     }
     Ok(post)
+}
+
+/// Hızlı yol: **tek** vxtwitter isteği + gecikme sigortası (hedge).
+///
+/// vx yanıtı gönderi, metrikler, topluluk notu **ve** (dil ekiyle) X'in kendi Grok çevirisini
+/// tek cevapta verir: FX'in aksine not için sınırsız bekleme yoktur — hedge sonrası yalnızca
+/// [`HEDGE_MERGE_GRACE`] kadar ek süre tanınır, sonra syndication verisiyle devam edilir.
+/// Yavaş ya da hata veren uç kartı bekletmez.
+async fn fetch_vx_fast(
+    client: &reqwest::Client,
+    original_url: &str,
+    id: &str,
+    engine: &EngineSettings,
+    max_video_bytes: u64,
+) -> Result<BuiltinPost, String> {
+    let translate = engine.auto_translate;
+    let translation_target = &engine.translation_target;
+    let language = translate.then_some(translation_target.as_str());
+    let vx = from_vxtwitter(
+        client,
+        original_url,
+        id,
+        language,
+        translation_target,
+        max_video_bytes,
+    );
+    tokio::pin!(vx);
+
+    match tokio::time::timeout(HEDGE_DELAY, &mut vx).await {
+        Ok(Ok(post)) => return Ok(post),
+        Ok(Err(err)) => {
+            warn!("vxTwitter isteği başarısız ({id}): {err}");
+            // Dil eki sorun çıkarmış olabilir: bir kez dil olmadan denenir.
+            // Dil yoksa ilk istek zaten dilsizdi; aynı isteği tekrarlamak gecikme ekler.
+            return if language.is_some() {
+                from_vxtwitter(
+                    client,
+                    original_url,
+                    id,
+                    None,
+                    translation_target,
+                    max_video_bytes,
+                )
+                .await
+            } else {
+                Err(err)
+            };
+        }
+        // Yanıt gecikti: hedge devreye girer (X syndication ucu da istenir).
+        Err(_elapsed) => debug!(
+            "vxTwitter {} ms içinde yanıt vermedi ({id}): X ucu da paralel istendi",
+            HEDGE_DELAY.as_millis()
+        ),
+    }
+
+    let syndication = from_syndication(client, original_url, id, max_video_bytes);
+    tokio::pin!(syndication);
+
+    // İki uç yarışır; vx tercih edilir (topluluk notu ve çeviri onda).
+    let (vx_result, x_result) = tokio::select! {
+        biased;
+        result = &mut vx => (Some(result), None),
+        result = &mut syndication => (None, Some(result)),
+    };
+
+    if let Some(result) = vx_result {
+        return match result {
+            Ok(post) => Ok(post),
+            Err(err) => {
+                debug!("vxTwitter hedge sonrası hata verdi ({id}): {err}");
+                syndication
+                    .await
+                    .map_err(|sy_err| format!("{err} | {sy_err}"))
+            }
+        };
+    }
+
+    // X ucu kazandı: veri hazır. vx tek yanıttayla not + çeviri sunduğundan yalnızca
+    // kısa bir ek süre tanınır; o da gelmezse syndication sonucu kullanılır (notsuz).
+    match tokio::time::timeout(HEDGE_MERGE_GRACE, &mut vx).await {
+        Ok(Ok(post)) => return Ok(post),
+        Ok(Err(err)) => {
+            debug!("vxTwitter hedge sonrası hata verdi ({id}): {err}");
+        }
+        Err(_) => {}
+    }
+    x_result.expect("select her zaman bir dalı döner")
+}
+
+/// Gönderi verisini vxtwitter API'sinden çeker.
+///
+/// Dil eki (`/tr`) verildiğinde yanıt `translation` alanında X'in kendi Grok çevirisini
+/// taşır; topluluk notu (`communityNote`) her yanıtta mevcuttur (yoksa null).
+async fn from_vxtwitter(
+    client: &reqwest::Client,
+    original_url: &str,
+    id: &str,
+    language: Option<&str>,
+    translation_target: &str,
+    max_video_bytes: u64,
+) -> Result<BuiltinPost, String> {
+    // vx tek video varyantı döndürür; kalite/bütçe seçimine gerek yok (FX/Syndication'dan farklı).
+    let _ = max_video_bytes;
+    let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
+    let handle = TWEET_URL_REGEX
+        .captures(original_url)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_string())
+        .filter(|handle| !handle.is_empty())
+        // vx yoldaki kullanıcı adını yalnızca adres biçimi için kullanır; her segment çalışır.
+        .unwrap_or_else(|| "Twitter".to_string());
+    let url = format!("{VXTWITTER_URL}/{handle}/status/{id}{language_suffix}");
+    let value = super::get_json(client, &url).await?;
+    let tweet: VxTweet = serde_json::from_value(value)
+        .map_err(|e| format!("vxtwitter yanıtı çözümlenemedi ({id}): {e}"))?;
+
+    if tweet.tweet_id.is_none() {
+        return Err(format!("vxtwitter yanıtında gönderi kimliği yok: {id}"));
+    }
+
+    vx_to_post(&tweet, original_url, translation_target)
+}
+
+/// vxtwitter JSON gönderi şeması. Şema içeriğe göre değişkendir (görsel/video/alıntı);
+/// tüm alanlar `Option` + `#[serde(default)]` ile toleranslı çözümlenir.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct VxTweet {
+    #[serde(rename = "tweetID")]
+    tweet_id: Option<String>,
+    #[serde(rename = "tweetURL")]
+    tweet_url: Option<String>,
+    text: Option<String>,
+    #[serde(rename = "user_name")]
+    user_name: Option<String>,
+    #[serde(rename = "user_screen_name")]
+    user_screen_name: Option<String>,
+    #[serde(rename = "user_profile_image_url")]
+    user_profile_image_url: Option<String>,
+    #[serde(rename = "date_epoch")]
+    date_epoch: Option<i64>,
+    likes: Option<u64>,
+    retweets: Option<u64>,
+    replies: Option<u64>,
+    lang: Option<String>,
+    possibly_sensitive: Option<bool>,
+    #[serde(rename = "media_extended")]
+    media_extended: Vec<VxMedia>,
+    qrt: Option<Box<VxTweet>>,
+    #[serde(rename = "communityNote")]
+    community_note: Option<String>,
+    translation: Option<VxTranslation>,
+    /// Saf retweet: vx gerçek içeriği buraya koyar, dış metni boşatır.
+    retweet: Option<Box<VxTweet>>,
+}
+
+/// vxtwitter gönderisini [`BuiltinPost`]'a çevirir.
+///
+/// Alıntı yalnızca **ilk seviye** inline gömülür (`qrt`); daha derin zincirler
+/// [`populate_nested_quote`] akışındaki mevcut yolla tamamlanır.
+fn vx_to_post(
+    tweet: &VxTweet,
+    fallback_url: &str,
+    translation_target: &str,
+) -> Result<BuiltinPost, String> {
+    let handle = tweet.user_screen_name.clone().unwrap_or_default();
+
+    // Saf retweet: vx gerçek içeriği `retweet` objesine koyar ve dış metni boşatır.
+    if let Some(inner) = tweet.retweet.as_deref() {
+        let mut inner_post = vx_to_post(inner, fallback_url, translation_target)?;
+        inner_post.quote = None; // retweet içinde alıntı zinciri gösterilmez.
+        return Ok(inner_post);
+    }
+
+    let mut author = Author::new(
+        tweet
+            .user_name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| handle.clone()),
+        handle.clone(),
+    );
+    author.avatar = tweet.user_profile_image_url.clone();
+    author.profile_url = if handle.is_empty() {
+        None
+    } else {
+        Some(format!("https://x.com/{handle}"))
+    };
+
+    let url = tweet
+        .tweet_url
+        .clone()
+        .unwrap_or_else(|| fallback_url.to_string());
+    let mut post = BuiltinPost::new(Platform::Twitter, url, author);
+
+    let raw_text = tweet.text.clone().unwrap_or_default();
+    post.text = strip_trailing_media_links(&super::unescape_html(&raw_text));
+    post.language = tweet.lang.clone().filter(|lang| !lang.trim().is_empty());
+    post.created_at = tweet.date_epoch;
+    post.stats = Stats {
+        replies: tweet.replies.unwrap_or(0),
+        reposts: tweet.retweets.unwrap_or(0),
+        likes: tweet.likes.unwrap_or(0),
+        quotes: 0,
+        // vx görüntülenme sayısını bildirmez; FX akışı istenirse merge_stats ile tamamlar.
+        views: None,
+    };
+    post.sensitive = tweet.possibly_sensitive.unwrap_or(false);
+    post.media = tweet.media_extended.iter().filter_map(vx_media).collect();
+
+    if let Some(quote) = tweet.qrt.as_deref()
+        && let Ok(quote_post) = vx_to_post(quote, fallback_url, translation_target)
+    {
+        post.quote = Some(Box::new(quote_post));
+    }
+
+    post.community_note = tweet
+        .community_note
+        .clone()
+        .map(|note| note.trim().to_owned())
+        .filter(|note| !note.is_empty());
+
+    apply_vx_translation(&mut post, tweet, translation_target);
+    Ok(post)
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct VxMedia {
+    url: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    size: Option<VxSize>,
+    #[serde(rename = "thumbnail_url")]
+    thumbnail_url: Option<String>,
+    #[serde(rename = "duration_millis")]
+    duration_millis: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct VxSize {
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VxTranslation {
+    text: Option<String>,
+    #[serde(rename = "source_language")]
+    source_language: Option<String>,
+}
+
+/// vxtwitter medya öğesini [`Media`]'ya çevirir.
+///
+/// Görsel: `url` doğrudan `pbs.twimg.com` adresidir. Video: `poster` küçük görsel varyantı,
+/// süre milisaniyedir. GIF: vx de `tweet_video` mp4'ünü verir; kart bunu vxTwitter **gifconvert**
+/// servisine türetilmiş animasyonlu AVIF bağlantısıyla göstermeye devam eder.
+fn vx_media(item: &VxMedia) -> Option<Media> {
+    let url = item.url.as_deref()?.to_string();
+    let (width, height) = item
+        .size
+        .as_ref()
+        .map_or((None, None), |s| (s.width, s.height));
+    let duration = item.duration_millis.map(|ms| ms.div_ceil(1000));
+
+    let kind = match item.kind.as_deref() {
+        Some("video") => MediaKind::Video,
+        Some("gif") => MediaKind::Gif,
+        Some("image") | None => MediaKind::Image,
+        Some(other) => {
+            debug!("Bilinmeyen vx medya türü atlandı ({other}): {url}");
+            return None;
+        }
+    };
+
+    Some(Media {
+        kind,
+        url,
+        poster: item.thumbnail_url.clone(),
+        width,
+        height,
+        duration,
+    })
+}
+
+/// Dil ekli vxtwitter yanıtındaki X çevirisini gönderiye uygular.
+///
+/// Eski FX akışındaki [Grok kuralı] burada ücretsiz sağlanır: vx'in `translation` alanı
+/// yapısal olarak yalnızca X'in `grok_translated_post_with_availability` verisiyle dolduğu
+/// için sağlayıcı kontrolüne gerek kalmaz. Yalnızca gönderi Türkçe/İngilizce değilse uygulanır.
+fn apply_vx_translation(post: &mut BuiltinPost, tweet: &VxTweet, translation_target: &str) {
+    if !needs_translation(post.language.as_deref(), translation_target) {
+        return;
+    }
+
+    let Some(translation) = tweet.translation.as_ref() else {
+        return;
+    };
+
+    let Some(text) = translation
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    else {
+        return;
+    };
+
+    post.text = strip_trailing_media_links(&super::unescape_html(text));
+    post.translation = Some(Translation {
+        source: translation
+            .source_language
+            .clone()
+            .or_else(|| post.language.clone()),
+    });
 }
 
 /// Eksik alanları doldurur; kaynakta 0/`None` olan değerleri taze veriyle değiştirir.
@@ -1310,6 +1632,200 @@ mod tests {
         .expect("gönderi üretilmeli")
     }
 
+    /// vxtwitter API yanıtının alan yapısı (canlı yanıttan; görsel içerikli gönderi).
+    fn vx_tweet_json(lang: &str) -> serde_json::Value {
+        serde_json::json!({
+            "text": "Guten Morgen zusammen",
+            "tweetID": "1112223334445556666",
+            "tweetURL": "https://twitter.com/kullanici/status/1112223334445556666",
+            "user_name": "Kullanıcı",
+            "user_screen_name": "kullanici",
+            "user_profile_image_url": "https://pbs.twimg.com/profile_images/1/a_normal.jpg",
+            "date_epoch": 1_714_998_896,
+            "likes": 12,
+            "retweets": 3,
+            "replies": 4,
+            "lang": lang,
+            "possibly_sensitive": false,
+            "media_extended": [{
+                "url": "https://pbs.twimg.com/media/AaBbCcD.jpg",
+                "type": "image",
+                "size": { "width": 1200, "height": 800 },
+                "thumbnail_url": "https://pbs.twimg.com/media/AaBbCcD.jpg",
+                "altText": null,
+                "id_str": "100"
+            }],
+            "communityNote": null,
+            "translation": null,
+            "qrt": null,
+            "retweet": null
+        })
+    }
+
+    fn vx_post_from(json: &serde_json::Value) -> BuiltinPost {
+        let tweet: VxTweet =
+            serde_json::from_value(json.clone()).expect("örnek vx JSON geçerli olmalı");
+        vx_to_post(
+            &tweet,
+            "https://x.com/kullanici/status/1112223334445556666",
+            "tr",
+        )
+        .expect("vxtwitter gönderisi üretilmeli")
+    }
+
+    #[test]
+    fn vx_parses_text_author_stats_and_media() {
+        let post = vx_post_from(&vx_tweet_json("en"));
+
+        assert_eq!(post.author.handle, "kullanici");
+        assert_eq!(post.author.name, "Kullanıcı");
+        assert_eq!(
+            post.author.profile_url.as_deref(),
+            Some("https://x.com/kullanici")
+        );
+        assert_eq!(
+            post.author.avatar.as_deref(),
+            Some("https://pbs.twimg.com/profile_images/1/a_normal.jpg")
+        );
+        assert_eq!(post.created_at, Some(1_714_998_896));
+        assert_eq!(post.stats.likes, 12);
+        assert_eq!(post.stats.reposts, 3);
+        assert_eq!(post.stats.replies, 4);
+        assert_eq!(post.media.len(), 1);
+        assert_eq!(post.media[0].kind, MediaKind::Image);
+        assert_eq!(post.media[0].width, Some(1200));
+        assert_eq!(post.media[0].height, Some(800));
+    }
+
+    #[test]
+    fn vx_video_and_gif_media_map_to_the_right_kinds() {
+        let mut json = vx_tweet_json("en");
+        json["media_extended"] = serde_json::json!([
+            {
+                "url": "https://video.twimg.com/ext_tw_video/1/pu/vid/762x528/x.mp4",
+                "type": "video",
+                "size": { "width": 762, "height": 528 },
+                "duration_millis": 13_650,
+                "thumbnail_url": "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg",
+                "altText": null,
+                "id_str": "101"
+            },
+            {
+                "url": "https://video.twimg.com/tweet_video/AaBbCcD.mp4",
+                "type": "gif",
+                "size": { "width": 500, "height": 500 },
+                "duration_millis": 0,
+                "thumbnail_url": "https://pbs.twimg.com/tweet_video_thumb/AaBbCcD.jpg",
+                "altText": null,
+                "id_str": "102"
+            },
+            { "type": "unknown_kind", "url": "https://pbs.twimg.com/media/z.mp4" }
+        ]);
+
+        let post = vx_post_from(&json);
+        assert_eq!(post.media.len(), 2, "bilinmeyen tür atlanır");
+
+        let video = &post.media[0];
+        assert_eq!(video.kind, MediaKind::Video);
+        assert_eq!(
+            video.duration,
+            Some(14),
+            "13_650 ms → 14 sn (yukarı yuvarlar)"
+        );
+        assert_eq!(
+            video.poster.as_deref(),
+            Some("https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/x.jpg")
+        );
+
+        let gif = &post.media[1];
+        assert_eq!(gif.kind, MediaKind::Gif);
+        assert_eq!(gif.url, "https://video.twimg.com/tweet_video/AaBbCcD.mp4");
+        // gifconvert türetimi (`media::gif_convert_url`) tweet_video yolunu kabul eder.
+        assert!(crate::converters::builtin::media::gif_convert_url(&gif.url).is_some());
+    }
+
+    #[test]
+    fn vx_translation_applies_only_for_foreign_languages() {
+        // Almanca → hedef Türkçe: X'in Grok çevirisi uygulanır ve metin değişir.
+        let mut german = vx_tweet_json("de");
+        german["translation"] = serde_json::json!({
+            "text": "Herkese günaydın",
+            "source_language": "de"
+        });
+        let post = vx_post_from(&german);
+        assert_eq!(post.text, "Herkese günaydın");
+        assert_eq!(
+            post.translation,
+            Some(Translation {
+                source: Some("de".into())
+            })
+        );
+
+        // Türkçe gönderi: çeviri alanı dolu olsa bile uygulanmaz.
+        let mut turkish = vx_tweet_json("tr");
+        turkish["translation"] = german["translation"].clone();
+        let post = vx_post_from(&turkish);
+        assert_eq!(post.text, "Guten Morgen zusammen");
+        assert!(post.translation.is_none());
+
+        // Çeviri metni boşluk ise yok sayılır.
+        let mut blank = vx_tweet_json("de");
+        blank["translation"]["text"] = serde_json::json!("   ");
+        let post = vx_post_from(&blank);
+        assert_eq!(post.text, "Guten Morgen zusammen");
+        assert!(post.translation.is_none());
+    }
+
+    #[test]
+    fn vx_community_note_is_kept_but_blank_notes_dropped() {
+        let mut json = vx_tweet_json("en");
+        json["communityNote"] = serde_json::json!("Bu gönderi bağlamı eksik: ...");
+        let post = vx_post_from(&json);
+        assert_eq!(
+            post.community_note.as_deref(),
+            Some("Bu gönderi bağlamı eksik: ...")
+        );
+
+        let mut blank = vx_tweet_json("en");
+        blank["communityNote"] = serde_json::json!("   ");
+        assert!(vx_post_from(&blank).community_note.is_none());
+    }
+
+    #[test]
+    fn vx_quote_is_embedded_one_level_deep() {
+        let mut json = vx_tweet_json("en");
+        json["qrt"] = serde_json::json!({
+            "tweetID": "999888777666555444",
+            "text": "iç alıntı metni",
+            "user_name": "Alinti",
+            "user_screen_name": "alinti_user",
+            "media_extended": [],
+        });
+
+        let post = vx_post_from(&json);
+        let quote = post.quote.as_ref().expect("alıntı gömülmeli");
+        assert_eq!(quote.author.handle, "alinti_user");
+        assert_eq!(quote.text, "iç alıntı metni");
+    }
+
+    #[test]
+    fn vx_retweet_unwraps_the_inner_content() {
+        let mut json = vx_tweet_json("en");
+        json["text"] = serde_json::json!("");
+        json["retweet"] = serde_json::json!({
+            "tweetID": "888999111222333444",
+            "text": "asıl içerik",
+            "user_name": "Asıl",
+            "user_screen_name": "asil_user",
+            "media_extended": [],
+        });
+
+        let post = vx_post_from(&json);
+        assert_eq!(post.author.handle, "asil_user");
+        assert_eq!(post.text, "asıl içerik");
+        assert!(post.quote.is_none());
+    }
+
     #[test]
     fn fx_video_uses_the_variant_that_plays_instantly() {
         let mut json = translated_tweet("en");
@@ -1703,9 +2219,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires live X/FxTwitter access; run explicitly"]
+    #[ignore = "requires live X/vxTwitter access; run explicitly"]
     async fn live_fetch_three_level_quote() {
         let client = reqwest::Client::builder()
+            .tls_backend_rustls()
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap();
@@ -1717,7 +2234,7 @@ mod tests {
             user_comment: None,
         };
         let mut engine = EngineSettings {
-            twitter_source: TwitterSource::Fxtwitter,
+            twitter_source: TwitterSource::Vxtwitter,
             show_quote: true,
             ..EngineSettings::default()
         };

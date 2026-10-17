@@ -43,6 +43,26 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-17 11:15] zoltrons — Twitter veri kaynağı vxtwitter'a geçti; çeviri yolu 6-13 sn'den <1 sn'ye
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. **Kök neden:** `auto_translate` açıkken kritik yol FxTwitter'a gidiyor ve çok aşamalı gecikmeler (hedge +
+    topluluk notu için **sınırsız** FX beklemesi + 6 sn istek zaman aşımı) 6.6-12.8 sn kart gecikmelerine neden
+    oluyordu. FX'in `/tr` çevirisi artık X'in çevirisi değil (kendi Polyglot/Grok servisi); vx API'si ise tek
+    yanıtta X'in birebir Grok `translation` alanını döndürür (canlı doğrulandı: `grok_translated_post_with_availability`).
+  2. **Geçiş:** `TwitterSource::Vxtwitter` eklendi; `from_vxtwitter` + `fetch_vx_fast` (FX akışıyla aynı hedge yapısı
+    fakat **sınırsız not beklemesi yok** — hedge 500 ms + syndication'a 300 ms grace). `auto_translate` veya
+    `twitter_source=vxtwitter` durumlarında **tek istekte** metin + medya (video poster/milisaniye-süre; GIF
+    `tweet_video` mp4'ü mevcut gifconvert türetim akışını beslemeyi sürdürür) + metrikler + topluluk notu +
+    X çevirisi alınıyor. Yanıt şeması tümü-`Option` toleranslı ayrıştırılır; `qrt` bir seviye gömülür, daha derin
+    zincir mevcut `populate_nested_quote` ile tamamlanır; saf retweet iç içeriğe açılır. `fxtwitter` açıkça
+    seçiliyse eski FX hızlı yolu; syndication+çeviri-kapalıysa eski syndication+FX birleştirme akışı korunur.
+  3. **Panel/ayarlar:** panelde "vxTwitter · tek istekte metin, not ve X çevirisi (önerilen)" opsiyonu;
+    `settings.json` `engine.twitter_source=vxtwitter`. 8 yeni vx birim testi (parse/medya/süre/çeviri/not/
+    alıntı/retweet/tolerans). Canlı 3-seviye alıntı testi vx kaynağına taşındı ve eksik olan
+    `.tls_backend_rustls()` eklenerek çalışır hâle getirildi — live test **geçiyor**.
+- **Etkilenen:** `src/settings.rs`, `src/converters/builtin/twitter.rs`, `src/web/ui/index.html`, `settings.json`
+
 ### [2026-10-15 15:20] zoltrons — Çeviri notu satır içi koda alındı (saatin yanına)
 - **Commit:** `bu-commit`
 - **Düzeltme:** Önceki turda yanlış anlaşılıp **blok alıntı** yapılan çeviri notu, istenen biçime çevrildi: **satır içi kod** (ters tırnak) ve **saatin hemen yanında** —

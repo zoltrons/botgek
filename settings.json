@@ -86,7 +86,7 @@
       "bluesky": "",
       "spotify": ""
     },
-    "twitter_source": "syndication",
+    "twitter_source": "vxtwitter",
     "max_images": 4,
     "max_video_mb": 8,
     "show_metrics": true,
