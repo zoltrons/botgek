@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-15 15:05] zoltrons — Çeviri notu blok alıntıya alındı
+- **Commit:** `bu-commit`
+- **Yapılan:** Çeviri notu (`Portekizce'den çevrildi`) artık alt bilgi satırının **hemen altında blok alıntı** olarak gösterilir (`> Portekizce'den çevrildi`); üstteki soluk satırda **platform emojisi (en solda)** ve saat kalır. Not emojisizdir, blok kendi sol şeridiyle ayrılır.
+- **Test:** **314 Rust** + **13 panel** testi geçiyor; `check` · `clippy -D warnings` · `fmt --check` temiz.
+- **Etkilenen:** `src/converters/builtin/v2.rs`
+
+
 ### [2026-10-15 14:40] zoltrons — Kart: kullanıcı adı yeniden kalın, çeviri notu emojisiz ve saatin yanında
 - **Commit:** `bu-commit`
 - **Yapılan:**

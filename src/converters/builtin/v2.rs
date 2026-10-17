@@ -760,14 +760,6 @@ fn meta_line(card: &V2Card<'_>) -> String {
         parts.push(format!("<t:{created_at}:R>"));
     }
 
-    // Çeviri notu **saatin hemen yanında** durur ve saat gibi soluk kalır; başında emoji
-    // **yoktur** (not: `Japonca'dan çevrildi`).
-    if let Some(translation) = &post.translation {
-        parts.push(super::translate::translated_from_note(
-            translation.source.as_deref(),
-        ));
-    }
-
     // Gönderi linki kartın içinde durur.
     let link = format!("[Link]({})", post.url);
     parts.push(spoiler_wrap(&link, hidden(card)));
@@ -779,10 +771,22 @@ fn meta_line(card: &V2Card<'_>) -> String {
         parts.push(format!("Gönderen: <@{sender}>"));
     }
 
+    // Çeviri notu **blok alıntı** olarak, saatin bulunduğu satırın hemen altında durur:
+    //   `> Portekizce'den çevrildi`
+    // Blok alıntı kendi sol şeridiyle ayrılır; platform emojisi ve saat üstteki `-# ` satırında
+    // kalır (platform emojisi her zaman en soldadır).
+    let mut line = format!("-# {}", parts.join(" • "));
+    if let Some(translation) = &post.translation {
+        line.push('\n');
+        line.push_str("> ");
+        line.push_str(&super::translate::translated_from_note(
+            translation.source.as_deref(),
+        ));
+    }
+
     // Not: indirilemeyen video için ayrıca "🎬 Videoyu aç" bağlantısı **eklenmez**; video
     // zaten kartın içindeki Media Gallery'de oynar (öğe başına tek gösterim yeterli).
-
-    format!("-# {}", parts.join(" • "))
+    line
 }
 
 /// Hassas gönderilerde metni spoiler içine alır.
@@ -1544,7 +1548,7 @@ mod tests {
     }
 
     #[test]
-    fn translation_note_follows_the_timestamp_without_emoji() {
+    fn translation_note_is_a_block_quote_below_the_meta_line() {
         let mut post = sample_post();
         post.translation = Some(Translation {
             source: Some("pt".to_string()),
@@ -1556,12 +1560,15 @@ mod tests {
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let meta = texts(&payload).last().unwrap().to_string();
 
-        // Platform emojisi **en solda**, çeviri notu **emojisiz** ve saatin hemen yanında.
+        // Üstteki soluk satırda **platform emojisi en solda** ve saat; çeviri notu ise hemen
+        // altında **blok alıntı** olarak ve **emojisiz** durur.
         assert!(
-            meta.starts_with(
-                "-# <:twitter:1476642012072920355> • <t:1714998896:R> • Portekizce'den çevrildi"
-            ),
-            "çeviri notu saatin yanında ve emojisiz olmalı: {meta}"
+            meta.starts_with("-# <:twitter:1476642012072920355> • <t:1714998896:R>"),
+            "platform emojisi ve saat üst satırda olmalı: {meta}"
+        );
+        assert!(
+            meta.contains("\n> Portekizce'den çevrildi"),
+            "çeviri notu blok alıntı olarak altta olmalı: {meta}"
         );
         assert!(
             !meta.contains("<:translation:"),
