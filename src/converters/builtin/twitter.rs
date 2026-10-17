@@ -5,7 +5,7 @@
 //!   üçüncü taraf yok, API anahtarı yok. Metin/görsel/video/alıntı/metrik verir.
 //! - **FxTwitter** (`api.fxtwitter.com`): görüntülenme, repost, topluluk notu gibi ek alanlar.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::Deserialize;
@@ -33,9 +33,13 @@ static TWEET_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 /// Hızlı yol (FxTwitter) bu süre içinde yanıt vermezse X syndication ucu **paralel**
 /// başlatılır (hedge): yavaş veya askıda kalan uç kartın gelmesini geciktirmez.
 const HEDGE_DELAY: Duration = Duration::from_millis(500);
+/// VxTwitter için syndication hedge'i daha erken başlatılır; FxTwitter'ın bütçesi değişmez.
+const VX_HEDGE_DELAY: Duration = Duration::from_millis(125);
 /// Hedge sonrası X ucu kazandıysa, çeviri/metrikleri tamamlamak için FxTwitter'a tanınan
 /// ek süre (gelmezse X verisiyle devam edilir).
 const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(300);
+/// İç içe alıntı, ana gönderiyi bekletmemesi gereken en iyi çaba tamamlamasıdır.
+const NESTED_QUOTE_TIMEOUT: Duration = Duration::from_millis(700);
 /// Harici link önizlemesi (X'in "link kartı") için tanınan süre: hedef sayfa bu süre
 /// içinde yanıt vermezse kart önizlemesiz gönderilir (kart asla bekletilmez).
 const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(500);
@@ -86,19 +90,34 @@ pub async fn fetch(
         engine.twitter_source.key()
     );
 
+    let source_started = Instant::now();
     let mut post =
         fetch_post_internal(client, &parsed.original_url, &id, engine, video_budget).await?;
+    let source_elapsed = source_started.elapsed();
 
     // Medyasız zincirlerde X alıntının alıntısını da (3 seviye) gösterir.
     // Ancak ne Syndication ne de FxTwitter API'si tek yanıtta iç içe alıntıyı dönmez:
-    // alıntılanan gönderinin kendisi çekilerek içteki alıntı (ve medyası) tamamlanır.
-    if engine.show_quote && post.media.is_empty() {
+    // ilk seviye alıntı da medyasızsa, alıntılanan gönderinin kendisi çekilerek içteki
+    // alıntı (ve medyası) tamamlanır.
+    let nested_started = Instant::now();
+    if engine.show_quote && should_populate_nested_quote(&post) {
         populate_nested_quote(client, &mut post, engine, video_budget).await;
     }
+    let nested_elapsed = nested_started.elapsed();
 
     // Gönderi yalnızca link içeriyorsa X'in kendi arayüzünde gösterdiği link kartı
     // (hedef sayfanın önizlemesi) da karta eklenir.
+    let preview_started = Instant::now();
     attach_link_preview(client, &mut post).await;
+    let preview_elapsed = preview_started.elapsed();
+
+    debug!(
+        "X veri fazları ({id}): kaynak {} ms, iç içe alıntı {} ms, link önizleme {} ms, toplam {} ms",
+        source_elapsed.as_millis(),
+        nested_elapsed.as_millis(),
+        preview_elapsed.as_millis(),
+        (source_elapsed + nested_elapsed + preview_elapsed).as_millis(),
+    );
 
     Ok(post)
 }
@@ -287,8 +306,8 @@ async fn fetch_post_internal(
 /// Medyasız alıntı zincirlerinde iç içe alıntıyı (3. seviye) tamamlar.
 ///
 /// X'in syndication ve FxTwitter API'leri performans gerekçesiyle alıntı içindeki alıntıyı
-/// (2. derinlik) tek yanıtta dönmez. Gönderide medya yoksa ve alıntı içeriyorsa, alıntılanan
-/// tweet ayrı bir istekle çekilerek iç içe alıntı ve medyası (varsa) zincire eklenir.
+/// (2. derinlik) tek yanıtta dönmez. Gönderi ve ilk seviye alıntı medyasızsa, alıntılanan tweet
+/// ayrı bir istekle çekilerek iç içe alıntı ve medyası (varsa) zincire eklenir.
 async fn populate_nested_quote(
     client: &reqwest::Client,
     post: &mut BuiltinPost,
@@ -307,10 +326,9 @@ async fn populate_nested_quote(
 
     // Alıntılanan gönderiyi çekerek iç içe alıntıyı (3. seviye) ara.
     // Ana isteği gereksiz bekletmemek için kısa bir zaman aşımı uygulanır.
-    let timeout = Duration::from_millis(1500);
     let fetch_fut = fetch_post_internal(client, &quote.url, &quote_id, engine, video_budget);
 
-    match tokio::time::timeout(timeout, fetch_fut).await {
+    match tokio::time::timeout(NESTED_QUOTE_TIMEOUT, fetch_fut).await {
         Ok(Ok(full_quote)) => {
             *quote = full_quote;
         }
@@ -329,6 +347,19 @@ fn extract_tweet_id(url: &str) -> Option<String> {
         .captures(url)
         .and_then(|c| c.get(2))
         .map(|m| m.as_str().to_string())
+}
+
+/// İç içe alıntı isteğinin gerekli olup olmadığını belirler.
+///
+/// Ana gönderi medyasızsa ve ilk seviye alıntı da medyasızsa, eksik üçüncü seviyeyi
+/// tamamlamak anlamlıdır. İlk seviye alıntıda medya gömülüyse yeni istek yalnızca
+/// gecikme ekler; mevcut iç içe alıntı da yeniden çekilmez.
+fn should_populate_nested_quote(post: &BuiltinPost) -> bool {
+    post.media.is_empty()
+        && post
+            .quote
+            .as_ref()
+            .is_some_and(|quote| quote.media.is_empty() && quote.quote.is_none())
 }
 
 /// Hızlı yol: **tek** FxTwitter isteği + gecikme sigortası (hedge).
@@ -471,7 +502,7 @@ async fn fetch_vx_fast(
     );
     tokio::pin!(vx);
 
-    match tokio::time::timeout(HEDGE_DELAY, &mut vx).await {
+    match tokio::time::timeout(VX_HEDGE_DELAY, &mut vx).await {
         Ok(Ok(post)) => return Ok(post),
         Ok(Err(err)) => {
             warn!("vxTwitter isteği başarısız ({id}): {err}");
@@ -494,7 +525,7 @@ async fn fetch_vx_fast(
         // Yanıt gecikti: hedge devreye girer (X syndication ucu da istenir).
         Err(_elapsed) => debug!(
             "vxTwitter {} ms içinde yanıt vermedi ({id}): X ucu da paralel istendi",
-            HEDGE_DELAY.as_millis()
+            VX_HEDGE_DELAY.as_millis()
         ),
     }
 
@@ -1806,6 +1837,74 @@ mod tests {
         let quote = post.quote.as_ref().expect("alıntı gömülmeli");
         assert_eq!(quote.author.handle, "alinti_user");
         assert_eq!(quote.text, "iç alıntı metni");
+    }
+
+    #[test]
+    fn twitter_hedge_and_nested_quote_budgets_are_separate() {
+        assert_eq!(HEDGE_DELAY, Duration::from_millis(500));
+        assert_eq!(VX_HEDGE_DELAY, Duration::from_millis(125));
+        assert_eq!(NESTED_QUOTE_TIMEOUT, Duration::from_millis(700));
+    }
+
+    #[test]
+    fn nested_quote_refresh_only_runs_for_media_less_first_level_quotes() {
+        let mut post = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/kullanici/status/1",
+            Author::new("Kullanıcı", "kullanici"),
+        );
+        assert!(
+            !should_populate_nested_quote(&post),
+            "alıntı yoksa yenileme yok"
+        );
+
+        post.quote = Some(Box::new(BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/alinti/status/2",
+            Author::new("Alıntı", "alinti"),
+        )));
+        assert!(
+            should_populate_nested_quote(&post),
+            "medyasız alıntı tamamlanmalı"
+        );
+
+        post.quote.as_mut().unwrap().media.push(Media {
+            kind: MediaKind::Image,
+            url: "https://pbs.twimg.com/media/quote.jpg".to_string(),
+            poster: None,
+            width: None,
+            height: None,
+            duration: None,
+        });
+        assert!(
+            !should_populate_nested_quote(&post),
+            "gömülü ilk seviye medya yeni isteği gereksiz kılar"
+        );
+
+        post.quote.as_mut().unwrap().media.clear();
+        post.quote.as_mut().unwrap().quote = Some(Box::new(BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/inner/status/3",
+            Author::new("İç", "inner"),
+        )));
+        assert!(
+            !should_populate_nested_quote(&post),
+            "mevcut iç içe alıntı yeniden çekilmemeli"
+        );
+
+        post.quote.as_mut().unwrap().quote = None;
+        post.media.push(Media {
+            kind: MediaKind::Image,
+            url: "https://pbs.twimg.com/media/post.jpg".to_string(),
+            poster: None,
+            width: None,
+            height: None,
+            duration: None,
+        });
+        assert!(
+            !should_populate_nested_quote(&post),
+            "ana gönderide medya varsa zincir yenilenmemeli"
+        );
     }
 
     #[test]

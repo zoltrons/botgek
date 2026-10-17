@@ -78,8 +78,12 @@ fn prewarm_connections(client: &reqwest::Client) {
     let client = client.clone();
     tokio::spawn(async move {
         tokio::join!(
-            // X verisi (FxEmbed/FxTwitter API) — hızlı yol
+            // X verisi (FxTwitter API) — açıkça FxTwitter seçildiyse kullanılan yol
             warm(&client, "https://api.fxtwitter.com/i/status/20"),
+            // X verisi (vxTwitter API) — varsayılan çeviri kaynağı
+            warm(&client, "https://api.vxtwitter.com/i/status/20"),
+            // X'in kendi syndication ucu — hedge yedeği
+            warm(&client, "https://cdn.syndication.twimg.com/"),
             // Discord REST — kart gönderimi (serenity'den ayrı istemci kullanılır)
             warm(&client, "https://discord.com/api/v10/gateway"),
             // Medya CDN'i — ışık hızı modunda kart bu bağlantıları taşır

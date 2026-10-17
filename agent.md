@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-17 16:47] zoltrons — Twitter veri fazındaki gereksiz beklemeler azaltıldı
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. VxTwitter hedge'i 500 ms yerine 125 ms'de başlıyor; FxTwitter'ın 500 ms davranışı korunuyor.
+  2. İç içe alıntı bütçesi 700 ms'ye indirildi; ilk alıntıda medya veya mevcut iç içe alıntı varsa gereksiz ikinci istek atlanıyor.
+  3. VxTwitter, syndication ve faz kırılımı debug ölçümleri açılışta ısıtılıyor/raporlanıyor.
+- **Etkilenen:** `src/converters/builtin/twitter.rs`, `src/main.rs`
+
 ### [2026-10-17 16:07] zoltrons — Webhook warmup görevinin CI derleme hatası düzeltildi
 - **Commit:** `bu-commit`
 - **Yapılan:**
