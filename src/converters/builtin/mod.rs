@@ -1109,7 +1109,7 @@ fn spawn_webhook_warmup(
         let target = webhook_target(&ctx, &msg).await;
         let webhook = channel_webhook(&ctx, &client, &config, target.channel_id, false).await;
         (target, webhook)
-    });
+    })
 }
 
 /// Native embed akışı. Veri çekilemez veya mesaj gönderilemezse `false` döner; bu durumda

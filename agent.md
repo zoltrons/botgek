@@ -43,6 +43,13 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-17 16:07] zoltrons — Webhook warmup görevinin CI derleme hatası düzeltildi
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. `spawn_webhook_warmup` içindeki `JoinHandle` tail expression'ının yanlışlıkla `()` döndürmesine neden olan noktalı virgül kaldırıldı.
+  2. Linux CI'nin `cargo test` derlemesiyle uyumlu dönüş tipi doğrulandı.
+- **Etkilenen:** `src/converters/builtin/mod.rs`
+
 ### [2026-10-17 16:03] zoltrons — Discord Components V2 gönderim yolunda webhook ve HTTP/2 gecikmesi azaltıldı
 - **Commit:** `bu-commit`
 - **Yapılan:**
