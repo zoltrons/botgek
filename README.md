@@ -36,6 +36,11 @@ Community Posts desteklenir.
   gönderilmez; bu durumda orijinal mesaj korunur ve hata loglanır. 429 bekleme süresi kısaltılmaz.
 - Rol filtreleri, AI ve çeviri reaksiyonu ekleme/kaldırma aynı politikayı kullanır. Boş allowlist erişim vermez;
   rol sorgusu başarısız olursa etkin filtre erişimi reddeder.
+- Global **`/dönüştür link:<bağlantı>`** komutu DM'ler dâhil her yerde çalışır; ayrıca bir mesaja sağ tıklayıp
+  **Apps → Dönüştür** ile o mesajdaki bağlantı dönüştürülür. Her iki akış da platform modüllerini, kanal/thread
+  ayarlarını ve rol filtrelerini otomatik mesaj akışıyla aynı biçimde uygular.
+  Discord, slash komutu etkileşiminde yanıtlanan mesajı göndermediği için "mesaja yanıt verip `/dönüştür` yazma"
+  doğrudan desteklenmez; mesaj komutu bu ihtiyacın Discord'daki resmî karşılığıdır.
 
 Bu bütçeler yapılandırılmış sınırlardır; **ölçülmüş p95 veya RAM garantisi değildir**.
 
@@ -50,6 +55,7 @@ Bu bütçeler yapılandırılmış sınırlardır; **ölçülmüş p95 veya RAM 
 Discord Developer Portal'da **Message Content Intent** açılmalıdır. Gerekli bot izinleri:
 Send Messages, Embed Links, Read Message History, Add Reactions; orijinal mesajları silmek için
 Manage Messages, kullanıcı taklidi için Manage Webhooks. Yanıtlarda varsayılan olarak bot kimliği kullanılır.
+Slash ve mesaj komutları için davet bağlantısında **`applications.commands`** kapsamı da bulunmalıdır.
 
 ### Windows
 

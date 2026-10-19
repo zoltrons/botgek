@@ -2,8 +2,13 @@ pub mod builtin;
 pub mod parser;
 pub mod translation;
 
-use serenity::all::{Context, CreateMessage, Message, ReactionType};
+use serenity::all::{
+    ChannelId, Context, CreateMessage, GuildId, Member, Message, MessageId, MessageReference,
+    ReactionType, User,
+};
+use std::sync::LazyLock;
 use std::sync::OnceLock;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{self, Sender, error::TrySendError};
 use tracing::{error, info, warn};
 
@@ -142,6 +147,143 @@ pub async fn enqueue_message(
     }
 }
 
+/// `/dönüştür` gibi etkileşimlerin **eşzamanlı** dönüşüm sayısı.
+///
+/// Etkileşim yanıtı kullanıcıyı beklettiği için otomatik mesaj kuyruğundan ayrı, küçük bir
+/// kapasiteyle sınırlanır: yoğunlukta komut anında "meşgul" yanıtı alır, kuyruktaki
+/// konuşmaların kartları gecikmez.
+const INTERACTION_WORKERS: usize = 4;
+static INTERACTION_SLOTS: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(INTERACTION_WORKERS));
+
+/// Etkileşimden (slash/mesaj komutu) yapılan dönüşümün sonucu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertError {
+    /// Mesajda/argümanda desteklenen bir bağlantı yok.
+    Unsupported,
+    /// Platform modülü bu sunucu/kanal için kapalı.
+    ModuleDisabled,
+    /// Rol filtresi kullanıcıya bu dönüşümü izin vermiyor.
+    RoleDenied,
+    /// Eşzamanlı etkileşim dönüşüm kapasitesi dolu.
+    Busy,
+    /// Bağlantı çözümlenemedi veya kart gönderilemedi.
+    Failed,
+}
+
+impl ConvertError {
+    /// Discord'a gösterilecek kısa, sır içermeyen açıklama.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Unsupported => {
+                "Desteklenen bir bağlantı bulunamadı. Örnek: `/dönüştür link:https://x.com/kullanici/status/123`"
+            }
+            Self::ModuleDisabled => "Bu platform için dönüştürme burada kapalı.",
+            Self::RoleDenied => "Rol filtresi bu dönüştürmeye izin vermiyor.",
+            Self::Busy => "Dönüşüm kapasitesi şu an dolu; birkaç saniye sonra tekrar dene.",
+            Self::Failed => {
+                "Bağlantı dönüştürülemedi (gönderi silinmiş veya kaynağa erişilemiyor olabilir)."
+            }
+        }
+    }
+}
+
+/// Etkileşimden gelen bağlantıyı **bekleyerek** dönüştürür.
+///
+/// Otomatik mesaj akışından farkları:
+/// - Kullanıcının yazdığı bir mesaj yoktur: silinecek kaynak ve taklit edilecek gönderen
+///   bulunmaz, bu yüzden `delete_original` ve `impersonate_user` bu iş için kapatılır.
+/// - Sonuç çağırana döner; slash komutu yanıtı bu sonuca göre güncellenir.
+///
+/// `author`, kartın "Gönderen" etiketinde görünecek kullanıcıdır (slash komutunda komutu
+/// kullanan, mesaj komutunda hedef mesajın yazarı). `actor` ise rol filtresinden geçen
+/// **komutu kullanan** kullanıcıdır; ikisi mesaj komutunda bilinçli olarak ayrıdır.
+#[allow(clippy::too_many_arguments)]
+pub async fn convert_now(
+    ctx: &Context,
+    content: &str,
+    author: &User,
+    actor: &User,
+    actor_member: Option<&Member>,
+    guild_id: Option<GuildId>,
+    channel_id: ChannelId,
+    // Mesaj komutunda kartın yanıt olarak bağlanacağı hedef mesaj.
+    reply_to: Option<MessageId>,
+    client: &reqwest::Client,
+    config: &Config,
+    settings: &GuildSettings,
+) -> Result<parser::Platform, ConvertError> {
+    let domains = resolve_domains(&settings.engine, config);
+    let Some(parsed) = parser::parse_message_with_domains(content, &domains) else {
+        return Err(ConvertError::Unsupported);
+    };
+
+    let (module_enabled, module_key) = module_enabled(settings, parsed.platform);
+    if !module_enabled {
+        return Err(ConvertError::ModuleDisabled);
+    }
+
+    let role_filter = settings.get_role_filter(module_key);
+    if !crate::policy::allows(
+        ctx,
+        guild_id,
+        actor.id,
+        actor_member.map(|member| member.roles.as_slice()),
+        role_filter,
+    )
+    .await
+    {
+        return Err(ConvertError::RoleDenied);
+    }
+
+    let Ok(_slot) = INTERACTION_SLOTS.try_acquire() else {
+        return Err(ConvertError::Busy);
+    };
+
+    let mut msg = Message::default();
+    msg.id = generated_message_id();
+    msg.channel_id = channel_id;
+    msg.guild_id = guild_id;
+    msg.author = author.clone();
+    msg.content = content.to_string();
+    if let Some(target_id) = reply_to {
+        let mut reference = MessageReference::new(Default::default(), channel_id)
+            .message_id(target_id)
+            .fail_if_not_exists(false);
+        if let Some(guild_id) = guild_id {
+            reference = reference.guild_id(guild_id);
+        }
+        msg.message_reference = Some(reference);
+    }
+
+    // Kaynak mesaj yok: ne silinecek bir kullanıcı mesajı ne de taklit edilecek bir gönderen var.
+    let mut job_config = config.clone();
+    job_config.delete_original = false;
+    let mut job_settings = settings.clone();
+    job_settings.engine.impersonate_user = false;
+
+    let delivered = process_message(ctx, &msg, client, &job_config, &job_settings, &parsed).await;
+    if delivered {
+        Ok(parsed.platform)
+    } else {
+        Err(ConvertError::Failed)
+    }
+}
+
+/// Etkileşim için üretilen yapay mesajın kimliği.
+///
+/// Gerçek bir Discord mesajına işaret etmez; yalnızca `Message` tipinin zorunlu alanını
+/// doldurur. Bu işte silme ve taklit kapalıdır, dolayısıyla kimlik hiçbir REST çağrısında
+/// kullanılmaz. Yine de sıfır olmayan, tarihçe olarak tutarlı bir snowflake üretilir.
+fn generated_message_id() -> serenity::all::MessageId {
+    const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    serenity::all::MessageId::new(now_ms.saturating_sub(DISCORD_EPOCH_MS) << 22)
+}
+
 async fn prepare_job(
     ctx: &Context,
     msg: &Message,
@@ -186,6 +328,8 @@ async fn prepare_job(
     })
 }
 
+/// Dönüşümü uçtan uca yürütür. Kart/proxy mesajı gerçekten gönderildiyse `true` döner;
+/// kaynak çözümlenemediğinde veya Discord gönderimi reddettiğinde `false`.
 async fn process_message(
     ctx: &Context,
     msg: &Message,
@@ -193,14 +337,17 @@ async fn process_message(
     config: &Config,
     settings: &GuildSettings,
     parsed: &parser::ParsedPost,
-) {
+) -> bool {
     // 3. Motor Seçimi: native embed veya (yalnızca proxy destekleyen platformlarda) proxy
     //    yönlendirmesi. Twitter/X, Instagram ve Reddit **native-only**'dir: `mode_for` bu
     //    platformlarda daima `Builtin` döner ve proxy yedeği hiç kullanılmaz.
     let platform_key = builtin::platform_key(parsed.platform);
     if settings.engine.mode_for(platform_key) == ConversionMode::Builtin {
-        if builtin::handle(ctx, msg, client, parsed, config, &settings.engine).await {
-            return;
+        match builtin::handle(ctx, msg, client, parsed, config, &settings.engine).await {
+            builtin::HandleResult::Sent => return true,
+            // Kapasite dolu veya sonuç belirsiz: proxy'ye düşmek mükerrer/yanlış kart üretebilir.
+            builtin::HandleResult::Busy | builtin::HandleResult::Ambiguous => return false,
+            builtin::HandleResult::Failed => {}
         }
 
         if !settings.engine.allows_proxy_fallback(platform_key) {
@@ -208,7 +355,7 @@ async fn process_message(
                 "Native embed üretilemedi ve bu platformda proxy yedeği yok, dönüştürme atlandı: {}",
                 parsed.original_url
             );
-            return;
+            return false;
         }
 
         warn!(
@@ -276,7 +423,7 @@ async fn process_message(
         Ok(m) => m,
         Err(e) => {
             error!("Mesaj gönderilirken hata oluştu: {:?}", e);
-            return;
+            return false;
         }
     };
     info!(
@@ -298,6 +445,8 @@ async fn process_message(
     {
         error!("Silme reaksiyonu eklenemedi: {:?}", e);
     }
+
+    true
 }
 
 #[cfg(test)]

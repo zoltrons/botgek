@@ -1,7 +1,7 @@
 use serenity::all::{
     Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EditMessage,
-    EventHandler, GuildId, Message, MessageId, MessageReference, MessageType, Permissions,
-    Reaction, ReactionType, Ready, UserId, async_trait,
+    EventHandler, GuildId, Interaction, Message, MessageId, MessageReference, MessageType,
+    Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -104,7 +104,7 @@ impl EventHandler for Handler {
             std::sync::atomic::Ordering::Relaxed,
         );
     }
-    async fn ready(&self, _ctx: Context, ready: Ready) {
+    async fn ready(&self, ctx: Context, ready: Ready) {
         crate::telemetry::DISCORD_READY.store(true, std::sync::atomic::Ordering::Relaxed);
         info!("===========================================");
         info!("Botgek başarıyla bağlandı!");
@@ -133,6 +133,24 @@ impl EventHandler for Handler {
         );
         info!("Orijinal Mesajı Silme: {}", self.config.delete_original);
         info!("===========================================");
+
+        // Global slash + mesaj komutları: DM'ler dâhil her yerde görünür. Kayıt ağ isteği
+        // olduğu için gateway olay döngüsü bekletilmez.
+        let http = ctx.http.clone();
+        tokio::spawn(async move { crate::commands::register(http).await });
+    }
+
+    /// Slash ve sağ tık (mesaj) komutları.
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        // Dönüşüm veri çekme + kart gönderimi nedeniyle uzun sürebilir; etkileşim hemen
+        // ertelenir (komut tarafında), bu yüzden olay işleyicisi ayrı görevde çalıştırılır.
+        let ctx = ctx.clone();
+        let client = self.http_client.clone();
+        let config = self.config.clone();
+        let settings = self.settings.clone();
+        tokio::spawn(async move {
+            crate::commands::handle(&ctx, &interaction, &client, &config, &settings).await;
+        });
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
@@ -582,7 +600,7 @@ impl EventHandler for Handler {
     }
 }
 
-async fn discord_thread_parent(
+pub(crate) async fn discord_thread_parent(
     ctx: &Context,
     guild_id: Option<GuildId>,
     channel_id: ChannelId,

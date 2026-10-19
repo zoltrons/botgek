@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-19 23:25] eray — Global `/dönüştür` slash komutu ve mesaj (sağ tık) dönüştürme komutu
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. **Global `/dönüştür link:<url>`** komutu eklendi: etkileşim hemen ephemeral ertelenir, mevcut dönüşüm motoru (platform modülleri, kanal/thread ayarları, rol filtreleri, native/proxy, önbellek) çalıştırılır, sonuç ephemeral yanıta yazılır. Etkileşimler için ayrı **4** eşzamanlı slot vardır.
+  2. **Mesaja sağ tık → Apps → Dönüştür** mesaj komutu eklendi; hedef mesaj `resolved.messages` üzerinden okunur ve kart hedef mesaja **yanıt** olarak gönderilir. Discord slash komutu interaction'ı yanıtlanan mesajı taşımadığı için "reply + /dönüştür" akışının API'deki resmî karşılığı budur.
+  3. Etkileşim kaynaklı dönüşümlerde kaynak mesaj silme ve webhook taklidi kapatıldı. Native motor `Sent / Failed / Busy / Ambiguous` sonucu döndürecek şekilde ayrıştırıldı; komut yanlış "dönüştürüldü" demiyor.
+- **Test:** **320 Rust** testi geçiyor; `cargo clippy --all-targets -- -D warnings` ve `cargo fmt --check` temiz.
+- **Etkilenen:** `src/commands/mod.rs`, `src/converters/mod.rs`, `src/converters/builtin/mod.rs`, `src/handler.rs`, `src/main.rs`, `README.md`
+
 ### [2026-10-19 19:10] zoltrons — CI sadeleştirildi: temizlik workflow'ları silindi, imaj yerel arm64'te yayınlanıyor
 - **Commit:** `bu-commit`
 - **Yapılan:**

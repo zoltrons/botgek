@@ -1,6 +1,7 @@
 mod ai;
 #[cfg(test)]
 mod benchmarks;
+mod commands;
 mod config;
 mod converters;
 mod handler;

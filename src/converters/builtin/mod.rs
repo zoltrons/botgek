@@ -1168,8 +1168,21 @@ fn spawn_webhook_warmup(
     })
 }
 
-/// Native embed akışı. Veri çekilemez veya mesaj gönderilemezse `false` döner; bu durumda
-/// çağıran taraf (ayar açıksa) proxy motoruna düşer.
+/// Native dönüşümün sonucu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleResult {
+    /// Kart gönderildi.
+    Sent,
+    /// Kaynak çözümlenemedi veya Discord isteği kesin olarak reddedildi; proxy yedeği denenebilir.
+    Failed,
+    /// Native iş kapasitesi dolu; bu istek için kart üretilmedi.
+    Busy,
+    /// Gönderim sonucu belirsiz (ağ hatası / yanıtsız POST). Yeniden denemek mükerrer mesaj
+    /// oluşturabileceği için proxy yedeği de denenmez.
+    Ambiguous,
+}
+
+/// Native embed akışı. `Failed` dönerse çağıran taraf (ayar açıksa) proxy motoruna düşer.
 pub async fn handle(
     ctx: &Context,
     msg: &Message,
@@ -1177,14 +1190,14 @@ pub async fn handle(
     parsed: &ParsedPost,
     config: &Config,
     engine: &EngineSettings,
-) -> bool {
+) -> HandleResult {
     // Süre ölçümü: dönüşüm gecikmesi veri / medya / gönderim olarak log'lanır.
     static SLOTS: LazyLock<tokio::sync::Semaphore> =
         LazyLock::new(|| tokio::sync::Semaphore::new(16));
     let Ok(_slot) = SLOTS.try_acquire() else {
         crate::telemetry::OVERLOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         warn!("Native conversion capacity reached; original message preserved");
-        return true;
+        return HandleResult::Busy;
     };
     let started = std::time::Instant::now();
 
@@ -1208,7 +1221,7 @@ pub async fn handle(
                 parsed.original_url, err
             );
             crate::telemetry::record(platform_key(parsed.platform), false, started.elapsed());
-            return false;
+            return HandleResult::Failed;
         }
     };
     let fetched = started.elapsed();
@@ -1293,13 +1306,17 @@ pub async fn handle(
                 parsed.original_url
             );
             finish(ctx, msg, config, message_id).await;
-            true
+            HandleResult::Sent
         }
         Err(err) => {
             error!("Components V2 kartı gönderilemedi: {err}");
             crate::telemetry::record(platform_key(parsed.platform), false, started.elapsed());
             // A lost POST response may already have created a message. Do not proxy-resend.
-            !err.safe_fallback()
+            if err.safe_fallback() {
+                HandleResult::Failed
+            } else {
+                HandleResult::Ambiguous
+            }
         }
     }
 }
