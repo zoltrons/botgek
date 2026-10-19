@@ -277,8 +277,9 @@ impl Source for ReqwestSource {
 
             let bytes = read_limited(response, MAX_PART_BYTES).await?;
             // Reddit'in AAC parçalarındaki `sbgp`(roll) kutuları motorun "resource-only" profiline
-            // takılır; kutu çıkarılırken örnek verisi hiç değişmez (bkz. `strip_sample_group_boxes`).
-            Ok(strip_sample_group_boxes(&bytes).unwrap_or(bytes))
+            // takılır; kutu **silinmez**, aynı boyutta `free` kutusuna çevrilir (bkz.
+            // `neutralize_sample_group_boxes`): dönen bayt sayısı istenen aralıkla birebir aynı kalmalı.
+            Ok(neutralize_sample_group_boxes(&bytes).unwrap_or(bytes))
         })
     }
 }
@@ -293,158 +294,69 @@ fn read_box(data: &[u8], offset: usize) -> Option<(usize, [u8; 4])> {
     Some((size, [header[4], header[5], header[6], header[7]]))
 }
 
-/// `traf` gövdesindeki `trun` kutularının `data_offset` alanlarını `delta` kadar kaydırır.
+/// `sbgp`/`sgpd` (örnek grubu) kutularını **bayt sayısını değiştirmeden** `free` kutusuna çevirir.
 ///
-/// `tfhd.default-base-is-moof` kullanıldığında offset, `moof` başına göre görelidir; `moof`
-/// küçüldüğünde `mdat` başa yaklaşır, bu yüzden tüm `trun` offset'leri azaltılmalıdır.
-fn adjust_trun_offsets(payload: &mut [u8], delta: i32) -> Option<()> {
-    let mut offset = 0;
-    while offset + 8 <= payload.len() {
-        let (size, kind) = read_box(payload, offset)?;
-        if &kind == b"trun" {
-            let fullbox = payload.get(offset + 8..offset + size)?;
-            let flags = u32::from_be_bytes(fullbox.get(..4)?.try_into().ok()?);
-            if flags & 1 != 0 {
-                if size < 20 {
-                    return None;
-                }
-                let at = offset + 16; // box header + version/flags + sample_count
-                let current = i32::from_be_bytes(payload.get(at..at + 4)?.try_into().ok()?);
-                payload
-                    .get_mut(at..at + 4)?
-                    .copy_from_slice(&current.checked_sub(delta)?.to_be_bytes());
-            }
-        }
-        offset += size;
-    }
-    (offset == payload.len()).then_some(())
-}
-
-/// Parçadaki `sbgp`/`sgpd` (örnek grubu) kutularını çıkarır.
+/// `hls-transmux` "resource-only" profilinde örnek grubu kutularını kabul etmez; Reddit'in **AAC**
+/// parçaları `sbgp`(**roll**) taşır (video parçalarında yoktur), bu yüzden parça doğrulamada
+/// reddedilir. Roll grubu yalnızca kodek primerleme ipucudur: kutu etkisizleştirilirken örnek
+/// verisi hiç değişmez.
 ///
-/// `hls-transmux` "resource-only" profilinde bu kutuları kabul etmez; Reddit'in **AAC** parçaları
-/// `sbgp`(roll) taşır (video parçalarında yoktur), bu yüzden doğrulama başarısız olur. Roll grubu
-/// yalnızca kodek primerleme ipucudur: kutular çıkarılırken **örnek verisi hiç değişmez**, yalnızca
-/// `moof`/`traf` boyutları ve `trun` göreli offsetleri tutarlı biçimde güncellenir.
+/// Kutu **silinemez**, yalnızca türü değiştirilebilir:
+/// - Reddit video ve sesi artık tek dosyada `#EXT-X-BYTERANGE` ile sunuyor; motor, istenen
+///   aralığın **tam olarak** aynı sayıda baytla dönmesini şart koşuyor. Silme kısa yanıt üretir
+///   ve motor birleştirmeyi `InvalidRange` ile düşürür (sahada görülen hata).
+/// - Silme ayrıca `moof`/`traf` boyutlarını ve `trun.data_offset` alanlarını kaydırır; tüm
+///   offset'lerin yeniden hesaplanması gerekirdi.
 ///
-/// Değişiklik gerekmiyorsa ya da yapı beklenmedikse `None` döner (çağıran özgün baytları kullanır).
-fn strip_sample_group_boxes(data: &[u8]) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(data.len());
+/// ISO-BMFF'te `free` kutusu yok sayılır: yalnızca 4 baytlık kutu türü değişir; kutu boyutları,
+/// örnek verisi ve tüm offset'ler aynı kalır. Değişiklik gerekmiyorsa ya da yapı beklenmedikse
+/// `None` döner (çağıran özgün baytları kullanır).
+fn neutralize_sample_group_boxes(data: &[u8]) -> Option<Vec<u8>> {
+    // Önce yalnızca taranır: video parçaları (en büyük trafik) hiç kopyalanmaz, çünkü onlarda
+    // örnek grubu kutusu yoktur.
+    let mut groups: Vec<usize> = Vec::new();
     let mut cursor = 0;
-    let mut changed = false;
     while cursor < data.len() {
         let (size, kind) = read_box(data, cursor)?;
-        let current = data.get(cursor..cursor + size)?;
-        if kind == *b"moof" {
-            if let Some(rewritten) = strip_moof(current) {
-                output.extend_from_slice(&rewritten);
-                changed = true;
-            } else {
-                output.extend_from_slice(current);
-            }
-        } else {
-            output.extend_from_slice(current);
-        }
-        cursor += size;
-    }
-    changed.then_some(output)
-}
-
-fn strip_moof(data: &[u8]) -> Option<Vec<u8>> {
-    let mut cursor = 0;
-    let mut moof = None;
-    while let Some((size, kind)) = read_box(data, cursor) {
         if &kind == b"moof" {
-            moof = Some((cursor, size));
-            break;
-        }
-        cursor += size;
-    }
-    let (moof_offset, moof_size) = moof?;
-    let moof_end = moof_offset + moof_size;
-
-    let mut removed_total = 0usize;
-    let mut removed_at: Vec<usize> = Vec::new();
-    let mut traf_shrinks: Vec<(usize, usize)> = Vec::new();
-
-    let mut pos = moof_offset + 8;
-    while pos < moof_end {
-        let (size, kind) = read_box(data, pos)?;
-        if pos + size > moof_end {
-            return None;
-        }
-        if &kind == b"sbgp" || &kind == b"sgpd" {
-            removed_at.push(pos);
-            removed_total += size;
-        } else if &kind == b"traf" {
-            let traf_end = pos + size;
-            let mut inner = pos + 8;
-            let mut shrink = 0usize;
-            while inner < traf_end {
-                let (inner_size, inner_kind) = read_box(data, inner)?;
-                if inner + inner_size > traf_end {
+            let moof_end = cursor + size;
+            let mut pos = cursor + 8;
+            while pos < moof_end {
+                let (child_size, child_kind) = read_box(data, pos)?;
+                if pos + child_size > moof_end {
                     return None;
                 }
-                if &inner_kind == b"sbgp" || &inner_kind == b"sgpd" {
-                    removed_at.push(inner);
-                    shrink += inner_size;
+                if &child_kind == b"traf" {
+                    let traf_end = pos + child_size;
+                    let mut inner = pos + 8;
+                    while inner < traf_end {
+                        let (inner_size, inner_kind) = read_box(data, inner)?;
+                        if inner + inner_size > traf_end {
+                            return None;
+                        }
+                        if &inner_kind == b"sbgp" || &inner_kind == b"sgpd" {
+                            groups.push(inner);
+                        }
+                        inner += inner_size;
+                    }
+                } else if &child_kind == b"sbgp" || &child_kind == b"sgpd" {
+                    groups.push(pos);
                 }
-                inner += inner_size;
-            }
-            if shrink > 0 {
-                traf_shrinks.push((pos, shrink));
-                removed_total += shrink;
+                pos += child_size;
             }
         }
-        pos += size;
+        cursor += size;
     }
 
-    if removed_total == 0 {
+    if groups.is_empty() {
         return None;
     }
-
-    let mut output: Vec<u8> = Vec::with_capacity(data.len() - removed_total);
-    output.extend_from_slice(data.get(..moof_offset)?);
-    output.extend_from_slice(&((moof_size - removed_total) as u32).to_be_bytes());
-    output.extend_from_slice(b"moof");
-
-    let mut pos = moof_offset + 8;
-    while pos < moof_end {
-        let (size, kind) = read_box(data, pos)?;
-        if removed_at.contains(&pos) {
-            pos += size;
-            continue;
-        }
-        let shrink = traf_shrinks
-            .iter()
-            .find(|(at, _)| *at == pos)
-            .map(|(_, shrink)| *shrink)
-            .unwrap_or(0);
-        let mut payload = Vec::new();
-        if &kind == b"traf" {
-            let mut inner = pos + 8;
-            while inner < pos + size {
-                let (child_size, _) = read_box(data, inner)?;
-                if inner + child_size > pos + size {
-                    return None;
-                }
-                if !removed_at.contains(&inner) {
-                    payload.extend_from_slice(data.get(inner..inner + child_size)?);
-                }
-                inner += child_size;
-            }
-            // Every traf points into the same mdat, including tracks without removed boxes.
-            adjust_trun_offsets(&mut payload, i32::try_from(removed_total).ok()?)?;
-        } else {
-            payload.extend_from_slice(data.get(pos + 8..pos + size)?);
-        }
-        output.extend_from_slice(&((size - shrink) as u32).to_be_bytes());
-        output.extend_from_slice(&kind);
-        output.extend_from_slice(&payload);
-        pos += size;
+    let mut output = data.to_vec();
+    for offset in groups {
+        output
+            .get_mut(offset + 4..offset + 8)?
+            .copy_from_slice(b"free");
     }
-    output.extend_from_slice(data.get(moof_end..)?);
-
     Some(output)
 }
 
@@ -476,12 +388,26 @@ fn hls_err<E: fmt::Debug>(err: E) -> HlsError {
     HlsError::InvalidInput(format!("{err:?}"))
 }
 
-/// Motor hatalarını, tanılamayı **kaybetmeden** (kaynak/örnek nedeni dahil) çevirir.
+/// Motor hatalarını, tanılamayı **kaybetmeden** çevirir.
+///
+/// `ContinuousError`'ın `Debug` çıktısı bilinçli olarak yalnızca tür ve parça yuvasını yazar;
+/// asıl neden `resource_error()` içindedir (kaynak türü, parça adresi, HTTP/doğrulama hatası).
+/// Bu ayrıntı loglanmazsa saha teşhisi "continuous session Resource" satırından öteye geçmez.
 fn engine_err(err: ContinuousError) -> HlsError {
-    match err.raw_cause() {
-        Some(cause) => HlsError::InvalidInput(format!("{err:?} | neden: {cause:?}")),
-        None => hls_err(err),
+    let mut detail = format!("{err:?}");
+    if let Some(resource) = err.resource_error() {
+        detail.push_str(&format!(" | kaynak türü: {:?}", resource.kind()));
+        if let Some(resource) = resource.resource() {
+            detail.push_str(&format!(" | konum: {}", resource.location().diagnostic()));
+        }
+        if let Some(cause) = resource.raw_cause() {
+            detail.push_str(&format!(" | neden: {cause}"));
+        }
     }
+    if let Some(cause) = err.raw_cause() {
+        detail.push_str(&format!(" | neden: {cause}"));
+    }
+    HlsError::InvalidInput(detail)
 }
 
 /// Şifreleme yok: Reddit akışları şifresizdir, anahtar hiçbir zaman sağlanmaz.
@@ -768,38 +694,64 @@ mod tests {
     }
 
     #[test]
-    fn sample_groups_are_removed_and_all_track_offsets_are_rebased() {
+    fn sample_group_boxes_are_neutralized_without_changing_byte_count() {
         let mut trun = 1u32.to_be_bytes().to_vec(); // data-offset-present
         trun.extend_from_slice(&7u32.to_be_bytes()); // sample_count must remain unchanged
-        trun.extend_from_slice(&200i32.to_be_bytes());
+        trun.extend_from_slice(&200i32.to_be_bytes()); // data_offset must remain unchanged
         let trun = mp4_box(b"trun", &trun);
         let group = mp4_box(b"sbgp", &[0; 4]);
         let track = mp4_box(b"traf", &[trun.clone(), group.clone()].concat());
         let other = mp4_box(b"traf", &trun);
         let moof = mp4_box(b"moof", &[track, other].concat());
         let data = [moof.clone(), mp4_box(b"mdat", &[42; 8])].concat();
-        let result = strip_sample_group_boxes(&data).unwrap();
-        assert_eq!(result.len(), data.len() - group.len());
-        assert_eq!(read_box(&result, 0).unwrap().0, moof.len() - group.len());
-        assert!(!result.windows(4).any(|s| s == b"sbgp"));
-        for pos in [8, 36] {
-            assert_eq!(read_box(&result, pos).unwrap(), (28, *b"traf"));
+
+        let result = neutralize_sample_group_boxes(&data).unwrap();
+
+        // Motor, `#EXT-X-BYTERANGE` ile istenen aralığın **aynı bayt sayısıyla** dönmesini şart
+        // koşar; kutu silinseydi yanıt kısalır ve birleştirme `InvalidRange` ile düşerdi.
+        assert_eq!(result.len(), data.len(), "bayt sayısı korunmalı");
+        assert_eq!(
+            read_box(&result, 0).unwrap().0,
+            moof.len(),
+            "moof boyutu sabit"
+        );
+        assert!(
+            !result.windows(4).any(|s| s == b"sbgp"),
+            "sbgp türü kalmamalı"
+        );
+        assert!(
+            result.windows(4).any(|s| s == b"free"),
+            "kutu `free` olarak etkisizleştirilmeli"
+        );
+        // `mfhd`/`traf`/`trun` yerleşimi ve `trun.data_offset` hiç kaymamalı.
+        assert_eq!(read_box(&result, 8).unwrap(), (40, *b"traf"));
+        assert_eq!(read_box(&result, 48).unwrap(), (28, *b"traf"));
+        for pos in [8, 48] {
             assert_eq!(&result[pos + 20..pos + 24], &7u32.to_be_bytes());
-            assert_eq!(&result[pos + 24..pos + 28], &188i32.to_be_bytes());
+            assert_eq!(&result[pos + 24..pos + 28], &200i32.to_be_bytes());
         }
-        assert_eq!(&result[result.len() - 8..], &[42; 8]);
+        assert_eq!(
+            &result[result.len() - 8..],
+            &[42; 8],
+            "örnek verisi değişmemeli"
+        );
     }
 
     #[test]
-    fn malformed_boxes_and_missing_data_offsets_are_safe() {
-        assert!(strip_sample_group_boxes(&[0; 7]).is_none());
+    fn malformed_boxes_and_absent_sample_groups_are_safe() {
+        assert!(neutralize_sample_group_boxes(&[0; 7]).is_none());
         assert!(read_box(&[0; 8], usize::MAX).is_none());
-        let mut no_offset = mp4_box(b"trun", &[0; 8]);
-        let before = no_offset.clone();
-        assert_eq!(adjust_trun_offsets(&mut no_offset, 12), Some(()));
-        assert_eq!(no_offset, before);
-        let mut truncated = mp4_box(b"trun", &1u32.to_be_bytes());
-        assert_eq!(adjust_trun_offsets(&mut truncated, 12), None);
+        // Örnek grubu yoksa yeniden yazım gerekmez: çağıran özgün baytları kullanır.
+        let plain = [
+            mp4_box(b"moof", &mp4_box(b"traf", &mp4_box(b"trun", &[0; 8]))),
+            mp4_box(b"mdat", &[1; 4]),
+        ]
+        .concat();
+        assert!(neutralize_sample_group_boxes(&plain).is_none());
+        // Bozuk iç kutu boyutu güvenle reddedilir (panik yok).
+        let mut broken = mp4_box(b"moof", &[0, 0, 0, 99, b't', b'r', b'a', b'f']);
+        broken.truncate(16);
+        assert!(neutralize_sample_group_boxes(&broken).is_none());
     }
 
     #[tokio::test]

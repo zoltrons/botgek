@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-19 18:44] zoltrons — Reddit video birleştirmesi düzeltildi: `sbgp` kutusu silinmiyor, `free`'ye çevriliyor
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. **Kök neden:** Reddit video ve sesi artık tek dosyada `#EXT-X-BYTERANGE` ile sunuyor ve `hls-transmux` istenen aralığın **tam olarak** aynı bayt sayısıyla dönmesini şart koşuyor. AAC parçalarındaki `sbgp`(**roll**) kutusu "resource-only" profili için **siliniyordu**; yanıt 28 bayt kısalıyor, motor birleştirmeyi `ResourceErrorKind::InvalidRange` ile düşürüyordu (`.../CMAF_AUDIO_128.mp4`, `sequence: 0`). Sonuç: `merge()` `None` dönüyor, kart sessiz (video-only) mp4'e düşüyordu.
+  2. **Düzeltme:** `strip_sample_group_boxes` / `strip_moof` / `adjust_trun_offsets` (kutuyu silip `moof`/`traf` boyutlarını ve `trun.data_offset` alanlarını yeniden hesaplayan yol) kaldırıldı; yerine `neutralize_sample_group_boxes` geldi — yalnızca 4 baytlık kutu türü `sbgp`/`sgpd` → `free` olur. Bayt sayısı, kutu boyutları, örnek verisi ve tüm offset'ler değişmez; `free` ISO-BMFF'te yok sayıldığı için motor doğrulaması geçer. Video parçaları (en büyük trafik) kopyalanmadan taranır.
+  3. **Teşhis:** `engine_err` artık `ContinuousError::resource_error()` ayrıntısını (kaynak türü, parça adresi, ham neden) loglar; önce yalnızca "continuous session Resource" görünüyordu.
+- **Test:** Rust 1.98.1 GNU/LLVM ile 375 test başarılı (9 canlı test atlandı), Clippy ve `fmt --check` temiz. Canlı doğrulama (`v.redd.it/4ilyyn689buh1`): önce `None` (1,35 sn), sonra **8.025.158 bayt** (1,1 sn) — `ftyp` + `mp4a` + `soun`, iki iz (`vide/avc1`, `soun/mp4a`). Boyut merdiveni: 10 MB → 8,0 MB (720p), 8 MB (varsayılan) → 3,49 MB (360p), 3 MB → 1,47 MB (220p).
+- **Etkilenen:** `src/converters/builtin/reddit_video.rs`
 ### [2026-10-19 18:15] zoltrons — 1 sn üstü kart dönüşümlerinin nedeni bulundu; hedef bütçeyle sınırlandı
 - **Commit:** `bu-commit`
 - **Yapılan:**
