@@ -71,7 +71,7 @@ pub async fn send_channel_message(
 
 /// Webhook çalıştırma adresi.
 ///
-/// `wait=true`: Discord oluşan mesajı yanıt olarak döner (mesaj kimliği 🗑️ silme kaydı için
+/// `wait=true`: Discord oluşan mesajı yanıt olarak döner (mesaj kimliği kart kaydı için
 /// gerekir). `thread_id`: mesaj **alt başlığa** (veya forum gönderisine) gönderilir; Discord
 /// alt başlıklarda webhook oluşturmayı desteklemediği için webhook üst kanalda tutulur ve
 /// hedef bu parametreyle belirtilir.

@@ -1,7 +1,8 @@
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EditMessage,
-    EventHandler, GuildId, Interaction, Message, MessageId, MessageReference, MessageType,
-    Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
+    Channel, ChannelId, ChannelType, ComponentInteraction, Context, CreateAllowedMentions,
+    CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
+    CreateMessage, EditMessage, EventHandler, GuildId, Interaction, Message, MessageId,
+    MessageReference, MessageType, Permissions, Reaction, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -140,8 +141,19 @@ impl EventHandler for Handler {
         tokio::spawn(async move { crate::commands::register(http).await });
     }
 
-    /// Slash ve sağ tık (mesaj) komutları.
+    /// Slash/sağ tık komutları ve kart bileşenleri.
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        // Kart alt bilgisindeki kırmızı **Sil** butonu komut akışına girmez: yetki kontrolü
+        // ve silme doğrudan burada yapılır. Diğer bileşen etkileşimleri yok sayılır.
+        if let Interaction::Component(component) = &interaction
+            && component.data.custom_id == crate::converters::builtin::v2::CARD_DELETE_ID
+        {
+            let ctx = ctx.clone();
+            let component = component.clone();
+            tokio::spawn(async move { card_delete(&ctx, component).await });
+            return;
+        }
+
         // Dönüşüm veri çekme + kart gönderimi nedeniyle uzun sürebilir; etkileşim hemen
         // ertelenir (komut tarafında), bu yüzden olay işleyicisi ayrı görevde çalıştırılır.
         let ctx = ctx.clone();
@@ -376,8 +388,10 @@ impl EventHandler for Handler {
     }
 
     /// Reaksiyon ekleme dinleyicisi:
-    /// - 🗑️: Mesaj silme (orijinal yazar veya yönetici/moderatör)
     /// - Bayrak emojileri (🇹🇷, 🇬🇧, vb.): FxEmbed / FixupX / FxBluesky üzerinden anlık çeviri (/tr, /en)
+    ///
+    /// Kart silme artık reaksiyonla değil, kartın alt bilgi satırındaki kırmızı **Sil**
+    /// butonuyla yapılır (bkz. [`card_delete`]).
     async fn reaction_add(&self, ctx: Context, reaction: Reaction) {
         let current_user_id = ctx.cache.current_user().id;
 
@@ -387,74 +401,7 @@ impl EventHandler for Handler {
             _ => return,
         };
 
-        // 1. Silme İşlemi (🗑️)
-        if reaction.emoji == ReactionType::Unicode("🗑️".to_string()) {
-            // Kartı paylaşan kullanıcı kalıcı kayıttan okunur (taklit webhook mesajlarında
-            // mesajın yazarı bot/kullanıcı olmadığı için); proxy mesajlarında ise mesaj
-            // gövdesindeki `<@id>` etiketi kullanılır.
-            let recorded_author =
-                crate::converters::builtin::original_author(reaction.message_id).await;
-            let original_author_id = match recorded_author {
-                Some(author) => Some(author),
-                None => {
-                    let target_msg = match reaction.message(&ctx.http).await {
-                        Ok(m) => m,
-                        Err(e) => {
-                            error!("Silme reaksiyon mesajı alınamadı: {:?}", e);
-                            return;
-                        }
-                    };
-
-                    // Mesaj bu bot tarafından atılmamışsa işlem yapma
-                    if target_msg.author.id != current_user_id {
-                        return;
-                    }
-
-                    extract_author_id(&target_msg.content)
-                }
-            };
-            let is_author = original_author_id == Some(user_id);
-
-            // Yazar zaten yetkili: üye/izin sorgusu yapılmaz.
-            let is_admin_or_mod = match reaction.guild_id {
-                Some(guild_id) if !is_author => {
-                    let member = match reaction.member.clone() {
-                        Some(member) => Ok(member),
-                        None => guild_id.member(&ctx.http, user_id).await,
-                    };
-                    member.is_ok_and(|member| {
-                        can_manage_messages(&ctx, guild_id, reaction.channel_id, &member)
-                    })
-                }
-                _ => false,
-            };
-
-            if is_author || is_admin_or_mod {
-                info!(
-                    "Reaksiyon ile mesaj silme onaylandı. Silen: {} (Orijinal Yazar: {:?})",
-                    user_id, original_author_id
-                );
-                match reaction
-                    .channel_id
-                    .delete_message(&ctx.http, reaction.message_id)
-                    .await
-                {
-                    Err(e) => {
-                        error!("Mesaj silinirken hata oluştu: {:?}", e);
-                    }
-                    _ => {
-                        // Kart artık yok: kaydı da bırakma (veritabanı temiz kalır).
-                        crate::converters::builtin::forget_author(reaction.message_id).await;
-                    }
-                }
-            } else {
-                warn!("Yetkisiz silme reaksiyonu! Tıklayan: {}", user_id);
-                let _ = reaction.delete(&ctx.http).await;
-            }
-            return;
-        }
-
-        // 2. Bayrak Emojisi ile Çeviri (🇹🇷, 🇬🇧, 🇩🇪 vb.)
+        // Bayrak Emojisi ile Çeviri (🇹🇷, 🇬🇧, 🇩🇪 vb.)
         // Bayrak olmayan reaksiyonlar ayar/rol/kanal sorgusuna hiç girmez (her reaksiyon
         // olayında REST çağrısı yapılmasın).
         let Some(lang_code) = translation::emoji_to_lang_code(&reaction.emoji) else {
@@ -719,6 +666,91 @@ fn extract_author_id(content: &str) -> Option<UserId> {
         }
     }
     None
+}
+
+/// Kart alt bilgisindeki kırmızı **Sil** butonu.
+///
+/// Yetki kuralı reaksiyon akışıyla aynıdır: kartı paylaşan kişi ya da "Mesajları Yönet"
+/// iznine sahip yönetici/moderatör silebilir. Etkileşim 3 saniye içinde yanıtlanmak zorunda
+/// olduğundan silme isteğinden **önce** yanıt ertelenir; hata olursa yalnızca tıklayana
+/// görünen geçici (ephemeral) bir bildirim gönderilir.
+async fn card_delete(ctx: &Context, component: ComponentInteraction) {
+    let message_id = component.message.id;
+    let user_id = component.user.id;
+
+    // Kartı paylaşan kullanıcı kalıcı kayıttan okunur (taklit webhook mesajlarında mesajın
+    // yazarı bot olmadığı için); eski proxy mesajlarında gövdedeki `<@id>` etiketi kullanılır.
+    let original_author_id = match crate::converters::builtin::original_author(message_id).await {
+        Some(author) => Some(author),
+        None => extract_author_id(&component.message.content),
+    };
+    let is_author = original_author_id == Some(user_id);
+
+    // Yazar zaten yetkili: üye/izin sorgusu yapılmaz.
+    let is_admin_or_mod = match component.guild_id {
+        Some(guild_id) if !is_author => {
+            let member = match component.member.clone() {
+                Some(member) => Ok(member),
+                None => guild_id.member(&ctx.http, user_id).await,
+            };
+            member.is_ok_and(|member| {
+                can_manage_messages(ctx, guild_id, component.channel_id, &member)
+            })
+        }
+        _ => false,
+    };
+
+    if !is_author && !is_admin_or_mod {
+        warn!(
+            "Yetkisiz kart silme isteği! Tıklayan: {} (Orijinal Yazar: {:?})",
+            user_id, original_author_id
+        );
+        let _ = component
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(
+                            "Bu kartı yalnızca paylaşan kişi veya \"Mesajları Yönet\" izni \
+                             olanlar silebilir.",
+                        )
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
+    }
+
+    // 3 saniyelik etkileşim penceresi: yanıt hemen ertelenir, silme başarılıysa ek yanıt yok.
+    let _ = component.defer(ctx).await;
+
+    info!(
+        "Buton ile kart silme onaylandı. Silen: {} (Orijinal Yazar: {:?})",
+        user_id, original_author_id
+    );
+    match component
+        .channel_id
+        .delete_message(&ctx.http, message_id)
+        .await
+    {
+        Err(e) => {
+            error!("Mesaj silinirken hata oluştu: {:?}", e);
+            let _ = component
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .content(
+                            "Kart silinemedi; botun \"Mesajları Yönet\" izni olduğundan emin olun.",
+                        )
+                        .ephemeral(true),
+                )
+                .await;
+        }
+        _ => {
+            // Kart artık yok: kaydı da bırakma (veritabanı temiz kalır).
+            crate::converters::builtin::forget_author(message_id).await;
+        }
+    }
 }
 
 /// Bu mesaj Botgek'in dönüştürme (proxy veya native kart) mesajı mı?

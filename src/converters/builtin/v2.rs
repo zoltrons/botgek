@@ -48,7 +48,14 @@ pub const MEDIA_GALLERY_LIMIT: usize = 10;
 /// Kart (Container) içindeki bileşen sayısı (Discord API sınırı 10).
 const MAX_CONTAINER_CHILDREN: usize = 10;
 
+/// Kart alt bilgisindeki **Sil** butonunun `custom_id` değeri.
+///
+/// Buton her kartta aynı kimliği taşır: hangi mesajın silineceği, etkileşimin `message`
+/// alanından okunur (bkz. `handler::card_delete`). Discord `custom_id` sınırı 100 karakterdir.
+pub const CARD_DELETE_ID: &str = "card:delete";
+
 // Bileşen türleri
+const TYPE_BUTTON: u64 = 2;
 const TYPE_SECTION: u64 = 9;
 const TYPE_TEXT_DISPLAY: u64 = 10;
 const TYPE_THUMBNAIL: u64 = 11;
@@ -371,7 +378,7 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     if let Some(metrics) = metrics_line(card.post, card.options, card.emojis) {
         children.push(text(metrics));
     }
-    children.push(text(meta_line(card)));
+    children.push(meta_component(card));
 
     if children.len() > MAX_CONTAINER_CHILDREN {
         let last = children.pop();
@@ -617,6 +624,28 @@ fn media_gallery(card: &V2Card<'_>, skip_images: bool) -> Option<Value> {
 
     items.truncate(MEDIA_GALLERY_LIMIT);
     Some(json!({"type": TYPE_MEDIA_GALLERY, "items": items}))
+}
+
+/// `{"type": 2, "style": 4, ...}` — **kırmızı** (Danger) "Sil" butonu.
+///
+/// Discord metni renklendirmez; kırmızı görünüm buton stilinden gelir. Etiket (label) her
+/// zaman beyazdır. Buton, bir Action Row ya da Section aksesuarı içinde durmak zorundadır.
+pub fn delete_button() -> Value {
+    json!({
+        "type": TYPE_BUTTON,
+        "style": 4,
+        "label": "Sil",
+        "custom_id": CARD_DELETE_ID,
+    })
+}
+
+/// Alt bilgi satırı (`-# … Gönderen: @kullanıcı`) ve **hemen sağında** kırmızı "Sil" butonu.
+///
+/// Discord bileşenleri blok düzeyindedir: buton metnin *içine* gömülemez. Bu yüzden satır bir
+/// `Section` olur ve buton onun `accessory` alanına konur; böylece buton o satırın hizasında,
+/// kartın sağ ucunda durur ve kartın yüksekliği artmaz.
+fn meta_component(card: &V2Card<'_>) -> Value {
+    section(vec![text(meta_line(card))], delete_button())
 }
 
 /// Bölüm bileşeni (Section): solunda metin, sağında aksesuar (küçük görsel/thumbnail).
@@ -1061,13 +1090,21 @@ mod tests {
             texts(&payload)[0],
             "**Culture Base <:verified:1553709836859084841> ([@Culture3ase](https://x.com/Culture3ase))**"
         );
-        // Avatar/görsel bileşeni (Section/Thumbnail) kullanılmaz
+        // Avatar/görsel bileşeni kullanılmaz: yazar satırı düz metindir.
         assert!(
             !components(&payload)
                 .iter()
-                .any(|c| c["type"] == 9 || c["type"] == 11),
-            "yazar satırında section/thumbnail olmamalı"
+                .any(|c| c["type"] == TYPE_THUMBNAIL),
+            "yazar satırında thumbnail olmamalı"
         );
+        // Tek Section, alt bilgi satırındaki **Sil** butonunun aksesuarıdır.
+        let sections: Vec<&Value> = components(&payload)
+            .iter()
+            .filter(|c| c["type"] == TYPE_SECTION)
+            .collect();
+        assert_eq!(sections.len(), 1, "yalnızca Sil butonu için section olmalı");
+        assert_eq!(sections[0]["accessory"]["custom_id"], CARD_DELETE_ID);
+        assert_eq!(components(&payload)[0]["type"], TYPE_TEXT_DISPLAY);
     }
 
     #[test]
@@ -1183,6 +1220,40 @@ mod tests {
             "kart marka satırı içermemeli: {meta}"
         );
         assert!(!meta.contains("<https://"), "link hilesi olmamalı: {meta}");
+    }
+
+    #[test]
+    fn meta_line_carries_the_red_delete_button_on_its_right() {
+        let post = sample_post();
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        let meta_section = container(&payload)["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|component| component["accessory"]["custom_id"] == CARD_DELETE_ID)
+            .expect("alt bilgi satırı Sil butonunu taşımalı");
+
+        assert_eq!(
+            meta_section["type"], TYPE_SECTION,
+            "buton satır aksesuarı olmalı"
+        );
+        assert_eq!(meta_section["accessory"]["type"], TYPE_BUTTON);
+        assert_eq!(
+            meta_section["accessory"]["style"], 4,
+            "buton kırmızı olmalı"
+        );
+        assert_eq!(meta_section["accessory"]["label"], "Sil");
+        assert_eq!(meta_section["accessory"]["custom_id"], CARD_DELETE_ID);
+        assert!(
+            meta_section["components"][0]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("-# "),
+            "buton alt bilgi satırının hizasında durmalı"
+        );
     }
 
     #[test]

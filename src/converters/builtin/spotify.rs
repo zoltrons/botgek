@@ -331,6 +331,8 @@ fn build_card(view: &EntityView, open_url: &str) -> CustomCard {
         link_button("Spotify", open_url),
         link_button("Apple Music", &apple_music_search_url(view)),
         link_button("YouTube Music", &youtube_music_search_url(view)),
+        // Kartın silme butonu: link butonlarıyla aynı satırda, kırmızı (Danger).
+        crate::converters::builtin::v2::delete_button(),
     ];
 
     let components = vec![
@@ -533,9 +535,9 @@ mod tests {
                 .contains("[Never Gonna Give You Up](https://open.spotify.com/track/")
         );
 
-        // Buton satırı: Spotify + Apple Music + YouTube Music (önizleme butonu yok).
+        // Buton satırı: Spotify + Apple Music + YouTube Music + kartın Sil butonu.
         let buttons = card.components[2]["components"].as_array().unwrap();
-        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons.len(), 4);
         assert_eq!(
             buttons[0]["url"],
             "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
@@ -552,9 +554,16 @@ mod tests {
             "youtube: {youtube}"
         );
         assert!(youtube.contains("Rick"));
-        for button in buttons {
+        for button in &buttons[..3] {
             assert_eq!(button["style"], 5);
         }
+        // Son buton silme: kırmızı (Danger), etiketi "Sil".
+        assert_eq!(buttons[3]["style"], 4);
+        assert_eq!(buttons[3]["label"], "Sil");
+        assert_eq!(
+            buttons[3]["custom_id"],
+            crate::converters::builtin::v2::CARD_DELETE_ID
+        );
     }
 
     #[test]
@@ -567,10 +576,11 @@ mod tests {
         let card = build_card(&view, "https://open.spotify.com/playlist/x");
         // Görsel yoksa bölüm erişilebilirliği bir bağlantı butonu olur.
         assert_eq!(card.components[0]["accessory"]["type"], 2);
-        // Müzik butonları her zaman vardır (Spotify + Apple Music + YouTube Music).
+        // Müzik butonları her zaman vardır (Spotify + Apple Music + YouTube Music) ve
+        // kartın Sil butonu aynı satıra eklenir.
         assert_eq!(
             card.components[2]["components"].as_array().unwrap().len(),
-            3
+            4
         );
     }
 

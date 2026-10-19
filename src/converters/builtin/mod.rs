@@ -33,8 +33,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, Embed, Message, MessageId, ReactionType, UserId,
-    WebhookId,
+    Channel, ChannelId, ChannelType, Context, Embed, Message, MessageId, UserId, WebhookId,
 };
 use std::sync::LazyLock;
 use tokio::sync::Mutex;
@@ -789,8 +788,8 @@ fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> 
 
 /// Taklit edilen mesajın orijinal yazarını **kalıcı** olarak kaydeder (SQLite).
 ///
-/// Bu kayıt 🗑️ silme izni, "kartlara verilen yanıt AI'yı tetiklemesin" kuralı ve bayrak
-/// emojisiyle çeviri ayrımı için kullanılır. Bot yeniden başlasa, çökse veya güncellense
+/// Bu kayıt kartın **Sil** butonunun yetki kontrolü, "kartlara verilen yanıt AI'yı
+/// tetiklemesin" kuralı ve bayrak emojisiyle çeviri ayrımı için kullanılır. Bot yeniden başlasa, çökse veya güncellense
 /// de kayıt kaybolmaz (eskiden bellekteki bir `HashMap` içindeydi ve yeniden başlatmada
 /// siliniyordu).
 pub async fn remember_author(message_id: MessageId, channel_id: ChannelId, author: UserId) {
@@ -803,7 +802,7 @@ pub async fn forget_author(message_id: MessageId) {
     crate::store::blocking(move || crate::store::forget_card(message_id)).await;
 }
 
-/// Taklit edilen mesajın orijinal yazarı (🗑️ silme izni bu bilgiyle verilir).
+/// Taklit edilen mesajın orijinal yazarı (kartın **Sil** butonunun izni bu bilgiyle verilir).
 pub async fn original_author(message_id: MessageId) -> Option<UserId> {
     crate::store::blocking(move || crate::store::card_author(message_id)).await
 }
@@ -1106,8 +1105,8 @@ pub fn spawn_delete(ctx: &Context, msg: &Message) {
     tokio::spawn(async move { delete_user_message(&ctx, &msg).await });
 }
 
-/// Orijinal mesajı siler; zaten silinmişse sessizce geçer (🗑️ reaksiyonu
-/// yeni mesaja eklenir, bu yüzden mükerrer silme denemesi hata üretmez).
+/// Orijinal mesajı siler; zaten silinmişse sessizce geçer (kartın **Sil** butonu da aynı
+/// mesajı silebilir, bu yüzden mükerrer silme denemesi hata üretmez).
 ///
 /// Silmeden **önce** mesajın en az [`DELETE_MIN_AGE`] yaşında olması beklenir; bu,
 /// gönderenin istemcisinin optimistic (nonce'lu) mesajını sunucu kopyasıyla
@@ -1451,12 +1450,11 @@ async fn send_components_v2(
     .await?;
     Ok((message_id, false))
 }
-/// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
+/// Kartın **Sil** butonunun izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
 ///
-/// Reaksiyon ve silme **arka planda** yapılır: kart kullanıcıya çoktan görünmüştür, bu iki
-/// REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest kalır). Silme,
-/// kart gönderildikten **sonra** ve [`DELETE_MIN_AGE`] kadar gecikmeyle yapılır (hayalet
-/// mesaj önlemi).
+/// Silme **arka planda** yapılır: kart kullanıcıya çoktan görünmüştür, REST çağrısı dönüşüm
+/// süresine eklenmez (ve mesaj işleme döngüsü serbest kalır). Silme, kart gönderildikten
+/// **sonra** ve [`DELETE_MIN_AGE`] kadar gecikmeyle yapılır (hayalet mesaj önlemi).
 async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
     remember_author(message_id, msg.channel_id, msg.author.id).await;
 
@@ -1464,18 +1462,6 @@ async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: Messa
     let msg = msg.clone();
     let delete_original = config.delete_original;
     tokio::spawn(async move {
-        if let Err(e) = msg
-            .channel_id
-            .create_reaction(
-                &ctx.http,
-                message_id,
-                ReactionType::Unicode("🗑️".to_string()),
-            )
-            .await
-        {
-            error!("Silme reaksiyonu eklenemedi: {:?}", e);
-        }
-
         // Kart gönderildi; şimdi orijinal mesajı sil (en az DELETE_MIN_AGE yaşına gelene
         // kadar bekleyerek: gönderenin istemcisi optimistic mesajını eşleştirebilsin).
         if delete_original {
@@ -1827,7 +1813,7 @@ mod message_tests {
         assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
         assert!(is_native_message(message_id).await);
 
-        // Kayıt silinince kart tanıma da düşer (🗑️ ile kart silindiğinde kullanılır).
+        // Kayıt silinince kart tanıma da düşer (Sil butonuyla kart silindiğinde kullanılır).
         forget_author(message_id).await;
         assert_eq!(original_author(message_id).await, None);
         assert!(!is_native_message(message_id).await);
