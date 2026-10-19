@@ -47,6 +47,42 @@ use crate::utils::mentions::build_selective_allowed_mentions;
 
 /// Dış servis istekleri için zaman aşımı (ışık hızı: askıda kalan istek kartı bekletmez).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
+/// Kartın **kullanıcıya görünmesi** için hedeflenen üst sınır: dönüşüm başlangıcından
+/// (veri çekimi + medya + gönderim) itibaren. Tek bir isteğin ağ gecikmesi bu bütçenin
+/// dışında kalabilir; amaç, veri çekimini kaynağın en yavaş yanıtına **bağlı bırakmamaktır**.
+pub const LATENCY_TARGET: Duration = Duration::from_millis(1_000);
+/// Kart verisi hazır olduktan sonra **isteğe bağlı** zenginleştirme (çeviri, üçüncü seviye
+/// alıntı, görüntülenme/topluluk notu, harici link kartı) için tanınan süre.
+///
+/// Bu süre dolar ve kart hâlâ gönderilmediyse bekleyen zenginleştirme bırakılır: yavaş
+/// vxTwitter yanıtı yüzünden kart saniyelerce gecikmez (X syndication'ın verdiği metin,
+/// yazar, medya ve alıntı zaten kartı çizmeye yeter).
+pub const FETCH_ENRICH_BUDGET: Duration = Duration::from_millis(650);
+/// Hiçbir kaynak ilk veriyi vermezse, kart büsbütün düşmesin diye beklenecek üst sınır.
+///
+/// Bu sınıra ancak **tüm** kaynaklar yavaş/hatalıysa gelinir (syndication genelde hızlıdır).
+/// Tek istek zaten [`REQUEST_TIMEOUT`] ile sınırlıdır; bu bütçe, seri kalan zincirlerin
+/// 6 saniyeye kadar uzamasını engeller. Süre dolarsa orijinal mesaj korunur.
+pub const FETCH_FIRST_DATA_BUDGET: Duration = Duration::from_millis(3_000);
+/// Taklit webhook'u için tanınan **en fazla** ek süre.
+///
+/// Gerçek bekleme [`webhook_wait`] ile kalan bütçeye göre kısaltılır: veri fazı bütçeyi
+/// yediyse webhook hiç beklenmez (kart bot adına gider), veri hızlı bittiyse en fazla bu kadar.
+const WEBHOOK_WARMUP_WAIT: Duration = Duration::from_millis(200);
+/// Discord POST'u için bütçede ayrılan pay (sıcak HTTP/2 bağlantısında ~200-250 ms).
+const SEND_RESERVE: Duration = Duration::from_millis(250);
+
+/// Taklit webhook'u hazır değilse, **kalan bütçe kadar** beklenir.
+///
+/// Warmup veri çekimiyle paralel başladığı için normalde gönderim anında hazırdır; bu süre
+/// yalnızca yavaş bir kanalda kartın 1 saniyelik hedefi aşmaması için bir üst sınırdır.
+fn webhook_wait(prepare: Duration) -> Duration {
+    LATENCY_TARGET
+        .saturating_sub(prepare)
+        .saturating_sub(SEND_RESERVE)
+        .min(WEBHOOK_WARMUP_WAIT)
+}
+
 /// Video/görsel indirme için daha uzun zaman aşımı (tek isteğin üst sınırı).
 ///
 /// **Etkin** sınır bu değil [`render::VIDEO_BUDGET`] gibi süre bütçeleridir: kart, medya
@@ -943,6 +979,7 @@ async fn resolve_webhook(
 ///
 /// Mesajın bulunduğu kanal bir alt başlık veya forum gönderisiyse webhook **üst kanalda**
 /// çözümlenir ve gönderim `thread_id` ile o alt başlığa yapılır (bkz. [`webhook_target`]).
+#[allow(clippy::too_many_arguments)]
 async fn send_via_webhook(
     ctx: &Context,
     client: &reqwest::Client,
@@ -951,18 +988,30 @@ async fn send_via_webhook(
     payload: &serde_json::Value,
     files: &[serenity::all::CreateAttachment],
     warmup: Option<WebhookWarmup>,
+    wait: Duration,
 ) -> Result<MessageId, raw::DiscordError> {
     let mut last_error = raw::DiscordError::Unavailable;
     let (target, mut warmed) = match warmup {
-        Some(warmup) => match warmup.await {
-            Ok(result) => result,
-            Err(err) => {
+        Some(warmup) => match tokio::time::timeout(wait, warmup).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => {
                 warn!(
                     "Webhook warmup görevi başarısız oldu: {err}; gönderim sırasında yeniden çözümlenecek"
                 );
                 let target = webhook_target(ctx, msg).await;
                 let webhook = channel_webhook(ctx, client, config, target.channel_id, false).await;
                 (target, webhook)
+            }
+            Err(_) => {
+                // Veri hazır ama webhook hâlâ çözümleniyor: kartı bekletmek yerine bot adına
+                // gönder. Warmup görevi arka planda sürer ve sonucu önbelleğe yazar, böylece
+                // sonraki kart yeniden çözümleme maliyeti ödemez.
+                info!(
+                    "Taklit webhook'u {} ms içinde hazır olmadı; kart bot adına gönderilecek ({})",
+                    wait.as_millis(),
+                    msg.id
+                );
+                return Err(raw::DiscordError::Unavailable);
             }
         },
         None => {
@@ -1191,6 +1240,23 @@ pub async fn handle(
         parsed.original_url
     );
 
+    // Hedefe uymak için veri fazı, gönderime ayrılan payı yememeli. Yiyorsa nedeni
+    // log'da görünsün: kaynak yavaş mı, yoksa medya mı bekledi?
+    if media_done > LATENCY_TARGET - SEND_RESERVE {
+        warn!(
+            "Veri fazı {} ms sürdü (veri {} ms, medya {} ms; gönderime kalan pay {} ms): {}",
+            media_done.as_millis(),
+            fetched.as_millis(),
+            (media_done - fetched).as_millis(),
+            LATENCY_TARGET.saturating_sub(media_done).as_millis(),
+            parsed.original_url
+        );
+    }
+
+    // Webhook çözümlemesi veri çekimiyle paralel başladı; hâlâ sürüyorsa **kalan bütçe**
+    // kadar beklenir, gerisi kartı geciktirmemek için bot adına gönderilir.
+    let webhook_wait = webhook_wait(media_done);
+
     // Kart **yalnızca** Components V2 olarak gönderilir (klasik embed yedeği yoktur).
     match send_components_v2(
         ctx,
@@ -1204,19 +1270,26 @@ pub async fn handle(
         &engine.emojis,
         identity.as_ref(),
         webhook_warmup,
+        webhook_wait,
     )
     .await
     {
         Ok((message_id, impersonated)) => {
-            crate::telemetry::record(platform_key(parsed.platform), true, started.elapsed());
+            let total = started.elapsed();
+            crate::telemetry::record(platform_key(parsed.platform), true, total);
             info!(
-                "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}, veri {} ms, medya {} ms, gönderim {} ms, toplam {} ms): {}",
+                "Mesaj Components V2 kart olarak dönüştürüldü ({:?}, taklit: {}, veri {} ms, medya {} ms, gönderim {} ms, toplam {} ms{}): {}",
                 parsed.platform,
                 impersonated,
                 fetched.as_millis(),
                 (media_done - fetched).as_millis(),
-                (started.elapsed() - media_done).as_millis(),
-                started.elapsed().as_millis(),
+                (total - media_done).as_millis(),
+                total.as_millis(),
+                if total > LATENCY_TARGET {
+                    " — hedef 1 sn aşıldı"
+                } else {
+                    ""
+                },
                 parsed.original_url
             );
             finish(ctx, msg, config, message_id).await;
@@ -1303,6 +1376,7 @@ async fn send_components_v2(
     emojis: &EmojiSettings,
     identity: Option<&Impersonation>,
     warmup: Option<WebhookWarmup>,
+    webhook_wait: Duration,
 ) -> Result<(MessageId, bool), raw::DiscordError> {
     if let Some(identity) = identity {
         // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
@@ -1325,6 +1399,7 @@ async fn send_components_v2(
             &payload,
             &resolved.attachments,
             warmup,
+            webhook_wait,
         )
         .await
         {
@@ -1405,6 +1480,42 @@ fn is_discord_rejection(error: &str) -> bool {
 #[cfg(test)]
 mod message_tests {
     use super::*;
+
+    /// Bütçe paylaşımı 1 saniyelik hedefi **kendi içinde** tutmalı: isteğe bağlı
+    /// zenginleştirme + Discord POST payı hedefi aşamaz, webhook beklemesi de kalan
+    /// bütçeden fazlasını isteyemez.
+    #[test]
+    fn latency_budgets_fit_inside_the_one_second_target() {
+        assert!(
+            FETCH_ENRICH_BUDGET + SEND_RESERVE <= LATENCY_TARGET,
+            "zenginleştirme {} ms + gönderim {} ms > hedef {} ms",
+            FETCH_ENRICH_BUDGET.as_millis(),
+            SEND_RESERVE.as_millis(),
+            LATENCY_TARGET.as_millis()
+        );
+        assert!(FETCH_ENRICH_BUDGET < FETCH_FIRST_DATA_BUDGET);
+
+        // Veri fazı bütçeyi tam yese bile webhook beklemesi hedefi aşmaz.
+        let full = FETCH_ENRICH_BUDGET + webhook_wait(FETCH_ENRICH_BUDGET);
+        assert!(
+            full + SEND_RESERVE <= LATENCY_TARGET,
+            "zenginleştirme + webhook + gönderim hedefi aşıyor: {} ms",
+            full.as_millis() + SEND_RESERVE.as_millis()
+        );
+    }
+
+    /// Webhook beklemesi kalan bütçeye göre kısalır; geç kalan veri fazı hiç beklemez.
+    #[test]
+    fn webhook_wait_shrinks_with_the_remaining_budget() {
+        assert_eq!(webhook_wait(Duration::ZERO), WEBHOOK_WARMUP_WAIT);
+        assert!(webhook_wait(FETCH_ENRICH_BUDGET) <= WEBHOOK_WARMUP_WAIT);
+        assert!(
+            webhook_wait(FETCH_ENRICH_BUDGET) < webhook_wait(FETCH_ENRICH_BUDGET / 2),
+            "veri fazı uzadıkça bekleme kısalmalı"
+        );
+        assert_eq!(webhook_wait(LATENCY_TARGET), Duration::ZERO);
+        assert_eq!(webhook_wait(LATENCY_TARGET * 2), Duration::ZERO);
+    }
 
     #[test]
     fn content_requirements_are_isolated_in_the_whole_post_cache_key() {

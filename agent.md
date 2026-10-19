@@ -43,6 +43,15 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-19 18:15] zoltrons — 1 sn üstü kart dönüşümlerinin nedeni bulundu; hedef bütçeyle sınırlandı
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. **Kök neden:** `show_metrics`/`show_community_note` açıkken veri fazı **zorunlu** olarak en yavaş kaynağı (vxTwitter) bekliyordu; logdaki 1921/3798/4548/2212 ms'lik `veri` süreleri bu yüzden oluşuyordu. Buna ek olarak harici link önizlemesi tüm veri fazından **sonra sırayla** (500 ms'ye kadar), webhook çözümlemesi ise gönderim anında **sınırsız** bekleniyordu (2037 ms'lik ilk `gönderim`).
+  2. **Düzeltme:** X planlayıcısı iki kademeli bütçeye geçti — kart verisi hazır olduktan sonra isteğe bağlı zenginleştirme `FETCH_ENRICH_BUDGET` (650 ms) ile kesilir, hiç veri yoksa ilk yanıt `FETCH_FIRST_DATA_BUDGET` (3 sn) beklenir. Link önizlemesi bütçenin içinde kaynak istekleriyle **paralel** çalışır. Webhook beklemesi kalan bütçeyle sınırlanır (en fazla 200 ms; Discord POST'una 250 ms pay) ve süre dolarsa kart bot adına gönderilir. Tüm uçlar 45 sn'de bir yoklanarak DNS/TCP/TLS el sıkışması her dönüşümde yeniden ödenmez.
+  3. **Teşhis:** dönüşüm satırı hedef aşıldığında `— hedef 1 sn aşıldı` ekiyle, veri fazı gönderim payını yediğinde ayrı bir `Veri fazı … ms sürdü` uyarısıyla, webhook geç kaldığında bilgi satırıyla nedenini yazar. Bütçe toplamı, webhook beklemesinin kalan bütçeyle kısalması, bütçede kesilen zenginleştirme, paralel önizleme ve bayat önizleme reddi testlerle doğrulandı.
+- **Test:** Rust 1.98.1 LLVM ile 375 test başarılı (10 yavaş/canlı test varsayılan olarak atlandı); `clippy -D warnings` ve `fmt --check` temiz. `scripted_latency_comparison` medyanları değişmedi (İngilizce video 62 ms, üçlü görsel 125 ms, çevirili üçlü 372 ms). Üretim ağ ölçümü bu ortamda yapılamadı (TLS el sıkışması sandbox'ta kapalı).
+- **Etkilenen:** `src/converters/builtin/mod.rs`, `src/converters/builtin/twitter.rs`, `src/converters/builtin/twitter/pipeline.rs`, `src/main.rs`, `README.md`
+
 ### [2026-10-17 17:56] zoltrons — X veri çekimine içerik farkındalıklı paralel planlayıcı eklendi
 - **Commit:** `bu-commit`
 - **Yapılan:**

@@ -17,6 +17,10 @@ Community Posts desteklenir.
 - Otomatik X çevirisinin hedef dili WebUI'dan `tr`, `en`, `de` veya BCP-47 uyumlu başka bir kod olarak
   seçilebilir. Proxy bayrak çevirileri mevcut davranışını korur.
 - Native kartlar **yalnızca Discord Components V2** kullanır; klasik embed fallback'i veya kart stili seçimi yoktur.
+- Kartın görünme hedefi **1 saniyedir** (veri + medya + gönderim). Veri hazır olduktan sonra
+  çeviri/alıntı derinliği/link kartı gibi isteğe bağlı işler için **650 ms**, webhook beklemesi için
+  kalan bütçe (en fazla **200 ms**) ayrılır; Discord POST'una **250 ms** pay bırakılır. Kaynak
+  (vxTwitter) yavaşladığında kart, mevcut syndication verisiyle gönderilir.
 - Tumblr önce fxtumblr uyumlu renderer'ı (`FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`) dener; böylece NPF/reblog
   zinciri ve çoklu medya tek güvenli render görselinde korunur. Renderer erişilemezse public OG fallback kullanılır.
 - Görseller ve GIF'ler doğrudan CDN bağlantılarıdır; X görsellerinde `name=orig` kullanılır.
@@ -178,6 +182,11 @@ Bağımlılık denetiminin gerçekten geçtiğini ilgili CI sonucu olmadan varsa
 - `/api/metrics`: giriş gerektirir; platform bazlı native başarı/hata, kümülatif gecikme histogramı,
   cache-hit ve kapasite aşımı sayıları. Süreç yeniden başlayınca sıfırlanır; kullanıcı/veri/token içermez.
 - `RUST_LOG=botgek=debug,serenity=warn`: veri/medya/gönderim süreleri. Logları özel tutun; gönderi URL'leri içerebilir.
+- Dönüşüm satırı `toplam … ms — hedef 1 sn aşıldı` ekiyle biter; veri fazı gönderim payını
+  aştığında ayrıca `Veri fazı … ms sürdü (veri …, medya …)` uyarısı yazılır. Taklit webhook'u
+  zamanında hazır olmazsa `Taklit webhook'u … ms içinde hazır olmadı` bilgisi düşer.
+  Bu üç satır, yavaş bir kartın hangi fazda geciktiğini (kaynak / medya / webhook / Discord POST)
+  doğrudan gösterir.
 
 Tekrarlanabilir offline CPU başlangıç ölçümü:
 
@@ -209,8 +218,11 @@ bu bir hız garantisi değil, kritik yoldaki seri beklemeleri kaldırma tercihid
 - Kaynak sonuçları ayrıca **600 saniye / 512 girdi** ile önbelleklenir; aynı ID başka bir
   gönderide alıntılandığında da tekrar kullanılabilir. Kaynak/dil/hedef/video bütçeleri
   ayrıdır; eşzamanlı aynı istekler tek çekimde birleşir. NSFW/spoiler kararı bu cache'e yazılmaz.
-- Kaynak/çeviri/alıntı işleri tek **6 saniyelik toplam veri bütçesini** paylaşır; ayrı ayrı
-  tam zaman aşımı süreleri birikmez. Harici link önizlemesinin ayrı 500 ms sınırı korunur.
+- Kaynak/çeviri/alıntı işleri **iki kademeli bütçeyi** paylaşır: kart verisi geldikten sonra
+  isteğe bağlı zenginleştirme **650 ms** ile sınırlıdır, hiç veri gelmezse ilk yanıt için
+  **3 saniyeye** kadar beklenir (kart büsbütün düşmesin). Ayrı ayrı tam zaman aşımı süreleri
+  birikmez. Harici link önizlemesi bu bütçenin **içinde**, kaynak istekleriyle paralel çalışır;
+  ayrıca 500 ms sınırı vardır.
 
 Karar, hata, iptal ve gecikme karşılaştırmalarını tekrarlamak için:
 

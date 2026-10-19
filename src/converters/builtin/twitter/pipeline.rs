@@ -6,7 +6,9 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::debug;
 
 use super::plan::{FetchPlan, NestedHint, QuoteFetch, decide};
-use super::{BuiltinPost, EngineSettings, extract_tweet_id, merge_community_note, merge_stats};
+use super::{
+    BuiltinPost, EngineSettings, LinkPreview, extract_tweet_id, merge_community_note, merge_stats,
+};
 
 #[derive(Clone)]
 pub(super) struct Snapshot {
@@ -31,6 +33,19 @@ pub(super) trait Fetcher: Clone + Send + Sync + 'static {
     async fn cached(&self, _request: &Request) -> Option<Snapshot> {
         None
     }
+    /// Harici bağlantı kartı (yalnızca medyasız ve alıntısız gönderilerde kullanılır).
+    ///
+    /// Önizleme, kaynak istekleriyle **paralel** çalışır; sonuç karta sonradan eklenir.
+    async fn preview(&self, _url: &str) -> Option<LinkPreview> {
+        None
+    }
+}
+
+/// Tamamlanan işin iki türlü çıktısı: gönderi verisi ya da harici link kartı.
+/// Gönderi verisi kutulanır: varyantlar arasındaki boyut farkı büyük.
+enum Outcome {
+    Snapshot(Box<Snapshot>),
+    Preview(Option<LinkPreview>),
 }
 
 #[derive(Clone)]
@@ -40,6 +55,7 @@ enum Work {
     Metadata,
     Translation(String),
     Quote(QuoteFetch),
+    Preview(String),
 }
 
 impl Work {
@@ -51,6 +67,7 @@ impl Work {
             Self::Translation(url) => format!("translation:{}", identity(url)),
             Self::Quote(QuoteFetch::Direct(url)) => format!("direct:{}", identity(url)),
             Self::Quote(QuoteFetch::Inspect(url)) => format!("inspect:{}", identity(url)),
+            Self::Preview(url) => format!("preview:{}", identity(url)),
         }
     }
 }
@@ -60,7 +77,7 @@ fn identity(url: &str) -> String {
 }
 
 fn spawn<F: Fetcher>(
-    tasks: &mut JoinSet<(Work, Result<Snapshot, String>)>,
+    tasks: &mut JoinSet<(Work, Result<Outcome, String>)>,
     pending: &mut HashMap<String, (Work, AbortHandle)>,
     fetcher: F,
     work: Work,
@@ -76,7 +93,31 @@ fn spawn<F: Fetcher>(
         } else {
             fetcher.fetch(request).await
         };
-        (work, result)
+        (
+            work,
+            result.map(|snapshot| Outcome::Snapshot(Box::new(snapshot))),
+        )
+    });
+    pending.insert(key, (in_flight, handle));
+}
+
+/// Harici link kartı isteğini **diğer işlerle paralel** başlatır.
+///
+/// Eskiden önizleme, tüm veri fazı bittikten sonra sırayla çalışıyordu: medyasız bir
+/// gönderide kartın süresine 500 ms'ye kadar ekliyordu. Artık ilk veri gelir gelmez
+/// başlar ve zenginleştirme bütçesiyle sınırlıdır.
+fn spawn_preview<F: Fetcher>(
+    tasks: &mut JoinSet<(Work, Result<Outcome, String>)>,
+    pending: &mut HashMap<String, (Work, AbortHandle)>,
+    fetcher: F,
+    url: String,
+) {
+    let work = Work::Preview(url.clone());
+    let key = work.key();
+    let in_flight = work.clone();
+    let handle = tasks.spawn(async move {
+        let preview = fetcher.preview(&url).await;
+        (work, Ok(Outcome::Preview(preview)))
     });
     pending.insert(key, (in_flight, handle));
 }
@@ -93,22 +134,44 @@ fn translation_needed(plan: &FetchPlan, url: &str, checked: &HashSet<String>) ->
 /// No fixed merge-grace delay. The base endpoint races a speculative translated root
 /// when enabled: English/media posts do not wait for /tr, foreign posts do not pay an
 /// extra serial RTT to discover their language. Obsolete read-only work is cancelled.
-/// One total deadline prevents serial quote/translation timeouts from accumulating.
+/// Two deadlines bound the wait: optional enrichment stops once card data exists, while
+/// a first snapshot may take longer so a slow source cannot drop the card entirely.
 pub(super) async fn acquire<F: Fetcher>(
     fetcher: F,
     url: &str,
     engine: &EngineSettings,
 ) -> Result<BuiltinPost, String> {
-    acquire_with_budget(fetcher, url, engine, super::super::REQUEST_TIMEOUT).await
+    acquire_with_budgets(
+        fetcher,
+        url,
+        engine,
+        super::super::FETCH_ENRICH_BUDGET,
+        super::super::FETCH_FIRST_DATA_BUDGET,
+    )
+    .await
 }
 
+/// Tek bütçeli sürüm: hem ilk veri hem zenginleştirme aynı sınıra tabidir (testler).
+#[cfg(test)]
 async fn acquire_with_budget<F: Fetcher>(
     fetcher: F,
     url: &str,
     engine: &EngineSettings,
     budget: std::time::Duration,
 ) -> Result<BuiltinPost, String> {
-    let deadline = tokio::time::Instant::now() + budget;
+    acquire_with_budgets(fetcher, url, engine, budget, budget).await
+}
+
+async fn acquire_with_budgets<F: Fetcher>(
+    fetcher: F,
+    url: &str,
+    engine: &EngineSettings,
+    enrich: std::time::Duration,
+    first: std::time::Duration,
+) -> Result<BuiltinPost, String> {
+    let started = tokio::time::Instant::now();
+    let enrich_deadline = started + enrich;
+    let first_deadline = started + first;
     let mut tasks = JoinSet::new();
     let mut pending = HashMap::new();
     let base_request = Request::Vx {
@@ -228,6 +291,20 @@ async fn acquire_with_budget<F: Fetcher>(
                 }
             }
 
+            // Harici link kartı, kaynak/çeviri/alıntı işleriyle **paralel** istenir: eskiden
+            // veri fazı bittikten sonra sırayla çalışıyor ve kartı 500 ms'ye kadar geciktiriyordu.
+            if let Some(preview_url) = plan.preview_url.as_ref() {
+                let work = Work::Preview(preview_url.clone());
+                if attempted.insert(work.key()) {
+                    spawn_preview(
+                        &mut tasks,
+                        &mut pending,
+                        fetcher.clone(),
+                        preview_url.clone(),
+                    );
+                }
+            }
+
             let need_topology = !rich_finished && plan.quote.is_some();
             let need_rich = !rich_finished
                 && (engine.show_metrics || engine.show_community_note || need_topology);
@@ -248,6 +325,8 @@ async fn acquire_with_budget<F: Fetcher>(
                     Work::Metadata => false,
                     Work::Translation(url) => translation_needed(&plan, url, &checked),
                     Work::Quote(quote) => plan.quote.as_ref() == Some(quote),
+                    // İsteğe bağlı ama ucuz: bütçe dolana kadar karta eklenmesini bekle.
+                    Work::Preview(_) => true,
                 };
                 if relevant {
                     needed = true;
@@ -262,10 +341,22 @@ async fn acquire_with_budget<F: Fetcher>(
             }
         }
 
+        // Kart verisi hazırsa isteğe bağlı zenginleştirme için tanınan süre geçerlidir;
+        // hiç veri yoksa kartın büsbütün düşmemesi için daha uzun ilk-veri sınırı beklenir.
+        let deadline = if root.is_some() {
+            enrich_deadline
+        } else {
+            first_deadline
+        };
         let next = match tokio::time::timeout_at(deadline, tasks.join_next()).await {
             Ok(next) => next,
             Err(_) => {
-                debug!("X acquisition total deadline reached; keeping acquired data");
+                debug!(
+                    enrich_ms = enrich.as_millis(),
+                    first_ms = first.as_millis(),
+                    pending = pending.len(),
+                    "X acquisition deadline reached; keeping acquired data"
+                );
                 break;
             }
         };
@@ -278,14 +369,14 @@ async fn acquire_with_budget<F: Fetcher>(
         };
         pending.remove(&work.key());
         if matches!(work, Work::Rich | Work::TranslatedRoot) {
-            rich_finished |= result.is_ok()
+            rich_finished |= matches!(&result, Ok(Outcome::Snapshot(_)))
                 || (!pending.contains_key("rich") && !pending.contains_key("translated-root"));
         }
         if matches!(work, Work::TranslatedRoot) {
             // Even an error must not cause the exact same language URL to be retried
             // immediately as a per-node translation. Other quoted IDs may still succeed.
             checked.insert(identity(url));
-            if let Ok(snapshot) = &result {
+            if let Ok(Outcome::Snapshot(snapshot)) = &result {
                 checked.insert(identity(&snapshot.post.url));
                 if let Some(quote) = snapshot.post.quote.as_deref() {
                     checked.insert(identity(&quote.url));
@@ -296,10 +387,18 @@ async fn acquire_with_budget<F: Fetcher>(
             checked.insert(identity(url));
         }
         match result {
-            Ok(snapshot) => apply(&mut root, work, snapshot),
+            Ok(Outcome::Snapshot(snapshot)) => apply(&mut root, work, *snapshot),
+            Ok(Outcome::Preview(preview)) => {
+                if let Work::Preview(preview_url) = &work {
+                    apply_preview(&mut root, preview_url, preview);
+                }
+            }
             Err(reason) => {
-                debug!(work = %work.key(), "X acquisition request failed: {reason}");
-                failures.push(reason);
+                // Önizleme isteğe bağlıdır: başarısızlığı hata listesine yazılmaz.
+                if !matches!(work, Work::Preview(_)) {
+                    debug!(work = %work.key(), "X acquisition request failed: {reason}");
+                    failures.push(reason);
+                }
             }
         }
     }
@@ -376,7 +475,33 @@ fn apply(root: &mut Option<Snapshot>, work: Work, snapshot: Snapshot) {
                 root.nested_hint = NestedHint::Absent;
             }
         }
+        // Önizleme kendi çıktısıyla (`Outcome::Preview`) uygulanır.
+        Work::Preview(_) => {}
     }
+}
+
+/// Harici link kartını yalnızca hâlâ geçerliyse karta ekler.
+///
+/// Veri fazı sürerken metin değişebilir (çeviri) veya gönderiye medya/alıntı eklenebilir;
+/// bu durumda eski metinden üretilen önizleme karta konmaz.
+fn apply_preview(root: &mut Option<Snapshot>, url: &str, preview: Option<LinkPreview>) {
+    let Some(preview) = preview else { return };
+    let Some(root) = root else { return };
+    if !root.post.media.is_empty() || root.post.quote.is_some() {
+        return;
+    }
+    if super::external_link(&root.post.text).as_deref() != Some(url) {
+        return;
+    }
+    if root
+        .post
+        .link_preview
+        .as_ref()
+        .is_some_and(|existing| !existing.is_empty())
+    {
+        return;
+    }
+    root.post.link_preview = Some(preview);
 }
 
 fn merge_at(target: &mut BuiltinPost, url: &str, fresh: &BuiltinPost, depth: usize) {
@@ -429,11 +554,14 @@ mod tests {
     use std::time::{Duration, Instant};
 
     type Responses = HashMap<String, (Duration, Result<Snapshot, String>)>;
+    type Previews = HashMap<String, (Duration, Option<LinkPreview>)>;
 
     #[derive(Clone, Default)]
     struct FakeFetcher {
         responses: Arc<Responses>,
         calls: Arc<Mutex<Vec<String>>>,
+        previews: Arc<Previews>,
+        preview_calls: Arc<Mutex<Vec<String>>>,
     }
 
     fn request_key(request: &Request) -> String {
@@ -460,6 +588,17 @@ mod tests {
             tokio::time::sleep(delay).await;
             response
         }
+
+        async fn preview(&self, url: &str) -> Option<LinkPreview> {
+            self.preview_calls.lock().unwrap().push(url.to_string());
+            let (delay, preview) = self
+                .previews
+                .get(url)
+                .cloned()
+                .unwrap_or((Duration::ZERO, None));
+            tokio::time::sleep(delay).await;
+            preview
+        }
     }
 
     impl FakeFetcher {
@@ -474,6 +613,8 @@ mod tests {
                         .collect(),
                 ),
                 calls: Arc::new(Mutex::new(Vec::new())),
+                previews: Arc::new(Previews::new()),
+                preview_calls: Arc::new(Mutex::new(Vec::new())),
             }
         }
         fn count(&self, key: &str) -> usize {
@@ -483,6 +624,20 @@ mod tests {
                 .iter()
                 .filter(|call| call.as_str() == key)
                 .count()
+        }
+        fn with_previews(mut self, previews: Vec<(&str, u64, Option<LinkPreview>)>) -> Self {
+            self.previews = Arc::new(
+                previews
+                    .into_iter()
+                    .map(|(url, ms, preview)| {
+                        (url.to_string(), (Duration::from_millis(ms), preview))
+                    })
+                    .collect(),
+            );
+            self
+        }
+        fn preview_count(&self) -> usize {
+            self.preview_calls.lock().unwrap().len()
         }
     }
 
@@ -881,6 +1036,205 @@ mod tests {
         assert_eq!(result.text, root.text);
         assert!(result.translation.is_none());
         assert_eq!(fetcher.count("vx:1:tr"), 1);
+    }
+
+    /// Kart verisi hazır olduğunda isteğe bağlı işler **zenginleştirme bütçesinde** kesilir:
+    /// yavaş üçüncü seviye alıntı, kartı saniyelerce bekletmez.
+    #[tokio::test]
+    async fn optional_enrichment_stops_at_the_enrichment_budget() {
+        let mut root = post(1, "en");
+        root.quote = Some(Box::new(post(2, "en")));
+        let fetcher = FakeFetcher::new(vec![
+            ("meta:1", 5, Ok(snapshot(root.clone(), NestedHint::Unknown))),
+            (
+                "vx:1:original",
+                20,
+                Ok(snapshot(root.clone(), NestedHint::Unknown)),
+            ),
+            (
+                "vx:1:tr",
+                500,
+                Ok(snapshot(root.clone(), NestedHint::Unknown)),
+            ),
+            (
+                "vx:2:original",
+                900,
+                Ok(snapshot(post(2, "en"), NestedHint::Absent)),
+            ),
+        ]);
+        let started = Instant::now();
+        let result = acquire_with_budgets(
+            fetcher.clone(),
+            &root.url,
+            &engine(),
+            Duration::from_millis(100),
+            Duration::from_millis(1_000),
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "bütçe aşıldı: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(result.text, root.text);
+        assert!(
+            result.quote.as_deref().unwrap().quote.is_none(),
+            "bütçe dolduktan sonra alıntı derinliği tamamlanmamalı"
+        );
+    }
+
+    /// **Logdaki ana neden:** metrik/topluluk notu açıkken kart, hızlı syndication verisi
+    /// hazır olmasına rağmen yavaş vx yanıtına bağlanıyordu. Artık kart bütçede gönderilir.
+    #[tokio::test]
+    async fn slow_rich_source_does_not_pin_the_card_when_metadata_is_ready() {
+        let root = post(1, "ja");
+        let mut rich = root.clone();
+        rich.stats.views = Some(1_234);
+        rich.community_note = Some("not".to_string());
+        let fetcher = FakeFetcher::new(vec![
+            ("meta:1", 20, Ok(snapshot(root.clone(), NestedHint::Absent))),
+            (
+                "vx:1:original",
+                1_900,
+                Ok(snapshot(rich.clone(), NestedHint::Absent)),
+            ),
+            (
+                "vx:1:tr",
+                1_900,
+                Ok(snapshot(translated(rich), NestedHint::Absent)),
+            ),
+        ]);
+        let started = Instant::now();
+        let result = acquire(fetcher.clone(), &root.url, &engine())
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(800),
+            "kart yavaş kaynağa bağlı kaldı: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(result.text, root.text, "çeviri geç geldi, orijinal kalmalı");
+        assert_eq!(result.stats.views, None, "geç gelen metrik karta girmemeli");
+    }
+
+    /// Hiç veri yokken zenginleştirme bütçesi kartı düşürmez: ilk veri kendi (daha uzun)
+    /// sınırına kadar beklenir, çünkü bekleyen işler kartı üretebilecek tek şeydir.
+    #[tokio::test]
+    async fn a_missing_first_snapshot_waits_past_the_enrichment_budget() {
+        let root = post(1, "en");
+        let fetcher = FakeFetcher::new(vec![(
+            "vx:1:original",
+            200,
+            Ok(snapshot(root.clone(), NestedHint::Absent)),
+        )]);
+        let started = Instant::now();
+        let result = acquire_with_budgets(
+            fetcher,
+            &root.url,
+            &engine(),
+            Duration::from_millis(50),
+            Duration::from_millis(1_000),
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "ilk veri zenginleştirme bütçesinde kesilmemeli: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(result.text, root.text);
+    }
+
+    /// Harici link kartı kaynak istekleriyle **paralel** çalışır: kart iki sürenin toplamı
+    /// kadar değil, en yavaşı kadar bekler.
+    #[tokio::test]
+    async fn link_preview_runs_in_parallel_with_source_fetch() {
+        let mut root = post(1, "en");
+        root.text = "bak https://example.com/article".to_string();
+        let preview = LinkPreview {
+            url: "https://example.com/article".to_string(),
+            title: Some("Başlık".to_string()),
+            ..LinkPreview::default()
+        };
+        let fetcher = FakeFetcher::new(vec![
+            ("meta:1", 5, Ok(snapshot(root.clone(), NestedHint::Absent))),
+            (
+                "vx:1:original",
+                200,
+                Ok(snapshot(root.clone(), NestedHint::Absent)),
+            ),
+        ])
+        .with_previews(vec![(
+            "https://example.com/article",
+            200,
+            Some(preview.clone()),
+        )]);
+        let started = Instant::now();
+        let result = acquire_with_budgets(
+            fetcher.clone(),
+            &root.url,
+            &engine(),
+            Duration::from_millis(400),
+            Duration::from_millis(1_000),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.link_preview, Some(preview));
+        assert_eq!(fetcher.preview_count(), 1);
+        assert!(
+            started.elapsed() < Duration::from_millis(320),
+            "önizleme sırayla çalışmış olabilir: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Medya veya alıntı taşıyan kartta harici link önizlemesi istenmez (X de göstermez).
+    #[tokio::test]
+    async fn media_posts_do_not_request_a_link_preview() {
+        let mut root = post(1, "en");
+        root.text = "bak https://example.com/article".to_string();
+        root.media.push(media(MediaKind::Video));
+        let fetcher = FakeFetcher::new(vec![
+            ("meta:1", 5, Ok(snapshot(root.clone(), NestedHint::Absent))),
+            (
+                "vx:1:original",
+                20,
+                Ok(snapshot(root.clone(), NestedHint::Absent)),
+            ),
+        ]);
+        let result = acquire(fetcher.clone(), &root.url, &engine())
+            .await
+            .unwrap();
+        assert!(result.link_preview.is_none());
+        assert_eq!(fetcher.preview_count(), 0);
+    }
+
+    #[test]
+    fn stale_or_redundant_link_previews_are_rejected() {
+        let mut root = Some(snapshot(post(1, "en"), NestedHint::Absent));
+        root.as_mut().unwrap().post.text = "yeni https://example.com/b".to_string();
+        let preview = LinkPreview {
+            url: "https://example.com/a".to_string(),
+            title: Some("Eski".to_string()),
+            ..LinkPreview::default()
+        };
+
+        // Metin değiştiyse eski adresin önizlemesi karta konmaz.
+        apply_preview(&mut root, "https://example.com/a", Some(preview.clone()));
+        assert!(root.as_ref().unwrap().post.link_preview.is_none());
+
+        // Medya eklendiyse de önizleme gösterilmez.
+        let mut rooted = Some(snapshot(post(1, "en"), NestedHint::Absent));
+        rooted.as_mut().unwrap().post.text = "https://example.com/a".to_string();
+        rooted
+            .as_mut()
+            .unwrap()
+            .post
+            .media
+            .push(media(MediaKind::Image));
+        apply_preview(&mut rooted, "https://example.com/a", Some(preview));
+        assert!(rooted.as_ref().unwrap().post.link_preview.is_none());
     }
 
     #[tokio::test]

@@ -107,9 +107,12 @@ pub async fn fetch(
     let nested_elapsed = nested_started.elapsed();
 
     // Gönderi yalnızca link içeriyorsa X'in kendi arayüzünde gösterdiği link kartı
-    // (hedef sayfanın önizlemesi) da karta eklenir.
+    // (hedef sayfanın önizlemesi) da karta eklenir. Planlayıcı yolunda bu istek veri
+    // fazının **içinde**, diğer isteklerle paralel yürür; burada ikinci kez istenmez.
     let preview_started = Instant::now();
-    attach_link_preview(client, &mut post).await;
+    if !uses_planner(engine) {
+        attach_link_preview(client, &mut post).await;
+    }
     let preview_elapsed = preview_started.elapsed();
 
     debug!(
@@ -560,6 +563,30 @@ impl pipeline::Fetcher for HttpFetcher {
             result.is_ok(),
         );
         result.map(|snapshot| (*snapshot).clone())
+    }
+
+    /// Harici link kartını **veri istekleriyle paralel** çözer (bütçe planlayıcıdadır).
+    async fn preview(&self, url: &str) -> Option<LinkPreview> {
+        let (target, html) = match tokio::time::timeout(
+            LINK_PREVIEW_TIMEOUT,
+            super::safe_http::preview(url),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => {
+                debug!("Link önizlemesi alınamadı ({url}): {err}");
+                return None;
+            }
+            Err(_) => {
+                debug!(
+                    "Link önizlemesi {} ms içinde gelmedi: {url}",
+                    LINK_PREVIEW_TIMEOUT.as_millis()
+                );
+                return None;
+            }
+        };
+        build_link_preview(&target, &html)
     }
 }
 

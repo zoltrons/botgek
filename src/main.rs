@@ -56,39 +56,83 @@ fn parse_cli_arg(arg: Option<&str>) -> CliAction {
     }
 }
 
-/// İlk dönüşümde DNS çözümlemesi + TLS el sıkışması beklenmesin diye ilgili uçlara
-/// **arka planda** ısıtma isteği yapar. Bot her açılışta bir kez çalışır; ilk kartın
-/// ~200-400 ms daha erken gelmesini sağlar (yanıt içeriği önemsiz, bağlantı havuzu ısınır).
-fn prewarm_connections(client: &reqwest::Client) {
-    /// Yanıtı yok sayar: amaç bağlantıyı kurmak (DNS + TLS + HTTP/2 el sıkışması).
-    async fn warm(client: &reqwest::Client, url: &str) {
-        let Ok(response) = client
-            .get(url)
-            .header("user-agent", converters::builtin::DISCORD_USER_AGENT)
-            .send()
-            .await
-        else {
-            return;
-        };
-        // Gövdeyi tüketmeden Response'u bırakmak HTTP/2 akışını sıfırlayıp bağlantının
-        // sonraki kart gönderiminde yeniden kullanılmasını engelleyebilir.
-        let _ = response.bytes().await;
-    }
+/// Kart gönderiminde/veri çekiminde kullanılan uçlar. Her biri için DNS + TCP + TLS
+/// el sıkışması bir kez ödenir; bağlantı havuzu atıl kalırsa **her dönüşüm** bu maliyeti
+/// yeniden öder (ölçülen: Discord POST'unda ~150-250 ms).
+const KEEPALIVE_TARGETS: [(&str, &str); 5] = [
+    // X verisi (FxTwitter API) — açıkça FxTwitter seçildiyse kullanılan yol
+    (
+        "https://api.fxtwitter.com/i/status/20",
+        converters::builtin::USER_AGENT,
+    ),
+    // X verisi (vxTwitter API) — varsayılan çeviri kaynağı
+    (
+        "https://api.vxtwitter.com/i/status/20",
+        converters::builtin::USER_AGENT,
+    ),
+    // X'in kendi syndication ucu — hızlı kart verisi ve hedge yedeği
+    (
+        "https://cdn.syndication.twimg.com/",
+        converters::builtin::USER_AGENT,
+    ),
+    // Discord REST — kart gönderimi (serenity'den ayrı istemci kullanılır)
+    (
+        "https://discord.com/api/v10/gateway",
+        converters::builtin::DISCORD_USER_AGENT,
+    ),
+    // Medya CDN'i — ışık hızı modunda kart bu bağlantıları taşır
+    (
+        "https://pbs.twimg.com/media/",
+        converters::builtin::USER_AGENT,
+    ),
+];
 
+/// Bağlantı havuzunu sıcak tutmak için yoklama aralığı. İstemcinin `pool_idle_timeout`
+/// değerinden (90 sn) **küçük** olmalı; aksi hâlde bağlantı iki yoklama arasında atıl kalır.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Tek bir uca **arka planda** ısıtma isteği yapar (yanıt içeriği önemsiz: amaç DNS +
+/// TCP + TLS + HTTP/2 el sıkışmasını kurup bağlantı havuzunu sıcak tutmak).
+async fn warm(client: &reqwest::Client, url: &str, user_agent: &str) {
+    let Ok(response) = client
+        .get(url)
+        .header("user-agent", user_agent)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    else {
+        return;
+    };
+    // Gövdeyi tüketmeden Response'u bırakmak HTTP/2 akışını sıfırlayıp bağlantının
+    // sonraki kart gönderiminde yeniden kullanılmasını engelleyebilir.
+    let _ = response.bytes().await;
+}
+
+/// Tüm uçları ısıtır; her istek kendi görevinde yürür, biri yavaşsa diğerlerini beklemez.
+/// Hatalar sessizce yutulur (ısıtma başarısız olsa da dönüşüm çalışır).
+fn warm_all(client: &reqwest::Client) {
+    for (url, user_agent) in KEEPALIVE_TARGETS {
+        let client = client.clone();
+        tokio::spawn(async move {
+            warm(&client, url, user_agent).await;
+        });
+    }
+}
+
+/// İlk dönüşümde DNS + TLS el sıkışması beklenmesin diye uçları **açılışta** ısıtır ve
+/// dönüşümler seyrek olduğu için bağlantı havuzunu düzenli aralıklarla sıcak tutar.
+fn prewarm_connections(client: &reqwest::Client) {
     let client = client.clone();
     tokio::spawn(async move {
-        tokio::join!(
-            // X verisi (FxTwitter API) — açıkça FxTwitter seçildiyse kullanılan yol
-            warm(&client, "https://api.fxtwitter.com/i/status/20"),
-            // X verisi (vxTwitter API) — varsayılan çeviri kaynağı
-            warm(&client, "https://api.vxtwitter.com/i/status/20"),
-            // X'in kendi syndication ucu — hedge yedeği
-            warm(&client, "https://cdn.syndication.twimg.com/"),
-            // Discord REST — kart gönderimi (serenity'den ayrı istemci kullanılır)
-            warm(&client, "https://discord.com/api/v10/gateway"),
-            // Medya CDN'i — ışık hızı modunda kart bu bağlantıları taşır
-            warm(&client, "https://pbs.twimg.com/media/"),
-        );
+        warm_all(&client);
+        let mut ticker = tokio::time::interval(KEEPALIVE_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // `interval` ilk tıkı hemen verir; açılış ısıtması zaten yapıldı.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            warm_all(&client);
+        }
     });
 }
 
@@ -259,6 +303,28 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Isıtma aralığı bağlantı havuzunun atıl kalma süresinden **kısa** olmalı; aksi hâlde
+    /// bağlantı her yoklama arasında kapanır ve kazanç kaybolur.
+    #[test]
+    fn keepalive_interval_is_shorter_than_the_idle_pool_timeout() {
+        assert!(KEEPALIVE_INTERVAL < std::time::Duration::from_secs(90));
+        assert!(
+            KEEPALIVE_TARGETS
+                .iter()
+                .any(|(url, _)| url.contains("discord.com/api"))
+        );
+        assert!(
+            KEEPALIVE_TARGETS
+                .iter()
+                .any(|(url, _)| url.contains("vxtwitter"))
+        );
+        assert!(
+            KEEPALIVE_TARGETS
+                .iter()
+                .any(|(url, _)| url.contains("syndication"))
+        );
+    }
 
     /// CLI bayrakları: bayrak yoksa bot çalışır; sürüm/kullanım bayrakları çıkışa yol açar.
     #[test]
