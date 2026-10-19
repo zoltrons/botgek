@@ -192,7 +192,7 @@ async fn main() {
     };
     let settings = Arc::new(RwLock::new(loaded));
 
-    // Kalıcı kayıt deposu (SQLite): kart kayıtları, Sil butonunun izni ve AI koruması.
+    // Kalıcı kayıt deposu (SQLite): kart kayıtları, 🗑️ silme izni ve AI koruması.
     // Bot yeniden başladığında/güncellendiğinde hiçbir kayıt kaybolmaz.
     if let Err(reason) = store::init() {
         error!("Kalıcı kayıt deposu hazır değil: {reason}");

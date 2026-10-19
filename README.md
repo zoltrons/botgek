@@ -53,9 +53,8 @@ Bu bütçeler yapılandırılmış sınırlardır; **ölçülmüş p95 veya RAM 
 4. `cargo run --locked` çalıştırın. Sürüm sorgusu: `cargo run --locked -- --version`.
 
 Discord Developer Portal'da **Message Content Intent** açılmalıdır. Gerekli bot izinleri:
-Send Messages, Embed Links, Read Message History; kartların **Sil** butonu ve orijinal mesajları
-silmek için Manage Messages, kullanıcı taklidi için Manage Webhooks. Yanıtlarda varsayılan olarak
-bot kimliği kullanılır.
+Send Messages, Embed Links, Read Message History, Add Reactions; orijinal mesajları silmek için
+Manage Messages, kullanıcı taklidi için Manage Webhooks. Yanıtlarda varsayılan olarak bot kimliği kullanılır.
 Slash ve mesaj komutları için davet bağlantısında **`applications.commands`** kapsamı da bulunmalıdır.
 
 ### Windows

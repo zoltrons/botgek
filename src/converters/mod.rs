@@ -3,8 +3,8 @@ pub mod parser;
 pub mod translation;
 
 use serenity::all::{
-    ButtonStyle, ChannelId, Context, CreateActionRow, CreateButton, CreateMessage, GuildId, Member,
-    Message, MessageId, MessageReference, User,
+    ChannelId, Context, CreateMessage, GuildId, Member, Message, MessageId, MessageReference,
+    ReactionType, User,
 };
 use std::sync::LazyLock;
 use std::sync::OnceLock;
@@ -407,19 +407,9 @@ async fn process_message(
 
     let allowed_mentions = build_selective_allowed_mentions(msg);
 
-    // Proxy mesajı klasik (Components V2 olmayan) bir mesajdır: silme butonu ayrı bir Action
-    // Row olarak embed'in altına eklenir. Butonun `custom_id` değeri native kartlarla aynıdır
-    // (bkz. `handler::card_delete`).
-    let delete_row = CreateActionRow::Buttons(vec![
-        CreateButton::new(builtin::v2::CARD_DELETE_ID)
-            .label("Sil")
-            .style(ButtonStyle::Danger),
-    ]);
-
     let mut builder = CreateMessage::new()
         .content(content)
-        .allowed_mentions(allowed_mentions)
-        .components(vec![delete_row]);
+        .allowed_mentions(allowed_mentions);
 
     // Eğer orijinal mesaj bir yanıtsa, bot da aynı mesaja yanıt versin
     if let Some(ref message_ref) = msg.message_reference {
@@ -429,7 +419,7 @@ async fn process_message(
     // 7. Mesajı Gönder. Orijinal mesaj burada silinmez: erken silmek, gönderenin istemcisi
     // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
     // bırakır (discord-api-docs #850). Silme, gönderimden **sonra** arka planda yapılır.
-    let _sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
+    let sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
         Ok(m) => m,
         Err(e) => {
             error!("Mesaj gönderilirken hata oluştu: {:?}", e);
@@ -448,9 +438,13 @@ async fn process_message(
         builtin::spawn_delete(ctx, msg);
     }
 
-    // 9. Silme kontrolü kartın **içinde** durur: alt bilgi satırının sağındaki kırmızı
-    // "Sil" butonu (`builtin::v2::delete_button`) mesajla birlikte gönderilir. Reaksiyon
-    // eklenmez: ayarlarda mesaj başına ek bir REST çağrısı yapılmaz.
+    // 9. Kompakt 🗑️ reaksiyonu ekle
+    if let Err(e) = sent_msg
+        .react(&ctx.http, ReactionType::Unicode("🗑️".to_string()))
+        .await
+    {
+        error!("Silme reaksiyonu eklenemedi: {:?}", e);
+    }
 
     true
 }
