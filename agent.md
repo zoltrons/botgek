@@ -43,6 +43,14 @@ Bir işi bitirip commit attıktan **sonra** aşağıdaki adımları uygula:
 ## 🕒 Güncel Faaliyet (en yeni en üstte)
 
 <!-- LOG:START -->
+### [2026-10-19 19:10] zoltrons — CI sadeleştirildi: temizlik workflow'ları silindi, imaj yerel arm64'te yayınlanıyor
+- **Commit:** `bu-commit`
+- **Yapılan:**
+  1. **Silinen:** `ci-storage.yml` ve `ghcr-cleanup.yml` kaldırıldı. Depo public olduğu için Actions artefakt/cache ve public GHCR depolaması ücretsiz; artefaktlar zaten 1 gün saklanıyor, cache'ler 10 GB sınırında GitHub tarafından en eski girdiler atılarak budanıyor.
+  2. **İmaj hızı:** `docker-publish` x86 + QEMU yerine `ubuntu-24.04-arm` üzerinde çalışıyor. `Dockerfile.prebuilt` içindeki `apt-get` katmanı QEMU altında ~67 sn sürüyordu; yerel arm64'te birkaç saniye. QEMU kurulumu ve asılı kalabilen post adımı kaldırıldı; tek hedefli matris düz işe indirildi ve imaj yalnızca ana dal/etiket/elle başlatmada push ediyor.
+  3. **Cache/CI:** `cache-on-failure` açıldı, `cargo test --verbose` kaldırıldı, işlere timeout eklendi; kapsam raporu PR'larda çalışmıyor (ana dal + elle). `build-release` concurrency grubu, tamamlanamayan eski bir koşunun yeni koşuları süresiz kuyruğa almasını önlemek için sabit ada taşındı.
+- **Doğrulama:** `actionlint` üç workflow için de temiz. GitHub'da yeni akış henüz koşulmadı (değişiklik push edilmedi).
+- **Etkilenen:** `.github/workflows/{build-release,quality,release}.yml`, `.dockerignore`, `README.md`, `release.sh`
 ### [2026-10-19 18:44] zoltrons — Reddit video birleştirmesi düzeltildi: `sbgp` kutusu silinmiyor, `free`'ye çevriliyor
 - **Commit:** `bu-commit`
 - **Yapılan:**

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Botgek sürüm yayınlama — sürümü bump'lar, `Cargo.lock`'u senkronlar, commit + **annotated
 # tag** atar ve (istenirse) push'lar. Etiket push'u CI'yı tetikler: testler → `.tar.gz`
-# → GitHub Release → multi-arch Docker imajı (bkz. `.github/workflows/build-release.yml`).
+# → GitHub Release → arm64 Docker imajı (bkz. `.github/workflows/build-release.yml`).
 #
 # Kullanım:
 #   ./release.sh patch|minor|major        # 0.1.0 → 0.1.1 / 0.2.0 / 1.0.0

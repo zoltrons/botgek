@@ -162,11 +162,12 @@ cargo test --locked live_ -- --ignored --nocapture
 Bu komut gerçek upstream erişimi ister; Instagram oturum testi ayrıca özel çerez ister. Eksik önkoşul veya
 başarısız birleştirme **başarılı test gibi gösterilmez**. Üretim sırlarını public PR testlerine aktarmayın.
 
-- `build-release.yml`: test, fmt, Clippy, panel testleri; ardından arm64 paket ve imaj (imaj sürüm etiketinde veya elle başlatmada yayınlanır).
-- `quality.yml`: RustSec audit ve LCOV artifact. Coverage ilk ölçümden itibaren izlenir; uydurma eşik yoktur.
+- `build-release.yml`: test, fmt, Clippy, panel testleri; ardından arm64 paket ve imaj. `main` push'u ve elle başlatma `latest`'i, sürüm etiketi `X.Y.Z` + `latest`'i yayınlar; PR yalnızca derler.
+- `quality.yml`: RustSec audit kod değiştiren her PR/push'ta; LCOV raporu yalnızca ana dalda ve elle başlatmada üretilir (bilgi amaçlı, eşik yok).
 - `release.yml`: elle sürüm bump/etiket akışı. Yerelde `./release.sh patch` veya
   `./release.sh minor --push`. Temiz çalışma ağacı gerekir.
 - Sürüm `build.rs` ile git etiketinden gömülür; `SOURCE_DATE_EPOCH` tekrar üretilebilir tarih içindir.
+- Depo public olduğu için Actions artefakt/cache ve public GHCR depolaması ücretsizdir; günlük temizlik workflow'ları kaldırıldı. Artefaktlar 1 gün saklanır, cache'ler GitHub tarafından 10 GB sınırında en eski girdiler atılarak budanır.
 
 Serenity 0.12'nin Rustls gateway arka ucu eski `rustls-webpki 0.102` sürümünü sabitlediği için
 Serenity'nin desteklenen **native-TLS** arka ucu kullanılır; Linux/ARM'da OpenSSL vendored derlenir

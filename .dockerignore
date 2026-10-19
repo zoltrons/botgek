@@ -14,6 +14,10 @@ README.md
 # Yalnızca `cargo test` için gerekenler ve ajan kuralları imaja girmez (küçük ama temiz kalır)
 tests/
 .clinerules/
+# Ajan/yerel çalışma alanları: imaj bağlamını ~53 MB'tan ~1 MB'a indirir
+.opencode/
+.omnirush/
+local-test/
 
 # Ortam değişkenleri ve yapılandırma
 .env

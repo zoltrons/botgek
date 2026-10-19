@@ -1,6 +1,10 @@
 name: Dependency audit and coverage
 on:
   pull_request:
+    # Yalnızca belge değiştiren PR'larda audit çalıştırmaya gerek yok.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
   push:
     branches: [main, master]
   workflow_dispatch:
@@ -12,6 +16,7 @@ concurrency:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,7 +27,11 @@ jobs:
           tool: cargo-audit@0.22.2
       - run: cargo audit --deny warnings
   coverage:
+    # Kapsam raporu bilgi amaçlıdır ve eşik denetlemez: PR'larda enstrümanlı tam derlemeyi
+    # (~2 dk + ~380 MB cache) tekrarlamak yerine ana dalda ve elle başlatmada üretilir.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,14 +44,15 @@ jobs:
           # Kapsam derlemesi (`llvm-cov` enstrümantasyonu) testten farklı çıktı üretir: kendi `target/` cache'i vardır.
           add-job-id-key: "false"
           shared-key: "coverage"
-          # Yeni cache yalnızca ana dalda oluşturulur; PR'lar geri yükler.
+          # Yeni cache yalnızca ana dalda oluşturulur; elle başlatma ana daldan gelirse geri yükler.
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+          cache-on-failure: true
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.6.16
       - run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
       - uses: actions/upload-artifact@v4
-        # Rapor yalnızca bilgi amaçlıdır: artefakt kotası (GHCR paketleriyle ortak 0,5 GB) dolduğunda testler geçmiş olsa da iş kırmızıya dönmesin.
+        # Rapor yalnızca bilgi amaçlıdır: yükleme başarısız olsa da iş kırmızıya dönmesin.
         continue-on-error: true
         with:
           name: coverage-lcov
