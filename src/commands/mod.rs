@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serenity::all::{
     Command, CommandData, CommandDataOptionValue, CommandInteraction, CommandOptionType,
     CommandType, Context, CreateCommand, CreateCommandOption, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse, Http, InstallationContext,
-    Interaction, InteractionContext, MessageId, User,
+    CreateInteractionResponseMessage, EditInteractionResponse, Http, Interaction,
+    InteractionContext, MessageId, User,
 };
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -79,16 +79,21 @@ pub async fn register(http: impl AsRef<Http>) {
 
 /// Discord'a gönderilen komut tanımları.
 ///
-/// `contexts` **açıkça** gönderilmelidir: alan atlanırsa Discord komutu `contexts: null`
-/// ile saklıyor ve komut DM'lerde görünmüyor (yalnızca sunucularda kalıyor). Bu yüzden
-/// sohbet komutu `GUILD` + `BOT_DM`, mesaj komutu ise yalnızca `GUILD` bağlamını taşır.
+/// `integration_types` **bilinçli olarak gönderilmez**: alan atlanınca Discord uygulamanın
+/// Developer Portal'da yapılandırdığı kurulum bağlamlarını (Guild + User Install) kullanır.
+/// Buraya yalnızca `GUILD_INSTALL` yazmak, kullanıcı hesabına kurulumu (user install) olan
+/// uygulamada komutu DM'lerden ve kullanıcı bağlamlarından gizliyordu.
+///
+/// `contexts` ise **açıkça** gönderilmelidir: alan atlanırsa Discord komutu `contexts: null`
+/// ile saklıyor ve komut DM'lerde görünmüyor. `PRIVATE_CHANNEL` yalnızca user install ile
+/// birlikte geçerlidir; uygulama kullanıcı hesabına kurulabildiği için bu bağlam da eklenir.
 fn definitions() -> Vec<CreateCommand> {
     vec![
         CreateCommand::new(CONVERT_COMMAND)
             .description("Bir sosyal medya bağlantısını dönüştürür (X, Instagram, Reddit, TikTok, Bluesky ve daha fazlası).")
-            .add_integration_type(InstallationContext::Guild)
             .add_context(InteractionContext::Guild)
             .add_context(InteractionContext::BotDm)
+            .add_context(InteractionContext::PrivateChannel)
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
@@ -100,7 +105,6 @@ fn definitions() -> Vec<CreateCommand> {
             ),
         CreateCommand::new(CONVERT_MESSAGE_COMMAND)
             .kind(CommandType::Message)
-            .add_integration_type(InstallationContext::Guild)
             .add_context(InteractionContext::Guild)
             // Discord, USER/MESSAGE komutlarında açıklamayı boş string olarak bekler.
             .description(""),
@@ -341,18 +345,27 @@ mod tests {
     }
 
     #[test]
-    fn slash_command_is_explicitly_available_in_guilds_and_bot_dms() {
+    fn slash_command_is_available_in_guilds_and_user_dm_contexts() {
         let definitions = definitions();
         let chat = serde_json::to_value(&definitions[0]).expect("komut JSON'a çevrilmeli");
 
         // contexts alanı atlanırsa Discord `null` saklıyor ve komut DM'lerde görünmüyor.
-        assert_eq!(chat["contexts"], serde_json::json!([0, 1]));
-        assert_eq!(chat["integration_types"], serde_json::json!([0]));
+        assert_eq!(chat["contexts"], serde_json::json!([0, 1, 2]));
+        // integration_types gönderilmez: Discord uygulamanın Guild + User Install
+        // yapılandırmasını devralır. Yalnızca GUILD_INSTALL yazmak user-install komutunu
+        // DM'lerden gizliyordu.
+        assert!(
+            chat.get("integration_types").is_none(),
+            "integration_types uygulama yapılandırmasına bırakılmalı: {chat}"
+        );
 
         let message = serde_json::to_value(&definitions[1]).expect("komut JSON'a çevrilmeli");
         // Mesaj komutu hedef mesaj gerektirir; yalnızca sunucularda anlamlı.
         assert_eq!(message["contexts"], serde_json::json!([0]));
-        assert_eq!(message["integration_types"], serde_json::json!([0]));
+        assert!(
+            message.get("integration_types").is_none(),
+            "mesaj komutu da kurulum bağlamlarını devralmalı: {message}"
+        );
     }
 
     #[test]
