@@ -8,7 +8,8 @@
 //! - `/dönüştür link:<bağlantı>`: bağlantıyı doğrudan komut argümanı olarak alır.
 //! - **Mesaja sağ tık → Apps → Dönüştür**: hedef mesajın metnindeki bağlantıyı dönüştürür.
 //!
-//! Her iki akış da aynı dönüşüm motorunu, modül anahtarlarını ve rol filtrelerini kullanır.
+//! Her iki akış da aynı dönüşüm motorunu ve rol filtrelerini kullanır; WebUI'daki platform
+//! modülü açık/kapalı ayarından bağımsızdır (komut açıkça çağrıldığında her zaman dönüştürür).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

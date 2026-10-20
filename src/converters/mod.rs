@@ -161,8 +161,6 @@ static INTERACTION_SLOTS: LazyLock<Semaphore> =
 pub enum ConvertError {
     /// Mesajda/argümanda desteklenen bir bağlantı yok.
     Unsupported,
-    /// Platform modülü bu sunucu/kanal için kapalı.
-    ModuleDisabled,
     /// Rol filtresi kullanıcıya bu dönüşümü izin vermiyor.
     RoleDenied,
     /// Eşzamanlı etkileşim dönüşüm kapasitesi dolu.
@@ -178,7 +176,6 @@ impl ConvertError {
             Self::Unsupported => {
                 "Desteklenen bir bağlantı bulunamadı. Örnek: `/dönüştür link:https://x.com/kullanici/status/123`"
             }
-            Self::ModuleDisabled => "Bu platform için dönüştürme burada kapalı.",
             Self::RoleDenied => "Rol filtresi bu dönüştürmeye izin vermiyor.",
             Self::Busy => "Dönüşüm kapasitesi şu an dolu; birkaç saniye sonra tekrar dene.",
             Self::Failed => {
@@ -191,6 +188,9 @@ impl ConvertError {
 /// Etkileşimden gelen bağlantıyı **bekleyerek** dönüştürür.
 ///
 /// Otomatik mesaj akışından farkları:
+/// - **Platform modülü açık/kapalı ayarına bakmaz:** komut kullanıcı tarafından açıkça
+///   çağrıldığı için, WebUI'da o platform kapalı olsa bile dönüştürür. Rol filtresi ve
+///   kanal/thread motor ayarları yine uygulanır.
 /// - Kullanıcının yazdığı bir mesaj yoktur: silinecek kaynak ve taklit edilecek gönderen
 ///   bulunmaz, bu yüzden `delete_original` ve `impersonate_user` bu iş için kapatılır.
 /// - Sonuç çağırana döner; slash komutu yanıtı bu sonuca göre güncellenir.
@@ -218,10 +218,9 @@ pub async fn convert_now(
         return Err(ConvertError::Unsupported);
     };
 
-    let (module_enabled, module_key) = module_enabled(settings, parsed.platform);
-    if !module_enabled {
-        return Err(ConvertError::ModuleDisabled);
-    }
+    // Komut açıkça çağrıldığı için platform modülünün WebUI'da kapalı olması engel değildir.
+    // Rol filtresi yine uygulanır: modül anahtarı kartın/rol filtresinin platformunu belirler.
+    let module_key = builtin::platform_key(parsed.platform);
 
     let role_filter = settings.get_role_filter(module_key);
     if !crate::policy::allows(

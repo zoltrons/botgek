@@ -37,8 +37,9 @@ Community Posts desteklenir.
 - Rol filtreleri, AI ve çeviri reaksiyonu ekleme/kaldırma aynı politikayı kullanır. Boş allowlist erişim vermez;
   rol sorgusu başarısız olursa etkin filtre erişimi reddeder.
 - Global **`/dönüştür link:<bağlantı>`** komutu DM'ler dâhil her yerde çalışır; ayrıca bir mesaja sağ tıklayıp
-  **Apps → Dönüştür** ile o mesajdaki bağlantı dönüştürülür. Her iki akış da platform modüllerini, kanal/thread
-  ayarlarını ve rol filtrelerini otomatik mesaj akışıyla aynı biçimde uygular.
+  **Apps → Dönüştür** ile o mesajdaki bağlantı dönüştürülür. Her iki akış da kanal/thread motor ayarlarını ve
+  rol filtrelerini uygular; **WebUI'daki platform modülü açık/kapalı ayarından bağımsızdır** (komut açıkça
+  çağrıldığında her zaman dönüştürür).
   Discord, slash komutu etkileşiminde yanıtlanan mesajı göndermediği için "mesaja yanıt verip `/dönüştür` yazma"
   doğrudan desteklenmez; mesaj komutu bu ihtiyacın Discord'daki resmî karşılığıdır.
 
