@@ -1168,6 +1168,16 @@ fn spawn_webhook_warmup(
     })
 }
 
+/// Etkileşim yanıtı üzerinden kart teslimi.
+///
+/// DM/grup DM'de bot kanal üyesi olmadığı için normal kanal mesajı gönderemez; user-install
+/// etkileşimleri yalnızca interaction token'ı üzerinden yanıtlayabilir.
+#[derive(Debug, Clone)]
+pub struct InteractionDelivery {
+    pub application_id: u64,
+    pub token: String,
+}
+
 /// Native dönüşümün sonucu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandleResult {
@@ -1190,6 +1200,7 @@ pub async fn handle(
     parsed: &ParsedPost,
     config: &Config,
     engine: &EngineSettings,
+    delivery: Option<&InteractionDelivery>,
 ) -> HandleResult {
     // Süre ölçümü: dönüşüm gecikmesi veri / medya / gönderim olarak log'lanır.
     static SLOTS: LazyLock<tokio::sync::Semaphore> =
@@ -1284,6 +1295,7 @@ pub async fn handle(
         identity.as_ref(),
         webhook_warmup,
         webhook_wait,
+        delivery,
     )
     .await
     {
@@ -1305,7 +1317,13 @@ pub async fn handle(
                 },
                 parsed.original_url
             );
-            finish(ctx, msg, config, message_id).await;
+            if delivery.is_some() {
+                // Etkileşim yanıtı kartın kendisidir: kanal üyeliği olmadığı için reaksiyon
+                // eklenemez, ama kart sonraki mesajlarda tanınabilsin diye kaydedilir.
+                remember_author(message_id, msg.channel_id, msg.author.id).await;
+            } else {
+                finish(ctx, msg, config, message_id).await;
+            }
             HandleResult::Sent
         }
         Err(err) => {
@@ -1394,7 +1412,32 @@ async fn send_components_v2(
     identity: Option<&Impersonation>,
     warmup: Option<WebhookWarmup>,
     webhook_wait: Duration,
+    delivery: Option<&InteractionDelivery>,
 ) -> Result<(MessageId, bool), raw::DiscordError> {
+    // DM/grup DM: bot kanal üyesi olmadığı için kart yalnızca etkileşim yanıtı olarak
+    // düzenlenebilir; taklit/webhook yolu kullanılmaz.
+    if let Some(delivery) = delivery {
+        let payload = v2_payload(
+            msg,
+            parsed,
+            post,
+            options,
+            resolved,
+            emojis,
+            None,
+            Some(msg.author.id),
+        );
+        let message_id = raw::edit_interaction_response(
+            client,
+            delivery.application_id,
+            &delivery.token,
+            &payload,
+            &resolved.attachments,
+        )
+        .await?;
+        return Ok((message_id, false));
+    }
+
     if let Some(identity) = identity {
         // Webhook mesajları Discord'da yanıt olamaz (dokümante edilmemiş alan yok sayılır):
         // bu yüzden webhook denenir; başarısız olursa mesaj bot adına (yanıtla) gönderilir.

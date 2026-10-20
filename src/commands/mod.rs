@@ -144,8 +144,15 @@ pub async fn handle(
     };
 
     // 2. Üç saniyelik etkileşim penceresini kaçırmamak için dönüşümden **önce** ertelenir.
-    //    Kullanıcı yalnızca kendisine görünen "düşünüyor" durumunu görür.
-    if let Err(err) = command.defer_ephemeral(&ctx.http).await {
+    //    DM/grup DM'de kart etkileşim yanıtının kendisi olacağı için yanıt herkese görünür
+    //    (non-ephemeral) ertelenir; sunucu kanalında kart ayrı mesaj olarak gider.
+    let private = command.guild_id.is_none();
+    let deferred = if private {
+        command.defer(&ctx.http).await
+    } else {
+        command.defer_ephemeral(&ctx.http).await
+    };
+    if let Err(err) = deferred {
         warn!(interaction = %command.id, "Etkileşim ertelenemedi: {err:?}");
         return;
     }
@@ -158,6 +165,13 @@ pub async fn handle(
         command.channel_id,
         parent_id,
     );
+
+    // DM/grup DM'de bot kanal üyesi değildir: kart normal kanal mesajı olarak gönderilemez,
+    // etkileşim yanıtı düzenlenerek teslim edilir.
+    let delivery = private.then(|| converters::builtin::InteractionDelivery {
+        application_id: command.application_id.get(),
+        token: command.token.clone(),
+    });
 
     // Mesaj komutunda kart, bağlantıyı paylaşan kişiyi gösterir; rol filtresi ise komutu
     // kullanan kişiye uygulanır.
@@ -173,8 +187,15 @@ pub async fn handle(
         http_client,
         config,
         &settings,
+        delivery.as_ref(),
     )
     .await;
+
+    // Özel kanalda kart, ertelenen etkileşim yanıtının kendisine yazıldı; ayrıca onay
+    // mesajı göndermek kartı ikinci kez göndermek olurdu.
+    if private && result.is_ok() {
+        return;
+    }
 
     let content = match result {
         Ok(platform) => format!(

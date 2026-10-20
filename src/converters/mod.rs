@@ -64,6 +64,7 @@ fn conversion_sender() -> &'static Sender<ConversionJob> {
                         &job.config,
                         &job.settings,
                         &job.parsed,
+                        None,
                     )
                     .await;
                     crate::telemetry::CONVERSION_QUEUE_COMPLETED
@@ -212,6 +213,7 @@ pub async fn convert_now(
     client: &reqwest::Client,
     config: &Config,
     settings: &GuildSettings,
+    delivery: Option<&builtin::InteractionDelivery>,
 ) -> Result<parser::Platform, ConvertError> {
     let domains = resolve_domains(&settings.engine, config);
     let Some(parsed) = parser::parse_message_with_domains(content, &domains) else {
@@ -261,7 +263,16 @@ pub async fn convert_now(
     let mut job_settings = settings.clone();
     job_settings.engine.impersonate_user = false;
 
-    let delivered = process_message(ctx, &msg, client, &job_config, &job_settings, &parsed).await;
+    let delivered = process_message(
+        ctx,
+        &msg,
+        client,
+        &job_config,
+        &job_settings,
+        &parsed,
+        delivery,
+    )
+    .await;
     if delivered {
         Ok(parsed.platform)
     } else {
@@ -336,13 +347,14 @@ async fn process_message(
     config: &Config,
     settings: &GuildSettings,
     parsed: &parser::ParsedPost,
+    delivery: Option<&builtin::InteractionDelivery>,
 ) -> bool {
     // 3. Motor Seçimi: native embed veya (yalnızca proxy destekleyen platformlarda) proxy
     //    yönlendirmesi. Twitter/X, Instagram ve Reddit **native-only**'dir: `mode_for` bu
     //    platformlarda daima `Builtin` döner ve proxy yedeği hiç kullanılmaz.
     let platform_key = builtin::platform_key(parsed.platform);
     if settings.engine.mode_for(platform_key) == ConversionMode::Builtin {
-        match builtin::handle(ctx, msg, client, parsed, config, &settings.engine).await {
+        match builtin::handle(ctx, msg, client, parsed, config, &settings.engine, delivery).await {
             builtin::HandleResult::Sent => return true,
             // Kapasite dolu veya sonuç belirsiz: proxy'ye düşmek mükerrer/yanlış kart üretebilir.
             builtin::HandleResult::Busy | builtin::HandleResult::Ambiguous => return false,

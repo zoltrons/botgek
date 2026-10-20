@@ -31,9 +31,19 @@ fn message_request(
     payload: &serde_json::Value,
     files: &[CreateAttachment],
 ) -> Result<reqwest::RequestBuilder, DiscordError> {
+    message_request_with(reqwest::Method::POST, client, url, payload, files)
+}
+
+fn message_request_with(
+    method: reqwest::Method,
+    client: &reqwest::Client,
+    url: &str,
+    payload: &serde_json::Value,
+    files: &[CreateAttachment],
+) -> Result<reqwest::RequestBuilder, DiscordError> {
     let json = serde_json::to_string(payload).map_err(|_| DiscordError::InvalidPayload)?;
     let request = client
-        .post(url)
+        .request(method, url)
         .header("user-agent", DISCORD_USER_AGENT)
         .timeout(UPLOAD_TIMEOUT);
     Ok(if files.is_empty() {
@@ -67,6 +77,33 @@ pub async fn send_channel_message(
         .header("authorization", format!("Bot {token}"));
     let body = super::transport::send(client, request, format!("channel:{channel_id}")).await?;
     parse_message_id(&body).map_err(|_| DiscordError::Ambiguous)
+}
+
+/// Etkileşimin **özgün yanıtını** (defer edilmiş "düşünüyor" mesajını) kartla değiştirir.
+///
+/// DM/grup DM'de bot kanal üyesi olmadığı için normal kanal mesajı gönderemez; user-install
+/// etkileşimleri yalnızca interaction token'ı üzerinden yanıtlayabilir. Uç nokta
+/// `PATCH /webhooks/{application_id}/{token}/messages/@original` şeklindedir; kimlik
+/// doğrulaması URL'deki token ile yapılır, ayrıca bot yetkilendirmesi gerekmez.
+pub async fn edit_interaction_response(
+    client: &reqwest::Client,
+    application_id: u64,
+    token: &str,
+    payload: &serde_json::Value,
+    files: &[CreateAttachment],
+) -> Result<MessageId, DiscordError> {
+    let url = format!("{API_BASE}/webhooks/{application_id}/{token}/messages/@original");
+    // Etkileşim yanıtı webhook kimliği ve mesaj referansı taşımaz.
+    let payload = payload_without_fields(payload, &["username", "avatar_url", "message_reference"]);
+    let request = message_request_with(reqwest::Method::PATCH, client, &url, &payload, files)?;
+    let body =
+        super::transport::send(client, request, format!("interaction:{application_id}")).await?;
+    // Düzenleme başarılıysa gövde mesaj nesnesidir; boş gövde de kabul edilir.
+    match parse_message_id(&body) {
+        Ok(id) => Ok(id),
+        Err(_) if body.trim().is_empty() => Ok(MessageId::new(0)),
+        Err(_) => Err(DiscordError::Ambiguous),
+    }
 }
 
 /// Webhook çalıştırma adresi.
