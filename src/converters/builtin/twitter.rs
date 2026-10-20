@@ -514,13 +514,14 @@ impl HttpFetcher {
 #[serenity::all::async_trait]
 impl pipeline::Fetcher for HttpFetcher {
     async fn cached(&self, request: &pipeline::Request) -> Option<pipeline::Snapshot> {
-        let (url, language) = match request {
-            pipeline::Request::Vx { url, language } => (url, language.as_deref()),
+        let (source, url, language) = match request {
+            pipeline::Request::Vx { url, language } => ("vx", url, language.as_deref()),
+            pipeline::Request::Fx { url } => ("fx", url, None),
             pipeline::Request::Syndication { .. } => return None,
         };
         let id = extract_tweet_id(url)?;
         SOURCE_RESULTS
-            .get(&self.key("vx", &id, language))
+            .get(&self.key(source, &id, language))
             .await
             .map(|snapshot| (*snapshot).clone())
     }
@@ -528,6 +529,7 @@ impl pipeline::Fetcher for HttpFetcher {
     async fn fetch(&self, request: pipeline::Request) -> Result<pipeline::Snapshot, String> {
         let (source, url, language) = match request {
             pipeline::Request::Vx { url, language } => ("vx", url, language),
+            pipeline::Request::Fx { url } => ("fx", url, None),
             pipeline::Request::Syndication { url } => ("syndication", url, None),
         };
         let id = extract_tweet_id(&url).ok_or_else(|| "X request has no tweet id".to_string())?;
@@ -546,6 +548,20 @@ impl pipeline::Fetcher for HttpFetcher {
                         &self.translation_target,
                     )
                     .await
+                } else if source == "fx" {
+                    from_fxtwitter(
+                        &self.client,
+                        &url,
+                        &id,
+                        None,
+                        &self.translation_target,
+                        self.video_budget,
+                    )
+                    .await
+                    .map(|post| pipeline::Snapshot {
+                        post,
+                        nested_hint: plan::NestedHint::Unknown,
+                    })
                 } else {
                     from_syndication(&self.client, &url, &id, self.video_budget)
                         .await

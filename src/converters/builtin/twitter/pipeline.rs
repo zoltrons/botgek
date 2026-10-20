@@ -22,6 +22,10 @@ pub(super) enum Request {
         url: String,
         language: Option<String>,
     },
+    /// Yalnızca görüntülenme gibi eksik metrikleri tamamlayan FxTwitter isteği.
+    Fx {
+        url: String,
+    },
     Syndication {
         url: String,
     },
@@ -53,6 +57,8 @@ enum Work {
     Rich,
     TranslatedRoot,
     Metadata,
+    /// Kaynağın vermediği metrikleri (özellikle görüntülenme) FxTwitter'dan tamamlar.
+    Metrics,
     Translation(String),
     Quote(QuoteFetch),
     Preview(String),
@@ -64,6 +70,7 @@ impl Work {
             Self::Rich => "rich".to_string(),
             Self::TranslatedRoot => "translated-root".to_string(),
             Self::Metadata => "metadata".to_string(),
+            Self::Metrics => "metrics".to_string(),
             Self::Translation(url) => format!("translation:{}", identity(url)),
             Self::Quote(QuoteFetch::Direct(url)) => format!("direct:{}", identity(url)),
             Self::Quote(QuoteFetch::Inspect(url)) => format!("inspect:{}", identity(url)),
@@ -200,6 +207,24 @@ async fn acquire_with_budgets<F: Fetcher>(
         apply(&mut root, Work::TranslatedRoot, snapshot);
     }
     let mut rich_finished = root.is_some();
+    // Görüntülenme sayısını vx/syndication vermez; kartta metrikler açıksa ve önbellekte
+    // henüz bir değer yoksa FxTwitter yalnızca bu eksiği tamamlamak için paralel istenir.
+    // İsteğe bağlıdır: zenginleştirme bütçesi dolunca kart görüntülenmesiz gönderilir.
+    if engine.show_metrics
+        && root
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.post.stats.views.is_none())
+    {
+        spawn(
+            &mut tasks,
+            &mut pending,
+            fetcher.clone(),
+            Work::Metrics,
+            Request::Fx {
+                url: url.to_string(),
+            },
+        );
+    }
     if !rich_finished {
         spawn(
             &mut tasks,
@@ -323,6 +348,8 @@ async fn acquire_with_budgets<F: Fetcher>(
                             })
                     }
                     Work::Metadata => false,
+                    // Görüntülenme zaten geldiyse ya da kartta metrikler gizliyse bekleme.
+                    Work::Metrics => engine.show_metrics && snapshot.post.stats.views.is_none(),
                     Work::Translation(url) => translation_needed(&plan, url, &checked),
                     Work::Quote(quote) => plan.quote.as_ref() == Some(quote),
                     // İsteğe bağlı ama ucuz: bütçe dolana kadar karta eklenmesini bekle.
@@ -429,6 +456,15 @@ fn apply(root: &mut Option<Snapshot>, work: Work, snapshot: Snapshot) {
         Work::Metadata => match root {
             Some(current) => merge_post(&mut current.post, &snapshot.post),
             None => *root = Some(snapshot),
+        },
+        // Yalnızca eksik metrikleri tamamlar; metin/çeviri/medyayı ezmez. Kart hiç
+        // oluşmadıysa FxTwitter'ın tam yanıtı yedek başlangıç verisi olarak kullanılır.
+        Work::Metrics => match root {
+            Some(current) if identity(&current.post.url) == identity(&snapshot.post.url) => {
+                merge_post(&mut current.post, &snapshot.post);
+            }
+            None => *root = Some(snapshot),
+            _ => {}
         },
         Work::Translation(url) => {
             if identity(&url) != identity(&snapshot.post.url) {
@@ -547,7 +583,7 @@ fn merge_post(target: &mut BuiltinPost, fresh: &BuiltinPost) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{Author, Media, MediaKind, Translation};
+    use super::super::super::{Author, Media, MediaKind, Stats, Translation};
     use super::*;
     use crate::converters::parser::Platform;
     use std::sync::{Arc, Mutex};
@@ -571,6 +607,7 @@ mod tests {
                 identity(url),
                 language.as_deref().unwrap_or("original")
             ),
+            Request::Fx { url } => format!("fx:{}", identity(url)),
             Request::Syndication { url } => format!("meta:{}", identity(url)),
         }
     }
@@ -678,7 +715,17 @@ mod tests {
     fn engine() -> EngineSettings {
         EngineSettings {
             auto_translate: true,
+            // Bu akış testleri çeviri/alıntıya odaklı; metrik zenginleştirmesinin
+            // kendi testleri var ve isteğe bağlı ek bir istek üretir.
+            show_metrics: false,
             ..EngineSettings::default()
+        }
+    }
+
+    fn metrics_engine() -> EngineSettings {
+        EngineSettings {
+            show_metrics: true,
+            ..engine()
         }
     }
 
@@ -1116,6 +1163,122 @@ mod tests {
         );
         assert_eq!(result.text, root.text, "çeviri geç geldi, orijinal kalmalı");
         assert_eq!(result.stats.views, None, "geç gelen metrik karta girmemeli");
+    }
+
+    /// vx/syndication görüntülenme sayısını vermez. Kartta metrikler açıkken eksik değer
+    /// FxTwitter'dan paralel tamamlanır ve mevcut metrikler korunur.
+    #[tokio::test]
+    async fn missing_views_are_completed_from_fxtwitter() {
+        let root = post(1, "en");
+        let mut source = root.clone();
+        source.stats = Stats {
+            replies: 3,
+            reposts: 4,
+            likes: 5,
+            quotes: 1,
+            views: None,
+        };
+        let mut metrics = root.clone();
+        metrics.stats = Stats {
+            views: Some(1_240_000),
+            ..source.stats
+        };
+        let fetcher = FakeFetcher::new(vec![
+            ("meta:1", 5, Ok(snapshot(root.clone(), NestedHint::Absent))),
+            (
+                "vx:1:original",
+                20,
+                Ok(snapshot(source, NestedHint::Absent)),
+            ),
+            ("fx:1", 60, Ok(snapshot(metrics, NestedHint::Unknown))),
+        ]);
+
+        let result = acquire(fetcher.clone(), &root.url, &metrics_engine())
+            .await
+            .unwrap();
+
+        assert_eq!(result.stats.views, Some(1_240_000));
+        assert_eq!(result.stats.likes, 5, "mevcut metrikler korunmalı");
+        assert_eq!(fetcher.count("fx:1"), 1);
+    }
+
+    /// Metrikler kartta gizliyse görüntülenme için ek istek atılmaz.
+    #[tokio::test]
+    async fn metrics_are_not_requested_when_the_card_hides_them() {
+        let root = post(1, "en");
+        let fetcher = FakeFetcher::new(vec![
+            ("meta:1", 5, Ok(snapshot(root.clone(), NestedHint::Absent))),
+            (
+                "vx:1:original",
+                20,
+                Ok(snapshot(root.clone(), NestedHint::Absent)),
+            ),
+        ]);
+
+        let result = acquire(fetcher.clone(), &root.url, &engine())
+            .await
+            .unwrap();
+
+        assert_eq!(fetcher.count("fx:1"), 0);
+        assert_eq!(result.stats.views, None);
+    }
+
+    /// Görüntülenme isteği isteğe bağlıdır: zenginleştirme bütçesini aşan yanıt kartı bekletmez.
+    #[tokio::test]
+    async fn a_slow_metrics_source_does_not_delay_the_card() {
+        let root = post(1, "en");
+        let mut metrics = root.clone();
+        metrics.stats.views = Some(9_000);
+        let fetcher = FakeFetcher::new(vec![
+            ("meta:1", 5, Ok(snapshot(root.clone(), NestedHint::Absent))),
+            (
+                "vx:1:original",
+                20,
+                Ok(snapshot(root.clone(), NestedHint::Absent)),
+            ),
+            ("fx:1", 600, Ok(snapshot(metrics, NestedHint::Unknown))),
+        ]);
+
+        let started = Instant::now();
+        let result = acquire_with_budgets(
+            fetcher,
+            &root.url,
+            &metrics_engine(),
+            Duration::from_millis(120),
+            Duration::from_millis(1_000),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "görüntülenme isteği kartı bekletti: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            result.stats.views, None,
+            "bütçe dolduktan sonra geç gelen görüntülenme karta girmemeli"
+        );
+    }
+
+    /// Diğer kaynaklar düşerse FxTwitter'ın tam yanıtı kartı tek başına kurabilir.
+    #[tokio::test]
+    async fn metrics_response_can_create_the_card_when_other_sources_fail() {
+        let root = post(1, "en");
+        let mut metrics = root.clone();
+        metrics.stats.views = Some(9_000);
+        let fetcher = FakeFetcher::new(vec![(
+            "fx:1",
+            40,
+            Ok(snapshot(metrics, NestedHint::Unknown)),
+        )]);
+
+        let result = acquire(fetcher, &root.url, &metrics_engine())
+            .await
+            .unwrap();
+
+        assert_eq!(result.url, root.url);
+        assert_eq!(result.stats.views, Some(9_000));
     }
 
     /// Hiç veri yokken zenginleştirme bütçesi kartı düşürmez: ilk veri kendi (daha uzun)

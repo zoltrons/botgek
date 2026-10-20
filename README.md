@@ -212,15 +212,19 @@ timeout sonrası aktif iş ve p95 değerlerini değişiklik öncesi/sonrası kar
 
 VxTwitter/otomatik çeviri yolu gelen veriye göre yeniden planlanır; kart gönderimi veya
 webhook taklidi değişmez. İlk soğuk okumada orijinal Vx verisi, syndication metadatası ve
-çeviri açıksa dil ekli Vx yanıtı paraleldir. Dil ekli yanıt spekülatiftir: İngilizce/Türkçe
-metinde beklenmez; yabancı dilde ise dil tespitinden sonra ikinci bir seri ağ turu oluşmaz.
-Gereksizleşen okumalar iptal edilir. Bunun bedeli, soğuk önbellekte en fazla üç kök GET'tir;
-bu bir hız garantisi değil, kritik yoldaki seri beklemeleri kaldırma tercihidir.
+çeviri açıksa dil ekli Vx yanıtı paraleldir. Metrikler açıksa ve kaynakta görüntülenme yoksa
+FxTwitter da yalnızca bu eksiği tamamlamak için paralel istenir. Dil ekli yanıt spekülatiftir:
+İngilizce/Türkçe metinde beklenmez; yabancı dilde ise dil tespitinden sonra ikinci bir seri
+ağ turu oluşmaz. Gereksizleşen okumalar iptal edilir. Bunun bedeli, soğuk önbellekte en fazla
+dört kök GET'tir; bu bir hız garantisi değil, kritik yoldaki seri beklemeleri kaldırma tercihidir.
 
 - Yalnızca görünür, boş olmayan ve henüz çevrilmemiş metin için ek çeviri istenir.
 - `qrtURL: null` ile eksik `qrtURL` birbirinden ayrılır. Bilinen üçüncü gönderi doğrudan
   çekilir; sırf keşif için orta gönderi yeniden istenmez. Bilgi yoksa kısa, best-effort
   inceleme korunur. İlk alıntının medyalı olması, bilinen üçüncü alıntının metnini düşürmez.
+- Görüntülenme sayısını VxTwitter ve syndication vermez. Metrikler açıkken eksik değer
+  FxTwitter'dan isteğe bağlı olarak tamamlanır; mevcut yanıt/beğeni/repost değerleri ezilmez.
+  Bütçe dolarsa kart görüntülenmesiz gönderilir.
 - Yanıtlar gönderi ID'siyle birleştirilir; boş/geç gelen yanıt mevcut çeviriyi, medyayı,
   topluluk notunu veya tamamlanmış alıntıyı silmez. Zaman aşımında mevcut orijinal korunur.
 - Kaynak sonuçları ayrıca **600 saniye / 512 girdi** ile önbelleklenir; aynı ID başka bir
