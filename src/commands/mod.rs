@@ -17,7 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serenity::all::{
     Command, CommandData, CommandDataOptionValue, CommandInteraction, CommandOptionType,
     CommandType, Context, CreateCommand, CreateCommandOption, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse, Http, Interaction, MessageId, User,
+    CreateInteractionResponseMessage, EditInteractionResponse, Http, InstallationContext,
+    Interaction, InteractionContext, MessageId, User,
 };
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -77,10 +78,17 @@ pub async fn register(http: impl AsRef<Http>) {
 }
 
 /// Discord'a gönderilen komut tanımları.
+///
+/// `contexts` **açıkça** gönderilmelidir: alan atlanırsa Discord komutu `contexts: null`
+/// ile saklıyor ve komut DM'lerde görünmüyor (yalnızca sunucularda kalıyor). Bu yüzden
+/// sohbet komutu `GUILD` + `BOT_DM`, mesaj komutu ise yalnızca `GUILD` bağlamını taşır.
 fn definitions() -> Vec<CreateCommand> {
     vec![
         CreateCommand::new(CONVERT_COMMAND)
             .description("Bir sosyal medya bağlantısını dönüştürür (X, Instagram, Reddit, TikTok, Bluesky ve daha fazlası).")
+            .add_integration_type(InstallationContext::Guild)
+            .add_context(InteractionContext::Guild)
+            .add_context(InteractionContext::BotDm)
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
@@ -92,6 +100,8 @@ fn definitions() -> Vec<CreateCommand> {
             ),
         CreateCommand::new(CONVERT_MESSAGE_COMMAND)
             .kind(CommandType::Message)
+            .add_integration_type(InstallationContext::Guild)
+            .add_context(InteractionContext::Guild)
             // Discord, USER/MESSAGE komutlarında açıklamayı boş string olarak bekler.
             .description(""),
     ]
@@ -328,6 +338,21 @@ mod tests {
             message["options"].as_array().is_none_or(Vec::is_empty),
             "mesaj komutu seçenek taşımaz: {message}"
         );
+    }
+
+    #[test]
+    fn slash_command_is_explicitly_available_in_guilds_and_bot_dms() {
+        let definitions = definitions();
+        let chat = serde_json::to_value(&definitions[0]).expect("komut JSON'a çevrilmeli");
+
+        // contexts alanı atlanırsa Discord `null` saklıyor ve komut DM'lerde görünmüyor.
+        assert_eq!(chat["contexts"], serde_json::json!([0, 1]));
+        assert_eq!(chat["integration_types"], serde_json::json!([0]));
+
+        let message = serde_json::to_value(&definitions[1]).expect("komut JSON'a çevrilmeli");
+        // Mesaj komutu hedef mesaj gerektirir; yalnızca sunucularda anlamlı.
+        assert_eq!(message["contexts"], serde_json::json!([0]));
+        assert_eq!(message["integration_types"], serde_json::json!([0]));
     }
 
     #[test]
