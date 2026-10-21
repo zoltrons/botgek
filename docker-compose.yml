@@ -38,6 +38,9 @@ services:
       - .env
     environment:
       - WEB_BIND=0.0.0.0
+      # MCP endpoint tokenı: WebUI ile aynı portta `/mcp` yolunu açar. `.env`'den gelir;
+      # boşsa endpoint kapalı kalır (WebUI ve bot etkilenmez). ADMIN_TOKEN'dan farklı olmalı.
+      - MCP_TOKEN=${MCP_TOKEN:-}
       # Kalıcı kayıt veritabanı (kart kayıtları: 🗑️ silme izni + AI koruması)
       - BOTGEK_DB_PATH=/app/data/botgek.db
       - BOTGEK_SETTINGS_PATH=/app/data/settings.json

@@ -93,6 +93,14 @@ pub struct WebState {
     pub settings_path: Arc<std::path::PathBuf>,
     pub roles_cache: RolesCache,
     pub channels_cache: ChannelsCache,
+    /// Çözümlenmiş `.env` yapılandırması (MCP `convert_preview` ve durum özeti için).
+    pub config: Arc<Config>,
+    /// Dönüştürme önizlemesinde kullanılan paylaşılan HTTP istemcisi.
+    pub client: reqwest::Client,
+    /// MCP Bearer kimlik doğrulaması; `MCP_TOKEN` yoksa endpoint kapalıdır.
+    pub mcp: Option<Arc<crate::mcp::Auth>>,
+    /// Süreç/WebUI başlangıcı (MCP `bot_status` uptime).
+    pub started: std::time::Instant,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -131,6 +139,7 @@ pub async fn start_web_server(
     config: &Config,
     http: Arc<serenity::all::Http>,
     cache: Arc<serenity::all::Cache>,
+    client: reqwest::Client,
 ) {
     let port = config.web_port;
     let secure = crate::config::env_bool("WEB_SECURE_COOKIE", false);
@@ -141,6 +150,12 @@ pub async fn start_web_server(
             return;
         }
     };
+    let mcp = crate::mcp::auth_from_env();
+    if mcp.is_some() {
+        info!("MCP endpoint etkin: http://localhost:{port}/mcp (Bearer MCP_TOKEN)");
+    } else {
+        info!("MCP endpoint kapalı: MCP_TOKEN tanımlı değil");
+    }
     let bind = match std::env::var("WEB_BIND")
         .unwrap_or_else(|_| "127.0.0.1".into())
         .parse::<std::net::IpAddr>()
@@ -161,6 +176,10 @@ pub async fn start_web_server(
         settings_path: Arc::new(crate::settings::resolve_settings_path()),
         roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
         channels_cache: Arc::new(tokio::sync::Mutex::new(None)),
+        config: Arc::new(config.clone()),
+        client,
+        mcp,
+        started: std::time::Instant::now(),
     };
 
     let app = build_router(state);
@@ -183,8 +202,12 @@ pub async fn start_web_server(
 }
 
 /// Panelin rotalarını kurar (sunucu ve testler aynı yapıyı kullanır).
+///
+/// `/mcp` panel router'ının **dışında** tutulur: oturum çerezine değil Bearer tokena
+/// dayanır ve CSRF başlığı istemez. Ortak güvenlik başlıkları ve gövde sınırı iki
+/// router'a da uygulanır.
 fn build_router(state: WebState) -> Router {
-    Router::new()
+    let panel = Router::new()
         .route("/", get(index_handler))
         .route("/app.js", get(app_js_handler))
         .route("/api/settings", get(get_settings).post(save_settings))
@@ -201,6 +224,16 @@ fn build_router(state: WebState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/health", get(health_check))
         .layer(from_fn(auth::csrf))
+        .with_state(state.clone());
+
+    Router::new()
+        .merge(panel)
+        .route(
+            "/mcp",
+            post(crate::mcp::handle)
+                .get(crate::mcp::method_not_allowed)
+                .delete(crate::mcp::method_not_allowed),
+        )
         .layer(from_fn(add_security_headers))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state)
@@ -311,7 +344,7 @@ async fn metrics() -> impl IntoResponse {
 ///
 /// Panel kaydederken bunu `If-Match` ile geri gönderir; arada başka bir sekme kaydettiyse revizyon değişmiştir ve eski görünümden yapılan kayıt reddedilir.
 /// İçerikten türetildiği için bot yeniden başlasa da aynı ayarlar aynı revizyonu verir.
-fn settings_revision(settings: &AppSettings) -> String {
+pub(crate) fn settings_revision(settings: &AppSettings) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     serde_json::to_vec(settings)
@@ -503,46 +536,9 @@ async fn save_settings(
         .get(header::IF_MATCH)
         .and_then(|value| value.to_str().ok())
         .map(|value| value.trim().to_string());
-    new_settings.role_filters.sanitize();
-
-    // Sınır **karakter** sayısıdır: panel sayacı (`value.length`) ve kanal ayarlarının
-    // `sanitize`'ı da karakter sayar; bayt sınırı Türkçe istemleri sessizce kırpıyordu.
-    fn safe_truncate_str(s: &mut String, max_chars: usize) {
-        if let Some((end, _)) = s.char_indices().nth(max_chars) {
-            s.truncate(end);
-        }
-    }
-
-    safe_truncate_str(&mut new_settings.ai.system_prompt, 4000);
-    safe_truncate_str(&mut new_settings.ai.model, 128);
-
-    // Link dönüştürme motoru: alan adları temizlenir, sayısal aralıklar güvenli sınıra çekilir
-    new_settings.engine.sanitize();
-    new_settings.sanitize_channels();
-
-    // Sunucuya özel (sparse) ayarları doğrula ve temizle. Kayıtta **yalnızca sabitlenmiş
-    // bölümler** bulunur; boş kalan kayıt saklanmaz (o sunucu genel ayarları miras alır).
-    new_settings
-        .guilds
-        .retain(|gid, _| gid.parse::<u64>().is_ok_and(|id| id > 0));
-
-    for guild_cfg in new_settings.guilds.values_mut() {
-        if let Some(filters) = guild_cfg.role_filters.as_mut() {
-            filters.sanitize();
-        }
-
-        if let Some(ai) = guild_cfg.ai.as_mut() {
-            safe_truncate_str(&mut ai.system_prompt, 4000);
-            safe_truncate_str(&mut ai.model, 128);
-        }
-
-        if let Some(engine) = guild_cfg.engine.as_mut() {
-            engine.sanitize();
-        }
-    }
-
-    // "Miras" durumundaki (hiçbir bölümü sabitlenmemiş) kayıtlar saklanmaz.
-    new_settings.guilds.retain(|_, over| !over.is_empty());
+    // Panel ve MCP aynı normalizasyonu kullanır: filtreler, motor aralıkları, kanal/sunucu
+    // kimlikleri ve AI metin sınırları tek yerde uygulanır (bkz. `sanitize_for_save`).
+    new_settings.sanitize_for_save();
 
     // Şema sürümü panelden gelmez; sunucudaki değer **korunur**. Aksi hâlde sürüm 0'a düşer
     // ve sunucu ayarları göçü her açılışta yeniden çalışarak bilerek sabitlenen bölümleri
@@ -1009,6 +1005,10 @@ mod tests {
             settings_path: Arc::new(settings_path.clone()),
             roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
             channels_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            config: Arc::new(config()),
+            client: reqwest::Client::new(),
+            mcp: Some(crate::mcp::Auth::new("test-mcp-token-32-characters-long".into()).unwrap()),
+            started: std::time::Instant::now(),
         };
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1422,6 +1422,141 @@ mod tests {
                 .status(),
             StatusCode::UNAUTHORIZED
         );
+        server.abort();
+    }
+
+    /// `/mcp`, panel oturumundan bağımsızdır: Bearer token ister ve hem 2026-07-28
+    /// (`server/discover`/`tools/*`) hem eski `initialize` akışını yanıtlar.
+    #[tokio::test]
+    async fn mcp_endpoint_authenticates_and_serves_tools() {
+        const TOKEN: &str = "test-mcp-token-32-characters-long";
+        let settings_path = std::env::temp_dir().join(format!(
+            "botgek-mcp-test-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path_for_disk = settings_path.clone();
+        let state = WebState {
+            settings: Arc::new(RwLock::new(AppSettings::default())),
+            http: Arc::new(serenity::all::Http::new("test-token")),
+            cache: Arc::new(serenity::all::Cache::new()),
+            info: WebInfo::from_config(&config()),
+            auth: auth::Auth::new("test-administrator-token-32-characters".into(), false).unwrap(),
+            save_lock: Arc::new(tokio::sync::Mutex::new(())),
+            settings_path: Arc::new(settings_path),
+            roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            channels_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            config: Arc::new(config()),
+            client: reqwest::Client::new(),
+            mcp: Some(crate::mcp::Auth::new(TOKEN.into()).unwrap()),
+            started: std::time::Instant::now(),
+        };
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("test dinleyicisi");
+        let addr = listener.local_addr().expect("adres");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, build_router(state)).await;
+        });
+        let base = format!("http://{addr}");
+        let http = reqwest::Client::new();
+
+        let unauthorized = http
+            .post(format!("{base}/mcp"))
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .send()
+            .await
+            .expect("yetkisiz istek");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let listed = http
+            .post(format!("{base}/mcp"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header("mcp-protocol-version", "2026-07-28")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+            }))
+            .send()
+            .await
+            .expect("araç listesi");
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed: serde_json::Value = listed.json().await.expect("JSON gövde");
+        assert_eq!(listed["result"]["resultType"], "complete");
+        let names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .expect("tools dizisi")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(names.contains(&"convert_preview"), "{names:?}");
+        assert!(names.contains(&"settings_patch"), "{names:?}");
+
+        let status = http
+            .post(format!("{base}/mcp"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "bot_status", "arguments": {}}
+            }))
+            .send()
+            .await
+            .expect("araç çağrısı");
+        assert_eq!(status.status(), StatusCode::OK);
+        let status: serde_json::Value = status.json().await.expect("JSON gövde");
+        assert_eq!(status["result"]["isError"], false);
+        let text = status["result"]["content"][0]["text"]
+            .as_str()
+            .expect("metin içeriği");
+        assert!(text.contains("\"semver\""), "{text}");
+        assert!(text.contains(crate::version::SEMVER), "{text}");
+
+        // Ayarlar MCP üzerinden değiştirilebilir: aynı normalizasyon ve diske yazma.
+        let patched = http
+            .post(format!("{base}/mcp"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "settings_patch",
+                    "arguments": {"patch": {"modules": {"tiktok": false}}}
+                }
+            }))
+            .send()
+            .await
+            .expect("ayar yaması");
+        let patched: serde_json::Value = patched.json().await.expect("JSON gövde");
+        assert_eq!(patched["result"]["isError"], false, "{patched}");
+        let disk = std::fs::read_to_string(&path_for_disk).expect("ayar dosyası yazılmalı");
+        let disk: serde_json::Value = serde_json::from_str(&disk).expect("geçerli JSON");
+        assert_eq!(disk["modules"]["tiktok"], false);
+        let _ = std::fs::remove_file(&path_for_disk);
+
+        let legacy = http
+            .post(format!("{base}/mcp"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"}
+            }))
+            .send()
+            .await
+            .expect("eski el sıkışma");
+        let legacy: serde_json::Value = legacy.json().await.expect("JSON gövde");
+        assert_eq!(legacy["result"]["protocolVersion"], "2024-11-05");
+
         server.abort();
     }
 }

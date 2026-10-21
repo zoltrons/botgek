@@ -984,6 +984,18 @@ impl AppSettings {
         }
     }
 
+    /// WebUI kaydı ve MCP `settings_patch` için **tek** normalizasyon noktası.
+    ///
+    /// Panelin kayıt akışındaki temizliğin aynısıdır: filtreler, motor aralıkları,
+    /// kanal/sunucu kimlikleri ve AI metin sınırları. `schema_version`'a dokunmaz;
+    /// çağıran taraf mevcut sürümü korur.
+    pub fn sanitize_for_save(&mut self) {
+        self.role_filters.sanitize();
+        self.engine.sanitize();
+        self.sanitize_channels();
+        self.guilds.retain(|_, over| !over.is_empty());
+    }
+
     /// **Göç (bir kez):** eski **tam kopya** sunucu kayıtlarını sparse override'a indirger.
     ///
     /// Eski model sunucu kaydını ilk düzenlemede genelin tam kopyası olarak yazıyordu. Bu

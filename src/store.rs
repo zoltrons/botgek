@@ -94,6 +94,82 @@ fn database() -> Option<&'static Db> {
     DB.as_ref().ok()
 }
 
+/// Salt okunur teşhis sorgusunun sonucu (MCP `db_query` aracı).
+///
+/// Sütun adları korunur; değerler JSON'a çevrilir. BLOB'lar içerik sızdırmamak için
+/// yalnızca boyutlarıyla temsil edilir. `truncated`, `limit` nedeniyle satır atlandığını
+/// söyler (sorgu yine de salt okunurdur, veri değişmez).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub returned: usize,
+    pub truncated: bool,
+}
+
+/// Kayıt veritabanında **salt okunur** bir sorgu çalıştırır.
+///
+/// Yalnızca tek bir `SELECT`/`WITH` ifadesi kabul edilir; `rusqlite` ifadenin
+/// salt okunur olduğunu ayrıca doğrular (`Statement::readonly`). Yazma denemeleri
+/// `InvalidQuery` ile reddedilir. Sonuç satırı `limit` ile sınırlıdır (en fazla 200).
+pub fn query_readonly(sql: &str, limit: usize) -> Result<QueryResult, String> {
+    let trimmed = sql.trim();
+    let without_trailing = trimmed.trim_end_matches(';').trim();
+    let lowered = without_trailing.to_ascii_lowercase();
+    if without_trailing.is_empty()
+        || !(lowered.starts_with("select") || lowered.starts_with("with"))
+    {
+        return Err("yalnızca tek bir SELECT/WITH sorgusu kabul edilir".to_string());
+    }
+    if without_trailing.contains(';') {
+        return Err(
+            "tek sorgu gönderin: noktalı virgülle ayrılmış ikinci ifade reddedildi".to_string(),
+        );
+    }
+
+    let db = database().ok_or_else(|| "kayıt veritabanı açık değil".to_string())?;
+    let limit = limit.clamp(1, 200);
+    db.query_readonly(without_trailing, limit)
+}
+
+/// Veritabanı dosyasının bayt cinsinden boyutu (`:memory:` ise `None`).
+pub fn file_bytes() -> Option<u64> {
+    let path = database()?.path();
+    if path == ":memory:" {
+        return None;
+    }
+    std::fs::metadata(path).ok().map(|metadata| metadata.len())
+}
+
+/// Salt okunur teşhis sorgusunu blocking worker'da çalıştırır (MCP `db_query`).
+///
+/// Aynı veritabanı slotunu kullanır: teşhis sorgusu devam eden kart yazımını kilitlemez,
+/// ancak SQLite bağlantısına paralel erişmez.
+pub async fn query_readonly_blocking(sql: String, limit: usize) -> Result<QueryResult, String> {
+    let Ok(permit) = DB_SLOT.clone().acquire_owned().await else {
+        return Err("SQLite worker kullanılamıyor".to_string());
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        query_readonly(&sql, limit)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(format!("SQLite worker failed: {error}")),
+    }
+}
+
+/// Kayıt veritabanı yolu (`:memory:` olabilir; açık değilse `None`).
+pub fn path() -> Option<String> {
+    database().map(|db| db.path().to_string())
+}
+
+/// Kayıtlı kart sayısı (veritabanı açık değilse `None`).
+pub fn record_count() -> Option<i64> {
+    database().map(Db::count)
+}
+
 pub fn healthy() -> bool {
     DB.as_ref().is_ok_and(|db| {
         db.path() != ":memory:"
@@ -229,6 +305,42 @@ impl Db {
         .unwrap_or(0)
     }
 
+    /// Salt okunur sorguyu çalıştırır; yazma ifadeleri `InvalidQuery` ile reddedilir.
+    fn query_readonly(&self, sql: &str, limit: usize) -> Result<QueryResult, String> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(sql)?;
+            if !statement.readonly() {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            let columns = statement
+                .column_names()
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>();
+            let mut rows = statement.query([])?;
+            let mut values = Vec::new();
+            let mut truncated = false;
+            while let Some(row) = rows.next()? {
+                if values.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+                values.push(
+                    (0..columns.len())
+                        .map(|index| value_to_json(row.get_ref(index)?))
+                        .collect::<Result<Vec<_>, rusqlite::Error>>()?,
+                );
+            }
+            let returned = values.len();
+            Ok(QueryResult {
+                columns,
+                rows: values,
+                returned,
+                truncated,
+            })
+        })
+    }
+
     /// En yeni `keep` kaydı bırakır, daha eskilerini siler. Kayıt sayısı `keep`'ten azsa
     /// hiçbir şey silinmez. Silinen kayıt sayısını döner.
     pub fn prune(&self, keep: i64) -> usize {
@@ -353,6 +465,25 @@ fn default_path() -> String {
         .ok()
         .filter(|path| !path.is_empty())
         .unwrap_or_else(|| DEFAULT_DB_FILE.to_string())
+}
+
+/// SQLite değerini JSON'a çevirir. BLOB içeriği bilinçli olarak yalnızca boyutla temsil
+/// edilir: teşhis sorguları ikili veri dökmemeli.
+fn value_to_json(
+    value: rusqlite::types::ValueRef<'_>,
+) -> Result<serde_json::Value, rusqlite::Error> {
+    use rusqlite::types::ValueRef;
+    Ok(match value {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(number) => serde_json::Value::from(number),
+        ValueRef::Real(number) => serde_json::Number::from_f64(number)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        ValueRef::Text(text) => {
+            serde_json::Value::String(String::from_utf8_lossy(text).into_owned())
+        }
+        ValueRef::Blob(blob) => serde_json::Value::String(format!("<blob {} bytes>", blob.len())),
+    })
 }
 
 fn now_unix() -> i64 {
@@ -494,5 +625,44 @@ mod tests {
     fn startup_accepts_the_memory_store_used_by_tests() {
         let db = open_test(":memory:");
         assert!(init_with(Ok(&db)).is_ok());
+    }
+
+    #[test]
+    fn readonly_query_returns_columns_and_rejects_writes() {
+        let db = open_test(":memory:");
+        db.remember(MessageId::new(11), ChannelId::new(1), UserId::new(2));
+
+        let result = db
+            .query_readonly(
+                "SELECT message_id, author_id FROM cards ORDER BY message_id",
+                10,
+            )
+            .expect("salt okunur sorgu çalışmalı");
+        assert_eq!(result.columns, vec!["message_id", "author_id"]);
+        assert_eq!(result.returned, 1);
+        assert!(!result.truncated);
+        assert_eq!(result.rows[0][1], serde_json::json!(2));
+
+        assert!(
+            db.query_readonly("DELETE FROM cards", 10).is_err(),
+            "yazma ifadesi reddedilmeli"
+        );
+        assert!(
+            db.query_readonly("SELECT 1; DROP TABLE cards", 10).is_err(),
+            "çok ifadeli girdi reddedilmeli"
+        );
+    }
+
+    #[test]
+    fn readonly_query_truncates_at_the_requested_limit() {
+        let db = open_test(":memory:");
+        for id in 1..=5u64 {
+            db.remember(MessageId::new(id), ChannelId::new(1), UserId::new(7));
+        }
+        let result = db
+            .query_readonly("SELECT message_id FROM cards ORDER BY message_id", 2)
+            .expect("sorgu çalışmalı");
+        assert_eq!(result.returned, 2);
+        assert!(result.truncated);
     }
 }

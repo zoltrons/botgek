@@ -5,6 +5,8 @@ mod commands;
 mod config;
 mod converters;
 mod handler;
+mod logs;
+mod mcp;
 mod policy;
 mod settings;
 mod store;
@@ -22,6 +24,8 @@ use serenity::all::{Client, GatewayIntents};
 use tracing::error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// Komut satırı kullanımı (`botgek --help`).
 const USAGE: &str = "\
@@ -161,12 +165,17 @@ async fn main() {
     // .env dosyasını yükle
     dotenvy::dotenv().ok();
 
-    // Loglama sistemini başlat
+    // Loglama: terminal çıktısı + MCP/WebUI için sınırlı bellek halkası (`logs`).
+    // Aynı olaylar iki katmana da gider; halka diske yazmaz ve kapasiteyle sınırlıdır.
     let default_filter = "botgek=info,serenity=warn";
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(logs::CaptureLayer)
+        .init();
 
     info!("Botgek başlatılıyor...");
     // Sürüm, derleme zamanında git etiketlerinden gömülür (`build.rs`): hangi ikilinin
@@ -235,6 +244,8 @@ async fn main() {
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::DIRECT_MESSAGE_REACTIONS;
 
+    // MCP `convert_preview` WebUI ile aynı HTTP istemcisini kullanır (ayrı TLS yığını yok).
+    let web_client = http_client.clone();
     let handler = Handler {
         config: config.clone(),
         settings: settings.clone(),
@@ -258,7 +269,7 @@ async fn main() {
     let web_http = client.http.clone();
     let web_cache = client.cache.clone();
     tokio::spawn(async move {
-        web::start_web_server(web_settings, &web_config, web_http, web_cache).await;
+        web::start_web_server(web_settings, &web_config, web_http, web_cache, web_client).await;
     });
 
     // Güvenli durdurma sinyali dinleyicisi (CTRL+C ve Unix SIGTERM)

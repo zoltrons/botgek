@@ -93,6 +93,78 @@ yerel olarak yazın; sohbet, log, ekran görüntüsü veya Git'e koymayın.
 
 Tokenı döndürmek için `.env` değerini değiştirip botu yeniden başlatın. Token API yanıtlarında ve loglarda görünmez.
 
+## MCP sunucusu (geliştirme ve teşhis)
+
+Bot, WebUI ile **aynı adreste ve portta** `/mcp` yolunda bir
+[Model Context Protocol](https://modelcontextprotocol.io) sunucusu yayınlar. Amaç, botu
+geliştirirken/ayıklarken gereken bilgilere ayrı bir kabuk, `docker exec` veya Discord
+üzerinden değil, MCP istemcisinden tek yerden erişmektir. Ayrı container, ayrı port veya
+ek servis yoktur.
+
+`.env` içinde:
+
+```dotenv
+# En az 32 karakter, ADMIN_TOKEN'dan FARKLI bir sır. Boşsa MCP endpoint kapalıdır.
+MCP_TOKEN=
+```
+
+Token üretimi: `openssl rand -hex 32` (Windows PowerShell:
+`[Convert]::ToHexString((1..32 | ForEach-Object { Get-Random -Max 256 }))`). Değeri Git'e,
+sohbete veya ekran görüntüsüne koymayın. Docker Compose `MCP_TOKEN` değişkenini container'a
+açıkça aktarır; ek port eşlemesi gerekmez.
+
+Endpoint `Authorization: Bearer <MCP_TOKEN>` ister. MCP istemcisi (DSH) yapılandırması:
+
+```yaml
+- id: mcp-botgek
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: botgek
+    transport: streamable-http
+    url: http://127.0.0.1:3000/mcp
+    headers:
+      Authorization: !!js '`Bearer ${process.env.MCP_TOKEN}`'
+```
+
+DSH sürecinin ortamında `MCP_TOKEN` yoksa değeri doğrudan `headers` altına yazın; ancak
+tokenı depo içindeki bir dosyaya koymayın. Aynı endpoint hem 2026-07-28 oturumsuz akışını
+(`server/discover`, `MCP-Protocol-Version`) hem de eski `initialize` el sıkışmasını destekler.
+
+Araçlar:
+
+| Araç | Ne verir |
+| --- | --- |
+| `bot_status` | Sürüm/künye, uptime, Discord readiness, veritabanı ve ayar durumu, sır içermeyen `.env` özeti |
+| `bot_metrics` | Dönüşüm kuyruğu, platform bazlı başarı/hata ve gecikme kovaları |
+| `bot_logs` | Bellekteki son tracing logları (`limit`, `min_level`); süreç ömrüyle sınırlı, diske yazılmaz |
+| `settings_get` | Etkin ayarlar + içerik revizyonu (WebUI ile aynı model) |
+| `settings_patch` | JSON merge patch; aynı normalizasyonla diske yazar, botu **anında** etkiler |
+| `discord_overview` | Serenity cache'indeki sunucu/kanal/rol listesi (Discord'a istek atmaz) |
+| `db_stats` | Kart veritabanı yolu, kayıt sayısı, dosya boyutu |
+| `db_query` | Tek bir **salt okunur** `SELECT`/`WITH` (en fazla 200 satır) |
+| `convert_preview` | Bağlantıyı çözer, verisini çeker ve render planını döner; **Discord'a mesaj göndermez** |
+
+Hızlı doğrulama:
+
+```sh
+curl -s http://127.0.0.1:3000/mcp \
+  -H "Authorization: Bearer $MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Güvenlik notları:
+
+- MCP endpoint'i WebUI'nin bağlandığı adresi (`WEB_BIND`, varsayılan `127.0.0.1`) kullanır.
+  Uzaktan erişimde SSH tüneli veya HTTPS ters proxy kullanın; portu doğrudan internete açmayın.
+- `MCP_TOKEN` ile `ADMIN_TOKEN` ayrı sırlar olmalıdır. Token yoksa endpoint kapalıdır (503);
+  WebUI ve Discord botu çalışmaya devam eder.
+- `settings_patch` ve `convert_preview` dışındaki araçlar salt okunurdur. `db_query` yazma
+  ifadelerini reddeder; BLOB içeriği dökülmez.
+- `bot_logs` yalnızca bellekteki son 512 olayı tutar; hassas veri ayrıştırması yapmaz, bu
+  yüzden logları yine özel tutun.
+
 ## Yapılandırma ve kalıcılık
 
 | Değişken | Davranış |
@@ -100,6 +172,7 @@ Tokenı döndürmek için `.env` değerini değiştirip botu yeniden başlatın.
 | `BOTGEK_SETTINGS_PATH` | Ayar dosyası; boşsa `BOTGEK_DB_PATH` bir dizin içeriyorsa (ör. `/app/data/botgek.db`) o dizindeki `settings.json`, aksi hâlde çalışma dizinindeki `settings.json` |
 | `BOTGEK_SETTINGS_SEED` | Yalnızca hedef dosya yoksa ilk içe aktarım kaynağı |
 | `BOTGEK_DB_PATH` | Kart–paylaşan kullanıcı kaydı; varsayılan `botgek.db` |
+| `MCP_TOKEN` | `/mcp` MCP endpoint'i için Bearer token; boşsa endpoint kapalı |
 | `OPENROUTER_API_KEY` | İsteğe bağlı AI erişimi |
 | `FXTUMBLR_DOMAIN` | Tumblr NPF/render hizmeti; varsayılan `tpmblr.com`, boş bırakılırsa public OG fallback kullanılır |
 | `INSTAGRAM_SESSIONID` | İsteğe bağlı Instagram reel/video çerezi; yalnızca ortamda saklanır |
