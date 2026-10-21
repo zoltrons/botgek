@@ -58,7 +58,11 @@ pub(super) fn decide(
         if engine.auto_translate
             && !visible.text.trim().is_empty()
             && visible.translation.is_none()
-            && needs_translation(visible.language.as_deref(), &engine.translation_target)
+            && needs_translation(
+                visible.language.as_deref(),
+                &engine.translation_target,
+                engine.translate_english,
+            )
             && !translation_urls.contains(&visible.url)
         {
             translation_urls.push(visible.url.clone());
@@ -196,6 +200,28 @@ mod tests {
         assert_eq!(plan.translation_urls, vec![quote_url]);
         assert_eq!(plan.quote, None);
         assert!(plan.media_ready);
+    }
+
+    #[test]
+    fn english_translation_can_be_forced_for_interactions() {
+        let root = post(1, "Hello world", Some("en"));
+        let default = EngineSettings::default();
+        assert!(
+            decide(&root, &default, &NestedHint::Absent)
+                .translation_urls
+                .is_empty(),
+            "normal akışta İngilizce varsayılan olarak çevrilmez"
+        );
+
+        let forced = EngineSettings {
+            translate_english: true,
+            ..EngineSettings::default()
+        };
+        assert_eq!(
+            decide(&root, &forced, &NestedHint::Absent).translation_urls,
+            vec![root.url.clone()],
+            "etkileşim dönüşümü İngilizce için de çeviri istemeli"
+        );
     }
 
     #[test]

@@ -520,6 +520,10 @@ pub struct EngineSettings {
     pub auto_translate: bool,
     /// Otomatik X çevirisinin hedef dili (BCP-47 primary language kodu veya bölgesel kod).
     pub translation_target: String,
+    /// Yalnızca `/dönüştür` gibi etkileşim dönüşümlerinde `true`: hedef dil `tr` olsa bile
+    /// İngilizce gönderileri de çevirir. WebUI'a yazılmaz; çalışma zamanında türetilir.
+    #[serde(skip)]
+    pub translate_english: bool,
     /// Native embed üretilemezse otomatik olarak proxy linkine düş.
     pub fallback_to_proxy: bool,
     /// Mesajı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönder ("taklit").
@@ -549,6 +553,7 @@ impl Default for EngineSettings {
             show_quote: true,
             auto_translate: true,
             translation_target: "tr".to_string(),
+            translate_english: false,
             fallback_to_proxy: true,
             impersonate_user: true,
             impersonate_skip_replies: true,

@@ -175,10 +175,11 @@ fn post_cache_key(parsed: &ParsedPost, engine: &EngineSettings) -> String {
     // The content-aware Twitter path may finish from Syndication when neither notes
     // nor metrics are requested. Do not reuse that result for a richer settings scope.
     format!(
-        "post:{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "post:{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         parsed.original_url,
         engine.twitter_source.key(),
         engine.auto_translate,
+        engine.translate_english,
         engine.translation_target,
         engine.show_quote,
         engine.max_video_mb,
@@ -1897,5 +1898,24 @@ mod message_tests {
         engine.impersonate_user = false;
         assert!(!should_impersonate(&engine, false));
         assert!(!should_impersonate(&engine, true));
+    }
+
+    #[test]
+    fn translation_cache_keys_separate_english_override() {
+        let parsed = super::super::parser::parse_message_with_domains(
+            "https://x.com/kullanici/status/1",
+            &super::super::parser::PlatformDomains::default(),
+        )
+        .expect("X bağlantısı çözümlenmeli");
+
+        let mut engine = EngineSettings::default();
+        let normal = post_cache_key(&parsed, &engine);
+        engine.translate_english = true;
+        let interaction = post_cache_key(&parsed, &engine);
+
+        assert_ne!(
+            normal, interaction,
+            "İngilizce çeviri istisnası ayrı önbellek anahtarı kullanmalı"
+        );
     }
 }

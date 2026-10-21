@@ -267,6 +267,7 @@ async fn fetch_post_internal(
                 client: client.clone(),
                 video_budget,
                 translation_target: engine.translation_target.clone(),
+                translate_english: engine.translate_english,
             },
             original_url,
             engine,
@@ -289,6 +290,7 @@ async fn fetch_post_internal(
             None,
             &engine.translation_target,
             video_budget,
+            engine.translate_english,
         ),
     );
 
@@ -401,6 +403,7 @@ async fn fetch_fx_fast(
         language,
         translation_target,
         max_video_bytes,
+        engine.translate_english,
     );
     tokio::pin!(fx);
 
@@ -421,6 +424,7 @@ async fn fetch_fx_fast(
                     None,
                     translation_target,
                     max_video_bytes,
+                    engine.translate_english,
                 )
                 .await;
             }
@@ -495,6 +499,7 @@ struct HttpFetcher {
     client: reqwest::Client,
     video_budget: u64,
     translation_target: String,
+    translate_english: bool,
 }
 
 static SOURCE_RESULTS: LazyLock<source_cache::SourceCache<pipeline::Snapshot>> =
@@ -503,9 +508,10 @@ static SOURCE_RESULTS: LazyLock<source_cache::SourceCache<pipeline::Snapshot>> =
 impl HttpFetcher {
     fn key(&self, source: &str, id: &str, language: Option<&str>) -> String {
         format!(
-            "{source}:{id}:{}:{}:{}",
+            "{source}:{id}:{}:{}:{}:{}",
             language.unwrap_or("original"),
             self.translation_target,
+            self.translate_english,
             self.video_budget
         )
     }
@@ -546,6 +552,7 @@ impl pipeline::Fetcher for HttpFetcher {
                         &id,
                         language.as_deref(),
                         &self.translation_target,
+                        self.translate_english,
                     )
                     .await
                 } else if source == "fx" {
@@ -556,6 +563,7 @@ impl pipeline::Fetcher for HttpFetcher {
                         None,
                         &self.translation_target,
                         self.video_budget,
+                        self.translate_english,
                     )
                     .await
                     .map(|post| pipeline::Snapshot {
@@ -616,6 +624,7 @@ async fn from_vxtwitter(
     id: &str,
     language: Option<&str>,
     translation_target: &str,
+    translate_english: bool,
 ) -> Result<pipeline::Snapshot, String> {
     let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
     let handle = TWEET_URL_REGEX
@@ -636,7 +645,7 @@ async fn from_vxtwitter(
     }
 
     Ok(pipeline::Snapshot {
-        post: vx_to_post(&tweet, original_url, translation_target)?,
+        post: vx_to_post(&tweet, original_url, translation_target, translate_english)?,
         nested_hint,
     })
 }
@@ -713,12 +722,14 @@ fn vx_to_post(
     tweet: &VxTweet,
     fallback_url: &str,
     translation_target: &str,
+    translate_english: bool,
 ) -> Result<BuiltinPost, String> {
     let handle = tweet.user_screen_name.clone().unwrap_or_default();
 
     // Saf retweet: vx gerçek içeriği `retweet` objesine koyar ve dış metni boşatır.
     if let Some(inner) = tweet.retweet.as_deref() {
-        let mut inner_post = vx_to_post(inner, fallback_url, translation_target)?;
+        let mut inner_post =
+            vx_to_post(inner, fallback_url, translation_target, translate_english)?;
         inner_post.quote = None; // retweet içinde alıntı zinciri gösterilmez.
         return Ok(inner_post);
     }
@@ -777,7 +788,7 @@ fn vx_to_post(
     post.media = tweet.media_extended.iter().filter_map(vx_media).collect();
 
     if let Some(quote) = tweet.qrt.as_deref()
-        && let Ok(quote_post) = vx_to_post(quote, "", translation_target)
+        && let Ok(quote_post) = vx_to_post(quote, "", translation_target, translate_english)
     {
         post.quote = Some(Box::new(quote_post));
     }
@@ -788,7 +799,7 @@ fn vx_to_post(
         .map(|note| note.trim().to_owned())
         .filter(|note| !note.is_empty());
 
-    apply_vx_translation(&mut post, tweet, translation_target);
+    apply_vx_translation(&mut post, tweet, translation_target, translate_english);
     Ok(post)
 }
 
@@ -854,9 +865,19 @@ fn vx_media(item: &VxMedia) -> Option<Media> {
 ///
 /// Eski FX akışındaki [Grok kuralı] burada ücretsiz sağlanır: vx'in `translation` alanı
 /// yapısal olarak yalnızca X'in `grok_translated_post_with_availability` verisiyle dolduğu
-/// için sağlayıcı kontrolüne gerek kalmaz. Yalnızca gönderi Türkçe/İngilizce değilse uygulanır.
-fn apply_vx_translation(post: &mut BuiltinPost, tweet: &VxTweet, translation_target: &str) {
-    if !needs_translation(post.language.as_deref(), translation_target) {
+/// için sağlayıcı kontrolüne gerek kalmaz. Varsayılan akışta yalnızca gönderi
+/// Türkçe/İngilizce değilse uygulanır; `translate_english` ile İngilizce de uygulanır.
+fn apply_vx_translation(
+    post: &mut BuiltinPost,
+    tweet: &VxTweet,
+    translation_target: &str,
+    translate_english: bool,
+) {
+    if !needs_translation(
+        post.language.as_deref(),
+        translation_target,
+        translate_english,
+    ) {
         return;
     }
 
@@ -1485,6 +1506,7 @@ async fn from_fxtwitter(
     language: Option<&str>,
     translation_target: &str,
     max_video_bytes: u64,
+    translate_english: bool,
 ) -> Result<BuiltinPost, String> {
     // Dil eki (`/tr`) verildiğinde yanıt orijinal metinle birlikte X'in çevirisini de içerir.
     let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
@@ -1506,7 +1528,13 @@ async fn from_fxtwitter(
         .tweet
         .ok_or_else(|| format!("fxtwitter yanıtında gönderi yok: {id}"))?;
 
-    fx_to_post_with_target(&tweet, original_url, max_video_bytes, translation_target)
+    fx_to_post_with_target(
+        &tweet,
+        original_url,
+        max_video_bytes,
+        translation_target,
+        translate_english,
+    )
 }
 
 fn fx_to_post_with_target(
@@ -1514,6 +1542,7 @@ fn fx_to_post_with_target(
     fallback_url: &str,
     max_video_bytes: u64,
     translation_target: &str,
+    translate_english: bool,
 ) -> Result<BuiltinPost, String> {
     let user = tweet.author.as_ref();
     let handle = user.and_then(|a| a.screen_name.clone()).unwrap_or_default();
@@ -1579,27 +1608,42 @@ fn fx_to_post_with_target(
             })
             .unwrap_or_default();
         if !quoted_url.is_empty()
-            && let Ok(quoted_post) =
-                fx_to_post_with_target(quoted, &quoted_url, max_video_bytes, translation_target)
+            && let Ok(quoted_post) = fx_to_post_with_target(
+                quoted,
+                &quoted_url,
+                max_video_bytes,
+                translation_target,
+                translate_english,
+            )
         {
             post.quote = Some(Box::new(quoted_post));
         }
     }
 
     // Alıntılanan gönderi de kendi `fx_to_post` çağrısında çevrilir.
-    apply_fx_translation(&mut post, tweet, translation_target);
+    apply_fx_translation(&mut post, tweet, translation_target, translate_english);
 
     Ok(post)
 }
 
 /// Dil ekli FxTwitter yanıtındaki X çevirisini gönderiye uygular.
 ///
-/// Yalnızca gönderi Türkçe/İngilizce değilse uygulanır **ve çeviri Grok'tan gelmelidir**
-/// (X'in kendi çeviri servisi). FxEmbed, X çevirisi yoksa kendi yedek servisine (ör. DeepL)
-/// düşer; o çeviri **kullanılmaz** — gönderi orijinal metniyle ve çeviri notu olmadan
+/// Varsayılan akışta yalnızca gönderi Türkçe/İngilizce değilse uygulanır (`translate_english`
+/// ile İngilizce de) **ve çeviri Grok'tan gelmelidir** (X'in kendi çeviri servisi). FxEmbed,
+/// X çevirisi yoksa kendi yedek servisine (ör. DeepL) düşer; o çeviri **kullanılmaz** —
+/// gönderi orijinal metniyle ve çeviri notu olmadan
 /// gönderilir (bayrak reaksiyonuyla istenirse proxy linki üzerinden çevrilebilir).
-fn apply_fx_translation(post: &mut BuiltinPost, tweet: &FxTweet, translation_target: &str) {
-    if !needs_translation(post.language.as_deref(), translation_target) {
+fn apply_fx_translation(
+    post: &mut BuiltinPost,
+    tweet: &FxTweet,
+    translation_target: &str,
+    translate_english: bool,
+) {
+    if !needs_translation(
+        post.language.as_deref(),
+        translation_target,
+        translate_english,
+    ) {
         return;
     }
 
@@ -1751,6 +1795,7 @@ mod tests {
             "https://x.com/kullanici/status/1",
             8 * 1024 * 1024,
             "tr",
+            false,
         )
         .expect("gönderi üretilmeli")
     }
@@ -1792,6 +1837,7 @@ mod tests {
             &tweet,
             "https://x.com/kullanici/status/1112223334445556666",
             "tr",
+            false,
         )
         .expect("vxtwitter gönderisi üretilmeli")
     }

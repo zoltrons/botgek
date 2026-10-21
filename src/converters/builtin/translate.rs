@@ -5,7 +5,8 @@
 //! (sağlayıcı X'in çevirisi, ör. `provider: "grok"`). Bu modül yalnızca "hangi gönderi
 //! çevrilir" kararını verir; ağ isteği `twitter` modülündedir.
 //!
-//! Türkçe (`tr`) ve İngilizce (`en`) gönderiler olduğu gibi bırakılır.
+//! Varsayılan akışta Türkçe (`tr`) ve İngilizce (`en`) gönderiler olduğu gibi bırakılır;
+//! `/dönüştür` etkileşimi `translate_english` ile İngilizceyi de çevirir.
 
 /// Dilin belirlenemediği/çeviriye uygun olmadığı kodlar (X'in sözde dilleri dahil).
 const UNKNOWN_LANGUAGE_CODES: [&str; 7] = ["und", "zxx", "mul", "qme", "qam", "qht", "art"];
@@ -31,17 +32,18 @@ pub fn normalize_language(language: Option<&str>) -> Option<String> {
     Some(primary)
 }
 
-/// Gönderi Türkçeye çevrilmeli mi? Türkçe/İngilizce ve dili belirsiz gönderiler için `false`.
-/// Gönderi dili hedef dilden farklıysa X'in çeviri uç noktasına gidilmelidir.
-pub fn needs_translation(language: Option<&str>, target: &str) -> bool {
+/// Gönderi hedef dile çevrilmeli mi?
+///
+/// Hedef dilden farklı her dil çevrilir. Varsayılan mesaj akışında hedef `tr` iken
+/// İngilizce gönderiler **bilinçli olarak atlanır** (gecikme politikası). Etkileşim
+/// dönüşümü `translate_english` ile bu istisnayı kaldırır ve İngilizceyi de çevirir.
+/// Dili belirsiz gönderiler çevrilmez.
+pub fn needs_translation(language: Option<&str>, target: &str, translate_english: bool) -> bool {
     let target = normalize_language(Some(target));
     match normalize_language(language) {
         Some(lang) => {
             target.as_deref() != Some(lang.as_str())
-                // Preserve the existing default policy: Turkish auto-translation does not
-                // rewrite English posts. A different configured target may still translate
-                // English (for example, English -> German).
-                && !(target.as_deref() == Some("tr") && lang == "en")
+                && (translate_english || !(target.as_deref() == Some("tr") && lang == "en"))
         }
         None => false,
     }
@@ -205,16 +207,21 @@ mod tests {
     #[test]
     fn only_foreign_languages_need_translation() {
         // Türkçe ve İngilizce gönderiler olduğu gibi bırakılır
-        assert!(!needs_translation(Some("tr"), "tr"));
-        assert!(!needs_translation(Some("en-US"), "en"));
-        assert!(!needs_translation(Some("TR"), "tr"));
-        assert!(!needs_translation(Some("und"), "tr"));
-        assert!(!needs_translation(None, "tr"));
+        assert!(!needs_translation(Some("tr"), "tr", false));
+        assert!(!needs_translation(Some("en-US"), "en", false));
+        assert!(!needs_translation(Some("TR"), "tr", false));
+        assert!(!needs_translation(Some("und"), "tr", false));
+        assert!(!needs_translation(None, "tr", false));
         // Diğer diller çevrilir
-        assert!(needs_translation(Some("de"), "tr"));
-        assert!(needs_translation(Some("ja"), "tr"));
-        assert!(needs_translation(Some("ru"), "tr"));
-        assert!(needs_translation(Some("ar-SA"), "tr"));
+        assert!(needs_translation(Some("de"), "tr", false));
+        assert!(needs_translation(Some("ja"), "tr", false));
+        assert!(needs_translation(Some("ru"), "tr", false));
+        assert!(needs_translation(Some("ar-SA"), "tr", false));
+
+        // Etkileşim dönüşümü İngilizceyi de çevirir (normal akıştaki gecikme istisnası yok).
+        assert!(!needs_translation(Some("en"), "tr", false));
+        assert!(needs_translation(Some("en"), "tr", true));
+        assert!(!needs_translation(Some("tr"), "tr", true));
     }
 
     #[test]
