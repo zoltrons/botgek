@@ -39,7 +39,8 @@ Community Posts desteklenir.
 - Global **`/dönüştür link:<bağlantı>`** komutu DM'ler dâhil her yerde çalışır; ayrıca bir mesaja sağ tıklayıp
   **Apps → Dönüştür** ile o mesajdaki bağlantı dönüştürülür. Her iki akış da kanal/thread motor ayarlarını ve
   rol filtrelerini uygular; **WebUI'daki platform modülü açık/kapalı ayarından bağımsızdır** (komut açıkça
-  çağrıldığında her zaman dönüştürür).
+  çağrıldığında her zaman dönüştürür). X çevirisi komutta **varsayılan olarak açıktır**: `auto_translate`
+  kapalı olsa bile tweetler hedef dile çevrilir; hedef dil ayarı korunur.
   Discord, slash komutu etkileşiminde yanıtlanan mesajı göndermediği için "mesaja yanıt verip `/dönüştür` yazma"
   doğrudan desteklenmez; mesaj komutu bu ihtiyacın Discord'daki resmî karşılığıdır.
 

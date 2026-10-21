@@ -10,6 +10,7 @@
 //!
 //! Her iki akış da aynı dönüşüm motorunu ve rol filtrelerini kullanır; WebUI'daki platform
 //! modülü açık/kapalı ayarından bağımsızdır (komut açıkça çağrıldığında her zaman dönüştürür).
+//! X çevirisi komutta varsayılan olarak açıktır; hedef dil WebUI ayarından gelir.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

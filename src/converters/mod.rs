@@ -186,12 +186,27 @@ impl ConvertError {
     }
 }
 
+/// Etkileşim dönüşümünün ayar kopyası.
+///
+/// - Kaynak mesaj/taklit yok: `impersonate_user` kapatılır.
+/// - X çevirisi komut için **varsayılan olarak açıktır**: WebUI'daki `auto_translate`
+///   anahtarı kapalı olsa bile `/dönüştür` tweetleri hedef dile çevirir. Hedef dil ayarı
+///   korunur (varsayılan `tr`).
+fn interaction_settings(settings: &GuildSettings) -> GuildSettings {
+    let mut settings = settings.clone();
+    settings.engine.impersonate_user = false;
+    settings.engine.auto_translate = true;
+    settings
+}
+
 /// Etkileşimden gelen bağlantıyı **bekleyerek** dönüştürür.
 ///
 /// Otomatik mesaj akışından farkları:
 /// - **Platform modülü açık/kapalı ayarına bakmaz:** komut kullanıcı tarafından açıkça
 ///   çağrıldığı için, WebUI'da o platform kapalı olsa bile dönüştürür. Rol filtresi ve
 ///   kanal/thread motor ayarları yine uygulanır.
+/// - **X çevirisi varsayılan olarak açıktır:** WebUI'daki `auto_translate` kapalı olsa bile
+///   tweetler hedef dile çevrilir; hedef dil ayarı (`translation_target`) korunur.
 /// - Kullanıcının yazdığı bir mesaj yoktur: silinecek kaynak ve taklit edilecek gönderen
 ///   bulunmaz, bu yüzden `delete_original` ve `impersonate_user` bu iş için kapatılır.
 /// - Sonuç çağırana döner; slash komutu yanıtı bu sonuca göre güncellenir.
@@ -258,10 +273,10 @@ pub async fn convert_now(
     }
 
     // Kaynak mesaj yok: ne silinecek bir kullanıcı mesajı ne de taklit edilecek bir gönderen var.
+    // X çevirisi etkileşim dönüşümünde varsayılan olarak açıktır (bkz. `interaction_settings`).
     let mut job_config = config.clone();
     job_config.delete_original = false;
-    let mut job_settings = settings.clone();
-    job_settings.engine.impersonate_user = false;
+    let job_settings = interaction_settings(settings);
 
     let delivered = process_message(
         ctx,
@@ -482,5 +497,28 @@ mod tests {
             assert_eq!(receiver.recv().await, Some(expected));
         }
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn interaction_settings_force_translation_and_disable_impersonation() {
+        let mut settings = GuildSettings::default();
+        settings.engine.auto_translate = false;
+        settings.engine.impersonate_user = true;
+        settings.engine.translation_target = "de".to_string();
+
+        let resolved = interaction_settings(&settings);
+
+        assert!(
+            resolved.engine.auto_translate,
+            "etkileşim dönüşümü X çevirisini varsayılan olarak açmalı"
+        );
+        assert!(
+            !resolved.engine.impersonate_user,
+            "etkileşim dönüşümünde taklit kapalı olmalı"
+        );
+        assert_eq!(
+            resolved.engine.translation_target, "de",
+            "hedef dil ayarı korunmalı"
+        );
     }
 }
