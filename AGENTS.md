@@ -15,3 +15,8 @@ Default five triage roles, where each label string is the role name. See `docs/a
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` at the repo root, architecture decisions in `docs/adr/`. See `docs/agents/domain.md`.
+
+## Bot MCP server
+
+The bot serves a development/debug MCP server at `/mcp` on the WebUI address, guarded by
+`MCP_TOKEN`. Setup, client registration, call examples, tools, and limits: [mcp.md](mcp.md).

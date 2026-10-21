@@ -165,6 +165,9 @@ Güvenlik notları:
 - `bot_logs` yalnızca bellekteki son 512 olayı tutar; hassas veri ayrıştırması yapmaz, bu
   yüzden logları yine özel tutun.
 
+Operasyonel ayrıntılar (kurulum, istemci kaydı, curl/PowerShell örnekleri, sorun giderme):
+[mcp.md](mcp.md).
+
 ## Yapılandırma ve kalıcılık
 
 | Değişken | Davranış |
