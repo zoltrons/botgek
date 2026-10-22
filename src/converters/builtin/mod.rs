@@ -130,16 +130,32 @@ pub async fn get_json(client: &reqwest::Client, url: &str) -> Result<serde_json:
 
 /// Metin yanıtını çeker. `Content-Length` veya akış `MAX_BODY_BYTES`'ı aşarsa hata verir.
 pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    let response = client
+    use crate::telemetry::{self, HttpHost};
+    let host = HttpHost::classify(url);
+    telemetry::http_request(host);
+    let started = std::time::Instant::now();
+    let response = match client
         .get(url)
         .header("user-agent", USER_AGENT)
         .header("accept", "application/json, text/html;q=0.8, */*;q=0.5")
         .timeout(REQUEST_TIMEOUT)
         .send()
         .await
-        .map_err(|e| format!("İstek başarısız ({url}): {e}"))?;
+    {
+        Ok(response) => response,
+        Err(error) => {
+            telemetry::http_error(host, started.elapsed());
+            return Err(format!("İstek başarısız ({url}): {error}"));
+        }
+    };
 
     if !response.status().is_success() {
+        telemetry::http_error(host, started.elapsed());
+        warn!(
+            host = host.name(),
+            status = response.status().as_u16(),
+            "Upstream HTTP error"
+        );
         return Err(format!(
             "Beklenmeyen durum kodu ({url}): {}",
             response.status()
@@ -148,23 +164,37 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
     if let Some(len) = response.content_length()
         && len > MAX_BODY_BYTES as u64
     {
+        telemetry::http_error(host, started.elapsed());
         return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
     }
 
     let mut response = response;
     let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("Yanıt gövdesi okunamadı ({url}): {e}"))?
-    {
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                telemetry::http_error(host, started.elapsed());
+                return Err(format!("Yanıt gövdesi okunamadı ({url}): {error}"));
+            }
+        };
         if body.len() + chunk.len() > MAX_BODY_BYTES {
+            telemetry::http_error(host, started.elapsed());
             return Err(format!("Yanıt gövdesi sınırı aşıldı ({url})"));
         }
         body.extend_from_slice(&chunk);
     }
 
-    String::from_utf8(body).map_err(|_| format!("Yanıt UTF-8 değil ({url})"))
+    let body = match String::from_utf8(body) {
+        Ok(body) => body,
+        Err(_) => {
+            telemetry::http_error(host, started.elapsed());
+            return Err(format!("Yanıt UTF-8 değil ({url})"));
+        }
+    };
+    telemetry::http_success(host, started.elapsed(), body.len());
+    Ok(body)
 }
 
 // =====================================================================================
@@ -886,20 +916,39 @@ async fn channel_webhook(
     {
         let mut cache = CHANNEL_WEBHOOKS.lock().await;
         cache.retain(|_, (created, hook)| {
-            created.elapsed() < Duration::from_secs(if hook.is_some() { 600 } else { 60 })
+            let keep =
+                created.elapsed() < Duration::from_secs(if hook.is_some() { 600 } else { 60 });
+            if !keep {
+                crate::telemetry::cache_expired(crate::telemetry::CacheKind::Webhook);
+            }
+            keep
         });
         if !refresh && let Some(entry) = cache.get(&channel_id) {
+            if entry.1.is_some() {
+                crate::telemetry::cache_hit(crate::telemetry::CacheKind::Webhook);
+            } else {
+                crate::telemetry::cache_negative_hit(crate::telemetry::CacheKind::Webhook);
+            }
             return entry.1.clone();
         }
     }
     CHANNEL_WEBHOOKS.lock().await.remove(&channel_id);
+    crate::telemetry::cache_miss(crate::telemetry::CacheKind::Webhook);
 
-    match resolve_webhook(ctx, client, config, channel_id).await {
+    let resolve_started = std::time::Instant::now();
+    let resolved = resolve_webhook(ctx, client, config, channel_id).await;
+    crate::telemetry::record_phase(
+        crate::telemetry::Phase::WebhookResolve,
+        resolve_started.elapsed(),
+    );
+    match resolved {
         Ok(Some(webhook)) => {
+            crate::telemetry::cache_put(crate::telemetry::CacheKind::Webhook);
             cache_webhook(channel_id, Some(webhook.clone())).await;
             Some(webhook)
         }
         Ok(None) => {
+            crate::telemetry::cache_put(crate::telemetry::CacheKind::Webhook);
             warn!(
                 "Taklit webhook'u için token alınamadı ({}): mesaj bot adına gönderilecek",
                 channel_id
@@ -915,6 +964,7 @@ async fn channel_webhook(
             // Kalıcı ret (yetki yok veya DM kanalı) önbelleğe yazılır; geçici ağ hatalarında
             // bir sonraki mesajda yeniden denenir.
             if matches!(err, raw::DiscordError::Rejected(_)) {
+                crate::telemetry::cache_put(crate::telemetry::CacheKind::Webhook);
                 cache_webhook(channel_id, None).await;
             }
             None
@@ -932,6 +982,7 @@ async fn cache_webhook(channel: ChannelId, hook: Option<NamedWebhook>) {
             .map(|(id, _)| *id)
     {
         cache.remove(&oldest);
+        crate::telemetry::cache_evict(crate::telemetry::CacheKind::Webhook);
     }
     cache.insert(channel, (std::time::Instant::now(), hook));
 }
@@ -991,30 +1042,40 @@ async fn send_via_webhook(
     warmup: Option<WebhookWarmup>,
     wait: Duration,
 ) -> Result<MessageId, raw::DiscordError> {
+    let _webhook_send = crate::telemetry::PhaseTimer::new(crate::telemetry::Phase::WebhookSend);
     let mut last_error = raw::DiscordError::Unavailable;
     let (target, mut warmed) = match warmup {
-        Some(warmup) => match tokio::time::timeout(wait, warmup).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(err)) => {
-                warn!(
-                    "Webhook warmup görevi başarısız oldu: {err}; gönderim sırasında yeniden çözümlenecek"
-                );
-                let target = webhook_target(ctx, msg).await;
-                let webhook = channel_webhook(ctx, client, config, target.channel_id, false).await;
-                (target, webhook)
+        Some(warmup) => {
+            let wait_started = std::time::Instant::now();
+            let result = tokio::time::timeout(wait, warmup).await;
+            crate::telemetry::record_phase(
+                crate::telemetry::Phase::WebhookWait,
+                wait_started.elapsed(),
+            );
+            match result {
+                Ok(Ok(result)) => result,
+                Ok(Err(err)) => {
+                    warn!(
+                        "Webhook warmup görevi başarısız oldu: {err}; gönderim sırasında yeniden çözümlenecek"
+                    );
+                    let target = webhook_target(ctx, msg).await;
+                    let webhook =
+                        channel_webhook(ctx, client, config, target.channel_id, false).await;
+                    (target, webhook)
+                }
+                Err(_) => {
+                    // Veri hazır ama webhook hâlâ çözümleniyor: kartı bekletmek yerine bot adına
+                    // gönder. Warmup görevi arka planda sürer ve sonucu önbelleğe yazar, böylece
+                    // sonraki kart yeniden çözümleme maliyeti ödemez.
+                    info!(
+                        "Taklit webhook'u {} ms içinde hazır olmadı; kart bot adına gönderilecek ({})",
+                        wait.as_millis(),
+                        msg.id
+                    );
+                    return Err(raw::DiscordError::Unavailable);
+                }
             }
-            Err(_) => {
-                // Veri hazır ama webhook hâlâ çözümleniyor: kartı bekletmek yerine bot adına
-                // gönder. Warmup görevi arka planda sürer ve sonucu önbelleğe yazar, böylece
-                // sonraki kart yeniden çözümleme maliyeti ödemez.
-                info!(
-                    "Taklit webhook'u {} ms içinde hazır olmadı; kart bot adına gönderilecek ({})",
-                    wait.as_millis(),
-                    msg.id
-                );
-                return Err(raw::DiscordError::Unavailable);
-            }
-        },
+        }
         None => {
             let target = webhook_target(ctx, msg).await;
             let webhook = channel_webhook(ctx, client, config, target.channel_id, false).await;
@@ -1212,6 +1273,8 @@ pub async fn handle(
         return HandleResult::Busy;
     };
     let started = std::time::Instant::now();
+    // Erken dönüşlerde de toplam süreyi kaydeder (guard, kapsam sonunda düşer).
+    let _total = crate::telemetry::PhaseTimer::new(crate::telemetry::Phase::Total);
 
     // Taklit (webhook) kimliğinin çözümlenmesi **veri çekmeyle paralel** yürür: ikisi de REST
     // çağrısıdır ve eskiden dönüşümün kritik yolunda sırayla bekleniyordu.
@@ -1225,9 +1288,11 @@ pub async fn handle(
     // akışta `finish()`, hata durumunda proxy akışı). Erken silmek, gönderenin istemcisi
     // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
     // bıraktığı için artık kullanılmaz (bkz. [`delete_user_message`]).
+    let fetch_started = std::time::Instant::now();
     let post = match fetch(client, parsed, engine, config).await {
         Ok(post) => post,
         Err(err) => {
+            crate::telemetry::record_phase(crate::telemetry::Phase::Fetch, fetch_started.elapsed());
             warn!(
                 "Native embed verisi alınamadı ({}): {}",
                 parsed.original_url, err
@@ -1236,10 +1301,12 @@ pub async fn handle(
             return HandleResult::Failed;
         }
     };
+    crate::telemetry::record_phase(crate::telemetry::Phase::Fetch, fetch_started.elapsed());
     let fetched = started.elapsed();
 
     // Source/channel visibility is resolved per send. Never modify the cached Arc: the same
     // source post may be rendered in both NSFW and non-NSFW channels.
+    let render_started = std::time::Instant::now();
     let channel_nsfw = resolve_channel_nsfw(ctx, msg).await;
     let post = render::apply_visibility(
         &post,
@@ -1255,7 +1322,10 @@ pub async fn handle(
         options.video_requires_download, parsed.original_url
     );
     let plan = render::plan_media(&post, &options);
+    crate::telemetry::record_phase(crate::telemetry::Phase::Render, render_started.elapsed());
+    let media_started = std::time::Instant::now();
     let resolved = render::resolve_media(client, &post, &plan, &options).await;
+    crate::telemetry::record_phase(crate::telemetry::Phase::Media, media_started.elapsed());
     let media_done = started.elapsed();
 
     debug!(
@@ -1415,6 +1485,7 @@ async fn send_components_v2(
     webhook_wait: Duration,
     delivery: Option<&InteractionDelivery>,
 ) -> Result<(MessageId, bool), raw::DiscordError> {
+    let _send = crate::telemetry::PhaseTimer::new(crate::telemetry::Phase::Send);
     // DM/grup DM: bot kanal üyesi olmadığı için kart yalnızca etkileşim yanıtı olarak
     // düzenlenebilir; taklit/webhook yolu kullanılmaz.
     if let Some(delivery) = delivery {
@@ -1508,22 +1579,32 @@ async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: Messa
     let msg = msg.clone();
     let delete_original = config.delete_original;
     tokio::spawn(async move {
-        if let Err(e) = msg
+        let reaction_started = std::time::Instant::now();
+        let reaction = msg
             .channel_id
             .create_reaction(
                 &ctx.http,
                 message_id,
                 ReactionType::Unicode("🗑️".to_string()),
             )
-            .await
-        {
+            .await;
+        crate::telemetry::record_phase(
+            crate::telemetry::Phase::Reaction,
+            reaction_started.elapsed(),
+        );
+        if let Err(e) = reaction {
             error!("Silme reaksiyonu eklenemedi: {:?}", e);
         }
 
         // Kart gönderildi; şimdi orijinal mesajı sil (en az DELETE_MIN_AGE yaşına gelene
         // kadar bekleyerek: gönderenin istemcisi optimistic mesajını eşleştirebilsin).
         if delete_original {
+            let delete_started = std::time::Instant::now();
             delete_user_message(&ctx, &msg).await;
+            crate::telemetry::record_phase(
+                crate::telemetry::Phase::Delete,
+                delete_started.elapsed(),
+            );
         }
     });
 }

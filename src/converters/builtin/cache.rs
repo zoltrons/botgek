@@ -26,12 +26,19 @@ static CACHE: LazyLock<CacheMap> = LazyLock::new(|| Mutex::new(HashMap::new()));
 pub async fn get(key: &str) -> Option<Arc<BuiltinPost>> {
     let mut cache = CACHE.lock().await;
     match cache.get(key) {
-        Some((stored_at, post)) if stored_at.elapsed() < TTL => Some(post.clone()),
+        Some((stored_at, post)) if stored_at.elapsed() < TTL => {
+            crate::telemetry::cache_hit(crate::telemetry::CacheKind::Post);
+            Some(post.clone())
+        }
         Some(_) => {
             cache.remove(key);
+            crate::telemetry::cache_expired(crate::telemetry::CacheKind::Post);
             None
         }
-        None => None,
+        None => {
+            crate::telemetry::cache_miss(crate::telemetry::CacheKind::Post);
+            None
+        }
     }
 }
 
@@ -50,9 +57,11 @@ pub async fn put(key: String, post: Arc<BuiltinPost>) {
             .map(|(key, _)| key.clone())
         {
             cache.remove(&oldest);
+            crate::telemetry::cache_evict(crate::telemetry::CacheKind::Post);
         }
     }
 
+    crate::telemetry::cache_put(crate::telemetry::CacheKind::Post);
     cache.insert(key, (Instant::now(), post));
 }
 
@@ -66,7 +75,10 @@ static FAILURES: LazyLock<FailureMap> = LazyLock::new(|| Mutex::new(HashMap::new
 pub async fn recent_failure(key: &str) -> Option<String> {
     let mut failures = FAILURES.lock().await;
     match failures.get(key) {
-        Some((at, reason)) if at.elapsed() < FAILURE_TTL => Some(reason.clone()),
+        Some((at, reason)) if at.elapsed() < FAILURE_TTL => {
+            crate::telemetry::cache_negative_hit(crate::telemetry::CacheKind::Post);
+            Some(reason.clone())
+        }
         Some(_) => {
             failures.remove(key);
             None

@@ -194,6 +194,19 @@ pub async fn download_video(
 /// URL'deki medyayı indirir. Boyut `max_bytes`'ı aşarsa ya da içerik medya değilse
 /// (HTML hata sayfası vb.) `None` döner; böylece mesaj gönderimi bozulmaz.
 pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Option<MediaFile> {
+    use crate::telemetry::{self, HttpHost};
+    let host = HttpHost::classify(url);
+    telemetry::http_request(host);
+    let started = std::time::Instant::now();
+    let result = download_inner(client, url, max_bytes).await;
+    match &result {
+        Some(file) => telemetry::http_success(host, started.elapsed(), file.bytes.len()),
+        None => telemetry::http_error(host, started.elapsed()),
+    }
+    result
+}
+
+async fn download_inner(client: &reqwest::Client, url: &str, max_bytes: u64) -> Option<MediaFile> {
     if !url.starts_with("https://") {
         return None;
     }

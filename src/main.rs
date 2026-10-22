@@ -178,6 +178,7 @@ async fn main() {
         .init();
 
     info!("Botgek başlatılıyor...");
+    telemetry::mark_started();
     // Sürüm, derleme zamanında git etiketlerinden gömülür (`build.rs`): hangi ikilinin
     // çalıştığı, hangi commit'ten ve hangi hedeften geldiği tek satırda görünür.
     info!("Sürüm: {}", version::summary());

@@ -132,6 +132,27 @@ pub fn query_readonly(sql: &str, limit: usize) -> Result<QueryResult, String> {
     db.query_readonly(without_trailing, limit)
 }
 
+/// Veritabanı dosyalarının bayt cinsinden boyutları (`main`/`wal`/`shm`).
+///
+/// SQLite WAL modunda yeni satırlar önce `-wal` dosyasına gider; yalnızca ana dosyaya
+/// bakmak disk kullanımını olduğundan küçük gösterir. `None`: bellek içi veya kapalı.
+pub fn file_sizes() -> Option<serde_json::Value> {
+    let path = database()?.path();
+    if path == ":memory:" {
+        return None;
+    }
+    let size = |candidate: &str| {
+        std::fs::metadata(candidate)
+            .ok()
+            .map(|metadata| metadata.len())
+    };
+    Some(serde_json::json!({
+        "main": size(path),
+        "wal": size(&format!("{path}-wal")),
+        "shm": size(&format!("{path}-shm"))
+    }))
+}
+
 /// Veritabanı dosyasının bayt cinsinden boyutu (`:memory:` ise `None`).
 pub fn file_bytes() -> Option<u64> {
     let path = database()?.path();
@@ -174,7 +195,7 @@ pub fn healthy() -> bool {
     DB.as_ref().is_ok_and(|db| {
         db.path() != ":memory:"
             && db
-                .with_connection(|connection| {
+                .with_connection(crate::telemetry::DbOp::Healthy, |connection| {
                     connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 })
                 .is_ok()
@@ -242,7 +263,7 @@ impl Db {
     /// Kart kaydını yazar (aynı mesaj kimliği yeniden yazılırsa güncellenir).
     pub fn remember(&self, message_id: MessageId, channel_id: ChannelId, author_id: UserId) {
         let created_at = now_unix();
-        let result = self.with_connection(|connection| {
+        let result = self.with_connection(crate::telemetry::DbOp::Remember, |connection| {
             connection
                 .execute(
                     "INSERT INTO cards (message_id, channel_id, author_id, created_at)
@@ -267,7 +288,7 @@ impl Db {
 
     /// Kaydı siler (kart Discord'dan silindiğinde).
     pub fn forget(&self, message_id: MessageId) {
-        let result = self.with_connection(|connection| {
+        let result = self.with_connection(crate::telemetry::DbOp::Forget, |connection| {
             connection
                 .execute(
                     "DELETE FROM cards WHERE message_id = ?1",
@@ -284,6 +305,7 @@ impl Db {
     /// Kartı paylaşan kullanıcı (kayıt yoksa `None`).
     pub fn author(&self, message_id: MessageId) -> Option<UserId> {
         self.query_one(
+            crate::telemetry::DbOp::Author,
             "SELECT author_id FROM cards WHERE message_id = ?1",
             message_id,
         )
@@ -293,13 +315,17 @@ impl Db {
 
     /// Bu mesaj için kayıt var mı? (kart tanıma)
     pub fn contains(&self, message_id: MessageId) -> bool {
-        self.query_one("SELECT 1 FROM cards WHERE message_id = ?1", message_id)
-            .is_some()
+        self.query_one(
+            crate::telemetry::DbOp::Contains,
+            "SELECT 1 FROM cards WHERE message_id = ?1",
+            message_id,
+        )
+        .is_some()
     }
 
     /// Toplam kayıt sayısı (log/teşhis).
     pub fn count(&self) -> i64 {
-        self.with_connection(|connection| {
+        self.with_connection(crate::telemetry::DbOp::Count, |connection| {
             connection.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get::<_, i64>(0))
         })
         .unwrap_or(0)
@@ -307,7 +333,7 @@ impl Db {
 
     /// Salt okunur sorguyu çalıştırır; yazma ifadeleri `InvalidQuery` ile reddedilir.
     fn query_readonly(&self, sql: &str, limit: usize) -> Result<QueryResult, String> {
-        self.with_connection(|connection| {
+        self.with_connection(crate::telemetry::DbOp::Query, |connection| {
             let mut statement = connection.prepare(sql)?;
             if !statement.readonly() {
                 return Err(rusqlite::Error::InvalidQuery);
@@ -344,7 +370,7 @@ impl Db {
     /// En yeni `keep` kaydı bırakır, daha eskilerini siler. Kayıt sayısı `keep`'ten azsa
     /// hiçbir şey silinmez. Silinen kayıt sayısını döner.
     pub fn prune(&self, keep: i64) -> usize {
-        self.with_connection(|connection| {
+        self.with_connection(crate::telemetry::DbOp::Prune, |connection| {
             connection.execute(
                 "DELETE FROM cards
                   WHERE message_id < (SELECT message_id FROM cards ORDER BY message_id DESC LIMIT 1 OFFSET ?1)",
@@ -354,8 +380,13 @@ impl Db {
         .unwrap_or(0)
     }
 
-    fn query_one(&self, sql: &str, message_id: MessageId) -> Option<i64> {
-        let result = self.with_connection(|connection| {
+    fn query_one(
+        &self,
+        op: crate::telemetry::DbOp,
+        sql: &str,
+        message_id: MessageId,
+    ) -> Option<i64> {
+        let result = self.with_connection(op, |connection| {
             connection
                 .query_row(sql, params![message_id.get() as i64], |row| {
                     row.get::<_, i64>(0)
@@ -375,15 +406,19 @@ impl Db {
     /// Kilitli bağlantı üzerinde tek bir sorgu çalıştırır.
     fn with_connection<T>(
         &self,
+        op: crate::telemetry::DbOp,
         query: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>,
     ) -> Result<T, String> {
+        let started = std::time::Instant::now();
         // Zehirlenmiş kilit kurtarılır: SQLite bağlantısı bir sorgunun ortasında panik olsa
         // bile tutarlıdır; aksi hâlde tek bir panik depoyu yeniden başlatmaya dek kapatırdı.
         let connection = self
             .connection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        query(&connection).map_err(|err| err.to_string())
+        let result = query(&connection).map_err(|err| err.to_string());
+        crate::telemetry::db_op(op, started.elapsed(), result.is_ok());
+        result
     }
 }
 

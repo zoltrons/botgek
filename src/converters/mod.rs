@@ -33,6 +33,8 @@ struct ConversionJob {
     config: Config,
     settings: GuildSettings,
     parsed: parser::ParsedPost,
+    /// Kuyruğa giriş anı; işçi aldığında bekleme süresi metriklenir.
+    enqueued_at: std::time::Instant,
 }
 
 static CONVERSION_QUEUE: OnceLock<Sender<ConversionJob>> = OnceLock::new();
@@ -53,6 +55,10 @@ fn conversion_sender() -> &'static Sender<ConversionJob> {
                 };
                 crate::telemetry::CONVERSION_QUEUE_DEPTH
                     .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                crate::telemetry::record_phase(
+                    crate::telemetry::Phase::QueueWait,
+                    job.enqueued_at.elapsed(),
+                );
                 // Her iş kendi görevinde yürür: bir işteki panik yalnızca o kartı düşürür,
                 // kuyruk tüketicisini öldürmez.
                 tokio::spawn(async move {
@@ -353,6 +359,7 @@ async fn prepare_job(
         config: config.clone(),
         settings: settings.clone(),
         parsed,
+        enqueued_at: std::time::Instant::now(),
     })
 }
 

@@ -59,12 +59,19 @@ impl<T> SourceCache<T> {
     pub(super) async fn get(&self, key: &str) -> Option<Arc<T>> {
         let mut entries = self.entries.lock().await;
         match entries.get(key) {
-            Some((stored_at, value)) if stored_at.elapsed() < self.ttl => Some(Arc::clone(value)),
+            Some((stored_at, value)) if stored_at.elapsed() < self.ttl => {
+                crate::telemetry::cache_hit(crate::telemetry::CacheKind::Source);
+                Some(Arc::clone(value))
+            }
             Some(_) => {
                 entries.remove(key);
+                crate::telemetry::cache_expired(crate::telemetry::CacheKind::Source);
                 None
             }
-            None => None,
+            None => {
+                crate::telemetry::cache_miss(crate::telemetry::CacheKind::Source);
+                None
+            }
         }
     }
 
@@ -85,7 +92,9 @@ impl<T> SourceCache<T> {
                 .map(|(key, _)| key.clone())
         {
             entries.remove(&oldest);
+            crate::telemetry::cache_evict(crate::telemetry::CacheKind::Source);
         }
+        crate::telemetry::cache_put(crate::telemetry::CacheKind::Source);
         entries.insert(key, (now, value));
     }
 }

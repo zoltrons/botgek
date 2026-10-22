@@ -99,12 +99,14 @@ pub struct Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn shard_stage_update(&self, _ctx: Context, event: serenity::all::ShardStageUpdateEvent) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::ShardStage);
         crate::telemetry::DISCORD_READY.store(
             event.new == serenity::gateway::ConnectionStage::Connected,
             std::sync::atomic::Ordering::Relaxed,
         );
     }
     async fn ready(&self, ctx: Context, ready: Ready) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Ready);
         crate::telemetry::DISCORD_READY.store(true, std::sync::atomic::Ordering::Relaxed);
         info!("===========================================");
         info!("Botgek başarıyla bağlandı!");
@@ -142,6 +144,7 @@ impl EventHandler for Handler {
 
     /// Slash ve sağ tık (mesaj) komutları.
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Interaction);
         // Dönüşüm veri çekme + kart gönderimi nedeniyle uzun sürebilir; etkileşim hemen
         // ertelenir (komut tarafında), bu yüzden olay işleyicisi ayrı görevde çalıştırılır.
         let ctx = ctx.clone();
@@ -154,6 +157,7 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Message);
         let current_user_id = ctx.cache.current_user().id;
         if msg.author.id == current_user_id || msg.webhook_id.is_some() {
             return;
@@ -379,6 +383,7 @@ impl EventHandler for Handler {
     /// - 🗑️: Mesaj silme (orijinal yazar veya yönetici/moderatör)
     /// - Bayrak emojileri (🇹🇷, 🇬🇧, vb.): FxEmbed / FixupX / FxBluesky üzerinden anlık çeviri (/tr, /en)
     async fn reaction_add(&self, ctx: Context, reaction: Reaction) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Reaction);
         let current_user_id = ctx.cache.current_user().id;
 
         // Botun kendi eklediği reaksiyonları yok say
@@ -434,11 +439,16 @@ impl EventHandler for Handler {
                     "Reaksiyon ile mesaj silme onaylandı. Silen: {} (Orijinal Yazar: {:?})",
                     user_id, original_author_id
                 );
-                match reaction
+                let delete_started = std::time::Instant::now();
+                let deleted = reaction
                     .channel_id
                     .delete_message(&ctx.http, reaction.message_id)
-                    .await
-                {
+                    .await;
+                crate::telemetry::record_phase(
+                    crate::telemetry::Phase::Delete,
+                    delete_started.elapsed(),
+                );
+                match deleted {
                     Err(e) => {
                         error!("Mesaj silinirken hata oluştu: {:?}", e);
                     }
@@ -521,6 +531,7 @@ impl EventHandler for Handler {
     /// Bayrak emojisi kaldırıldığında, mesajda başka bayrak yoksa orijinal linke döner;
     /// başka bayrak varsa o dilin çevirisine geçer.
     async fn reaction_remove(&self, ctx: Context, reaction: Reaction) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Reaction);
         let current_user_id = ctx.cache.current_user().id;
 
         // Botun kendi işlemlerini yok say

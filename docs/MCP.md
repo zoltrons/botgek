@@ -170,6 +170,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:3000/mcp" -Method Post -Headers $header
 | --- | --- |
 | `bot_status` | Sürüm/künye, uptime, Discord readiness, veritabanı/ayar durumu ve sır içermeyen yapılandırma özeti. |
 | `bot_metrics` | Dönüşüm kuyruğu, platform bazlı başarı/hata ve gecikme kovaları. |
+| `bot_diagnostics` | Ayrıntılı telemetri: REST rota/status/429/retry, fazlar, upstream hostları, önbellek, SQLite, gateway ve süreç/kaynak metrikleri (`section` ile filtrelenir). |
 | `bot_logs` | Bellekteki son tracing logları (`limit`, `min_level`; en fazla 512 olay). |
 | `settings_get` | Etkin ayarlar ve içerik revizyonu. |
 | `settings_patch` | JSON merge patch; aynı normalizasyonla diske yazar ve botu **anında** etkiler. |
@@ -180,6 +181,25 @@ Invoke-RestMethod -Uri "http://127.0.0.1:3000/mcp" -Method Post -Headers $header
 
 Varsayılanlar: `bot_logs.limit=120`, `bot_logs.min_level=info`, `db_query.limit=50`,
 `convert_preview` için 20 saniye veri çekme bütçesi.
+
+### Telemetri kapsamı
+
+`bot_diagnostics` bölümleri:
+
+- `rest`: rota sınıfı başına istek/deneme, 2xx/4xx/5xx, 429, retry, rate-limit beklemesi,
+  toplam ve deneme gecikmesi, durum kodu dağılımı, yavaş çağrılar.
+- `pipeline`: kuyruk beklemesi, veri, render, medya, webhook çözümleme/bekleme/gönderim,
+  kart gönderimi, silme, reaksiyon ve toplam süre histogramları.
+- `http`: VxTwitter, FxTwitter, syndication, Discord, Twitter CDN, Instagram, Reddit,
+  Spotify ve diğer hostlar için istek/başarı/hata/bayt/gecikme.
+- `cache`: post, source ve webhook önbellekleri için hit/miss/expired/put/evict/negative.
+- `db`: SQLite işlem türü başına çağrı/hata/gecikme; `db_stats` ayrıca WAL/SHM boyutu verir.
+- `gateway`: olay sayıları, son olay yaşı.
+- `process`: RSS/peak RSS, sanal bellek, thread, açık fd, I/O, CPU, cgroup bellek/CPU/pids.
+- `conversion`: mevcut platform başarı/hata ve kuyruk sayaçları.
+
+429 ve 2 saniyeyi aşan Discord REST çağrıları `warn` seviyesinde loglanır; böylece
+`bot_logs` ile metrikler aynı olayı gösterebilir.
 
 ## Sınırlar ve güvenlik
 

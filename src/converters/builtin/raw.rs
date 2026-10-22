@@ -146,7 +146,7 @@ pub async fn execute_webhook(
     // Discord Execute Webhook uç noktası `message_reference` alanını desteklemez (400 Bad Request döner).
     let payload = payload_without_fields(payload, &["message_reference"]);
     let request = message_request(client, &url, &payload, files)?;
-    let body = super::transport::send(client, request, format!("hook:{webhook_id}")).await?;
+    let body = super::transport::send(client, request, format!("hook_exec:{webhook_id}")).await?;
     parse_message_id(&body)
         .map(Some)
         .map_err(|_| DiscordError::Ambiguous)
@@ -185,7 +185,7 @@ pub async fn list_channel_webhooks(
         .header("user-agent", DISCORD_USER_AGENT)
         .header("authorization", format!("Bot {bot_token}"))
         .timeout(UPLOAD_TIMEOUT);
-    let body = super::transport::send(client, request, format!("hooks:{channel_id}")).await?;
+    let body = super::transport::send(client, request, format!("hook_list:{channel_id}")).await?;
     serde_json::from_str(&body).map_err(|_| DiscordError::Unavailable)
 }
 
@@ -204,7 +204,7 @@ pub async fn create_channel_webhook(
         .header("authorization", format!("Bot {bot_token}"))
         .json(&serde_json::json!({"name": name}))
         .timeout(UPLOAD_TIMEOUT);
-    let body = super::transport::send(client, request, format!("hooks:{channel_id}")).await?;
+    let body = super::transport::send(client, request, format!("hook_create:{channel_id}")).await?;
     serde_json::from_str(&body).map_err(|_| DiscordError::Ambiguous)
 }
 

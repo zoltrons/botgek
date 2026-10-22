@@ -361,6 +361,22 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {"type": "object", "additionalProperties": false}
         }),
         json!({
+            "name": "bot_diagnostics",
+            "title": "Detailed diagnostics",
+            "description": "Ayrıntılı telemetri: Discord REST rota/status/429/retry, dönüşüm fazları, upstream HTTP hostları, önbellekler, SQLite işlemleri, gateway ve süreç/kaynak metrikleri.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "section": {
+                        "type": "string",
+                        "enum": ["all", "rest", "pipeline", "http", "cache", "db", "process", "gateway", "conversion"],
+                        "default": "all"
+                    }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "bot_logs",
             "title": "Recent logs",
             "description": "Bellekteki son tracing loglarını döner (en yeniden eskiye, süreç ömrüyle sınırlı).",
@@ -442,6 +458,10 @@ async fn call_tool(state: &WebState, name: &str, args: &Value) -> Result<Value, 
     match name {
         "bot_status" => Ok(tool_bot_status(state).await),
         "bot_metrics" => Ok(crate::telemetry::snapshot()),
+        "bot_diagnostics" => {
+            let section = args.get("section").and_then(Value::as_str).unwrap_or("all");
+            diagnostics_snapshot(section)
+        }
         "bot_logs" => {
             let limit = integer_arg(args, "limit").unwrap_or(120) as usize;
             let min_level = args
@@ -502,8 +522,11 @@ async fn tool_bot_status(state: &WebState) -> Value {
             "path": store::path(),
             "records": store::record_count(),
             "bytes": store::file_bytes(),
+            "files": store::file_sizes(),
             "max_records": 200_000
         },
+        "process": crate::telemetry::process_snapshot(),
+        "gateway": crate::telemetry::gateway_snapshot(),
         "settings": {
             "path": state.settings_path.display().to_string(),
             "revision": crate::web::settings_revision(&settings)
@@ -638,9 +661,38 @@ fn db_stats() -> Value {
         "path": store::path(),
         "records": store::record_count(),
         "bytes": store::file_bytes(),
+        "files": store::file_sizes(),
         "max_records": 200_000,
         "note": "SQLite WAL; kayıtlar mesaj → paylaşan kullanıcı eşlemesidir."
     })
+}
+
+/// `bot_diagnostics` bölüm filtresi. Tam anlık görüntü her çağrıda yeniden üretilir;
+/// çağrı sıklığı düşük olduğu için bu maliyet kabul edilebilir.
+fn diagnostics_snapshot(section: &str) -> Result<Value, String> {
+    let full = crate::telemetry::detailed_snapshot();
+    let selected = match section {
+        "all" => return Ok(full),
+        "rest" => json!({"rest": full["rest"]}),
+        "pipeline" | "phases" => json!({"phases": full["phases"]}),
+        "http" => json!({"http": full["http"]}),
+        "cache" | "caches" => json!({"caches": full["caches"]}),
+        "db" => json!({"db": full["db"]}),
+        "process" => json!({"process": full["process"]}),
+        "gateway" => json!({"gateway": full["gateway"]}),
+        "conversion" => json!({
+            "cache_hits": full["cache_hits"],
+            "overloads": full["overloads"],
+            "conversion_queue": full["conversion_queue"],
+            "native_conversions": full["native_conversions"]
+        }),
+        other => {
+            return Err(format!(
+                "bilinmeyen bölüm: {other}; all/rest/pipeline/http/cache/db/process/gateway/conversion"
+            ));
+        }
+    };
+    Ok(selected)
 }
 
 async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String> {
@@ -650,6 +702,7 @@ async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let channel_nsfw = args.get("channel_nsfw").and_then(Value::as_bool);
+    let _preview = crate::telemetry::PhaseTimer::new(crate::telemetry::Phase::Preview);
 
     let settings = state.settings.read().await.clone();
     let engine = settings.get_guild_settings(None).engine;
@@ -870,5 +923,9 @@ mod tests {
         }
         assert!(names.contains("convert_preview"));
         assert!(names.contains("db_query"));
+        assert!(names.contains("bot_diagnostics"));
+        assert!(diagnostics_snapshot("rest").unwrap()["rest"].is_object());
+        assert!(diagnostics_snapshot("process").unwrap()["process"].is_object());
+        assert!(diagnostics_snapshot("bilinmeyen").is_err());
     }
 }

@@ -69,9 +69,22 @@ pub async fn send(
     request: reqwest::RequestBuilder,
     route: String,
 ) -> Result<String, Error> {
-    let request = request.build().map_err(|_| Error::InvalidPayload)?;
+    use crate::telemetry::{self, RouteClass};
+    use tracing::warn;
+
+    let class = RouteClass::classify(&route);
+    telemetry::rest_request(class);
+    let total_started = Instant::now();
+    let request = match request.build() {
+        Ok(request) => request,
+        Err(_) => {
+            telemetry::rest_invalid(class);
+            telemetry::rest_total(class, total_started.elapsed());
+            return Err(Error::InvalidPayload);
+        }
+    };
     let _route = super::coordination::lock(format!("rest:{route}")).await;
-    tokio::time::timeout(Duration::from_secs(90), async {
+    let outcome = tokio::time::timeout(Duration::from_secs(90), async {
         for attempt in 0..3 {
             let wait = {
                 let mut cooldowns = COOLDOWNS.lock().await;
@@ -87,21 +100,48 @@ pub async fn send(
             if wait > Duration::from_secs(90) {
                 return Err(Error::RateLimited(wait));
             }
+            if !wait.is_zero() {
+                telemetry::rest_rate_limit_wait(class, wait);
+            }
             tokio::time::sleep(wait).await;
-            let mut response = client
+            let attempt_started = Instant::now();
+            let mut response = match client
                 .execute(request.try_clone().ok_or(Error::InvalidPayload)?)
                 .await
-                .map_err(|_| Error::Ambiguous)?;
+            {
+                Ok(response) => response,
+                Err(_) => {
+                    telemetry::rest_attempt(class, attempt_started.elapsed(), None);
+                    return Err(Error::Ambiguous);
+                }
+            };
             let status = response.status().as_u16();
             let headers = response.headers().clone();
             let mut bytes = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(|_| Error::Ambiguous)? {
-                if bytes.len() + chunk.len() > super::MAX_BODY_BYTES {
+            loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        if bytes.len() + chunk.len() > super::MAX_BODY_BYTES {
+                            telemetry::rest_attempt(class, attempt_started.elapsed(), None);
+                            return Err(Error::Ambiguous);
+                        }
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        telemetry::rest_attempt(class, attempt_started.elapsed(), None);
+                        return Err(Error::Ambiguous);
+                    }
+                }
+            }
+            let body = match String::from_utf8(bytes) {
+                Ok(body) => body,
+                Err(_) => {
+                    telemetry::rest_attempt(class, attempt_started.elapsed(), None);
                     return Err(Error::Ambiguous);
                 }
-                bytes.extend_from_slice(&chunk);
-            }
-            let body = String::from_utf8(bytes).map_err(|_| Error::Ambiguous)?;
+            };
+            telemetry::rest_attempt(class, attempt_started.elapsed(), Some(status));
             if status == 429 {
                 let wait = retry_after(&headers, &body);
                 let global = serde_json::from_str::<serde_json::Value>(&body)
@@ -119,23 +159,57 @@ pub async fn send(
                         .and_modify(|old| *old = (*old).max(until))
                         .or_insert(until);
                 }
+                telemetry::rest_rate_limit_wait(class, wait);
+                warn!(
+                    route = class.name(),
+                    attempt = attempt + 1,
+                    wait_ms = wait.as_millis().min(u64::MAX as u128) as u64,
+                    global,
+                    "Discord 429 rate limit"
+                );
                 if attempt == 2 {
                     return Err(Error::RateLimited(wait));
                 }
+                telemetry::rest_retry(class);
                 continue;
             }
             if (200..300).contains(&status) {
                 return Ok(body);
             }
             if (400..500).contains(&status) && status != 408 {
+                if matches!(status, 401 | 403) {
+                    warn!(route = class.name(), status, "Discord rejected the request");
+                }
                 return Err(Error::Rejected(status));
             }
+            warn!(route = class.name(), status, "Discord server error");
             return Err(Error::Ambiguous);
         }
         Err(Error::Ambiguous)
     })
-    .await
-    .unwrap_or(Err(Error::Ambiguous))
+    .await;
+    let result = match outcome {
+        Ok(result) => result,
+        Err(_) => {
+            telemetry::rest_timeout(class);
+            Err(Error::Ambiguous)
+        }
+    };
+    telemetry::rest_total(class, total_started.elapsed());
+    match &result {
+        Err(Error::Ambiguous) => telemetry::rest_ambiguous(class),
+        Err(Error::InvalidPayload) => telemetry::rest_invalid(class),
+        _ => {}
+    }
+    if total_started.elapsed() >= Duration::from_secs(2) {
+        telemetry::rest_slow(class);
+        warn!(
+            route = class.name(),
+            elapsed_ms = total_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            "Slow Discord REST call"
+        );
+    }
+    result
 }
 
 #[cfg(test)]

@@ -155,6 +155,7 @@ sırasında sürüm, readiness, metrikler, son loglar, ayarlar, Discord cache'i,
 | --- | --- |
 | `bot_status` | Sürüm, uptime, Discord readiness, veritabanı/ayar durumu. |
 | `bot_metrics` | Dönüşüm kuyruğu, platform başarı/hata ve gecikme kovaları. |
+| `bot_diagnostics` | REST 429/retry/status, fazlar, host, cache, SQLite, süreç metrikleri. |
 | `bot_logs` | Bellekteki son loglar (en fazla 512 olay). |
 | `settings_get` | Etkin ayarlar ve içerik revizyonu. |
 | `settings_patch` | JSON merge patch; botu anında etkiler. |
