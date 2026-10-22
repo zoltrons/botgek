@@ -178,6 +178,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:3000/mcp" -Method Post -Headers $header
 | `db_stats` | Kart veritabanı yolu, kayıt sayısı, dosya boyutu ve 200.000 kayıt sınırı. |
 | `db_query` | Tek bir **salt okunur** `SELECT`/`WITH`; en fazla 200 satır. |
 | `convert_preview` | Bağlantıyı çözer, verisini çeker ve render planını döner; **Discord'a mesaj göndermez**. |
+| `discord_test_card` | Yetkili test sunucusundaki kanala gerçek bir Components V2 kartı gönderir (varsayılan: hemen siler). Discord REST/medya/faz telemetrisini test eder. |
 
 Varsayılanlar: `bot_logs.limit=120`, `bot_logs.min_level=info`, `db_query.limit=50`,
 `convert_preview` için 20 saniye veri çekme bütçesi.

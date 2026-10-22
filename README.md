@@ -163,6 +163,7 @@ sırasında sürüm, readiness, metrikler, son loglar, ayarlar, Discord cache'i,
 | `db_stats` | Kart veritabanı yolu, kayıt sayısı ve dosya boyutu. |
 | `db_query` | Tek bir salt okunur `SELECT`/`WITH` (en fazla 200 satır). |
 | `convert_preview` | Bağlantıyı çözer, verisini çeker ve render planını döner. |
+| `discord_test_card` | Test sunucusunda gerçek kart gönderir; REST/medya telemetrisi için. |
 
 Kurulum, DSH istemci kaydı, curl/PowerShell örnekleri, sınırlar ve sorun giderme:
 [docs/MCP.md](docs/MCP.md).

@@ -436,6 +436,23 @@ fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "discord_test_card",
+            "title": "Send test card",
+            "description": "Belirtilen test sunucusundaki kanala gerçek bir Components V2 kartı gönderir; varsayılan olarak hemen siler. Discord REST, medya ve faz telemetrisini test etmek içindir.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Dönüştürülecek desteklenen bağlantı."},
+                    "channel_id": {"type": "string", "description": "Test kartının gönderileceği kanal kimliği."},
+                    "guild_id": {"type": "string", "description": "Kanalın ait olması gereken sunucu kimliği (yanlış sunucuya gönderimi engeller)."},
+                    "delete": {"type": "boolean", "default": true, "description": "Gönderimden sonra test mesajını sil."},
+                    "spoiler": {"type": "boolean", "default": false, "description": "Kartı spoiler olarak gönder."}
+                },
+                "required": ["url", "channel_id", "guild_id"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "convert_preview",
             "title": "Preview conversion",
             "description": "Bir bağlantıyı çözümleyip verisini çeker ve render planını döner; Discord'a hiçbir mesaj göndermez.",
@@ -493,6 +510,7 @@ async fn call_tool(state: &WebState, name: &str, args: &Value) -> Result<Value, 
             Ok(serde_json::to_value(result).map_err(|error| error.to_string())?)
         }
         "convert_preview" => convert_preview(state, args).await,
+        "discord_test_card" => discord_test_card(state, args).await,
         other => Err(format!("Bilinmeyen araç: {other}")),
     }
 }
@@ -757,6 +775,150 @@ async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String
     }))
 }
 
+/// Gerçek bir Components V2 kartını test kanalına gönderir (isteğe bağlı hemen siler).
+///
+/// Üretim kullanıcı akışından farkı: kaynak Discord mesajı yoktur, taklit/webhook
+/// kullanılmaz ve kart DB'ye kaydedilmez. Amaç Discord REST gönderim/silme, medya
+/// çözümleme ve faz telemetrisini gerçek bir kanalda doğrulamaktır.
+async fn discord_test_card(state: &WebState, args: &Value) -> Result<Value, String> {
+    use serenity::all::{ChannelId, ChannelType, GuildId};
+
+    let url = string_arg(args, "url")?;
+    let channel_id: u64 = string_arg(args, "channel_id")?
+        .parse()
+        .map_err(|_| "channel_id sayısal bir Discord kimliği olmalı".to_string())?;
+    let guild_id: u64 = string_arg(args, "guild_id")?
+        .parse()
+        .map_err(|_| "guild_id sayısal bir Discord kimliği olmalı".to_string())?;
+    let delete = args.get("delete").and_then(Value::as_bool).unwrap_or(true);
+    let spoiler = args
+        .get("spoiler")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let channel = ChannelId::new(channel_id);
+    let guild = GuildId::new(guild_id);
+    let mut found: Option<(String, String)> = None;
+    if let Some(guild_data) = state.cache.guild(guild) {
+        if let Some(channel_data) = guild_data.channels.get(&channel) {
+            if !matches!(
+                channel_data.kind,
+                ChannelType::Text
+                    | ChannelType::News
+                    | ChannelType::PublicThread
+                    | ChannelType::PrivateThread
+                    | ChannelType::NewsThread
+            ) {
+                return Err(format!(
+                    "kanal türü test kartı için uygun değil: {:?}",
+                    channel_data.kind
+                ));
+            }
+            found = Some((guild_data.name.clone(), channel_data.name.clone()));
+        } else if let Some(thread) = guild_data
+            .threads
+            .iter()
+            .find(|thread| thread.id == channel)
+        {
+            found = Some((guild_data.name.clone(), thread.name.clone()));
+        }
+    }
+    let Some((guild_name, channel_name)) = found else {
+        return Err(
+            "kanal verilen sunucuda Serenity cache'inde bulunamadı; guild_id/channel_id ve bot erişimini kontrol edin"
+                .to_string(),
+        );
+    };
+
+    let _total = crate::telemetry::PhaseTimer::new(crate::telemetry::Phase::Total);
+    let settings = state.settings.read().await.clone();
+    let engine = settings.get_guild_settings(Some(guild)).engine;
+    let domains = PlatformDomains {
+        tiktok: engine.domain_for("tiktok", &state.config),
+        bluesky: engine.domain_for("bluesky", &state.config),
+        spotify: engine.domain_for("spotify", &state.config),
+    };
+    let parsed = parser::parse_message_with_domains(&url, &domains)
+        .ok_or_else(|| "desteklenen bir bağlantı bulunamadı".to_string())?;
+
+    let fetch_started = Instant::now();
+    let fetched = tokio::time::timeout(
+        Duration::from_secs(20),
+        builtin::fetch(&state.client, &parsed, &engine, &state.config),
+    )
+    .await
+    .map_err(|_| "veri çekme 20 saniyede tamamlanmadı".to_string())?
+    .map_err(|error| format!("veri alınamadı: {error}"))?;
+    crate::telemetry::record_phase(crate::telemetry::Phase::Fetch, fetch_started.elapsed());
+
+    let options = builtin::render::RenderOptions::from_engine(
+        &engine,
+        builtin::platform_key(parsed.platform),
+    );
+    let visible = builtin::render::apply_visibility(&fetched, spoiler, engine.sensitive_mode, None);
+    let plan = builtin::render::plan_media(&visible, &options);
+    let media_started = Instant::now();
+    let resolved = builtin::render::resolve_media(&state.client, &visible, &plan, &options).await;
+    crate::telemetry::record_phase(crate::telemetry::Phase::Media, media_started.elapsed());
+
+    let payload = builtin::v2::build_payload(&builtin::v2::V2Card {
+        post: &visible,
+        options: &options,
+        resolved: &resolved,
+        emojis: &engine.emojis,
+        spoiler,
+        sender: None,
+        user_comment: parsed.user_comment.as_deref(),
+        impersonation: None,
+        allowed_mentions: None,
+    });
+    let component_count = payload
+        .get("components")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+
+    let send_started = Instant::now();
+    let message_id = builtin::raw::send_channel_message(
+        &state.client,
+        &state.config.discord_token,
+        channel,
+        &payload,
+        &resolved.attachments,
+    )
+    .await
+    .map_err(|error| format!("test kartı gönderilemedi: {error}"))?;
+    let send_ms = send_started.elapsed().as_millis();
+
+    let mut deleted = false;
+    if delete {
+        let delete_started = Instant::now();
+        match channel.delete_message(&state.http, message_id).await {
+            Ok(()) => deleted = true,
+            Err(error) => warn!(
+                channel_id,
+                message_id = message_id.get(),
+                "Test kartı silinemedi: {error}"
+            ),
+        }
+        crate::telemetry::record_phase(crate::telemetry::Phase::Delete, delete_started.elapsed());
+    }
+
+    Ok(json!({
+        "guild_id": guild_id,
+        "guild_name": guild_name,
+        "channel_id": channel_id,
+        "channel_name": channel_name,
+        "message_id": message_id.get(),
+        "platform": builtin::platform_key(parsed.platform),
+        "fetch_ms": fetch_started.elapsed().as_millis(),
+        "send_ms": send_ms,
+        "components": component_count,
+        "attachments": resolved.attachments.len(),
+        "deleted": deleted
+    }))
+}
+
 /// `BuiltinPost` için JSON görünümü (kaynak modelde serde türevi yok).
 fn post_json(post: &BuiltinPost, depth: usize) -> Value {
     let media: Vec<Value> = post
@@ -924,6 +1086,7 @@ mod tests {
         assert!(names.contains("convert_preview"));
         assert!(names.contains("db_query"));
         assert!(names.contains("bot_diagnostics"));
+        assert!(names.contains("discord_test_card"));
         assert!(diagnostics_snapshot("rest").unwrap()["rest"].is_object());
         assert!(diagnostics_snapshot("process").unwrap()["process"].is_object());
         assert!(diagnostics_snapshot("bilinmeyen").is_err());
