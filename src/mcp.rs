@@ -850,6 +850,7 @@ async fn discord_test_card(state: &WebState, args: &Value) -> Result<Value, Stri
     .map_err(|_| "veri çekme 20 saniyede tamamlanmadı".to_string())?
     .map_err(|error| format!("veri alınamadı: {error}"))?;
     crate::telemetry::record_phase(crate::telemetry::Phase::Fetch, fetch_started.elapsed());
+    let fetch_ms = fetch_started.elapsed().as_millis();
 
     let options = builtin::render::RenderOptions::from_engine(
         &engine,
@@ -912,7 +913,7 @@ async fn discord_test_card(state: &WebState, args: &Value) -> Result<Value, Stri
         "channel_name": channel_name,
         "message_id": message_id.get(),
         "platform": builtin::platform_key(parsed.platform),
-        "fetch_ms": fetch_started.elapsed().as_millis(),
+        "fetch_ms": fetch_ms,
         "send_ms": send_ms,
         "components": component_count,
         "attachments": resolved.attachments.len(),
