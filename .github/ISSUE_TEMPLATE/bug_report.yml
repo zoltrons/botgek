@@ -1,0 +1,100 @@
+name: Hata bildirimi
+description: Botgek'te beklenmeyen bir davranış bildirin
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Teşekkürler! Lütfen sorunu en küçük yeniden üretme adımıyla anlatın.
+        **Token, çerez veya kişisel veri paylaşmayın**; logları maskeleyin.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Ön kontroller
+      options:
+        - label: Mevcut issue'larda aynı sorunu aradım.
+          required: true
+        - label: En son sürümü veya `main` dalını denedim.
+          required: true
+        - label: Token, çerez ve kişisel verileri maskeledim.
+          required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Kurulum
+      options:
+        - Docker Compose
+        - Kaynaktan (`cargo run`)
+        - Hazır ikili
+        - Diğer
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Sürüm
+      description: "`botgek --version` çıktısı veya paneldeki sürüm bilgisi."
+      placeholder: "0.1.0 (abc1234, 2026-10-01)"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Ortam
+      description: İşletim sistemi, mimari ve Rust sürümü (kaynaktan derlediyseniz).
+      placeholder: "Debian 12 / arm64 / Rust 1.98.1"
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Etkilenen platform
+      options:
+        - X (Twitter)
+        - Instagram
+        - Reddit
+        - Bluesky
+        - TikTok
+        - Spotify
+        - Twitch
+        - Pixiv
+        - Tumblr
+        - Facebook
+        - YouTube Community Post
+        - Yönetim paneli
+        - AI sohbeti
+        - Komutlar
+        - Diğer
+  - type: textarea
+    id: steps
+    attributes:
+      label: Yeniden üretme adımları
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Beklenen davranış
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Gerçekleşen davranış
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: İlgili loglar
+      description: "`RUST_LOG=botgek=debug,serenity=warn` çıktısından ilgili satırlar."
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: İlgili yapılandırma
+      description: Token ve sırları çıkararak paylaşın.
+      render: json

@@ -5,7 +5,11 @@ edition = "2024"
 rust-version = "1.88"
 authors = ["Eray"]
 license = "MIT"
-description = "Modern Discord link dönüştürücü botu (Twitter/X, TikTok, Instagram, Reddit, Bluesky, WebUI, AI)"
+description = "Discord için sosyal medya bağlantı dönüştürücü: Components V2 kartları, yönetim paneli ve AI sohbeti"
+repository = "https://github.com/zoltrons/botgek"
+homepage = "https://github.com/zoltrons/botgek"
+readme = "README.md"
+keywords = ["discord", "bot", "twitter", "embed", "self-hosted"]
 
 [dependencies]
 serenity = { version = "0.12", default-features = false, features = [
@@ -29,7 +33,7 @@ regex = "1.10"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# 0.13: serenity de aynı sürümü kullanır, tek bir reqwest derlenir. `rustls` özelliği sistem kök sertifikalarını (ca-certificates) kullanır.
+# Serenity ile aynı sürüm: tek reqwest derlenir; rustls sistem kök sertifikalarını kullanır.
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "rustls",
@@ -37,13 +41,8 @@ reqwest = { version = "0.13", default-features = false, features = [
     "gzip",
     "stream"
 ] }
-# Reddit videolarını (video-only + ses-only CMAF) **sesli tek MP4**'e birleştirmek için saf Rust
-# HLS motoru: `hls-transmux` 0.10 (çok-izli oturum API'si `MultiTrackInputs`/`MultiTrackSession`:
-# video varyantı + ayrı `EXT-X-MEDIA TYPE=AUDIO` ses playlist'i tek oturumda `with_audio` ile birleşir).
-# Not: eski tek-girdili `transmux_hls_to_mp4_bytes` kolaylık girişi ses rendition'ını çözmediği için
-# bilinçli olarak çok-izli oturum kullanılır.
-# `default-source` kapalı: HTTP kaynağı kendi reqwest istemcimizle sağlanır (ikinci bir reqwest
-# sürümü/TLS yığını indirilmez). Yeniden kodlama yapılmaz; yalnızca konteyner yeniden yazılır.
+# Reddit videolarında video + ses rendition'larını tek MP4'te birleştirir (çok-izli oturum).
+# `default-source` kapalı: HTTP kaynağı kendi reqwest istemcimizle sağlanır; yeniden kodlama yoktur.
 hls-transmux = { version = "0.10", default-features = false }
 url = "2"
 serde = { version = "1.0", features = ["derive"] }
@@ -54,23 +53,20 @@ urlencoding = "2.1.3"
 getrandom = "0.4"
 subtle = "2"
 
-# Serenity 0.12's rustls gateway pins vulnerable webpki 0.102. Use its supported
-# native backend until upstream upgrades the gateway; keep our HTTP on Rustls.
-# Vendored OpenSSL makes Linux/ARM cross builds independent of host libssl headers.
+# Serenity 0.12'nin Rustls gateway arka ucu savunmasız rustls-webpki 0.102'yi sabitler; upstream
+# güncellenene kadar native-TLS kullanılır. Botun kendi HTTP istemcileri Rustls 0.23'te kalır.
+# Vendored OpenSSL, Linux/ARM çapraz derlemelerini host libssl başlıklarından bağımsız kılar.
 [target.'cfg(unix)'.dependencies]
 native-tls = { version = "0.2", features = ["vendored"] }
 
-# Geliştirme/test derlemeleri: hata ayıklama bilgisi **yalnızca satır tabloları** ile sınırlanır.
-# Geri izlemeler (backtrace) dosya/satır bilgisiyle çalışmaya devam eder, ama `target/` hacmi
-# ve bağlama (link) süresi belirgin biçimde küçülür (tam debug bilgisi gigabaytlara çıkıyordu).
+# Geri izlemeler dosya/satır bilgisiyle çalışsın, ancak `target/` hacmi ve link süresi küçük kalsın.
 [profile.dev]
 debug = "line-tables-only"
 
 [profile.release]
 opt-level = 3
-# İnce LTO: çalışma zamanı hızı ile CI derleme süresi arasında dengeli seçim.
+# İnce LTO: çalışma zamanı hızı ile CI derleme süresi arasında denge.
 lto = "thin"
 codegen-units = 16
-# Panik = unwind (varsayılan): uzun ömürlü bir botta harici bir yanıttaki tek bir panik
-# yalnızca o tokio görevini düşürür; `abort` tüm süreci (gateway + WebUI) öldürüyordu.
+# Panik = unwind: tek bir görev paniği süreci (gateway + panel) öldürmesin.
 strip = true

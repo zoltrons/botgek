@@ -1,228 +1,201 @@
+<div align="center">
+
 # Botgek
 
-Rust ile yazılmış Discord sosyal medya bağlantı dönüştürücüsü ve isteğe bağlı OpenRouter sohbet botu.
-Twitter/X, Instagram, Reddit, Bluesky, TikTok, Spotify, Twitch, Pixiv, Tumblr, Facebook ve YouTube
-Community Posts desteklenir.
+**Discord'da paylaşılan sosyal medya bağlantılarını zengin, etkileşimli kartlara dönüştüren açık kaynak bot.**
 
-## Güncel davranış
+*An open-source, self-hosted Discord bot that turns social media links into native Components V2 cards.*
 
-- Twitter/X, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook ve YouTube Community Posts
-  **native-only**; TikTok, Bluesky ve Spotify için native/proxy seçilebilir.
-- Ayarlar global, guild ve kanal kapsamlarında çözümlenir. Thread'ler yalnızca parent kanal ayarını miras alır;
-  kategori ayarı yoktur. Kanal kapsamları WebUI'daki authenticated Discord kanal listesinden seçilir.
-- Hassas içerik varsayılan olarak spoiler'dır. İstenirse yalnızca NSFW kanallarda açılabilir; kaynak spoiler'ı
-  ve kullanıcı tarafından `||...||` ile işaretlenen linkler NSFW kanalda da gizli kalır.
-- Başka botların desteklenen linkleri varsayılan olarak yok sayılır; WebUI'dan güvenli, impersonation'sız
-  bot dönüşümü açılabilir. Bot mesajları AI sohbetini tetiklemez ve duplicate kaynaklar TTL guard ile elenir.
-- Otomatik X çevirisinin hedef dili WebUI'dan `tr`, `en`, `de` veya BCP-47 uyumlu başka bir kod olarak
-  seçilebilir. Proxy bayrak çevirileri mevcut davranışını korur.
-- Native kartlar **yalnızca Discord Components V2** kullanır; klasik embed fallback'i veya kart stili seçimi yoktur.
-- Kartın görünme hedefi **1 saniyedir** (veri + medya + gönderim). Veri hazır olduktan sonra
-  çeviri/alıntı derinliği/link kartı gibi isteğe bağlı işler için **650 ms**, webhook beklemesi için
-  kalan bütçe (en fazla **200 ms**) ayrılır; Discord POST'una **250 ms** pay bırakılır. Kaynak
-  (vxTwitter) yavaşladığında kart, mevcut syndication verisiyle gönderilir.
-- Tumblr önce fxtumblr uyumlu renderer'ı (`FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`) dener; böylece NPF/reblog
-  zinciri ve çoklu medya tek güvenli render görselinde korunur. Renderer erişilemezse public OG fallback kullanılır.
-- Görseller ve GIF'ler doğrudan CDN bağlantılarıdır; X görsellerinde `name=orig` kullanılır.
-- X GIF'leri vxTwitter gifconvert üzerinden animasyonlu AVIF bağlantısına dönüştürülür; yerel ffmpeg yolu yoktur.
-- Reddit videosunda video/ses saf Rust ile MP4'e birleştirilir. Aynı anda en fazla **iki** birleştirme;
-  **5 saniye** bütçe ve çağırandan iptal sinyali vardır. Başarısızlıkta uzak, sessiz video korunur.
-- Native dönüşümler süreç başına **16** eşzamanlı işle sınırlıdır; kapasite dolduğunda orijinal mesaj korunur.
-- Gönderi önbelleği **600 saniye / 512 girdi** ile sınırlıdır; kaynak, çeviri, alıntı ve video bütçesi anahtara dâhildir.
-  Aynı anahtara gelen istekler birleştirilir. Metrikler önbellek ömrü boyunca eski olabilir.
-- X bağlantı önizlemesi yalnızca public HTTP(S), 80/443 portları ve doğrulanan DNS adreslerine gider.
-  Yönlendirmeler yeniden doğrulanır; toplam bütçe **500 ms**. İstek ortam proxy'sini kullanmaz.
-- Orijinal mesaj yalnızca başarılı gönderimden sonra silinir. Sonucu belirsiz Discord POST'u otomatik yeniden
-  gönderilmez; bu durumda orijinal mesaj korunur ve hata loglanır. 429 bekleme süresi kısaltılmaz.
-- Rol filtreleri, AI ve çeviri reaksiyonu ekleme/kaldırma aynı politikayı kullanır. Boş allowlist erişim vermez;
-  rol sorgusu başarısız olursa etkin filtre erişimi reddeder.
-- Global **`/dönüştür link:<bağlantı>`** komutu DM'ler dâhil her yerde çalışır; ayrıca bir mesaja sağ tıklayıp
-  **Apps → Dönüştür** ile o mesajdaki bağlantı dönüştürülür. Her iki akış da kanal/thread motor ayarlarını ve
-  rol filtrelerini uygular; **WebUI'daki platform modülü açık/kapalı ayarından bağımsızdır** (komut açıkça
-  çağrıldığında her zaman dönüştürür). X çevirisi komutta **varsayılan olarak açıktır**: `auto_translate`
-  kapalı olsa bile tweetler (İngilizce dâhil) hedef dile çevrilir; hedef dil ayarı korunur.
-  Discord, slash komutu etkileşiminde yanıtlanan mesajı göndermediği için "mesaja yanıt verip `/dönüştür` yazma"
-  doğrudan desteklenmez; mesaj komutu bu ihtiyacın Discord'daki resmî karşılığıdır.
+[![CI](https://github.com/zoltrons/botgek/actions/workflows/build-release.yml/badge.svg)](https://github.com/zoltrons/botgek/actions/workflows/build-release.yml)
+[![Bağımlılık denetimi](https://github.com/zoltrons/botgek/actions/workflows/quality.yml/badge.svg)](https://github.com/zoltrons/botgek/actions/workflows/quality.yml)
+[![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-blue.svg)](LICENSE)
+[![Rust 1.98.1](https://img.shields.io/badge/rust-1.98.1-orange.svg?logo=rust)](rust-toolchain.toml)
+[![Docker Compose](https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
 
-Bu bütçeler yapılandırılmış sınırlardır; **ölçülmüş p95 veya RAM garantisi değildir**.
+[Rust](https://www.rust-lang.org/) · tek ikili · Docker · arm64 / Raspberry Pi
 
-## Yerel kurulum
+</div>
 
-1. Rust toolchain: `rust-toolchain.toml` **1.98.1** sürümünü sabitler; kaynak dil tabanı Rust 1.88'dir.
-   Linux için C derleyicisi/linker gerekir (SQLite bundled olarak derlenir).
-2. `.env.example` dosyasını `.env` olarak kopyalayın. Gerçek `.env` dosyasını Git'e eklemeyin.
-3. `DISCORD_TOKEN` ve yönetim paneli için `ADMIN_TOKEN` değerlerini doldurun.
-4. `cargo run --locked` çalıştırın. Sürüm sorgusu: `cargo run --locked -- --version`.
+Botgek, bir kanalda desteklenen bir bağlantı gördüğünde platformdan veriyi çeker, medyayı hazırlar ve mesajı
+Discord'un **Components V2** bileşenleriyle tek bir karta dönüştürür. Discord botu, dönüştürme motoru ve
+yönetim paneli **tek bir Rust ikilisinde** çalışır; ffmpeg, harici veritabanı sunucusu veya ayrı bir web
+servisi gerekmez.
 
-Discord Developer Portal'da **Message Content Intent** açılmalıdır. Gerekli bot izinleri:
-Send Messages, Embed Links, Read Message History, Add Reactions; orijinal mesajları silmek için
-Manage Messages, kullanıcı taklidi için Manage Webhooks. Yanıtlarda varsayılan olarak bot kimliği kullanılır.
-Slash ve mesaj komutları için davet bağlantısında **`applications.commands`** kapsamı da bulunmalıdır.
+## Öne çıkanlar
 
-### Windows
+- **Native kartlar:** X/Twitter, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook ve YouTube Community
+  Post bağlantıları Components V2 kartına dönüşür. TikTok, Bluesky ve Spotify native modda aynı kartı
+  kullanır; bu üç platform için proxy modu da seçilebilir. Klasik embed fallback'i yoktur.
+- **Saf Rust medya hattı:** Reddit videolarında görüntü ve ses saf Rust ile tek MP4'e birleştirilir;
+  ffmpeg veya yerel bir yardımcı ikili kullanılmaz.
+- **Gecikme bütçesi:** Kart için hedef **1 saniyedir**. Veri, medya, çeviri, alıntı ve bağlantı önizlemesi
+  paralel yürür; kaynak yavaşladığında kart düşmez, eldeki veriyle gönderilir.
+- **Kontrollü eşzamanlılık:** Otomatik akış 8, native dönüşüm 16, etkileşim 4 eşzamanlı işle sınırlıdır.
+  Kuyruk dolduğunda orijinal mesaj korunur.
+- **Dayanıklı gönderim:** Orijinal mesaj yalnızca kart başarıyla gönderildikten sonra silinir; sonucu belirsiz
+  bir Discord isteği yeniden denenmez ve 429 bekleme süresi kısaltılmaz.
+- **Yönetim paneli:** Global, sunucu ve kanal kapsamında modül, rol filtresi, motor ve çeviri ayarları;
+  token ile korunan tek sayfa panel.
+- **İsteğe bağlı AI sohbeti:** OpenRouter üzerinden; bot etiketlendiğinde veya botun mesajına yanıt
+  verildiğinde çalışır. Rol filtresi, kullanıcı başına bekleme ve süreç geneli kapasite sınırı vardır.
+- **Çeviri:** X gönderileri için otomatik çeviri (`tr`, `en`, `de` veya herhangi bir BCP-47 kodu);
+  proxy mesajlarında bayrak tepkisiyle anlık çeviri.
+- **Gizlilik kontrolleri:** Hassas içerik varsayılan olarak spoiler'dır; yalnızca NSFW kanallarında
+  isteğe bağlı açılabilir.
+- **Tek komut:** `/dönüştür` DM'ler dâhil her yerde çalışır; **Apps → Dönüştür** mesaj komutu aynı işi
+  sağ tık menüsünden yapar.
+- **Dağıtım:** Docker Compose (non-root, salt okunur kök dosya sistemi), arm64/Raspberry Pi imajı ve
+  GitHub Actions CI.
 
-MSVC toolchain için Visual C++ Build Tools ve Windows SDK gerekir. Önceden kurulu GNU/LLVM toolchain
-kullanıyorsanız örneğin `cargo +stable-x86_64-pc-windows-gnullvm test --locked` çalıştırın;
-bu seçeneğin derleyici sürümünü `rustc +stable-x86_64-pc-windows-gnullvm --version` ile doğrulayın.
-Global rustup ayarını değiştirmeniz gerekmez.
+## Desteklenen platformlar
 
-## Yönetici girişi
+| Platform | Bağlantı türü | Motor |
+| --- | --- | --- |
+| X (Twitter) | Gönderi, alıntı, medya | Native (VxTwitter / FxTwitter / syndication) |
+| Instagram | Gönderi, Reels | Native |
+| Reddit | Gönderi, video | Native (saf Rust video birleştirme) |
+| Bluesky | Gönderi | Native / proxy |
+| TikTok | Video | Native / proxy |
+| Spotify | Parça, albüm, çalma listesi, sanatçı, kısa link | Native / proxy |
+| Twitch | Klip | Native |
+| Pixiv | Çizim | Native |
+| Tumblr | Gönderi | Native |
+| Facebook | Gönderi, video | Native |
+| YouTube | Topluluk gönderisi (Community Post) | Native |
 
-`.env` içinde:
+Native-only platformlarda proxy motoru ve proxy yedeği yoktur. TikTok, Bluesky ve Spotify için panelden
+native veya proxy seçilebilir. X verisi için `vxtwitter` (varsayılan), `fxtwitter`, `syndication` ya da
+`hybrid` kaynağı kullanılabilir.
 
-```dotenv
-ADMIN_TOKEN=
-WEB_BIND=127.0.0.1
-WEB_PORT=3000
-WEB_SECURE_COOKIE=false
-```
+## Hızlı başlangıç
 
-`ADMIN_TOKEN` için **32–512 karakterlik, yüksek entropili rastgele bir sır** kullanın.
-Örneğin kendi terminalinizde `openssl rand -hex 32` ile üretebilirsiniz. Çıktıyı `.env` dosyanıza
-yerel olarak yazın; sohbet, log, ekran görüntüsü veya Git'e koymayın.
-
-- Token yok/geçersizse **WebUI açılmaz**; Discord botunun çalışması etkilenmez.
-- `http://127.0.0.1:3000` giriş sayfasına yönlenir. Token yalnızca giriş isteğinde gönderilir;
-  localStorage/sessionStorage'a yazılmaz.
-- Oturum **8 saat** sürer; rastgele kimlik, `HttpOnly`, `SameSite=Strict` çerezi kullanılır.
-  Yeniden başlatma tüm oturumları iptal eder. Panelde **Çıkış yap** düğmesi vardır.
-- Durum değiştiren istekler `X-Botgek-Request: 1` ister; CORS açılmamıştır.
-- Giriş denemeleri süreç genelinde **20/dakika**, oturum sayısı **64** ile sınırlıdır.
-- Uzak erişimde **HTTPS ters proxy** veya SSH tüneli kullanın. HTTPS için `WEB_SECURE_COOKIE=true`
-  ayarlayın; botun HTTP portunu doğrudan internete açmayın. Uygulama TLS sonlandırmaz.
-
-Tokenı döndürmek için `.env` değerini değiştirip botu yeniden başlatın. Token API yanıtlarında ve loglarda görünmez.
-
-## MCP sunucusu (geliştirme ve teşhis)
-
-Bot, WebUI ile **aynı adreste ve portta** `/mcp` yolunda bir
-[Model Context Protocol](https://modelcontextprotocol.io) sunucusu yayınlar. Amaç, botu
-geliştirirken/ayıklarken gereken bilgilere ayrı bir kabuk, `docker exec` veya Discord
-üzerinden değil, MCP istemcisinden tek yerden erişmektir. Ayrı container, ayrı port veya
-ek servis yoktur.
-
-`.env` içinde:
-
-```dotenv
-# En az 32 karakter, ADMIN_TOKEN'dan FARKLI bir sır. Boşsa MCP endpoint kapalıdır.
-MCP_TOKEN=
-```
-
-Token üretimi: `openssl rand -hex 32` (Windows PowerShell:
-`[Convert]::ToHexString((1..32 | ForEach-Object { Get-Random -Max 256 }))`). Değeri Git'e,
-sohbete veya ekran görüntüsüne koymayın. Docker Compose `MCP_TOKEN` değişkenini container'a
-açıkça aktarır; ek port eşlemesi gerekmez.
-
-Endpoint `Authorization: Bearer <MCP_TOKEN>` ister. MCP istemcisi (DSH) yapılandırması:
-
-```yaml
-- id: mcp-botgek
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: botgek
-    transport: streamable-http
-    url: http://127.0.0.1:3000/mcp
-    headers:
-      Authorization: !!js '`Bearer ${process.env.MCP_TOKEN}`'
-```
-
-DSH sürecinin ortamında `MCP_TOKEN` yoksa değeri doğrudan `headers` altına yazın; ancak
-tokenı depo içindeki bir dosyaya koymayın. Aynı endpoint hem 2026-07-28 oturumsuz akışını
-(`server/discover`, `MCP-Protocol-Version`) hem de eski `initialize` el sıkışmasını destekler.
-
-Araçlar:
-
-| Araç | Ne verir |
-| --- | --- |
-| `bot_status` | Sürüm/künye, uptime, Discord readiness, veritabanı ve ayar durumu, sır içermeyen `.env` özeti |
-| `bot_metrics` | Dönüşüm kuyruğu, platform bazlı başarı/hata ve gecikme kovaları |
-| `bot_logs` | Bellekteki son tracing logları (`limit`, `min_level`); süreç ömrüyle sınırlı, diske yazılmaz |
-| `settings_get` | Etkin ayarlar + içerik revizyonu (WebUI ile aynı model) |
-| `settings_patch` | JSON merge patch; aynı normalizasyonla diske yazar, botu **anında** etkiler |
-| `discord_overview` | Serenity cache'indeki sunucu/kanal/rol listesi (Discord'a istek atmaz) |
-| `db_stats` | Kart veritabanı yolu, kayıt sayısı, dosya boyutu |
-| `db_query` | Tek bir **salt okunur** `SELECT`/`WITH` (en fazla 200 satır) |
-| `convert_preview` | Bağlantıyı çözer, verisini çeker ve render planını döner; **Discord'a mesaj göndermez** |
-
-Hızlı doğrulama:
+### Docker (önerilen)
 
 ```sh
-curl -s http://127.0.0.1:3000/mcp \
-  -H "Authorization: Bearer $MCP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "MCP-Protocol-Version: 2026-07-28" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-Güvenlik notları:
-
-- MCP endpoint'i WebUI'nin bağlandığı adresi (`WEB_BIND`, varsayılan `127.0.0.1`) kullanır.
-  Uzaktan erişimde SSH tüneli veya HTTPS ters proxy kullanın; portu doğrudan internete açmayın.
-- `MCP_TOKEN` ile `ADMIN_TOKEN` ayrı sırlar olmalıdır. Token yoksa endpoint kapalıdır (503);
-  WebUI ve Discord botu çalışmaya devam eder.
-- `settings_patch` ve `convert_preview` dışındaki araçlar salt okunurdur. `db_query` yazma
-  ifadelerini reddeder; BLOB içeriği dökülmez.
-- `bot_logs` yalnızca bellekteki son 512 olayı tutar; hassas veri ayrıştırması yapmaz, bu
-  yüzden logları yine özel tutun.
-
-Operasyonel ayrıntılar (kurulum, istemci kaydı, curl/PowerShell örnekleri, sorun giderme):
-[mcp.md](mcp.md).
-
-## Yapılandırma ve kalıcılık
-
-| Değişken | Davranış |
-| --- | --- |
-| `BOTGEK_SETTINGS_PATH` | Ayar dosyası; boşsa `BOTGEK_DB_PATH` bir dizin içeriyorsa (ör. `/app/data/botgek.db`) o dizindeki `settings.json`, aksi hâlde çalışma dizinindeki `settings.json` |
-| `BOTGEK_SETTINGS_SEED` | Yalnızca hedef dosya yoksa ilk içe aktarım kaynağı |
-| `BOTGEK_DB_PATH` | Kart–paylaşan kullanıcı kaydı; varsayılan `botgek.db` |
-| `MCP_TOKEN` | `/mcp` MCP endpoint'i için Bearer token; boşsa endpoint kapalı |
-| `OPENROUTER_API_KEY` | İsteğe bağlı AI erişimi |
-| `FXTUMBLR_DOMAIN` | Tumblr NPF/render hizmeti; varsayılan `tpmblr.com`, boş bırakılırsa public OG fallback kullanılır |
-| `INSTAGRAM_SESSIONID` | İsteğe bağlı Instagram reel/video çerezi; yalnızca ortamda saklanır |
-| `REDDIT_CLIENT_ID` | İsteğe bağlı public OAuth istemci kimliği; sır değildir |
-| `DELETE_ORIGINAL` | Başarılı dönüşüm sonrası orijinal mesajı silme |
-
-Ayarlar global varsayılan + sunucu başına bölüm override'ı (`modules`, `role_filters`, `ai`, `engine`) olarak
-çözümlenir. Dosya yazımı aynı dizinde geçici dosya, flush ve atomik replacement kullanır. WebUI kayıtları
-seri işlenir; disk işlemi async worker'ı bloklamaz. Bozuk ayar dosyası **varsayılan erişim politikasıyla
-başlatılmaz**: düzeltmeniz veya sağlam yedeği geri koymanız gerekir. Göç öncesi yedek alınamıyorsa göç durur.
-
-SQLite WAL kullanılır; işlemler sınırlı blocking worker üzerinden yürür. 200.000 kart sınırı ve budama vardır.
-Dosya açılamazsa bellek içi fallback loglanır ve readiness başarısız olur; bunu kalıcı çalışma saymayın.
-
-## Docker ve güncelleme
-
-Kaynak koddan derleyen bu Compose dosyasında güncelleme komutu:
-
-```sh
+git clone https://github.com/zoltrons/botgek.git
+cd botgek
+cp .env.example .env
+# .env içinde DISCORD_TOKEN ve ADMIN_TOKEN doldurun
 docker compose up -d --build
 ```
 
-`docker compose pull` yalnızca `image:` kullanan bir Compose tanımı için yeni imajı
-çeker; bu dosyada imaj `build:` ile üretilir. Yayınlanmış GHCR imajına geçildiğinde
-`pull && up -d` kullanılabilir.
+Panel: <http://127.0.0.1:3000>
 
-Compose yönetim portunu yalnızca **host 127.0.0.1** üzerinde yayınlar; container içinde `WEB_BIND=0.0.0.0`
-kullanılır. Uzak makinede SSH tüneli örneği: `ssh -L 3000:127.0.0.1:3000 sunucu`.
+Güçlü bir panel tokenı üretmek için: `openssl rand -hex 32`. İlk derleme birkaç dakika sürebilir;
+sonraki güncellemelerde `docker compose up -d --build` yeterlidir.
 
-**Mevcut kurulumdan geçiş:** `./settings.json` salt okunur `/app/settings.legacy.json` olarak bağlanır.
-İlk açılışta `/app/data/settings.json` yoksa bu dosya içe aktarılır. Sonraki WebUI kayıtları `botgek-data`
-volume'undaki dosyaya gider; hosttaki eski dosya artık güncellenmez. Güncellemeden önce ayar ve SQLite
-dosyalarının yedeğini alın. `docker compose down -v` kalıcı volume'u siler; normal güncellemede kullanmayın.
+### Kaynaktan
 
-Atomik ayar replacement'ı için tek yazılabilir dosya bind-mount'u yerine **dizin/volume** kullanın.
-Compose volume adı varsayılan olarak `botgek_botgek-data`'dır ve proje dizini değişse bile sabit kalır;
-başka bir mevcut volume kullanıyorsanız `.env` içine `BOTGEK_DATA_VOLUME=<gerçek-volume-adı>` yazın.
-Bot kullanıcısına (Docker: UID/GID 1000) dizin yazma izni verin; `chmod 666` kullanmayın.
-Yedek/geri yükleme işlemlerinde artık `BOTGEK_SETTINGS_PATH` ile gösterilen güncel dosyayı hedefleyin.
+```sh
+cp .env.example .env
+# .env içinde DISCORD_TOKEN ve ADMIN_TOKEN doldurun
+cargo run --locked
+```
 
-Kaynak imaj derlemesinde `.git` bulunmaz. Sürüm künyesini `BOTGEK_VERSION` ve `BOTGEK_SHA` build arg'larıyla
-verebilirsiniz. Runtime root olmayan kullanıcıdır; ffmpeg kurulmaz ve kullanılmaz.
+Depo, Rust **1.98.1** sürümünü `rust-toolchain.toml` ile sabitler; kaynak dil tabanı Rust **1.88**'dir
+(edition 2024). Linux'ta C derleyicisi/linker gerekir, çünkü SQLite bundled olarak derlenir.
 
-Ayar yedeği: `./backup-settings.sh` önce `BOTGEK_SETTINGS_PATH`'i kullanır.
-Docker'da dosya volume içindedir: `docker compose exec botgek cat /app/data/settings.json > settings.json.bak` ile dışarı alın.
+### Discord kurulumu
 
-## Kontroller ve CI
+1. Botu [Discord Developer Portal](https://discord.com/developers/applications)'da oluşturun.
+2. **Bot → Privileged Gateway Intents** altında **Message Content Intent**'i açın.
+3. Botu şu izinlerle davet edin: **Send Messages**, **Embed Links**, **Read Message History**,
+   **Add Reactions**. Orijinal mesajlar silinecekse **Manage Messages**, kullanıcı adına gönderim
+   (impersonation) kullanılacaksa **Manage Webhooks** ekleyin.
+4. Davet bağlantısında `applications.commands` kapsamı bulunmalıdır; aksi hâlde slash ve mesaj komutları
+   görünmez.
+
+Ayrıntılı kurulum ve güvenlik notları: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## Kullanım
+
+| Yol | Ne yapar |
+| --- | --- |
+| `/dönüştür link:<bağlantı>` | Bağlantıyı her yerde, DM'ler dâhil dönüştürür. Açıkça çağrıldığında platform modülü kapalı olsa bile çalışır; X çevirisi varsayılan olarak açıktır. |
+| Mesaja sağ tık → **Apps → Dönüştür** | O mesajdaki bağlantıyı dönüştürür. |
+| 🗑️ tepkisi | Kartı, kartı paylaşan kullanıcı veya **Manage Messages** yetkisi olan bir yönetici siler. |
+| Bayrak tepkisi (🇹🇷, 🇬🇧, …) | Proxy mesajını seçilen dile çevirir. Native kartlar kendi çeviri ayarını kullanır. |
+| @bot etiketleme veya bot mesajına yanıt | AI sohbetini tetikler (`OPENROUTER_API_KEY` ve `ai_chat` modülü açıksa). |
+
+`/dönüştür` açıkça çağrıldığında X çevirisi her durumda uygulanır: `auto_translate` kapalı olsa bile
+İngilizce dâhil tweetler hedef dile çevrilir; hedef dil ayarı korunur. Discord, slash komutu
+etkileşiminde yanıtlanan mesajı göndermediği için "mesaja yanıt verip `/dönüştür` yazma" desteklenmez;
+aynı ihtiyaç için **Apps → Dönüştür** kullanılır.
+
+## Yönetim paneli
+
+Panel varsayılan olarak `127.0.0.1:3000` üzerinde dinler ve `ADMIN_TOKEN` ile korunur. Modüller, rol
+filtreleri, AI personası ve dönüştürme motoru tek sayfadan yönetilir; ayarlar global, sunucu ve kanal
+kapsamında çözümlenir.
+
+- Token **32–512 karakter** arasında, yüksek entropili bir sır olmalıdır. Token yoksa panel açılmaz;
+  Discord botu çalışmaya devam eder.
+- Oturum **8 saat** sürer; çerez `HttpOnly` ve `SameSite=Strict`'tir, token tarayıcı depolamasına
+  yazılmaz. Durum değiştiren istekler `X-Botgek-Request: 1` başlığı ister.
+- İstemci adresi başına dakikada **20** başarısız girişten sonra giriş reddedilir; eşzamanlı oturum
+  sayısı **64** ile sınırlıdır.
+- Uzaktan erişimde **HTTPS ters proxy** veya SSH tüneli kullanın; panel TLS sonlandırmaz. HTTPS için
+  `WEB_SECURE_COOKIE=true` ayarlayın.
+
+## Yapılandırma
+
+Tüm ayarlar ortam değişkenleri ve `settings.json` üzerinden yapılır. En sık kullanılanlar:
+
+| Değişken | Zorunlu | Açıklama |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | Evet | Discord bot tokenı. |
+| `ADMIN_TOKEN` | Panel için | 32–512 karakterlik yönetim sırrı. |
+| `WEB_PORT` / `WEB_BIND` | Hayır | Panel portu ve bağlanma adresi (varsayılan `3000` / `127.0.0.1`). |
+| `OPENROUTER_API_KEY` | Hayır | AI sohbetini etkinleştirir. |
+| `DELETE_ORIGINAL` | Hayır | Başarılı dönüşümden sonra orijinal mesajı siler. |
+| `BOTGEK_DB_PATH` | Hayır | Kart kayıtları için SQLite yolu (varsayılan `botgek.db`). |
+| `BOTGEK_SETTINGS_PATH` | Hayır | Ayar dosyası yolu; Docker'da `/app/data/settings.json`. |
+| `FXTUMBLR_DOMAIN` | Hayır | Tumblr render hizmeti (varsayılan `tpmblr.com`). |
+| `INSTAGRAM_SESSIONID` | Hayır | Reels videolarının kart içinde oynaması için Instagram oturum çerezi. |
+| `REDDIT_CLIENT_ID` | Hayır | Reddit OAuth istemci kimliği (sır değildir). |
+
+Değişkenlerin tamamı, `settings.json` şeması, kapsam çözümleme ve kalıcılık:
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## Mimari
+
+```text
+Discord mesajı
+      │
+      ▼
+  parser ──► rol filtresi / modül kontrolü ──► dönüştürücü
+                                                  ├─ kaynak verisi (Vx/Fx, platform API'si, OG)
+                                                  ├─ medya, çeviri, alıntı (paralel + bütçeli)
+                                                  └─ Components V2 kartı
+      ◄──────────────────────────────────────────── Discord REST
+```
+
+| Bileşen | Sorumluluk |
+| --- | --- |
+| `src/handler.rs` | Gateway olayları, komutlar, tepkiler, AI tetikleme. |
+| `src/converters/` | URL ayrıştırma, platform dönüştürücüleri, medya, çeviri, kart üretimi. |
+| `src/settings.rs` | Ayar şeması, kapsam çözümleme, doğrulama ve göç. |
+| `src/store.rs` | SQLite tabanlı kart–paylaşan kaydı. |
+| `src/web/` | Axum API'si, kimlik doğrulama ve panel. |
+| `src/ai/` | OpenRouter istemcisi. |
+
+Tasarım kararları, istek yaşam döngüsü ve bütçe ayrıntıları: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Performans ve güvenilirlik
+
+- Kart hedefi **1 sn**; veri geldikten sonra isteğe bağlı zenginleştirme **650 ms**, webhook beklemesi en
+  fazla **200 ms**, Discord POST'una **250 ms** pay ayrılır. Hiç veri gelmezse ilk yanıt için **3 sn**
+  beklenir.
+- Gönderi ve kaynak önbelleği **600 sn / 512 girdi** ile sınırlıdır; aynı anahtara gelen istekler tek
+  çekimde birleştirilir.
+- X bağlantı önizlemesi yalnızca public HTTP(S), 80/443 portları ve doğrulanan DNS adreslerine gider;
+  yönlendirmeler yeniden doğrulanır ve toplam bütçe **500 ms**'dir.
+- SQLite WAL kullanılır; kart kayıtları **200.000** girdiyle sınırlıdır ve otomatik budanır.
+- Bu değerler yapılandırılmış sınırlardır; ölçülmüş p95 veya bellek garantisi değildir.
+
+İşletim, izleme ve ölçüm ayrıntıları: [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+## Geliştirme
 
 ```sh
 cargo fmt --all --check
@@ -233,98 +206,28 @@ node --check src/web/ui/login.js
 node --test tests/web-ui.test.cjs
 ```
 
-Normal test koşusu **ağdaki sosyal medya servislerine bağlanmaz**. Yerel HTTP testleri yalnızca loopback
-üzerinde fixture sunucuları açar; dosya testleri geçici dosyalar kullanır. Rust ve JavaScript ayar çözümleme
-testleri `tests/fixtures/settings-resolution.json` sözleşmesini paylaşır.
+Normal test koşusu ağdaki sosyal medya servislerine bağlanmaz; HTTP testleri loopback üzerindeki fixture
+sunucularını kullanır. Canlı testler `--ignored` ile açıkça çalıştırılır. Ayrıntılar:
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-Canlı testler açıkça ignore edilir ve yalnızca bilerek çalıştırılır:
+## Dokümantasyon
 
-```sh
-cargo test --locked live_ -- --ignored --nocapture
-```
+| Belge | İçerik |
+| --- | --- |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Ortam değişkenleri, `settings.json`, kapsamlar, yönetim paneli güvenliği. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modül haritası, istek yaşam döngüsü, bütçeler, önbellek, hata semantiği. |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Docker, yedekleme, sağlık uçları, loglama, performans ölçümü, CI/CD. |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Yerel kurulum, testler, canlı testler, sürüm akışı, yeni platform ekleme. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Katkı akışı ve PR beklentileri. |
+| [SECURITY.md](SECURITY.md) | Güvenlik açığı bildirimi ve dağıtım sertleştirme listesi. |
 
-Bu komut gerçek upstream erişimi ister; Instagram oturum testi ayrıca özel çerez ister. Eksik önkoşul veya
-başarısız birleştirme **başarılı test gibi gösterilmez**. Üretim sırlarını public PR testlerine aktarmayın.
+## Katkıda bulunma
 
-- `build-release.yml`: test, fmt, Clippy, panel testleri; ardından arm64 paket ve imaj. `main` push'u ve elle başlatma `latest`'i, sürüm etiketi `X.Y.Z` + `latest`'i yayınlar; PR yalnızca derler.
-- `quality.yml`: RustSec audit kod değiştiren her PR/push'ta; LCOV raporu yalnızca ana dalda ve elle başlatmada üretilir (bilgi amaçlı, eşik yok).
-- `release.yml`: elle sürüm bump/etiket akışı. Yerelde `./release.sh patch` veya
-  `./release.sh minor --push`. Temiz çalışma ağacı gerekir.
-- Sürüm `build.rs` ile git etiketinden gömülür; `SOURCE_DATE_EPOCH` tekrar üretilebilir tarih içindir.
-- Depo public olduğu için Actions artefakt/cache ve public GHCR depolaması ücretsizdir; günlük temizlik workflow'ları kaldırıldı. Artefaktlar 1 gün saklanır, cache'ler GitHub tarafından 10 GB sınırında en eski girdiler atılarak budanır.
+Hata bildirimleri ve özellik önerileri için GitHub Issues kullanılır. Pull request göndermeden önce
+[CONTRIBUTING.md](CONTRIBUTING.md) dosyasını okuyun; değişikliklerin `cargo fmt`, `cargo clippy` ve test
+kontrollerinden geçmesi beklenir. Güvenlik açıklarını lütfen herkese açık issue olarak değil,
+[SECURITY.md](SECURITY.md) içindeki yolla bildirin.
 
-Serenity 0.12'nin Rustls gateway arka ucu eski `rustls-webpki 0.102` sürümünü sabitlediği için
-Serenity'nin desteklenen **native-TLS** arka ucu kullanılır; Linux/ARM'da OpenSSL vendored derlenir
-(build ortamında C toolchain, Perl ve make gerekir), Windows'ta OS TLS kullanılır. Botun kendi HTTP
-istemcileri **Rustls 0.23** kullanmayı sürdürür. RUSTSEC-2026-0049/0098/0099/0104 istisnayla susturulmaz.
-Gelecekte upstream gateway güncellendiğinde bu uyumluluk tercihinin yeniden değerlendirilmesi gerekir.
-Bağımlılık denetiminin gerçekten geçtiğini ilgili CI sonucu olmadan varsaymayın.
+## Lisans
 
-## Gözlemlenebilirlik ve performans
-
-- `/api/health`: public liveness; yalnızca HTTP sunucusunun ayakta olduğunu söyler.
-- `/api/ready`: giriş gerektirir; Discord bağlantısı ve kalıcı SQLite erişimini kontrol eder, bozuk durumda 503.
-- `/api/metrics`: giriş gerektirir; platform bazlı native başarı/hata, kümülatif gecikme histogramı,
-  cache-hit ve kapasite aşımı sayıları. Süreç yeniden başlayınca sıfırlanır; kullanıcı/veri/token içermez.
-- `RUST_LOG=botgek=debug,serenity=warn`: veri/medya/gönderim süreleri. Logları özel tutun; gönderi URL'leri içerebilir.
-- Dönüşüm satırı `toplam … ms — hedef 1 sn aşıldı` ekiyle biter; veri fazı gönderim payını
-  aştığında ayrıca `Veri fazı … ms sürdü (veri …, medya …)` uyarısı yazılır. Taklit webhook'u
-  zamanında hazır olmazsa `Taklit webhook'u … ms içinde hazır olmadı` bilgisi düşer.
-  Bu üç satır, yavaş bir kartın hangi fazda geciktiğini (kaynak / medya / webhook / Discord POST)
-  doğrudan gösterir.
-
-Tekrarlanabilir offline CPU başlangıç ölçümü:
-
-```sh
-cargo test --release --locked offline_card_baseline -- --ignored --nocapture
-```
-
-Bu 10.000 örnekte parse+render p50/p95 ölçer; **ağ, toplam Discord gecikmesi veya RSS ölçmez**.
-Gerçek Raspberry Pi üzerinde aynı sürüm/derleyiciyle sıcak-soğuk önbellek, büyük Reddit videosu,
-eşzamanlı aynı/farklı URL, yavaş upstream ve 429 senaryolarını ayrıca ölçün. RSS/CPU, upstream istek sayısı,
-timeout sonrası aktif iş ve p95 değerlerini değişiklik öncesi/sonrası karşılaştırın. Donanım üzerinde
-ölçülmeden hızlanma veya bellek tasarrufu yüzdesi iddia edilmez.
-
-### X: içerik farkındalıklı veri planı
-
-VxTwitter/otomatik çeviri yolu gelen veriye göre yeniden planlanır; kart gönderimi veya
-webhook taklidi değişmez. İlk soğuk okumada orijinal Vx verisi, syndication metadatası ve
-çeviri açıksa dil ekli Vx yanıtı paraleldir. Metrikler açıksa ve kaynakta görüntülenme yoksa
-FxTwitter da yalnızca bu eksiği tamamlamak için paralel istenir. Dil ekli yanıt spekülatiftir:
-İngilizce/Türkçe metinde beklenmez; yabancı dilde ise dil tespitinden sonra ikinci bir seri
-ağ turu oluşmaz. Gereksizleşen okumalar iptal edilir. Bunun bedeli, soğuk önbellekte en fazla
-dört kök GET'tir; bu bir hız garantisi değil, kritik yoldaki seri beklemeleri kaldırma tercihidir.
-
-- Yalnızca görünür, boş olmayan ve henüz çevrilmemiş metin için ek çeviri istenir.
-- `qrtURL: null` ile eksik `qrtURL` birbirinden ayrılır. Bilinen üçüncü gönderi doğrudan
-  çekilir; sırf keşif için orta gönderi yeniden istenmez. Bilgi yoksa kısa, best-effort
-  inceleme korunur. İlk alıntının medyalı olması, bilinen üçüncü alıntının metnini düşürmez.
-- Görüntülenme sayısını VxTwitter ve syndication vermez. Metrikler açıkken eksik değer
-  FxTwitter'dan isteğe bağlı olarak tamamlanır; mevcut yanıt/beğeni/repost değerleri ezilmez.
-  Bütçe dolarsa kart görüntülenmesiz gönderilir.
-- Yanıtlar gönderi ID'siyle birleştirilir; boş/geç gelen yanıt mevcut çeviriyi, medyayı,
-  topluluk notunu veya tamamlanmış alıntıyı silmez. Zaman aşımında mevcut orijinal korunur.
-- Kaynak sonuçları ayrıca **600 saniye / 512 girdi** ile önbelleklenir; aynı ID başka bir
-  gönderide alıntılandığında da tekrar kullanılabilir. Kaynak/dil/hedef/video bütçeleri
-  ayrıdır; eşzamanlı aynı istekler tek çekimde birleşir. NSFW/spoiler kararı bu cache'e yazılmaz.
-- Kaynak/çeviri/alıntı işleri **iki kademeli bütçeyi** paylaşır: kart verisi geldikten sonra
-  isteğe bağlı zenginleştirme **650 ms** ile sınırlıdır, hiç veri gelmezse ilk yanıt için
-  **3 saniyeye** kadar beklenir (kart büsbütün düşmesin). Ayrı ayrı tam zaman aşımı süreleri
-  birikmez. Harici link önizlemesi bu bütçenin **içinde**, kaynak istekleriyle paralel çalışır;
-  ayrıca 500 ms sınırı vardır.
-
-Karar, hata, iptal ve gecikme karşılaştırmalarını tekrarlamak için:
-
-```sh
-cargo test --locked converters::builtin::twitter
-cargo test --locked scripted_latency_comparison -- --ignored --nocapture
-cargo test --locked twitter::benchmarks -- --ignored --nocapture
-cargo test --locked live_fetch_three_level_quote -- --ignored --nocapture
-```
-
-`scripted_latency_comparison`, eski `facfe5a` akışıyla yeni planı aynı gecikmeli uç
-simülasyonlarında, cache'siz ve üçer örnekle karşılaştırır; çıktı eşitliğini de doğrular.
-Canlı testler salt okunurdur, Discord'a mesaj göndermez; upstream cache/konum/ağ etkileri
-nedeniyle bunların süreleri kontrollü karşılaştırmadan ve üretim ölçümlerinden ayrı tutulmalıdır.
-Windows'ta MSVC linker hazır değilse mevcut GNU/LLVM toolchain'iyle aynı kontroller
-`cargo +stable-x86_64-pc-windows-gnullvm ...` şeklinde çalıştırılabilir; global ayar değişmez.
+[MIT](LICENSE) © 2026 Eray

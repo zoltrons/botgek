@@ -1,0 +1,53 @@
+name: Özellik önerisi
+description: Yeni bir özellik veya iyileştirme önerin
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Önerinizi kullanım senaryosuyla birlikte anlatın. Büyük değişiklikler için önce kapsamı
+        konuşmak, uygulamadan önce zaman kazandırır.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Ön kontroller
+      options:
+        - label: Mevcut issue'larda benzer bir öneri aradım.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Hangi sorunu çözüyor?
+      description: Mevcut davranışın neden yetersiz olduğunu anlatın.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Önerilen çözüm
+      description: Davranış, komut, ayar veya arayüz önerinizi açıklayın.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Düşünülen alternatifler
+  - type: dropdown
+    id: area
+    attributes:
+      label: İlgili alan
+      options:
+        - Dönüştürücü / platform
+        - Kart görünümü
+        - Yönetim paneli
+        - AI sohbeti
+        - Komutlar
+        - Docker / dağıtım
+        - Dokümantasyon
+        - Diğer
+  - type: textarea
+    id: extra
+    attributes:
+      label: Ek bağlam
+      description: Ekran görüntüsü, örnek bağlantı veya benzer projelerdeki çözümler.

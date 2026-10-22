@@ -532,8 +532,7 @@ pub struct EngineSettings {
     /// Kullanıcı linki **yanıt olarak** attığında taklit yerine bot mesajı gönderilir.
     /// Discord webhook mesajları yanıt olamadığı için bu ayar yanıt bağlantısını korur.
     pub impersonate_skip_replies: bool,
-    /// Kart gösterim stili: fxembed tarzı klasik embed / otomatik / her zaman modern kart.
-    /// Modern kartta kullanılan özel emoji seti (boş alan → Unicode varsayılan).
+    /// Components V2 kartında kullanılan özel emoji seti (boş alan → Unicode varsayılan).
     pub emojis: EmojiSettings,
 }
 

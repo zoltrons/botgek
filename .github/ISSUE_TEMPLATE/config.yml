@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Dokümantasyon
+    url: https://github.com/zoltrons/botgek/tree/main/docs
+    about: Kurulum, yapılandırma, mimari ve işletim belgeleri.
+  - name: Güvenlik açığı bildirimi
+    url: https://github.com/zoltrons/botgek/security/advisories/new
+    about: Güvenlik açıklarını lütfen herkese açık issue olarak açmayın.
