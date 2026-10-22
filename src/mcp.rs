@@ -889,6 +889,7 @@ async fn discord_test_card(state: &WebState, args: &Value) -> Result<Value, Stri
     .await
     .map_err(|error| format!("test kartı gönderilemedi: {error}"))?;
     let send_ms = send_started.elapsed().as_millis();
+    crate::telemetry::record_phase(crate::telemetry::Phase::Send, send_started.elapsed());
 
     let mut deleted = false;
     if delete {
