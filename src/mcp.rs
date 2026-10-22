@@ -1091,4 +1091,99 @@ mod tests {
         assert!(diagnostics_snapshot("process").unwrap()["process"].is_object());
         assert!(diagnostics_snapshot("bilinmeyen").is_err());
     }
+
+    /// Canlı Discord testi: yetkili test kanalına gerçek bir Components V2 kartı gönderir,
+    /// REST telemetrisinin arttığını doğrular ve mesajı siler.
+    ///
+    /// Gerekli ortam: `DISCORD_TOKEN`, `BOTGEK_TEST_CHANNEL_ID`, `BOTGEK_TEST_GUILD_ID`.
+    /// İsteğe bağlı: `BOTGEK_TEST_URL`.
+    #[tokio::test]
+    #[ignore = "live Discord test: posts and deletes a real card"]
+    async fn live_discord_test_card_records_rest_metrics() {
+        use serenity::all::{ChannelId, GuildId};
+
+        dotenvy::dotenv().ok();
+        let token = std::env::var("DISCORD_TOKEN").expect("DISCORD_TOKEN");
+        let channel_id: u64 = std::env::var("BOTGEK_TEST_CHANNEL_ID")
+            .expect("BOTGEK_TEST_CHANNEL_ID")
+            .parse()
+            .expect("channel id");
+        let guild_id: u64 = std::env::var("BOTGEK_TEST_GUILD_ID")
+            .expect("BOTGEK_TEST_GUILD_ID")
+            .parse()
+            .expect("guild id");
+        let url = std::env::var("BOTGEK_TEST_URL").unwrap_or_else(|_| {
+            "https://x.com/chickemwingss/status/2113175139865219414".to_string()
+        });
+
+        let config = crate::config::Config::from_env().expect("config");
+        let settings = crate::settings::AppSettings::default();
+        let engine = settings
+            .get_guild_settings(Some(GuildId::new(guild_id)))
+            .engine;
+        let domains = PlatformDomains {
+            tiktok: engine.domain_for("tiktok", &config),
+            bluesky: engine.domain_for("bluesky", &config),
+            spotify: engine.domain_for("spotify", &config),
+        };
+        let parsed = parser::parse_message_with_domains(&url, &domains).expect("parsed url");
+        let client = reqwest::Client::new();
+        let http = serenity::all::Http::new(&token);
+        let fetched = builtin::fetch(&client, &parsed, &engine, &config)
+            .await
+            .expect("fetch");
+        let options = builtin::render::RenderOptions::from_engine(
+            &engine,
+            builtin::platform_key(parsed.platform),
+        );
+        let visible =
+            builtin::render::apply_visibility(&fetched, false, engine.sensitive_mode, None);
+        let plan = builtin::render::plan_media(&visible, &options);
+        let resolved = builtin::render::resolve_media(&client, &visible, &plan, &options).await;
+        let payload = builtin::v2::build_payload(&builtin::v2::V2Card {
+            post: &visible,
+            options: &options,
+            resolved: &resolved,
+            emojis: &engine.emojis,
+            spoiler: false,
+            sender: None,
+            user_comment: parsed.user_comment.as_deref(),
+            impersonation: None,
+            allowed_mentions: None,
+        });
+
+        let message_id = builtin::raw::send_channel_message(
+            &client,
+            &token,
+            ChannelId::new(channel_id),
+            &payload,
+            &resolved.attachments,
+        )
+        .await
+        .expect("test card send");
+        let deleted = ChannelId::new(channel_id)
+            .delete_message(&http, message_id)
+            .await;
+        assert!(deleted.is_ok(), "test card should be deleted: {deleted:?}");
+
+        let snapshot = crate::telemetry::snapshot();
+        let route = snapshot["rest"]["routes"]
+            .as_array()
+            .expect("rest routes")
+            .iter()
+            .find(|route| route["route"] == "channel_message")
+            .expect("channel_message route");
+        assert!(
+            route["requests"].as_u64().unwrap_or(0) >= 1,
+            "channel_message request recorded: {route}"
+        );
+        assert!(
+            route["success"].as_u64().unwrap_or(0) >= 1,
+            "channel_message success recorded: {route}"
+        );
+        println!(
+            "test card sent: guild={guild_id} channel={channel_id} message={} send_metrics={route}",
+            message_id.get()
+        );
+    }
 }
