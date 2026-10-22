@@ -91,15 +91,19 @@ pub fn record(platform: &str, ok: bool, elapsed: Duration) {
 // HİSTOGRAM
 // =====================================================================================
 
-/// Sabit kovalı, atomik histogram. p50/p90/p95/p99 değerleri kova sınırlarından
-/// **yaklaşık** hesaplanır; `buckets` alanı kesin dağılımı verir.
+/// Sabit kovalı, atomik histogram. `p50/p90/p95/p99` yaşam boyu kovalardan **yaklaşık**;
+/// `recent_*` alanları son 64 gözlemin **tam** yüzdeleridir. `buckets` kesin dağılımı verir.
 pub struct Histogram {
     buckets: [AtomicU64; BUCKET_COUNT],
     count: AtomicU64,
     sum_us: AtomicU64,
     min_us: AtomicU64,
     max_us: AtomicU64,
+    recent: [AtomicU64; RECENT_CAPACITY],
+    recent_cursor: AtomicU64,
 }
+
+const RECENT_CAPACITY: usize = 64;
 
 impl Histogram {
     fn new() -> Self {
@@ -109,6 +113,8 @@ impl Histogram {
             sum_us: AtomicU64::new(0),
             min_us: AtomicU64::new(u64::MAX),
             max_us: AtomicU64::new(0),
+            recent: std::array::from_fn(|_| AtomicU64::new(0)),
+            recent_cursor: AtomicU64::new(0),
         }
     }
 
@@ -118,11 +124,26 @@ impl Histogram {
         self.sum_us.fetch_add(micros, RELAXED);
         self.min_us.fetch_min(micros, RELAXED);
         self.max_us.fetch_max(micros, RELAXED);
+        let cursor = self.recent_cursor.fetch_add(1, RELAXED) as usize;
+        self.recent[cursor % RECENT_CAPACITY].store(micros, RELAXED);
         let index = BUCKETS_US
             .iter()
             .position(|upper| micros <= *upper)
             .unwrap_or(BUCKET_COUNT - 1);
         self.buckets[index].fetch_add(1, RELAXED);
+    }
+
+    /// Son `RECENT_CAPACITY` gözlemin sıralı mikrosaniye değerleri.
+    fn recent_samples(&self) -> Vec<u64> {
+        let cursor = self.recent_cursor.load(RELAXED) as usize;
+        let count = self.count.load(RELAXED) as usize;
+        let valid = count.min(RECENT_CAPACITY);
+        let start = cursor.saturating_sub(valid);
+        let mut samples: Vec<u64> = (0..valid)
+            .map(|offset| self.recent[(start + offset) % RECENT_CAPACITY].load(RELAXED))
+            .collect();
+        samples.sort_unstable();
+        samples
     }
 
     #[cfg(test)]
@@ -145,6 +166,7 @@ impl Histogram {
             }));
         }
         let count = self.count.load(RELAXED);
+        let recent = self.recent_samples();
         if count == 0 {
             return json!({
                 "count": 0,
@@ -155,6 +177,10 @@ impl Histogram {
                 "p95_ms": Value::Null,
                 "p99_ms": Value::Null,
                 "max_ms": Value::Null,
+                "recent_count": 0,
+                "recent_p50_ms": Value::Null,
+                "recent_p95_ms": Value::Null,
+                "recent_max_ms": Value::Null,
                 "buckets": buckets
             });
         }
@@ -169,9 +195,21 @@ impl Histogram {
             "p95_ms": percentile(0.95),
             "p99_ms": percentile(0.99),
             "max_ms": max_us.div_ceil(1_000),
+            "recent_count": recent.len(),
+            "recent_p50_ms": exact_percentile_ms(&recent, 0.50),
+            "recent_p95_ms": exact_percentile_ms(&recent, 0.95),
+            "recent_max_ms": recent.last().map_or(Value::Null, |value| json!(value.div_ceil(1_000))),
             "buckets": buckets
         })
     }
+}
+
+fn exact_percentile_ms(samples: &[u64], fraction: f64) -> Value {
+    if samples.is_empty() {
+        return Value::Null;
+    }
+    let index = (((samples.len() - 1) as f64) * fraction).round() as usize;
+    json!(samples[index].div_ceil(1_000))
 }
 
 fn percentile_ms(counts: &[u64; BUCKET_COUNT], count: u64, fraction: f64, max_us: u64) -> u64 {
@@ -326,11 +364,12 @@ impl RouteClass {
     }
 }
 
-/// Yaygın Discord durum kodları; diğerleri `other_4xx`/`other_5xx` altında toplanır.
+/// Yaygın Discord durum kodları; diğerleri `2xx`/`other_4xx`/`other_5xx` altında toplanır.
 const STATUS_CODES: [u16; 10] = [400, 401, 403, 404, 408, 429, 500, 502, 503, 504];
-const STATUS_SLOT_COUNT: usize = STATUS_CODES.len() + 2;
-const OTHER_4XX: usize = STATUS_CODES.len();
-const OTHER_5XX: usize = STATUS_CODES.len() + 1;
+const STATUS_SLOT_COUNT: usize = STATUS_CODES.len() + 3;
+const OTHER_2XX: usize = STATUS_CODES.len();
+const OTHER_4XX: usize = STATUS_CODES.len() + 1;
+const OTHER_5XX: usize = STATUS_CODES.len() + 2;
 
 struct RouteMetrics {
     requests: AtomicU64,
@@ -379,7 +418,9 @@ fn status_slot(status: u16) -> usize {
     STATUS_CODES
         .iter()
         .position(|code| *code == status)
-        .unwrap_or(if (400..500).contains(&status) {
+        .unwrap_or(if (200..300).contains(&status) {
+            OTHER_2XX
+        } else if (400..500).contains(&status) {
             OTHER_4XX
         } else {
             OTHER_5XX
@@ -787,7 +828,9 @@ fn rest_snapshot() -> Value {
                 if count == 0 {
                     continue;
                 }
-                let key = if index == OTHER_4XX {
+                let key = if index == OTHER_2XX {
+                    "2xx".to_string()
+                } else if index == OTHER_4XX {
                     "other_4xx".to_string()
                 } else if index == OTHER_5XX {
                     "other_5xx".to_string()
@@ -1061,6 +1104,10 @@ mod tests {
         let p95 = snapshot["p95_ms"].as_u64().unwrap();
         assert!(p50 <= p90 && p90 <= p95);
         assert!(p50 >= 1 && p95 >= 10);
+        assert_eq!(snapshot["recent_count"], 5);
+        assert_eq!(snapshot["recent_p50_ms"], 3);
+        assert_eq!(snapshot["recent_p95_ms"], 600);
+        assert_eq!(snapshot["recent_max_ms"], 600);
         assert_eq!(snapshot["buckets"].as_array().unwrap().len(), BUCKET_COUNT);
     }
 
@@ -1069,6 +1116,17 @@ mod tests {
         let snapshot = Histogram::new().snapshot();
         assert_eq!(snapshot["count"], 0);
         assert!(snapshot["p95_ms"].is_null());
+        assert!(snapshot["recent_p95_ms"].is_null());
+    }
+
+    #[test]
+    fn success_status_is_not_counted_as_server_error() {
+        assert_eq!(status_slot(200), OTHER_2XX);
+        assert_eq!(status_slot(201), OTHER_2XX);
+        assert_eq!(status_slot(403), 2);
+        assert_eq!(status_slot(429), 5);
+        assert_eq!(status_slot(418), OTHER_4XX);
+        assert_eq!(status_slot(501), OTHER_5XX);
     }
 
     #[test]
