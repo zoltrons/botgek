@@ -618,6 +618,10 @@ impl pipeline::Fetcher for HttpFetcher {
 ///
 /// Dil eki (`/tr`) verildiğinde yanıt `translation` alanında X'in kendi Grok çevirisini
 /// taşır; topluluk notu (`communityNote`) her yanıtta mevcuttur (yoksa null).
+///
+/// **Metin eksik olabilir:** uzun (note) gönderilerde vx metni ilk bağlantıda keser ve geri
+/// kalanını hiç döndürmez (bkz. Wario64/2113285272523968617). Gönderinin tamamını yalnızca
+/// FxTwitter verdiği için kök metni planlayıcıda FxTwitter yanıtıyla tamamlanır.
 async fn from_vxtwitter(
     client: &reqwest::Client,
     original_url: &str,

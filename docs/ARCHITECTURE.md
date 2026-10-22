@@ -91,8 +91,10 @@ VxTwitter/otomatik çeviri yolu gelen veriye göre yeniden planlanır; kart gön
 değişmez.
 
 - Soğuk okumada orijinal Vx verisi, syndication metadatası ve çeviri açıksa dil ekli Vx yanıtı paralel
-  istenir. Metrikler açıksa ve kaynakta görüntülenme yoksa FxTwitter yalnızca bu eksiği tamamlamak için
-  paralel çağrılır.
+  istenir. FxTwitter kökün eksik kalan alanlarını tamamlar: görüntülenme ve **tam metin**. VxTwitter uzun
+  (note) gönderilerde metni ilk bağlantıda, syndication 280 karakterde keser; gönderinin tamamını yalnızca
+  FxTwitter döndürür. İstek metrikler açıkken her zaman, gizliyken yalnızca kaynak metni kestiğini
+  bildirdiğinde yapılır; gelen uzun metin eldeki metnin devamıysa kart onu kullanır (çeviri varsa ezilmez).
 - Dil ekli yanıt spekülatiftir: İngilizce/Türkçe metinde beklenmez; yabancı dilde ikinci bir seri ağ turu
   oluşmaz. Gereksizleşen okumalar iptal edilir.
 - `qrtURL: null` ile eksik `qrtURL` birbirinden ayrılır. Bilinen üçüncü gönderi doğrudan çekilir; sırf

@@ -57,8 +57,8 @@ enum Work {
     Rich,
     TranslatedRoot,
     Metadata,
-    /// Kaynağın vermediği metrikleri (özellikle görüntülenme) FxTwitter'dan tamamlar.
-    Metrics,
+    /// Kökün eksik kalan alanlarını (görüntülenme ve **tam metin**) FxTwitter'dan tamamlar.
+    Fx,
     Translation(String),
     Quote(QuoteFetch),
     Preview(String),
@@ -70,7 +70,7 @@ impl Work {
             Self::Rich => "rich".to_string(),
             Self::TranslatedRoot => "translated-root".to_string(),
             Self::Metadata => "metadata".to_string(),
-            Self::Metrics => "metrics".to_string(),
+            Self::Fx => "fx".to_string(),
             Self::Translation(url) => format!("translation:{}", identity(url)),
             Self::Quote(QuoteFetch::Direct(url)) => format!("direct:{}", identity(url)),
             Self::Quote(QuoteFetch::Inspect(url)) => format!("inspect:{}", identity(url)),
@@ -207,24 +207,20 @@ async fn acquire_with_budgets<F: Fetcher>(
         apply(&mut root, Work::TranslatedRoot, snapshot);
     }
     let mut rich_finished = root.is_some();
-    // Görüntülenme sayısını vx/syndication vermez; kartta metrikler açıksa ve önbellekte
-    // henüz bir değer yoksa FxTwitter yalnızca bu eksiği tamamlamak için paralel istenir.
-    // İsteğe bağlıdır: zenginleştirme bütçesi dolunca kart görüntülenmesiz gönderilir.
-    if engine.show_metrics
-        && root
-            .as_ref()
-            .is_none_or(|snapshot| snapshot.post.stats.views.is_none())
-    {
-        spawn(
-            &mut tasks,
-            &mut pending,
-            fetcher.clone(),
-            Work::Metrics,
-            Request::Fx {
-                url: url.to_string(),
-            },
-        );
-    }
+    // FxTwitter kökün iki eksiğini birlikte tamamlar: görüntülenme (vx/syndication vermez) ve
+    // **tam metin**. VxTwitter uzun (note) gönderilerde metni ilk bağlantıda keser, syndication
+    // 280 karakterde keser; gönderinin tamamını yalnızca FxTwitter döndürür. Metrikler kartta
+    // gizliyken de istenir: eksik metin görünür bir kusurdur, görüntülenme değil. İstek diğer
+    // kaynaklarla paraleldir, zenginleştirme bütçesiyle sınırlıdır ve önbellekteki yanıt anında döner.
+    spawn(
+        &mut tasks,
+        &mut pending,
+        fetcher.clone(),
+        Work::Fx,
+        Request::Fx {
+            url: url.to_string(),
+        },
+    );
     if !rich_finished {
         spawn(
             &mut tasks,
@@ -348,8 +344,9 @@ async fn acquire_with_budgets<F: Fetcher>(
                             })
                     }
                     Work::Metadata => false,
-                    // Görüntülenme zaten geldiyse ya da kartta metrikler gizliyse bekleme.
-                    Work::Metrics => engine.show_metrics && snapshot.post.stats.views.is_none(),
+                    // Kart metni veya görüntülenme eksik olabilir; ikisi de bu yanıttan gelir.
+                    // İsteğe bağlıdır: zenginleştirme bütçesi dolunca eldeki veriyle gönderilir.
+                    Work::Fx => true,
                     Work::Translation(url) => translation_needed(&plan, url, &checked),
                     Work::Quote(quote) => plan.quote.as_ref() == Some(quote),
                     // İsteğe bağlı ama ucuz: bütçe dolana kadar karta eklenmesini bekle.
@@ -457,9 +454,10 @@ fn apply(root: &mut Option<Snapshot>, work: Work, snapshot: Snapshot) {
             Some(current) => merge_post(&mut current.post, &snapshot.post),
             None => *root = Some(snapshot),
         },
-        // Yalnızca eksik metrikleri tamamlar; metin/çeviri/medyayı ezmez. Kart hiç
-        // oluşmadıysa FxTwitter'ın tam yanıtı yedek başlangıç verisi olarak kullanılır.
-        Work::Metrics => match root {
+        // Eksik metrikleri ve kaynağın kestiği metni tamamlar; metin yalnızca eldeki metnin
+        // devamı geldiğinde değişir (bkz. [`merge_post`]). Kart hiç oluşmadıysa FxTwitter'ın
+        // tam yanıtı yedek başlangıç verisi olarak kullanılır.
+        Work::Fx => match root {
             Some(current) if identity(&current.post.url) == identity(&snapshot.post.url) => {
                 merge_post(&mut current.post, &snapshot.post);
             }
@@ -556,7 +554,14 @@ fn merge_post(target: &mut BuiltinPost, fresh: &BuiltinPost) {
     if identity(&target.url) != identity(&fresh.url) {
         return;
     }
-    if fresh.translation.is_some() || target.text.is_empty() {
+    // Metin, gelen yanıt eldeki metnin **kesilmiş hâlini tamamlıyorsa** yenilenir: kaynaklar
+    // gönderiyi farklı yerlerde keser (vx ilk bağlantıda, syndication 280 karakterde), bu yüzden
+    // geç gelen uzun metin kartın görünen metnini düzeltir. Çevirisi olan metin ezilmez: çeviri
+    // eldeki metne ait kalır.
+    let completes_text = target.translation.is_none()
+        && fresh.translation.is_none()
+        && continues_text(&target.text, &fresh.text);
+    if fresh.translation.is_some() || target.text.is_empty() || completes_text {
         target.text.clone_from(&fresh.text);
         target.translation.clone_from(&fresh.translation);
     }
@@ -579,6 +584,17 @@ fn merge_post(target: &mut BuiltinPost, fresh: &BuiltinPost) {
         (None, Some(quote)) => target.quote = Some(Box::new(quote.clone())),
         _ => {}
     }
+}
+
+/// `fresh` metni `current` metninin **devamı** mı (yani `current` onun kesilmiş hâli mi)?
+///
+/// Kaynaklar gönderiyi farklı noktalarda keser ve kesim genellikle kelime/bağlantı sınırına
+/// denk geldiği için yalnızca sondaki boşluk atılır. Metin aynıysa ya da `fresh` daha kısa/eşitse
+/// yeni bir şey öğrenilmemiştir; o zaman eldeki metin korunur.
+fn continues_text(current: &str, fresh: &str) -> bool {
+    let current = current.trim_end();
+    let fresh = fresh.trim_end();
+    !current.is_empty() && fresh.len() > current.len() && fresh.starts_with(current)
 }
 
 #[cfg(test)]
@@ -956,6 +972,7 @@ mod tests {
                     NestedHint::Present(post(3, "ja").url),
                 )),
             ),
+            ("fx:1", 30, Ok(snapshot(root.clone(), NestedHint::Unknown))),
         ]);
         let settings = EngineSettings {
             auto_translate: false,
@@ -966,7 +983,21 @@ mod tests {
             .await
             .unwrap();
         assert!(result.translation.is_none());
-        assert_eq!(fetcher.calls.lock().unwrap().len(), 2);
+        assert_eq!(
+            fetcher.count("vx:1:tr"),
+            0,
+            "çeviri kapalıyken dil yanıtı istenmez"
+        );
+        assert_eq!(
+            fetcher.count("inspect:2"),
+            0,
+            "alıntı gizliyken keşif isteği yoktur"
+        );
+        assert_eq!(
+            fetcher.calls.lock().unwrap().len(),
+            3,
+            "yalnızca kök, metadata ve FxTwitter tamamlama isteği"
+        );
     }
 
     #[tokio::test]
@@ -1202,10 +1233,14 @@ mod tests {
         assert_eq!(fetcher.count("fx:1"), 1);
     }
 
-    /// Metrikler kartta gizliyse görüntülenme için ek istek atılmaz.
+    /// Metrikler kartta gizliyken de FxTwitter istenir: kaynağın kestiği metni yalnızca o
+    /// tamamlar (bkz. `truncated_source_text_is_completed_from_fxtwitter`). Görüntülenme aynı
+    /// yanıtla gelir; kartta metrikler gizli olduğu için görünmez.
     #[tokio::test]
-    async fn metrics_are_not_requested_when_the_card_hides_them() {
+    async fn fx_is_requested_for_the_root_even_when_metrics_are_hidden() {
         let root = post(1, "en");
+        let mut metrics = root.clone();
+        metrics.stats.views = Some(9_000);
         let fetcher = FakeFetcher::new(vec![
             ("meta:1", 5, Ok(snapshot(root.clone(), NestedHint::Absent))),
             (
@@ -1213,14 +1248,99 @@ mod tests {
                 20,
                 Ok(snapshot(root.clone(), NestedHint::Absent)),
             ),
+            ("fx:1", 40, Ok(snapshot(metrics, NestedHint::Unknown))),
         ]);
 
         let result = acquire(fetcher.clone(), &root.url, &engine())
             .await
             .unwrap();
 
-        assert_eq!(fetcher.count("fx:1"), 0);
-        assert_eq!(result.stats.views, None);
+        assert_eq!(fetcher.count("fx:1"), 1);
+        assert_eq!(result.text, root.text);
+    }
+
+    /// VxTwitter uzun (note) gönderilerde metni ilk bağlantıda keser: kartın yalnızca ilk
+    /// satırı değil, gönderinin tamamı görünmelidir (bkz. Wario64/2113285272523968617).
+    #[tokio::test]
+    async fn truncated_source_text_is_completed_from_fxtwitter() {
+        let mut root = post(1, "en");
+        root.text = "'Sony reportedly exits UHD Blu-ray player market'".to_string();
+        let mut full = root.clone();
+        full.text = format!(
+            "{} https://example.com/haber\n\nİkinci paragraf.",
+            root.text
+        );
+        let fetcher = FakeFetcher::new(vec![
+            (
+                "vx:1:original",
+                20,
+                Ok(snapshot(root.clone(), NestedHint::Absent)),
+            ),
+            ("fx:1", 40, Ok(snapshot(full.clone(), NestedHint::Unknown))),
+        ]);
+
+        // Metrikler gizli: istek yine de tam metin için yapılır.
+        let result = acquire(fetcher.clone(), &root.url, &engine())
+            .await
+            .unwrap();
+
+        assert_eq!(result.text, full.text);
+        assert_eq!(fetcher.count("fx:1"), 1);
+    }
+
+    /// Kesik metin tamamlanırken çeviri ezilmez: çeviri eldeki metne aittir.
+    #[tokio::test]
+    async fn text_completion_never_replaces_a_translation() {
+        let mut current = post(1, "en");
+        current.text = "kısa".to_string();
+        current.translation = Some(Translation {
+            source: Some("en".to_string()),
+        });
+        let mut fresh = post(1, "en");
+        fresh.text = "kısa ama tam metin".to_string();
+
+        merge_post(&mut current, &fresh);
+
+        assert_eq!(current.text, "kısa");
+        assert!(current.translation.is_some());
+    }
+
+    /// Metin tamamlama isteğe bağlıdır: zenginleştirme bütçesini aşan yanıt kartı bekletmez.
+    #[tokio::test]
+    async fn a_slow_text_completion_does_not_delay_the_card() {
+        let mut root = post(1, "en");
+        root.text = "kesik".to_string();
+        let mut full = root.clone();
+        full.text = "kesik ama tam metin".to_string();
+        let fetcher = FakeFetcher::new(vec![
+            (
+                "vx:1:original",
+                20,
+                Ok(snapshot(root.clone(), NestedHint::Absent)),
+            ),
+            ("fx:1", 600, Ok(snapshot(full, NestedHint::Unknown))),
+        ]);
+
+        let started = Instant::now();
+        let result = acquire_with_budgets(
+            fetcher,
+            &root.url,
+            &engine(),
+            Duration::from_millis(120),
+            Duration::from_millis(1_000),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "tam metin isteği kartı bekletti: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            result.text, "kesik",
+            "bütçe dolduktan sonra gelen metin karta girmemeli"
+        );
     }
 
     /// Görüntülenme isteği isteğe bağlıdır: zenginleştirme bütçesini aşan yanıt kartı bekletmez.
@@ -1475,6 +1595,7 @@ mod tests {
                 )),
             ),
             ("vx:3:original", 20, Ok(snapshot(third, NestedHint::Absent))),
+            ("fx:1", 30, Ok(snapshot(root.clone(), NestedHint::Unknown))),
         ]);
         let fetcher = CachedFetcher {
             inner: inner.clone(),
