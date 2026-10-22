@@ -71,6 +71,7 @@ Geri yüklemede güncel ayar dosyasını `BOTGEK_SETTINGS_PATH` ile gösterilen 
 | `GET /api/health` | Yok | Public liveness; yalnızca HTTP sunucusunun ayakta olduğunu söyler. `OK` döner. |
 | `GET /api/ready` | Gerekir | Discord bağlantısını ve kalıcı SQLite erişimini kontrol eder; bozuk durumda `503`. |
 | `GET /api/metrics` | Gerekir | Platform bazlı native başarı/hata, kümülatif gecikme histogramı, cache-hit ve kapasite aşımı sayıları. Süreç yeniden başlayınca sıfırlanır; kullanıcı/veri/token içermez. |
+| `POST /mcp` | `MCP_TOKEN` (Bearer) | Geliştirme/teşhis MCP endpoint'i; token boşsa `503`. Ayrıntılar: [MCP.md](MCP.md). |
 
 `/api/health` tek başına botun Discord'a bağlı olduğunu kanıtlamaz; orkestrasyon readiness için
 `/api/ready` kullanmalıdır.

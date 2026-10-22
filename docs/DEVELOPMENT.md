@@ -47,6 +47,15 @@ Rust panel testleri gömülü varlıkları ve API uçlarını gerçek HTTP iste�
 sunucuda tanımlı API yollarını çağırdığını da kontrol eder. Node testleri ise panelin ayar çözümleme
 mantığını ve kayıt/yarış davranışını tarayıcı bağlamında çalıştırır.
 
+MCP endpoint'inin kimlik doğrulama, `tools/list`, `tools/call`, `settings_patch` ve eski `initialize`
+akışını kapsayan entegrasyon testi:
+
+```sh
+cargo test --locked web::tests::mcp_endpoint_authenticates_and_serves_tools
+```
+
+MCP kurulumu, araçlar ve sınırlar: [MCP.md](MCP.md).
+
 ### Canlı testler
 
 Canlı testler açıkça ignore edilir ve yalnızca bilerek çalıştırılır:

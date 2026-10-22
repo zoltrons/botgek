@@ -18,6 +18,8 @@ modelini ve tasarım kararlarının nedenlerini açıklar.
 | `src/settings.rs` | Ayar şeması, kapsam çözümleme, doğrulama, atomik yazma ve göç. |
 | `src/store.rs` | Kart–paylaşan kullanıcı kaydı (SQLite, WAL). |
 | `src/web/` | Axum API'si, oturum kimlik doğrulaması ve gömülü panel varlıkları. |
+| `src/mcp.rs` | `/mcp` MCP Streamable HTTP endpoint'i, Bearer kimlik doğrulaması ve araçları. |
+| `src/logs.rs` | MCP için 512 olaylık bellek içi log halkası. |
 | `src/ai/` | OpenRouter istemcisi, model normalizasyonu ve yedek model zinciri. |
 | `src/policy.rs` | Rol filtresi kararları. |
 | `src/telemetry.rs` | Süreç içi sayaçlar ve gecikme histogramı. |
@@ -156,6 +158,23 @@ adreslerine gider:
 - İstemci adresi başına 60 saniyede 20 başarısız girişten sonra giriş reddedilir; izlenen adres tablosu
   1024 girdiyle sınırlıdır. Eşzamanlı oturum sayısı 64'tür.
 - Uygulama TLS sonlandırmaz; uzak erişimde HTTPS ters proxy veya SSH tüneli gerekir.
+
+## MCP teşhis sunucusu
+
+- WebUI ile aynı Axum sunucusunda `/mcp` yolunda **Streamable HTTP** MCP endpoint'i yayınlanır; ayrı
+  port, container veya servis yoktur. Yalnızca `POST` kabul edilir.
+- `MCP_TOKEN` 32–512 karakter olmalı ve `ADMIN_TOKEN`'dan farklı olmalıdır. Token tanımsız/geçersizse
+  endpoint **503** döner; panel ve Discord botu etkilenmez. Bearer token sabit zamanlı karşılaştırılır.
+- İstekte `Origin` varsa `Host` ile aynı olmalıdır (DNS rebinding koruması). Modern
+  `2026-07-28` (`server/discover`) ve eski `initialize` akışları desteklenir.
+- Araçlar: `bot_status`, `bot_metrics`, `bot_logs`, `settings_get`, `settings_patch`,
+  `discord_overview`, `db_stats`, `db_query`, `convert_preview`.
+- `db_query` tek bir salt okunur `SELECT`/`WITH` çalıştırır (en fazla 200 satır); `settings_patch`
+  kalıcıdır ve botu anında etkiler; `convert_preview` Discord'a mesaj göndermez.
+- `bot_logs` süreç ömrüyle sınırlı 512 olaylık bellek halkasından okur; diske yazılmaz ve hassas veri
+  ayrıştırması yapmaz.
+
+Kurulum, istemci kaydı ve çağrı örnekleri: [MCP.md](MCP.md).
 
 ## AI ve çeviri
 

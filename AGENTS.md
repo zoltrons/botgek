@@ -19,4 +19,4 @@ Single-context: one `GLOSSARY.md` at the repo root, architecture decisions in `d
 ## Bot MCP server
 
 The bot serves a development/debug MCP server at `/mcp` on the WebUI address, guarded by
-`MCP_TOKEN`. Setup, client registration, call examples, tools, and limits: [mcp.md](mcp.md).
+`MCP_TOKEN`. Setup, client registration, call examples, tools, and limits: [docs/MCP.md](docs/MCP.md).

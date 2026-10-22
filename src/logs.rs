@@ -1,6 +1,6 @@
 //! Bellek içi, sınırlı log halkası.
 //!
-//! WebUI/MCP üzerinden son çalışma zamanı loglarını görebilmek için `tracing` olayları
+//! MCP üzerinden son çalışma zamanı loglarını görebilmek için `tracing` olayları
 //! yakalanır. Halka **süreç ömrüyle** sınırlıdır ve kapasiteye ulaşınca en eski girdi
 //! düşer; diske yazılmaz, kullanıcı kimliği/URL/token ayrıştırması yapılmaz. Amaç,
 //! üretimde `docker compose logs` gerektirmeden son hataları ve yavaşlık uyarılarını

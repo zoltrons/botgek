@@ -27,6 +27,7 @@ yayınlanana kadar ayrıntıları gizli tutun.
 Özellikle şu alanlar inceleme kapsamındadır:
 
 - Yönetim paneli kimlik doğrulaması, oturum ve CSRF kontrolleri,
+- MCP endpoint kimlik doğrulaması, Origin kontrolü ve salt okunur SQL sınırları,
 - Kullanıcı girdisinden gelen URL'lerde SSRF ve DNS rebinding koruması,
 - Kart render yolunda XSS, markdown ve mention enjeksiyonu,
 - Ayar dosyası ve göç mantığında yetkisiz erişim veya veri kaybı,
@@ -39,6 +40,8 @@ yayınlanana kadar ayrıntıları gizli tutun.
 - HTTPS arkasında `WEB_SECURE_COOKIE=true` ayarlayın. Uygulama TLS sonlandırmaz.
 - `ADMIN_TOKEN` için en az 32 karakterlik rastgele bir sır üretin (`openssl rand -hex 32`) ve düzenli
   olarak döndürün.
+- `MCP_TOKEN`'ı `ADMIN_TOKEN`'dan ayrı tutun; MCP endpoint'i panel ile aynı adreste yayınlandığı için
+  aynı erişim sınırlamalarına tabi tutun.
 - Botu en az yetkiyle davet edin. **Manage Webhooks** yalnızca impersonation gerekiyorsa verilmelidir.
 - `.env` dosyasını Git dışında tutun ve dosya izinlerini kısıtlayın.
 - `docker compose` kullanıyorsanız non-root kullanıcı, salt okunur kök dosya sistemi ve `cap_drop: ALL`

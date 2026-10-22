@@ -14,6 +14,7 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | --- | --- | --- |
 | `DISCORD_TOKEN` | — (**zorunlu**) | Discord bot tokenı. |
 | `ADMIN_TOKEN` | boş | Yönetim paneli sırrı. **32–512 karakter**, başında/sonunda boşluk olmadan. Boşsa panel açılmaz; bot çalışır. |
+| `MCP_TOKEN` | boş | `/mcp` MCP sunucusu için Bearer token. **32–512 karakter**, `ADMIN_TOKEN`'dan farklı olmalı. Boş veya geçersizse endpoint kapalıdır (503); panel ve bot çalışır. |
 | `WEB_PORT` | `3000` | Panel HTTP portu. Geçersiz değer uyarıyla `3000`'e döner. |
 | `WEB_BIND` | `127.0.0.1` | Panelin bağlanacağı adres. Docker'da container içinde `0.0.0.0` kullanılır, port host tarafında yalnızca loopback'e yayınlanır. |
 | `WEB_SECURE_COOKIE` | `false` | HTTPS ters proxy arkasında `true` yapın; oturum çerezine `Secure` ekler. |
@@ -150,6 +151,9 @@ yazmak gerekmez.
 - İstemci adresi başına 60 saniyede 20 başarısız girişten sonra giriş reddedilir; izlenen adres tablosu
   1.024 girdiyle sınırlıdır. Eşzamanlı oturum sayısı 64'tür.
 - Tokenı döndürmek için `.env` değerini değiştirip botu yeniden başlatın.
+
+Aynı adreste `/mcp` yolunda bir MCP endpoint'i de yayınlanır. Ayrı `MCP_TOKEN` ile korunur; token
+tanımsız/geçersizse kapalıdır ve paneli etkilemez. Kurulum, araçlar ve sınırlar: [MCP.md](MCP.md).
 
 Uygulama TLS sonlandırmaz. Uzak erişimde **HTTPS ters proxy** veya SSH tüneli kullanın ve
 `WEB_SECURE_COOKIE=true` ayarlayın; botun HTTP portunu doğrudan internete açmayın.

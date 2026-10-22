@@ -36,6 +36,8 @@ servisi gerekmez.
   bir Discord isteği yeniden denenmez ve 429 bekleme süresi kısaltılmaz.
 - **Yönetim paneli:** Global, sunucu ve kanal kapsamında modül, rol filtresi, motor ve çeviri ayarları;
   token ile korunan tek sayfa panel.
+- **MCP teşhis sunucusu:** WebUI ile aynı portta `/mcp`; sürüm, metrik, log, ayar, Discord cache'i,
+  salt okunur SQL ve Discord'a göndermeyen link önizlemesi. Ayrı servis veya port gerekmez.
 - **İsteğe bağlı AI sohbeti:** OpenRouter üzerinden; bot etiketlendiğinde veya botun mesajına yanıt
   verildiğinde çalışır. Rol filtresi, kullanıcı başına bekleme ve süreç geneli kapasite sınırı vardır.
 - **Çeviri:** X gönderileri için otomatik çeviri (`tr`, `en`, `de` veya herhangi bir BCP-47 kodu);
@@ -137,6 +139,33 @@ kapsamında çözümlenir.
 - Uzaktan erişimde **HTTPS ters proxy** veya SSH tüneli kullanın; panel TLS sonlandırmaz. HTTPS için
   `WEB_SECURE_COOKIE=true` ayarlayın.
 
+## MCP sunucusu (geliştirme ve teşhis)
+
+Bot, WebUI ile aynı adreste ve portta `/mcp` yolunda bir
+[Model Context Protocol](https://modelcontextprotocol.io) sunucusu yayınlar. Geliştirme ve teşhis
+sırasında sürüm, readiness, metrikler, son loglar, ayarlar, Discord cache'i, salt okunur SQL ve link
+önizlemesi ayrı bir servis veya port gerektirmeden tek noktadan okunur.
+
+- Endpoint `MCP_TOKEN` ile korunur; token boş veya geçersizse kapalıdır (**503**). `MCP_TOKEN`,
+  `ADMIN_TOKEN`'dan farklı ve **32–512 karakter** olmalıdır.
+- `settings_patch` kalıcıdır ve botu anında etkiler; `db_query` salt okunurdur; `convert_preview`
+  Discord'a mesaj göndermez.
+
+| Araç | Ne verir |
+| --- | --- |
+| `bot_status` | Sürüm, uptime, Discord readiness, veritabanı/ayar durumu. |
+| `bot_metrics` | Dönüşüm kuyruğu, platform başarı/hata ve gecikme kovaları. |
+| `bot_logs` | Bellekteki son loglar (en fazla 512 olay). |
+| `settings_get` | Etkin ayarlar ve içerik revizyonu. |
+| `settings_patch` | JSON merge patch; botu anında etkiler. |
+| `discord_overview` | Serenity cache'indeki sunucu/kanal/rol listesi. |
+| `db_stats` | Kart veritabanı yolu, kayıt sayısı ve dosya boyutu. |
+| `db_query` | Tek bir salt okunur `SELECT`/`WITH` (en fazla 200 satır). |
+| `convert_preview` | Bağlantıyı çözer, verisini çeker ve render planını döner. |
+
+Kurulum, DSH istemci kaydı, curl/PowerShell örnekleri, sınırlar ve sorun giderme:
+[docs/MCP.md](docs/MCP.md).
+
 ## Yapılandırma
 
 Tüm ayarlar ortam değişkenleri ve `settings.json` üzerinden yapılır. En sık kullanılanlar:
@@ -145,6 +174,7 @@ Tüm ayarlar ortam değişkenleri ve `settings.json` üzerinden yapılır. En s�
 | --- | --- | --- |
 | `DISCORD_TOKEN` | Evet | Discord bot tokenı. |
 | `ADMIN_TOKEN` | Panel için | 32–512 karakterlik yönetim sırrı. |
+| `MCP_TOKEN` | MCP için | `/mcp` endpoint'inin Bearer tokenı; boşsa endpoint kapalı. |
 | `WEB_PORT` / `WEB_BIND` | Hayır | Panel portu ve bağlanma adresi (varsayılan `3000` / `127.0.0.1`). |
 | `OPENROUTER_API_KEY` | Hayır | AI sohbetini etkinleştirir. |
 | `DELETE_ORIGINAL` | Hayır | Başarılı dönüşümden sonra orijinal mesajı siler. |
@@ -177,6 +207,8 @@ Discord mesajı
 | `src/settings.rs` | Ayar şeması, kapsam çözümleme, doğrulama ve göç. |
 | `src/store.rs` | SQLite tabanlı kart–paylaşan kaydı. |
 | `src/web/` | Axum API'si, kimlik doğrulama ve panel. |
+| `src/mcp.rs` | `/mcp` MCP sunucusu, kimlik doğrulama ve araçlar. |
+| `src/logs.rs` | MCP için 512 olaylık bellek içi log halkası. |
 | `src/ai/` | OpenRouter istemcisi. |
 
 Tasarım kararları, istek yaşam döngüsü ve bütçe ayrıntıları: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -218,6 +250,7 @@ sunucularını kullanır. Canlı testler `--ignored` ile açıkça çalıştır�
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modül haritası, istek yaşam döngüsü, bütçeler, önbellek, hata semantiği. |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Docker, yedekleme, sağlık uçları, loglama, performans ölçümü, CI/CD. |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Yerel kurulum, testler, canlı testler, sürüm akışı, yeni platform ekleme. |
+| [docs/MCP.md](docs/MCP.md) | MCP endpoint'i, istemci kaydı, araçlar, sınırlar ve sorun giderme. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Katkı akışı ve PR beklentileri. |
 | [SECURITY.md](SECURITY.md) | Güvenlik açığı bildirimi ve dağıtım sertleştirme listesi. |
 
