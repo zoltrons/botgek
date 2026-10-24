@@ -226,6 +226,14 @@ fn media_url(raw: &str, video: bool) -> Option<String> {
     Some(link_url(&url))
 }
 
+/// OG/meta değerini tek satıra indirir, boşsa `None`, uzunsa `limit` karaktere kısaltır.
+pub(super) fn meta_value(value: Option<String>, limit: usize) -> Option<String> {
+    value
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|text| !text.is_empty())
+        .map(|text| crate::utils::truncate_chars(&text, limit))
+}
+
 pub(super) fn plain_text(raw: &str) -> String {
     raw.chars()
         .filter(|ch| !ch.is_control() || *ch == '\n')

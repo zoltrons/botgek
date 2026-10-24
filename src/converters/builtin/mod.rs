@@ -124,6 +124,14 @@ pub use model::{
 
 /// JSON yanıtını çeker ve çözümler. Gövde boyutu `MAX_BODY_BYTES` ile sınırlıdır.
 pub async fn get_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
+    get_json_as(client, url).await
+}
+
+/// JSON yanıtını doğrudan `T`'ye çözümler: ara `serde_json::Value` ağacı kurulmaz.
+pub async fn get_json_as<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<T, String> {
     let body = get_text(client, url).await?;
     serde_json::from_str(&body).map_err(|e| format!("JSON çözümlenemedi ({url}): {e}"))
 }
@@ -161,40 +169,39 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
             response.status()
         ));
     }
-    if let Some(len) = response.content_length()
-        && len > MAX_BODY_BYTES as u64
-    {
-        telemetry::http_error(host, started.elapsed());
-        return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
-    }
-
-    let mut response = response;
-    let mut body: Vec<u8> = Vec::new();
-    loop {
-        let chunk = match response.chunk().await {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => break,
-            Err(error) => {
-                telemetry::http_error(host, started.elapsed());
-                return Err(format!("Yanıt gövdesi okunamadı ({url}): {error}"));
-            }
-        };
-        if body.len() + chunk.len() > MAX_BODY_BYTES {
-            telemetry::http_error(host, started.elapsed());
-            return Err(format!("Yanıt gövdesi sınırı aşıldı ({url})"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-
-    let body = match String::from_utf8(body) {
+    let body = match read_limited_text(response, url).await {
         Ok(body) => body,
-        Err(_) => {
+        Err(err) => {
             telemetry::http_error(host, started.elapsed());
-            return Err(format!("Yanıt UTF-8 değil ({url})"));
+            return Err(err);
         }
     };
     telemetry::http_success(host, started.elapsed(), body.len());
     Ok(body)
+}
+
+/// Yanıt gövdesini [`MAX_BODY_BYTES`] sınırıyla okuyup UTF-8 metne çevirir.
+pub(super) async fn read_limited_text(
+    mut response: reqwest::Response,
+    url: &str,
+) -> Result<String, String> {
+    if let Some(len) = response.content_length()
+        && len > MAX_BODY_BYTES as u64
+    {
+        return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("Yanıt gövdesi okunamadı ({url}): {e}"))?
+    {
+        if body.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(format!("Yanıt gövdesi sınırı aşıldı ({url})"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| format!("Yanıt UTF-8 değil ({url})"))
 }
 
 // =====================================================================================
