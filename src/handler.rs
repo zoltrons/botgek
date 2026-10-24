@@ -16,6 +16,8 @@ static BOT_SOURCE_GUARD: LazyLock<Mutex<HashMap<MessageId, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 const BOT_SOURCE_TTL: Duration = Duration::from_secs(300);
 
+/// Aynı kullanıcının iki AI isteği arasındaki en kısa süre.
+const AI_USER_COOLDOWN: Duration = Duration::from_secs(3);
 const AI_BUDGET_WINDOW: Duration = Duration::from_secs(10);
 const AI_GLOBAL_REQUESTS_PER_WINDOW: u32 = 20;
 const AI_GUILD_REQUESTS_PER_WINDOW: u32 = 5;
@@ -87,7 +89,7 @@ async fn consume_ai_budget(guild_id: Option<GuildId>) -> bool {
 use crate::config::Config;
 use crate::converters;
 use crate::converters::translation;
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, GuildSettings};
 use crate::utils::{DISCORD_CONTENT_LIMIT, truncate_chars};
 
 pub struct Handler {
@@ -224,158 +226,9 @@ impl EventHandler for Handler {
 
         // 2. Bot Etiketleme (@botgekv2) veya Yanıt (Reply) ile AI Sohbet Kontrolü.
         // Modül kapalıysa yanıtlanan mesaj için REST/kayıt sorgusu hiç yapılmaz.
-        if !current_settings.modules.ai_chat {
-            return;
-        }
-        let referenced_info = if let Some(ref ref_msg) = msg.referenced_message {
-            Some((
-                ref_msg.author.id,
-                ref_msg.content.clone(),
-                is_converted_message(ref_msg, current_user_id).await,
-            ))
-        } else if let Some(ref msg_ref) = msg.message_reference {
-            if let Some(msg_id) = msg_ref.message_id {
-                match msg.channel_id.message(&ctx.http, msg_id).await {
-                    Ok(referenced) => Some((
-                        referenced.author.id,
-                        referenced.content.clone(),
-                        is_converted_message(&referenced, current_user_id).await,
-                    )),
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let is_mentioned = msg.mentions.iter().any(|u| u.id == current_user_id);
-        let should_trigger = should_trigger_ai_chat(
-            is_mentioned,
-            referenced_info.as_ref().map(|(id, _, _)| *id),
-            referenced_info
-                .as_ref()
-                .map(|(_, content, _)| content.as_str()),
-            referenced_info
-                .as_ref()
-                .map(|(_, _, converted)| *converted)
-                .unwrap_or(false),
-            current_user_id,
-        );
-
-        if should_trigger && current_settings.modules.ai_chat {
-            // Modüle özel rol kontrolü (ai_chat)
-            let role_filter = current_settings.get_role_filter("ai_chat");
-            if !crate::policy::allows(
-                &ctx,
-                msg.guild_id,
-                msg.author.id,
-                msg.member.as_ref().map(|m| m.roles.as_slice()),
-                role_filter,
-            )
-            .await
-            {
-                return;
-            }
-            if let Some(ref api_key) = self.config.openrouter_api_key {
-                if !crate::ai::has_capacity() {
-                    warn!(
-                        "AI sağlayıcı yuvaları dolu, istek atlandı: {}",
-                        msg.author.id
-                    );
-                    return;
-                }
-                // Hız sınırı (Rate limiting): Kullanıcı başına 3 saniye bekleme süresi
-                {
-                    let mut cooldowns = AI_COOLDOWNS.lock().await;
-                    cooldowns.retain(|_, instant| instant.elapsed() < Duration::from_secs(10));
-                    if let Some(last_time) = cooldowns.get(&msg.author.id)
-                        && last_time.elapsed() < Duration::from_secs(3)
-                    {
-                        warn!("AI hız sınırı aşıldı, istek atlandı: {}", msg.author.id);
-                        return;
-                    }
-                    cooldowns.insert(msg.author.id, Instant::now());
-                }
-
-                let clean_query = msg
-                    .content
-                    .replace(&format!("<@{}>", current_user_id), "")
-                    .replace(&format!("<@!{}>", current_user_id), "")
-                    .trim()
-                    .to_string();
-
-                if !clean_query.is_empty() {
-                    if !consume_ai_budget(msg.guild_id).await {
-                        warn!(
-                            guild_id = ?msg.guild_id,
-                            "AI guild/global bütçesi dolu, istek atlandı"
-                        );
-                        return;
-                    }
-
-                    // Discord "Yazıyor..." göstergesi
-                    let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
-
-                    match crate::ai::query_openrouter(
-                        &self.http_client,
-                        api_key,
-                        &current_settings.ai.model,
-                        &current_settings.ai.system_prompt,
-                        &clean_query,
-                    )
-                    .await
-                    {
-                        Ok(reply) => {
-                            let safe_reply = sanitize_mentions(&reply);
-
-                            // Güvenlik: LLM çıktısındaki @everyone veya rol etiketlerinin bildirim tetiklemesini engelle
-                            let allowed_mentions = CreateAllowedMentions::new()
-                                .empty_roles()
-                                .empty_users()
-                                .everyone(false)
-                                .replied_user(true);
-
-                            let builder = CreateMessage::new()
-                                .content(truncate_chars(&safe_reply, DISCORD_CONTENT_LIMIT))
-                                .reference_message(soft_reply(&msg))
-                                .allowed_mentions(allowed_mentions);
-
-                            if let Err(e) = msg.channel_id.send_message(&ctx.http, builder).await {
-                                error!("AI yanıtı Discord'a gönderilemedi: {:?}", e);
-                            }
-                        }
-                        Err(e) => {
-                            // Ayrıntı yalnızca log'a yazılır: sunucu yapılandırmasına
-                            // (.env, API anahtarı) dair bilgi Discord kullanıcılarına sızdırılmaz
-                            error!("AI yanıtı üretilirken hata oluştu: {:?}", e);
-                            let notice = if e.contains("429")
-                                || e.contains("504")
-                                || e.contains("rate-limited")
-                            {
-                                "Model sağlayıcısı şu an yoğunluk veya hız sınırı nedeniyle yanıt veremedi. Birkaç saniye sonra tekrar dene."
-                            } else if e.contains("401") || e.contains("API key") {
-                                "AI servisi yapılandırmasında bir sorun var, bot sahibi bilgilendirildi."
-                            } else {
-                                "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
-                            };
-                            let builder = CreateMessage::new()
-                                .content(notice)
-                                .reference_message(soft_reply(&msg));
-                            if let Err(send_err) =
-                                msg.channel_id.send_message(&ctx.http, builder).await
-                            {
-                                error!("AI hata bildirimi gönderilemedi: {:?}", send_err);
-                            }
-                        }
-                    }
-                }
-            } else {
-                info!(
-                    "Bot etiketlendi veya yanıtlandı fakat OPENROUTER_API_KEY .env dosyasında tanımlı değil."
-                );
-            }
+        if current_settings.modules.ai_chat {
+            self.reply_with_ai(&ctx, &msg, current_user_id, &current_settings)
+                .await;
         }
     }
 
@@ -589,15 +442,11 @@ impl EventHandler for Handler {
         }
 
         // Mesajda hala kalan başka bir bayrak emojisi var mı kontrol et
-        let mut remaining_lang: Option<&'static str> = None;
-        for r in &target_msg.reactions {
-            if r.count > 0
-                && let Some(code) = translation::emoji_to_lang_code(&r.reaction_type)
-            {
-                remaining_lang = Some(code);
-                break;
-            }
-        }
+        let remaining_lang = target_msg
+            .reactions
+            .iter()
+            .filter(|r| r.count > 0)
+            .find_map(|r| translation::emoji_to_lang_code(&r.reaction_type));
 
         if let Some(new_content) =
             translation::update_link_translation(&target_msg.content, remaining_lang)
@@ -615,6 +464,161 @@ impl EventHandler for Handler {
                 }
             }
         }
+    }
+}
+
+impl Handler {
+    /// Bot etiketlendiğinde veya botun dönüşüm kartı olmayan bir mesajına yanıt verildiğinde
+    /// AI sohbet yanıtı üretir. Ucuz kontroller (rol, boş istem, yuva) kullanıcı bekleme
+    /// süresini ve guild/global bütçeyi tüketmeden önce yapılır.
+    async fn reply_with_ai(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        bot_id: UserId,
+        settings: &GuildSettings,
+    ) {
+        let referenced = referenced_message_info(ctx, msg, bot_id).await;
+        let should_trigger = should_trigger_ai_chat(
+            msg.mentions.iter().any(|u| u.id == bot_id),
+            referenced.as_ref().map(|r| r.author),
+            referenced.as_ref().map(|r| r.content.as_str()),
+            referenced.as_ref().is_some_and(|r| r.converted),
+            bot_id,
+        );
+        if !should_trigger {
+            return;
+        }
+        if !crate::policy::allows(
+            ctx,
+            msg.guild_id,
+            msg.author.id,
+            msg.member.as_ref().map(|m| m.roles.as_slice()),
+            settings.get_role_filter("ai_chat"),
+        )
+        .await
+        {
+            return;
+        }
+        let Some(api_key) = self.config.openrouter_api_key.as_deref() else {
+            info!(
+                "Bot etiketlendi veya yanıtlandı fakat OPENROUTER_API_KEY .env dosyasında tanımlı değil."
+            );
+            return;
+        };
+
+        let clean_query = msg
+            .content
+            .replace(&format!("<@{bot_id}>"), "")
+            .replace(&format!("<@!{bot_id}>"), "")
+            .trim()
+            .to_string();
+        if clean_query.is_empty() {
+            return;
+        }
+        if !crate::ai::has_capacity() {
+            warn!(
+                "AI sağlayıcı yuvaları dolu, istek atlandı: {}",
+                msg.author.id
+            );
+            return;
+        }
+        if !claim_ai_cooldown(msg.author.id).await {
+            warn!("AI hız sınırı aşıldı, istek atlandı: {}", msg.author.id);
+            return;
+        }
+        if !consume_ai_budget(msg.guild_id).await {
+            warn!(
+                guild_id = ?msg.guild_id,
+                "AI guild/global bütçesi dolu, istek atlandı"
+            );
+            return;
+        }
+
+        // Discord "Yazıyor..." göstergesi
+        let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+
+        let content = match crate::ai::query_openrouter(
+            &self.http_client,
+            api_key,
+            &settings.ai.model,
+            &settings.ai.system_prompt,
+            &clean_query,
+        )
+        .await
+        {
+            Ok(reply) => truncate_chars(&sanitize_mentions(&reply), DISCORD_CONTENT_LIMIT),
+            Err(e) => {
+                // Ayrıntı yalnızca log'a yazılır: sunucu yapılandırmasına (.env, API anahtarı)
+                // dair bilgi Discord kullanıcılarına sızdırılmaz.
+                error!("AI yanıtı üretilirken hata oluştu: {:?}", e);
+                ai_error_notice(&e).to_string()
+            }
+        };
+        // Güvenlik: LLM çıktısındaki @everyone, rol veya kullanıcı etiketleri bildirim tetiklemez.
+        let allowed_mentions = CreateAllowedMentions::new()
+            .empty_roles()
+            .empty_users()
+            .everyone(false)
+            .replied_user(true);
+        let builder = CreateMessage::new()
+            .content(content)
+            .reference_message(soft_reply(msg))
+            .allowed_mentions(allowed_mentions);
+        if let Err(e) = msg.channel_id.send_message(&ctx.http, builder).await {
+            error!("AI yanıtı Discord'a gönderilemedi: {:?}", e);
+        }
+    }
+}
+
+/// AI tetikleme kararı için yanıtlanan mesajın gereken alanları.
+struct ReferencedMessage {
+    author: UserId,
+    content: String,
+    converted: bool,
+}
+
+/// Yanıtlanan mesajı gateway yükünden, yoksa REST'ten okur.
+async fn referenced_message_info(
+    ctx: &Context,
+    msg: &Message,
+    bot_id: UserId,
+) -> Option<ReferencedMessage> {
+    let fetched;
+    let referenced = match msg.referenced_message.as_deref() {
+        Some(referenced) => referenced,
+        None => {
+            let id = msg.message_reference.as_ref()?.message_id?;
+            fetched = msg.channel_id.message(&ctx.http, id).await.ok()?;
+            &fetched
+        }
+    };
+    Some(ReferencedMessage {
+        author: referenced.author.id,
+        content: referenced.content.clone(),
+        converted: is_converted_message(referenced, bot_id).await,
+    })
+}
+
+/// Kullanıcı başına AI bekleme süresini talep eder; süre dolmadıysa `false`.
+async fn claim_ai_cooldown(user: UserId) -> bool {
+    let mut cooldowns = AI_COOLDOWNS.lock().await;
+    cooldowns.retain(|_, at| at.elapsed() < AI_USER_COOLDOWN);
+    if cooldowns.contains_key(&user) {
+        return false;
+    }
+    cooldowns.insert(user, Instant::now());
+    true
+}
+
+/// Sağlayıcı hatasını kullanıcıya gösterilecek, sır içermeyen bildirime çevirir.
+fn ai_error_notice(error: &str) -> &'static str {
+    if error.contains("429") || error.contains("504") || error.contains("rate-limited") {
+        "Model sağlayıcısı şu an yoğunluk veya hız sınırı nedeniyle yanıt veremedi. Birkaç saniye sonra tekrar dene."
+    } else if error.contains("401") || error.contains("API key") {
+        "AI servisi yapılandırmasında bir sorun var, bot sahibi bilgilendirildi."
+    } else {
+        "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
     }
 }
 
@@ -822,6 +826,21 @@ pub fn sanitize_mentions(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ai_cooldown_blocks_only_the_same_user() {
+        let user = UserId::new(9_000_000_000_000_001);
+        assert!(claim_ai_cooldown(user).await);
+        assert!(!claim_ai_cooldown(user).await);
+        assert!(claim_ai_cooldown(UserId::new(9_000_000_000_000_002)).await);
+    }
+
+    #[test]
+    fn ai_error_notice_never_leaks_provider_details() {
+        let notice = ai_error_notice("401 Unauthorized: invalid API key sk-or-123");
+        assert!(!notice.contains("sk-or") && !notice.contains("401"));
+        assert!(ai_error_notice("HTTP 429").contains("hız sınırı"));
+    }
 
     #[test]
     fn test_sanitize_mentions() {
