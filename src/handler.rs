@@ -479,6 +479,11 @@ impl Handler {
         settings: &GuildSettings,
     ) {
         let referenced = referenced_message_info(ctx, msg, bot_id).await;
+        // Eğlence komutlarının yanıtlarına (uyum kartı, düello, 8top...) verilen yanıtlar
+        // sohbet değildir; Discord yanıtı botu etiketlese bile AI çalışmaz.
+        if referenced.as_ref().is_some_and(|r| r.command_response) {
+            return;
+        }
         let should_trigger = should_trigger_ai_chat(
             msg.mentions.iter().any(|u| u.id == bot_id),
             referenced.as_ref().map(|r| r.author),
@@ -576,6 +581,7 @@ struct ReferencedMessage {
     author: UserId,
     content: String,
     converted: bool,
+    command_response: bool,
 }
 
 /// Yanıtlanan mesajı gateway yükünden, yoksa REST'ten okur.
@@ -597,6 +603,8 @@ async fn referenced_message_info(
         author: referenced.author.id,
         content: referenced.content.clone(),
         converted: is_converted_message(referenced, bot_id).await,
+        command_response: referenced.author.id == bot_id
+            && referenced.interaction_metadata.is_some(),
     })
 }
 
