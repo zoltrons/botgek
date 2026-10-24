@@ -115,7 +115,7 @@ Ayrıntılı kurulum ve güvenlik notları: [docs/CONFIGURATION.md](docs/CONFIGU
 | --- | --- |
 | `/dönüştür link:<bağlantı>` | Bağlantıyı her yerde, DM'ler dâhil dönüştürür. Açıkça çağrıldığında platform modülü kapalı olsa bile çalışır; X çevirisi varsayılan olarak açıktır. |
 | Mesaja sağ tık → **Apps → Dönüştür** | O mesajdaki bağlantıyı dönüştürür. |
-| `/uyum kişi:<@biri> [ikinci:<@biri>]` | İki kişinin uyum kartı: gemi adı, avatarlar, skor ve alt başlıklar. Skor sabittir; karttaki seçiciyle herkes kendi uyumunu dener. Kullanıcıya sağ tık → **Apps → Uyumumuz** da aynı işi yapar. |
+| `/uyum kişi:<@biri> [ikinci:<@biri>]` | İki kişinin uyum kartı: ship adı, avatarlar, skor ve alt başlıklar. Skor sabittir; karttaki seçiciyle herkes kendi uyumunu dener. Kullanıcıya sağ tık → **Apps → Uyumumuz** da aynı işi yapar. |
 | `/düello rakip:<@biri>` | Gizli seçimli Taş · Kağıt · Makas; ilk iki turu alan kazanır, rövanş butonu vardır. Bota meydan okunabilir. |
 | `/sayı-tahmini [zorluk]` | Bot bir sayı tutar; herkes butondan açılan pencereyle tahmin eder, kart daralan aralığı ve sıcak/soğuk ipuçlarını gösterir. |
 | `/8top soru:<soru>` | Sihirli 8 top cevabı. |

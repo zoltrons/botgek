@@ -386,12 +386,12 @@ fn verdict(score: u8) -> (&'static str, u32) {
     }
 }
 
-/// İki adın yarılarından "gemi adı" üretir: `Ayşe` + `Mehmet` → `Aymet`.
+/// İki adın yarılarından "ship adı" üretir: `Ayşe` + `Mehmet` → `Aymet`.
 fn ship_name(a: &str, b: &str) -> String {
     let a: Vec<char> = a.chars().filter(|c| c.is_alphanumeric()).collect();
     let b: Vec<char> = b.chars().filter(|c| c.is_alphanumeric()).collect();
     if a.is_empty() || b.is_empty() {
-        return "Bilinmeyen Gemi".to_string();
+        return "Bilinmeyen Ship".to_string();
     }
     let head: String = a[..a.len().div_ceil(2)].iter().collect();
     let tail: String = b[b.len() / 2..].iter().collect::<String>().to_lowercase();
@@ -416,7 +416,7 @@ fn compat_card(a: &Profile, b: &Profile) -> Value {
         children.push(gallery(&[a.avatar.as_str()]));
     } else {
         children.push(text(format!(
-            "## 💞 {name_a} × {name_b}\n-# Gemi adı: **{}**",
+            "## 💞 {name_a} × {name_b}\n-# Ship adı: **{}**",
             escape_markdown(&ship_name(&a.name, &b.name))
         )));
         children.push(gallery(&[a.avatar.as_str(), b.avatar.as_str()]));
@@ -1385,7 +1385,7 @@ mod tests {
     fn ship_name_merges_halves() {
         assert_eq!(ship_name("Ayşe", "Mehmet"), "Aymet");
         assert_eq!(ship_name("Ali", "Can"), "Alan");
-        assert_eq!(ship_name("🌸", "Can"), "Bilinmeyen Gemi");
+        assert_eq!(ship_name("🌸", "Can"), "Bilinmeyen Ship");
     }
 
     #[test]
