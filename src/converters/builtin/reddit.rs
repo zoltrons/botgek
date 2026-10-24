@@ -746,7 +746,9 @@ fn external_link_url(post: &RedditPost) -> Option<String> {
         || host.ends_with(".reddit.com")
         || host == "redd.it"
         || host.ends_with(".redd.it");
-    (!is_reddit).then(|| raw.to_string())
+    // Gönderen kişinin verdiği adres kartta `[etiket](url)` içine basılır: `)`/`[`/`]` kaçırılmazsa
+    // bağlantı kırılır ya da sahte bir maskeli bağlantı enjekte edilebilir.
+    (!is_reddit).then(|| super::preview::link_url(&url))
 }
 
 /// Adresin alan adı (`www.` atılmış); ayrıştırılamazsa `None`.
@@ -1147,6 +1149,23 @@ mod tests {
         assert!(preview.title.is_none());
         // Kartta ek görsel istenmez: link satırı görsel taşımaz.
         assert!(preview.image.is_none());
+    }
+
+    #[test]
+    fn external_link_url_cannot_break_out_of_the_markdown_link() {
+        let post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "link2",
+                "title": "t",
+                "permalink": "/r/test/comments/link2/t/",
+                "url_overridden_by_dest": "https://example.com/a)[Bedava](https://phish.example/x"
+            }}] }}]"#,
+        );
+        let url = post.link_preview.expect("link satırı").url;
+        assert!(
+            !url.contains(')') && !url.contains('[') && !url.contains(']'),
+            "{url}"
+        );
     }
 
     #[test]
