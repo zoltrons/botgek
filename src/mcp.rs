@@ -178,6 +178,18 @@ pub async fn handle(State(state): State<WebState>, headers: HeaderMap, body: Byt
         "tools/list" => rpc_result(id, tools_list_result(), modern),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            // Şartname: bilinmeyen araç bir araç sonucu değil, protokol hatasıdır (-32602).
+            if !tool_definitions()
+                .iter()
+                .any(|tool| tool["name"].as_str() == Some(name))
+            {
+                return json_error_response(
+                    StatusCode::OK,
+                    id,
+                    -32602,
+                    &format!("Bilinmeyen araç: {name}"),
+                );
+            }
             let arguments = params
                 .get("arguments")
                 .cloned()
@@ -185,7 +197,9 @@ pub async fn handle(State(state): State<WebState>, headers: HeaderMap, body: Byt
             let result = call_tool(&state, name, &arguments).await;
             rpc_result(id, tool_result(result), modern)
         }
-        "logging/setLevel" => StatusCode::ACCEPTED.into_response(),
+        // İstek (`id` taşır): yanıtsız 202 istemciyi zaman aşımına kadar bekletirdi. Log
+        // seviyesi `bot_logs` aracıyla seçildiği için burada kabul edilip yok sayılır.
+        "logging/setLevel" => rpc_result(id, json!({}), modern),
         other => json_error_response(
             if modern {
                 StatusCode::NOT_FOUND

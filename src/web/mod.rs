@@ -1519,6 +1519,40 @@ mod tests {
         assert!(text.contains("\"semver\""), "{text}");
         assert!(text.contains(crate::version::SEMVER), "{text}");
 
+        // `logging/setLevel` bir istektir: boş gövdeli 202 değil, JSON-RPC sonucu alır.
+        let set_level = http
+            .post(format!("{base}/mcp"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "logging/setLevel",
+                "params": {"level": "debug"}
+            }))
+            .send()
+            .await
+            .expect("log seviyesi");
+        assert_eq!(set_level.status(), StatusCode::OK);
+        let set_level: serde_json::Value = set_level.json().await.expect("JSON gövde");
+        assert_eq!(set_level["id"], 5);
+        assert!(set_level["result"].is_object(), "{set_level}");
+
+        // Bilinmeyen araç, araç sonucu değil protokol hatasıdır (-32602).
+        let unknown = http
+            .post(format!("{base}/mcp"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {"name": "olmayan_arac", "arguments": {}}
+            }))
+            .send()
+            .await
+            .expect("bilinmeyen araç");
+        let unknown: serde_json::Value = unknown.json().await.expect("JSON gövde");
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+
         // Ayarlar MCP üzerinden değiştirilebilir: aynı normalizasyon ve diske yazma.
         let patched = http
             .post(format!("{base}/mcp"))
