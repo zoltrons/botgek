@@ -213,12 +213,23 @@ fn external_link(text: &str) -> Option<String> {
                 .to_string()
         })
         .find(|url| {
-            let lower = url.to_ascii_lowercase();
-            let host = lower.split("://").nth(1).unwrap_or_default();
-            !OWN_HOSTS
-                .iter()
-                .any(|own| host == *own || host.starts_with(&format!("{own}/")))
+            url::Url::parse(url)
+                .ok()
+                .and_then(|url| url.host_str().map(|host| !is_own_host(host)))
+                .unwrap_or(false)
         })
+}
+
+/// X/Twitter'a ait alan adı mı? Alt alan adları da sayılır (`mobile.twitter.com`,
+/// `www.x.com`, `pbs.twimg.com`): bunlar link kartı değil, gönderi/medya bağlantısıdır.
+fn is_own_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    OWN_HOSTS.iter().any(|own| {
+        host == *own
+            || host
+                .strip_suffix(own)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
 }
 
 /// Adresten alan adını çıkarır (`www.` ve alt alan adı olmadan): `https://www.bbc.com/x` →
@@ -235,7 +246,7 @@ fn host_label(url: &str) -> Option<String> {
         .next()?
         .trim()
         .trim_start_matches("www.");
-    if host.is_empty() || OWN_HOSTS.contains(&host) {
+    if host.is_empty() || is_own_host(host) {
         return None;
     }
     Some(host.to_string())
@@ -2583,6 +2594,14 @@ mod tests {
         );
         assert!(external_link("sadece https://x.com/biri/status/9").is_none());
         assert!(external_link("link içermeyen metin").is_none());
+        // X'in alt alan adları da harici bağlantı sayılmaz.
+        assert!(external_link("bak https://mobile.twitter.com/biri/status/9").is_none());
+        assert!(external_link("https://pbs.twimg.com/media/a.jpg https://www.x.com/i").is_none());
+        // Benzer ama yabancı alan adları atlanmaz.
+        assert_eq!(
+            external_link("https://notx.com/haber").as_deref(),
+            Some("https://notx.com/haber")
+        );
     }
 
     #[test]
