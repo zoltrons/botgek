@@ -106,6 +106,7 @@ static INSTAGRAM_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 // ==================== REDDIT ====================
 // 1. Standart Gönderi: /r/subreddit/comments/id veya /(u|user)/username/comments/id
+// (yorum bağlantısında `/başlık/yorum_id` dördüncü grupta yakalanır)
 static REDDIT_POST_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\|\|\s*https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^/\s|?#]+/([a-zA-Z0-9]+))?(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Post regex deseni")
@@ -819,6 +820,39 @@ mod tests {
         );
         assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
+    }
+
+    /// Yorum kimliği atılırsa kart yorumu değil yalnızca gönderiyi gösterirdi.
+    #[test]
+    fn reddit_comment_links_keep_the_comment_id() {
+        let cfg = dummy_config();
+        for (content, spoiler) in [
+            (
+                "https://www.reddit.com/r/rust/comments/abc123/baslik/def456/?context=3",
+                false,
+            ),
+            (
+                "||https://old.reddit.com/r/rust/comments/abc123/baslik/def456/||",
+                true,
+            ),
+        ] {
+            let parsed = parse_message(content, &cfg).unwrap();
+            assert_eq!(parsed.is_spoiler, spoiler);
+            assert_eq!(
+                parsed.original_url,
+                "https://www.reddit.com/r/rust/comments/abc123/_/def456"
+            );
+        }
+        // Başlıkla biten gönderi bağlantısı yorum sanılmaz.
+        let parsed = parse_message(
+            "https://www.reddit.com/r/rust/comments/abc123/baslik/",
+            &cfg,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.original_url,
+            "https://www.reddit.com/r/rust/comments/abc123"
+        );
     }
 
     #[test]
