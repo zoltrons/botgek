@@ -313,7 +313,12 @@ pub fn parse_timestamp(raw: &str) -> Option<i64> {
         let hour: i64 = raw.get(11..13)?.parse().ok()?;
         let minute: i64 = raw.get(14..16)?.parse().ok()?;
         let second: i64 = raw.get(17..19)?.parse().ok()?;
-        let offset = parse_offset(&raw[19..]).unwrap_or(0);
+        // Kesirli saniye (`.123`) ofsetten önce gelir; atlanmazsa `+03:00` gibi ofsetler
+        // okunamayıp UTC sayılıyordu (Bluesky `createdAt` istemciye göre ikisini birlikte taşır).
+        let rest = raw[19..].strip_prefix('.').map_or(&raw[19..], |fraction| {
+            fraction.trim_start_matches(|c: char| c.is_ascii_digit())
+        });
+        let offset = parse_offset(rest).unwrap_or(0);
         return Some(
             days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second
                 - offset,
@@ -526,6 +531,18 @@ mod tests {
         assert_eq!(parse_timestamp("2024-05-06T12:34:56Z"), Some(1714998896));
         assert_eq!(
             parse_timestamp("2024-05-06T15:34:56+03:00"),
+            Some(1714998896)
+        );
+        assert_eq!(
+            parse_timestamp("2024-05-06T15:34:56.789+03:00"),
+            Some(1714998896)
+        );
+        assert_eq!(
+            parse_timestamp("2024-05-06T07:34:56.1-05:00"),
+            Some(1714998896)
+        );
+        assert_eq!(
+            parse_timestamp("2024-05-06T12:34:56.000Z"),
             Some(1714998896)
         );
         assert_eq!(
