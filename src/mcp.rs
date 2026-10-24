@@ -577,12 +577,30 @@ async fn tool_settings_patch(state: &WebState, args: &Value) -> Result<Value, St
     if !patch.is_object() {
         return Err("patch bir JSON nesnesi olmalı".to_string());
     }
-    let expected_revision = args.get("expected_revision").and_then(Value::as_str);
+    let expected_revision = args
+        .get("expected_revision")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
+    // WebUI kaydıyla aynı: disk + bellek yayını sahiplenilmiş görevde tamamlanır. İstek
+    // future'ı (ör. istemci bağlantıyı kesince) yazma ile bellek güncellemesi arasında
+    // düşürülürse disk yeni, bellek eski ayarı tutar ve revizyonlar ayrışırdı.
+    let state = state.clone();
+    let patch = patch.clone();
+    tokio::spawn(async move { apply_settings_patch(&state, &patch, expected_revision).await })
+        .await
+        .map_err(|error| format!("ayar güncelleme görevi düştü: {error}"))?
+}
+
+async fn apply_settings_patch(
+    state: &WebState,
+    patch: &Value,
+    expected_revision: Option<String>,
+) -> Result<Value, String> {
     let _writer = state.save_lock.lock().await;
     let current = state.settings.read().await.clone();
     let current_revision = crate::web::settings_revision(&current);
-    if let Some(expected) = expected_revision
+    if let Some(expected) = expected_revision.as_deref()
         && expected.trim_matches('"') != current_revision.trim_matches('"')
     {
         return Err(format!(
