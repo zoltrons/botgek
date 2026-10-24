@@ -415,7 +415,14 @@ impl EventHandler for Handler {
                         return;
                     }
 
-                    extract_author_id(&target_msg.content)
+                    // Baştaki `<@id>` yalnızca proxy dönüşüm mesajında paylaşanı gösterir. AI
+                    // yanıtları gibi diğer bot mesajlarının içeriğini model/kullanıcı belirler;
+                    // oradaki bir etiket kimseye silme yetkisi vermemeli.
+                    if is_link_conversion_message(&target_msg.content) {
+                        extract_author_id(&target_msg.content)
+                    } else {
+                        None
+                    }
                 }
             };
             let is_author = original_author_id == Some(user_id);
