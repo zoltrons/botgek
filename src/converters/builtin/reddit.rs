@@ -84,6 +84,11 @@ struct TokenEntry {
 
 /// Süreç genelinde paylaşılan token önbelleği: her gönderi için yeni token alınmaz.
 static TOKEN: LazyLock<Mutex<Option<TokenEntry>>> = LazyLock::new(|| Mutex::new(None));
+/// Başarısız token isteğinden sonra yeniden denemenin en erken anı.
+static TOKEN_RETRY_AFTER: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
+/// Token ucu çöktüğünde her Reddit dönüşümü aynı kilitte sırayla zaman aşımını beklemesin:
+/// başarısızlık bu süre boyunca hatırlanır ve doğrudan kimliksiz yola düşülür.
+const TOKEN_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
 /// `Basic` kimlik doğrulaması için minimal base64 kodlayıcı (ek bağımlılık yok).
 fn base64_ascii(input: &str) -> String {
@@ -115,16 +120,40 @@ fn base64_ascii(input: &str) -> String {
 ///
 /// Herhangi bir hata `None` döner; çağıran taraf kimliksiz yola düşer, akış bozulmaz.
 pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
-    let _refresh = super::coordination::lock("reddit:oauth".into()).await;
-    {
-        let guard = TOKEN.lock().await;
-        if let Some(entry) = guard.as_ref()
-            && Instant::now() < entry.expires_at
-        {
-            return Some(entry.token.clone());
-        }
+    // Taze token varken yenileme kilidi hiç beklenmez.
+    if let Some(token) = cached_token().await {
+        return Some(token);
     }
+    let _refresh = super::coordination::lock("reddit:oauth".into()).await;
+    // Kilidi bekleyen başka bir çağrı token'ı bu arada almış ya da az önce başarısız olmuş olabilir.
+    if let Some(token) = cached_token().await {
+        return Some(token);
+    }
+    if TOKEN_RETRY_AFTER
+        .lock()
+        .await
+        .is_some_and(|retry_after| Instant::now() < retry_after)
+    {
+        return None;
+    }
+    let token = request_token(client, client_id).await;
+    *TOKEN_RETRY_AFTER.lock().await = token
+        .is_none()
+        .then(|| Instant::now() + TOKEN_FAILURE_BACKOFF);
+    token
+}
 
+async fn cached_token() -> Option<String> {
+    TOKEN
+        .lock()
+        .await
+        .as_ref()
+        .filter(|entry| Instant::now() < entry.expires_at)
+        .map(|entry| entry.token.clone())
+}
+
+/// Token ucundan yeni token alır ve önbelleğe yazar; herhangi bir hata `None` döner.
+async fn request_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
     // Reddit `installed_client` akışında istemci kimliği Basic kullanıcı adı, parola boştur.
     let credentials = base64_ascii(&format!("{client_id}:"));
     let body = format!(
