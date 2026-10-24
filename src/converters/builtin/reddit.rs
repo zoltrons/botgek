@@ -713,17 +713,11 @@ fn redgifs_source_url(post: &RedditPost) -> Option<String> {
 }
 
 fn redgifs_link(raw: &str) -> Option<String> {
-    let (scheme, remainder) = raw.split_once("://")?;
-    if !scheme.eq_ignore_ascii_case("https") {
+    let url = super::https_url_on(raw, &["redgifs.com"])?;
+    if !matches!(url.host_str(), Some("redgifs.com" | "www.redgifs.com")) {
         return None;
     }
-    let (host, path) = remainder.split_once('/').unwrap_or((remainder, ""));
-    let host = host.split(':').next()?.to_ascii_lowercase();
-    if host != "redgifs.com" && host != "www.redgifs.com" {
-        return None;
-    }
-    let path = path.split(['?', '#']).next().unwrap_or(path);
-    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+    let mut segments = url.path_segments()?.filter(|segment| !segment.is_empty());
     let kind = segments.next()?;
     if !kind.eq_ignore_ascii_case("watch") && !kind.eq_ignore_ascii_case("ifr") {
         return None;
@@ -739,25 +733,15 @@ fn redgifs_link(raw: &str) -> Option<String> {
     Some(format!("https://www.redgifs.com/watch/{id}"))
 }
 
+/// Reddit videoları zorunlu indirildiği için bu doğrulama sunucunun hangi hosta istek
+/// atacağını belirler: ayrıştırılmış (kanonik) adres döner, ham metin değil.
 fn allowed_redgifs_asset(raw: &str) -> Option<String> {
-    let (scheme, remainder) = raw.split_once("://")?;
-    if !scheme.eq_ignore_ascii_case("https") {
-        return None;
-    }
-    let (host, path) = remainder.split_once('/').unwrap_or((remainder, ""));
-    let host = host.split(':').next()?.to_ascii_lowercase();
-    if host != "redgifs.com" && !host.ends_with(".redgifs.com") {
-        return None;
-    }
-    let path = path
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(path)
-        .to_ascii_lowercase();
+    let url = super::https_url_on(raw, &["redgifs.com"])?;
+    let path = url.path().to_ascii_lowercase();
     [".mp4", ".m3u8", ".webm"]
         .iter()
         .any(|ext| path.ends_with(ext))
-        .then(|| raw.to_string())
+        .then(|| url.to_string())
 }
 
 /// Gönderinin **harici** hedef adresi: Reddit dışı ve `http(s)`.
@@ -1687,6 +1671,10 @@ mod tests {
         );
         assert_eq!(redgifs_link("https://evil.example/watch/abc"), None);
         assert_eq!(redgifs_link("http://redgifs.com/watch/abc"), None);
+        assert_eq!(
+            redgifs_link("https://evil.example\\.redgifs.com/watch/abc"),
+            None
+        );
 
         let post = parse(
             r#"[{"data":{"children":[{"data":{
@@ -1701,6 +1689,23 @@ mod tests {
                 .map(|preview| preview.url.as_str()),
             Some("https://www.redgifs.com/watch/AbC123")
         );
+    }
+
+    #[test]
+    fn redgifs_assets_are_checked_against_the_host_actually_requested() {
+        assert_eq!(
+            allowed_redgifs_asset("https://media.redgifs.com/Abc.mp4").as_deref(),
+            Some("https://media.redgifs.com/Abc.mp4")
+        );
+        for raw in [
+            "https://169.254.169.254\\.redgifs.com/a.mp4",
+            "https://user@media.redgifs.com/a.mp4",
+            "http://media.redgifs.com/a.mp4",
+            "https://media.redgifs.com.evil.example/a.mp4",
+            "https://media.redgifs.com/a.html",
+        ] {
+            assert_eq!(allowed_redgifs_asset(raw), None, "{raw}");
+        }
     }
 
     /// Canlı test: `installed_client` OAuth akışı Reddit API'sinden veri getirmeli.

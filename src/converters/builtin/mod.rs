@@ -394,6 +394,29 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+/// `raw` kimlik bilgisi taşımayan bir `https` adresiyse ve alan adı `domains` köklerinden biri ya
+/// da onun alt alanıysa ayrıştırılmış adresi döndürür.
+///
+/// Host, adresi gerçekten isteyecek URL ayrıştırıcısıyla okunur. Elle `://` ve `/` ile bölmek
+/// `https://169.254.169.254\.cdn.example/a.mp4` gibi adreslerde `.cdn.example` görür, oysa istek
+/// `169.254.169.254`'e gider (ayrıştırıcı `\` karakterini yol ayırıcısı sayar).
+pub(super) fn https_url_on(raw: &str, domains: &[&str]) -> Option<url::Url> {
+    let url = url::Url::parse(raw).ok()?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    let host = url.host_str()?;
+    domains
+        .iter()
+        .any(|domain| {
+            host == *domain
+                || host
+                    .strip_suffix(domain)
+                    .is_some_and(|prefix| prefix.ends_with('.'))
+        })
+        .then_some(url)
+}
+
 /// Sorgu parametrelerinde kullanılmak üzere percent-encoding uygular.
 pub fn encode_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());

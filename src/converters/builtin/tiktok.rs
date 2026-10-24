@@ -319,25 +319,11 @@ impl TikTokVideo {
 }
 
 fn allowed_tiktok_url(raw: &str) -> bool {
-    let Some((scheme, remainder)) = raw.split_once("://") else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("https") {
-        return false;
-    }
-    let host = remainder
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    host == "tiktok.com"
-        || host.ends_with(".tiktok.com")
-        || host.ends_with(".tiktokcdn.com")
-        || host.ends_with(".ibytedtos.com")
-        || host.ends_with(".musical.ly")
+    super::https_url_on(
+        raw,
+        &["tiktok.com", "tiktokcdn.com", "ibytedtos.com", "musical.ly"],
+    )
+    .is_some()
 }
 
 #[cfg(test)]
@@ -439,5 +425,13 @@ mod tests {
         assert!(post.media.is_empty());
         assert_eq!(post.title.as_deref(), Some("Silinmiş video"));
         assert!(!allowed_tiktok_url("http://v16.tiktokcdn.com/video.mp4"));
+        // Ayrıştırıcı `\` karakterini yol sayar: gerçek host 169.254.169.254'tür.
+        assert!(!allowed_tiktok_url(
+            "https://169.254.169.254\\.tiktokcdn.com/video.mp4"
+        ));
+        assert!(!allowed_tiktok_url(
+            "https://user@v16.tiktokcdn.com/video.mp4"
+        ));
+        assert!(!allowed_tiktok_url("https://nottiktok.com/video.mp4"));
     }
 }
