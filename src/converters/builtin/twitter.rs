@@ -111,7 +111,7 @@ pub async fn fetch(
     // fazının **içinde**, diğer isteklerle paralel yürür; burada ikinci kez istenmez.
     let preview_started = Instant::now();
     if !uses_planner(engine) {
-        attach_link_preview(client, &mut post).await;
+        attach_link_preview(&mut post).await;
     }
     let preview_elapsed = preview_started.elapsed();
 
@@ -132,32 +132,14 @@ pub async fn fetch(
 /// hedef sayfanın `og:`/`twitter:` etiketleri okunur. Hiçbir medya indirilmez; önizleme
 /// görseli doğrudan CDN bağlantısıyla karta bağlanır. Sayfa yanıt vermezse, etiketler boşsa
 /// ya da [`LINK_PREVIEW_TIMEOUT`] dolarsa kart önizlemesiz gönderilir.
-async fn attach_link_preview(_client: &reqwest::Client, post: &mut BuiltinPost) {
+async fn attach_link_preview(post: &mut BuiltinPost) {
     if !post.media.is_empty() || post.quote.is_some() {
         return;
     }
     let Some(url) = external_link(&post.text) else {
         return;
     };
-
-    let (target, html) =
-        match tokio::time::timeout(LINK_PREVIEW_TIMEOUT, super::safe_http::preview(&url)).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(err)) => {
-                debug!("Link önizlemesi alınamadı ({url}): {err}");
-                return;
-            }
-            Err(_elapsed) => {
-                debug!(
-                    "Link önizlemesi {} ms içinde gelmedi: {url}",
-                    LINK_PREVIEW_TIMEOUT.as_millis()
-                );
-                return;
-            }
-        };
-
-    let Some(preview) = build_link_preview(&target, &html) else {
-        debug!("Link önizlemesinde gösterilecek veri yok: {target}");
+    let Some(preview) = fetch_link_preview(&url).await else {
         return;
     };
     debug!(
@@ -166,6 +148,31 @@ async fn attach_link_preview(_client: &reqwest::Client, post: &mut BuiltinPost) 
         preview.site_name.as_deref().unwrap_or("-")
     );
     post.link_preview = Some(preview);
+}
+
+/// Harici sayfanın link kartını [`LINK_PREVIEW_TIMEOUT`] içinde çözer; sayfa yanıt vermezse
+/// ya da gösterilecek etiket yoksa `None` (kart önizlemesiz gönderilir).
+async fn fetch_link_preview(url: &str) -> Option<LinkPreview> {
+    let (target, html) =
+        match tokio::time::timeout(LINK_PREVIEW_TIMEOUT, super::safe_http::preview(url)).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => {
+                debug!("Link önizlemesi alınamadı ({url}): {err}");
+                return None;
+            }
+            Err(_elapsed) => {
+                debug!(
+                    "Link önizlemesi {} ms içinde gelmedi: {url}",
+                    LINK_PREVIEW_TIMEOUT.as_millis()
+                );
+                return None;
+            }
+        };
+    let preview = build_link_preview(&target, &html);
+    if preview.is_none() {
+        debug!("Link önizlemesinde gösterilecek veri yok: {target}");
+    }
+    preview
 }
 
 /// Çekilen sayfanın OG etiketlerinden karta konacak link önizlemesini üretir.
@@ -583,26 +590,7 @@ impl pipeline::Fetcher for HttpFetcher {
 
     /// Harici link kartını **veri istekleriyle paralel** çözer (bütçe planlayıcıdadır).
     async fn preview(&self, url: &str) -> Option<LinkPreview> {
-        let (target, html) = match tokio::time::timeout(
-            LINK_PREVIEW_TIMEOUT,
-            super::safe_http::preview(url),
-        )
-        .await
-        {
-            Ok(Ok(result)) => result,
-            Ok(Err(err)) => {
-                debug!("Link önizlemesi alınamadı ({url}): {err}");
-                return None;
-            }
-            Err(_) => {
-                debug!(
-                    "Link önizlemesi {} ms içinde gelmedi: {url}",
-                    LINK_PREVIEW_TIMEOUT.as_millis()
-                );
-                return None;
-            }
-        };
-        build_link_preview(&target, &html)
+        fetch_link_preview(url).await
     }
 }
 
