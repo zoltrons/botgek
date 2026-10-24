@@ -16,6 +16,7 @@ pub enum Platform {
     Tumblr,
     Facebook,
     YouTube,
+    Letterboxd,
 }
 
 impl Platform {
@@ -32,6 +33,7 @@ impl Platform {
             Platform::Tumblr => "Tumblr",
             Platform::Facebook => "Facebook",
             Platform::YouTube => "YouTube",
+            Platform::Letterboxd => "Letterboxd",
         }
     }
 }
@@ -219,6 +221,34 @@ static YOUTUBE_COMMUNITY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli YouTube community regex")
 });
 
+// ==================== LETTERBOXD ====================
+// Film sayfası: /film/{slug}/ (alt sayfalar — /reviews/, /crew/ … — film adresine iner).
+static LETTERBOXD_FILM_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\|\|\s*https?://(?i:(?:www\.)?letterboxd\.com)/film/([a-z0-9-]+)[^\s|]*\s*\|\|")
+        .expect("geçerli Letterboxd film spoiler regex")
+});
+static LETTERBOXD_FILM_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://(?i:(?:www\.)?letterboxd\.com)/film/([a-z0-9-]+)[^\s<>()]*")
+        .expect("geçerli Letterboxd film regex")
+});
+// Kullanıcı kaydı / incelemesi: /{kullanıcı}/film/{slug}/ ya da yeniden izleme için /{n}/.
+static LETTERBOXD_REVIEW_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\|\|\s*https?://(?i:(?:www\.)?letterboxd\.com)/([A-Za-z0-9_]+)/film/([a-z0-9-]+)(?:/([0-9]{1,6}))?[^\s|]*\s*\|\|")
+        .expect("geçerli Letterboxd inceleme spoiler regex")
+});
+static LETTERBOXD_REVIEW_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://(?i:(?:www\.)?letterboxd\.com)/([A-Za-z0-9_]+)/film/([a-z0-9-]+)(?:/([0-9]{1,6}))?[^\s<>()]*")
+        .expect("geçerli Letterboxd inceleme regex")
+});
+// boxd.it kısa linki: native motorda hedefe çözülür.
+static LETTERBOXD_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\|\|\s*https?://(?i:boxd\.it)/([A-Za-z0-9]+)[^\s|]*\s*\|\|")
+        .expect("geçerli boxd.it spoiler regex")
+});
+static LETTERBOXD_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://(?i:boxd\.it)/([A-Za-z0-9]+)").expect("geçerli boxd.it regex")
+});
+
 /// Characters that would prematurely close or corrupt the Markdown link the
 /// converter wraps these URLs in (`[:](url)` / `[**Platform**](<url>)`).
 /// Left unescaped they let a crafted post URL inject arbitrary link text and a
@@ -348,6 +378,9 @@ pub fn parse_message_with_domains(
         return Some(sanitize_urls(post));
     }
     if let Some(post) = parse_youtube(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_letterboxd(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -711,9 +744,91 @@ fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
+/// Letterboxd: **native-only**. Kullanıcı incelemesi film sayfasından önce denenir; kısa
+/// linkler (`boxd.it`) hedefe native motorda çözülür. Adresler kanonik biçime indirilir
+/// (sorgu, parça ve alt sayfa atılır).
+fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
+    match_pair(
+        raw_content,
+        Platform::Letterboxd,
+        &LETTERBOXD_REVIEW_SPOILER_REGEX,
+        &LETTERBOXD_REVIEW_REGEX,
+        |caps| {
+            let user = caps.get(1)?.as_str();
+            let slug = caps.get(2)?.as_str();
+            let entry = caps
+                .get(3)
+                .map(|n| format!("{}/", n.as_str()))
+                .unwrap_or_default();
+            native(format!("https://letterboxd.com/{user}/film/{slug}/{entry}"))
+        },
+    )
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::Letterboxd,
+            &LETTERBOXD_FILM_SPOILER_REGEX,
+            &LETTERBOXD_FILM_REGEX,
+            |caps| {
+                native(format!(
+                    "https://letterboxd.com/film/{}/",
+                    caps.get(1)?.as_str()
+                ))
+            },
+        )
+    })
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::Letterboxd,
+            &LETTERBOXD_SHORT_SPOILER_REGEX,
+            &LETTERBOXD_SHORT_REGEX,
+            |caps| native(format!("https://boxd.it/{}", caps.get(1)?.as_str())),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn letterboxd_links_are_canonicalized() {
+        let parse =
+            |text: &str| parse_letterboxd(text).map(|post| (post.original_url, post.is_spoiler));
+        assert_eq!(
+            parse("bak https://letterboxd.com/film/parasite-2019/reviews/by/activity/?x=1"),
+            Some(("https://letterboxd.com/film/parasite-2019/".into(), false))
+        );
+        assert_eq!(
+            parse("https://www.letterboxd.com/hollieamanda/film/parasite-2019/"),
+            Some((
+                "https://letterboxd.com/hollieamanda/film/parasite-2019/".into(),
+                false
+            ))
+        );
+        assert_eq!(
+            parse("||https://letterboxd.com/biri_1/film/heat-1995/2/||"),
+            Some((
+                "https://letterboxd.com/biri_1/film/heat-1995/2/".into(),
+                true
+            ))
+        );
+        assert_eq!(
+            parse("https://boxd.it/2bg8"),
+            Some(("https://boxd.it/2bg8".into(), false))
+        );
+        // Profil, liste ve arama sayfaları dönüştürülmez.
+        assert_eq!(parse("https://letterboxd.com/hollieamanda/"), None);
+        assert_eq!(parse("https://letterboxd.com/biri/list/en-iyiler/"), None);
+        let parsed = parse_message_with_domains(
+            "https://letterboxd.com/film/heat-1995/",
+            &PlatformDomains::default(),
+        )
+        .unwrap();
+        assert_eq!(parsed.platform, Platform::Letterboxd);
+        assert_eq!(parsed.fixed_url, parsed.original_url);
+    }
 
     fn dummy_config() -> Config {
         Config {

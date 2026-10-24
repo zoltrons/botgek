@@ -748,7 +748,7 @@ async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String
     let engine = settings.get_guild_settings(None).engine;
     let domains = crate::converters::resolve_domains(&engine, &state.config);
     let parsed = parser::parse_message_with_domains(&url, &domains)
-        .ok_or_else(|| "desteklenen bir bağlantı bulunamadı (X, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv, Tumblr, Facebook, YouTube)".to_string())?;
+        .ok_or_else(|| "desteklenen bir bağlantı bulunamadı (X, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv, Tumblr, Facebook, YouTube, Letterboxd)".to_string())?;
 
     let started = Instant::now();
     let fetched = tokio::time::timeout(

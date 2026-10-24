@@ -10,6 +10,7 @@ pub mod cache;
 mod coordination;
 pub mod facebook;
 pub mod instagram;
+pub mod letterboxd;
 pub mod media;
 pub mod opengraph;
 pub mod pixiv;
@@ -110,6 +111,7 @@ pub fn platform_key(platform: Platform) -> &'static str {
         Platform::Tumblr => "tumblr",
         Platform::Facebook => "facebook",
         Platform::YouTube => "youtube",
+        Platform::Letterboxd => "letterboxd",
     }
 }
 
@@ -260,6 +262,7 @@ pub async fn fetch(
         Platform::Twitch => twitch::fetch(client, parsed).await,
         Platform::Pixiv => pixiv::fetch(client, parsed).await,
         Platform::Tumblr => tumblr::fetch(client, parsed).await,
+        Platform::Letterboxd => letterboxd::fetch(client, parsed).await,
         Platform::Facebook => facebook::fetch(client, parsed).await,
         Platform::YouTube => youtube::fetch(client, parsed).await,
     };

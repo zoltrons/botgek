@@ -34,7 +34,7 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `BOTGEK_VERSION` / `BOTGEK_SHA` | boş | Kaynak imaj derlemesinde sürüm künyesini gömmek için build argümanları. |
 
 > Proxy alan adları yalnızca proxy motoru kullanılabilen platformlar içindir. X/Twitter, Instagram,
-> Reddit, Twitch, Pixiv, Tumblr, Facebook ve YouTube Community Post **native-only**'dir; bu platformlarda
+> Reddit, Twitch, Pixiv, Tumblr, Facebook, YouTube Community Post ve Letterboxd **native-only**'dir; bu platformlarda
 > proxy modu ve yedek alan adı yoktur. Panelde dolu bir alan adı `.env` değerini geçersiz kılar.
 
 ### Discord Developer Portal

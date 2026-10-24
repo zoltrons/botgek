@@ -35,12 +35,12 @@ async function apiFetch(path, options = {}) {
 }
 
 /* ── sabitler: Rust varsayılanlarıyla birebir aynı ───────────────────────── */
-const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'pixiv', 'tumblr', 'facebook', 'youtube', 'translation', 'ai_chat'];
-const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, pixiv: true, tumblr: true, facebook: true, youtube: true, translation: true, ai_chat: true };
+const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'pixiv', 'tumblr', 'facebook', 'youtube', 'letterboxd', 'translation', 'ai_chat'];
+const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, pixiv: true, tumblr: true, facebook: true, youtube: true, letterboxd: true, translation: true, ai_chat: true };
 const MODULE_LABELS = {
     twitter: 'Twitter / X', tiktok: 'TikTok', instagram: 'Instagram', reddit: 'Reddit',
     bluesky: 'Bluesky', spotify: 'Spotify', twitch: 'Twitch', pixiv: 'Pixiv', tumblr: 'Tumblr',
-    facebook: 'Facebook', youtube: 'YouTube Posts', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
+    facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
 };
 const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
 
@@ -62,7 +62,8 @@ const ENGINE_PLATFORMS = [
     { key: 'pixiv', label: 'Pixiv', nativeOnly: true },
     { key: 'tumblr', label: 'Tumblr', nativeOnly: true },
     { key: 'facebook', label: 'Facebook', nativeOnly: true },
-    { key: 'youtube', label: 'YouTube Posts', nativeOnly: true }
+    { key: 'youtube', label: 'YouTube Posts', nativeOnly: true },
+    { key: 'letterboxd', label: 'Letterboxd', nativeOnly: true }
 ];
 
 const ENGINE_DEFAULTS = {

@@ -114,11 +114,20 @@ değişmez.
 - **Proxy** motoru, bağlantıyı platformun proxy alan adına yönlendirir. Yalnızca TikTok, Bluesky ve
   Spotify için seçilebilir; bu platformlarda `fallback_to_proxy` ile native başarısızlığında proxy'ye
   düşülebilir.
-- X, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook ve YouTube Community Post **native-only**'dir;
+- X, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook, YouTube Community Post ve Letterboxd
+  **native-only**'dir;
   proxy modu ve proxy yedeği bu platformlarda yoktur.
 - Tumblr önce fxtumblr uyumlu renderer'ı (`FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`) dener; böylece
   NPF/reblog zinciri ve çoklu medya tek güvenli render görselinde korunur. Renderer erişilemezse public
   OG fallback kullanılır.
+- Letterboxd kartları sayfanın JSON-LD verisinden kurulur. Film kartı (yeşil) posteri, Letterboxd
+  ortalamasını yıldız ve oy sayısıyla, slogan, açıklama, tür/süre/ülke, oyuncular ve Letterboxd / Fragman
+  / IMDb / TMDB butonlarını gösterir. İnceleme kartı (turuncu) kullanıcının yıldızlarını, kalbini,
+  izleme tarihini, yeniden izlemeyi, beğeni sayısını ve metni gösterir; spoiler uyarılı incelemelerde
+  metin `||…||` arkasındadır. Numaralı yeniden izleme kayıtları (`/{kullanıcı}/film/{slug}/{n}/`)
+  Letterboxd tarafından botlara kapalıdır (403); bu durumda film kartı, incelemenin sahibini ve
+  bağlantısını belirterek gösterilir. `boxd.it` kısa linkleri varılan adresten hedefe çözülür.
+  İstekler botun kendi User-Agent'ıyla yapılır; film ve numarasız inceleme sayfaları buna açıktır.
 - X GIF'leri vxTwitter gifconvert üzerinden animasyonlu AVIF bağlantısına dönüştürülür; yerel ffmpeg yolu
   yoktur. Görseller ve GIF'ler doğrudan CDN bağlantılarıdır; X görsellerinde `name=orig` kullanılır.
 - Reddit videolarında video ve ses saf Rust ile MP4'e birleştirilir. Başarısızlıkta uzak, sessiz video

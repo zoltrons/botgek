@@ -761,6 +761,8 @@ fn has_supported_bot_input(content: &str) -> bool {
             "tumblr.com/",
             "facebook.com/",
             "youtube.com/",
+            "letterboxd.com/",
+            "boxd.it/",
         ]
         .iter()
         .any(|host| lower.contains(host))

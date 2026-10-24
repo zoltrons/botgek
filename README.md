@@ -23,8 +23,8 @@ servisi gerekmez.
 
 ## Öne çıkanlar
 
-- **Native kartlar:** X/Twitter, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook ve YouTube Community
-  Post bağlantıları Components V2 kartına dönüşür. TikTok, Bluesky ve Spotify native modda aynı kartı
+- **Native kartlar:** X/Twitter, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook, YouTube Community
+  Post ve Letterboxd bağlantıları Components V2 kartına dönüşür. TikTok, Bluesky ve Spotify native modda aynı kartı
   kullanır; bu üç platform için proxy modu da seçilebilir. Klasik embed fallback'i yoktur.
 - **Saf Rust medya hattı:** Reddit videolarında görüntü ve ses saf Rust ile tek MP4'e birleştirilir;
   ffmpeg veya yerel bir yardımcı ikili kullanılmaz.
@@ -67,6 +67,7 @@ servisi gerekmez.
 | Tumblr | Gönderi | Native |
 | Facebook | Gönderi, video | Native |
 | YouTube | Topluluk gönderisi (Community Post) | Native |
+| Letterboxd | Film, kullanıcı incelemesi, `boxd.it` kısa link | Native |
 
 Native-only platformlarda proxy motoru ve proxy yedeği yoktur. TikTok, Bluesky ve Spotify için panelden
 native veya proxy seçilebilir. X verisi için `vxtwitter` (varsayılan), `fxtwitter`, `syndication` ya da

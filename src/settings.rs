@@ -19,6 +19,7 @@ pub struct PlatformModules {
     pub tumblr: bool,
     pub facebook: bool,
     pub youtube: bool,
+    pub letterboxd: bool,
     pub translation: bool,
     pub ai_chat: bool,
 }
@@ -37,6 +38,7 @@ impl Default for PlatformModules {
             tumblr: true,
             facebook: true,
             youtube: true,
+            letterboxd: true,
             translation: true,
             ai_chat: true,
         }
@@ -105,7 +107,7 @@ pub enum ConversionMode {
 /// Twitter/X, Instagram ve Reddit için native embed motoru çalışır durumdadır (sesli video
 /// dâhil eksiksiz kart üretir); bu yüzden bu platformlarda **proxy modu** ve **proxy yedeği**
 /// tamamen kaldırılmıştır: motor modu daima native'dir, yedek alan adı yoktur.
-pub const NATIVE_ONLY_PLATFORMS: [&str; 8] = [
+pub const NATIVE_ONLY_PLATFORMS: [&str; 9] = [
     "twitter",
     "instagram",
     "reddit",
@@ -114,6 +116,7 @@ pub const NATIVE_ONLY_PLATFORMS: [&str; 8] = [
     "tumblr",
     "facebook",
     "youtube",
+    "letterboxd",
 ];
 
 /// Verilen platform yalnızca native motorla mı çalışır (proxy desteklenmez)?
@@ -675,6 +678,8 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub youtube: RoleFilterSettings,
     #[serde(default)]
+    pub letterboxd: RoleFilterSettings,
+    #[serde(default)]
     pub translation: RoleFilterSettings,
     #[serde(default)]
     pub ai_chat: RoleFilterSettings,
@@ -706,6 +711,7 @@ impl ModuleRoleFilters {
             &mut self.tumblr,
             &mut self.facebook,
             &mut self.youtube,
+            &mut self.letterboxd,
             &mut self.translation,
             &mut self.ai_chat,
         ] {
@@ -731,6 +737,7 @@ impl GuildSettings {
             "tumblr" => &self.role_filters.tumblr,
             "facebook" => &self.role_filters.facebook,
             "youtube" => &self.role_filters.youtube,
+            "letterboxd" => &self.role_filters.letterboxd,
             "translation" => &self.role_filters.translation,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
@@ -1100,6 +1107,7 @@ impl AppSettings {
         self.role_filters.tumblr = legacy.clone();
         self.role_filters.facebook = legacy.clone();
         self.role_filters.youtube = legacy.clone();
+        self.role_filters.letterboxd = legacy.clone();
         self.role_filters.translation = legacy.clone();
         self.role_filters.ai_chat = legacy;
     }

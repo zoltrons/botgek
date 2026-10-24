@@ -104,6 +104,7 @@ fn module_enabled(settings: &GuildSettings, platform: parser::Platform) -> (bool
         parser::Platform::Tumblr => (settings.modules.tumblr, "tumblr"),
         parser::Platform::Facebook => (settings.modules.facebook, "facebook"),
         parser::Platform::YouTube => (settings.modules.youtube, "youtube"),
+        parser::Platform::Letterboxd => (settings.modules.letterboxd, "letterboxd"),
     }
 }
 
