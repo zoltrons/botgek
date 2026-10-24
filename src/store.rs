@@ -30,9 +30,12 @@ pub const DEFAULT_DB_FILE: &str = "botgek.db";
 /// Bu sayıdan fazla kayıt birikirse **en eski** kayıtlar budanır: mesaj kimlikleri zaman
 /// sıralı Snowflake olduğu için en büyük kimlikler en yeni kartlardır. Böylece dosya
 /// sınırsız büyümez, ama pratikte hiçbir kayıt unutulmaz.
-const MAX_RECORDS: i64 = 200_000;
+pub const MAX_RECORDS: i64 = 200_000;
 /// Budama kontrolü her bu kadar kayıtta bir yapılır (her yazmada sorgu çalıştırmamak için).
 const PRUNE_EVERY: u64 = 512;
+/// Teşhis sorgusunun (MCP `db_query`) en uzun süresi. Sorgu kart yazımlarıyla aynı tek bağlantıyı
+/// tutar; süre sınırı olmadan sonsuz bir `WITH RECURSIVE` sorgusu kayıtları süresiz kilitlerdi.
+const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Controls whether opening a database may fall back to an in-memory store.
 /// Production startup uses [`PersistencePolicy::RequirePersistent`]; allowing
@@ -334,36 +337,21 @@ impl Db {
     /// Salt okunur sorguyu çalıştırır; yazma ifadeleri `InvalidQuery` ile reddedilir.
     fn query_readonly(&self, sql: &str, limit: usize) -> Result<QueryResult, String> {
         self.with_connection(crate::telemetry::DbOp::Query, |connection| {
-            let mut statement = connection.prepare(sql)?;
-            if !statement.readonly() {
-                return Err(rusqlite::Error::InvalidQuery);
-            }
-            let columns = statement
-                .column_names()
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect::<Vec<_>>();
-            let mut rows = statement.query([])?;
-            let mut values = Vec::new();
-            let mut truncated = false;
-            while let Some(row) = rows.next()? {
-                if values.len() >= limit {
-                    truncated = true;
-                    break;
+            // Bekçi iş parçacığı süre dolunca çalışan ifadeyi keser (`SQLITE_INTERRUPT`). Sorgu
+            // bitmişse `interrupt` etkisizdir; bekçi bağlantı bırakılmadan önce birleştirilir.
+            let interrupt = connection.get_interrupt_handle();
+            let (finished, done) = std::sync::mpsc::channel::<()>();
+            let watchdog = std::thread::spawn(move || {
+                if done.recv_timeout(QUERY_TIMEOUT)
+                    == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                {
+                    interrupt.interrupt();
                 }
-                values.push(
-                    (0..columns.len())
-                        .map(|index| value_to_json(row.get_ref(index)?))
-                        .collect::<Result<Vec<_>, rusqlite::Error>>()?,
-                );
-            }
-            let returned = values.len();
-            Ok(QueryResult {
-                columns,
-                rows: values,
-                returned,
-                truncated,
-            })
+            });
+            let result = run_readonly(connection, sql, limit);
+            let _ = finished.send(());
+            let _ = watchdog.join();
+            result
         })
     }
 
@@ -424,6 +412,44 @@ impl Db {
 
 /// Kart kaydı (mesaj → paylaşan kullanıcı) yazar. Her yazmada hafif bir sayaç artar;
 /// sayaç eşiğe gelince en eski kayıtlar budanır.
+/// Hazırlanan ifadenin salt okunur olduğunu doğrular ve en fazla `limit` satırı JSON'a çevirir.
+fn run_readonly(
+    connection: &Connection,
+    sql: &str,
+    limit: usize,
+) -> Result<QueryResult, rusqlite::Error> {
+    let mut statement = connection.prepare(sql)?;
+    if !statement.readonly() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let columns = statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    let mut rows = statement.query([])?;
+    let mut values = Vec::new();
+    let mut truncated = false;
+    while let Some(row) = rows.next()? {
+        if values.len() >= limit {
+            truncated = true;
+            break;
+        }
+        values.push(
+            (0..columns.len())
+                .map(|index| value_to_json(row.get_ref(index)?))
+                .collect::<Result<Vec<_>, rusqlite::Error>>()?,
+        );
+    }
+    let returned = values.len();
+    Ok(QueryResult {
+        columns,
+        rows: values,
+        returned,
+        truncated,
+    })
+}
+
 pub fn remember_card(message_id: MessageId, channel_id: ChannelId, author_id: UserId) {
     let Some(db) = database() else {
         return;
@@ -552,6 +578,24 @@ mod tests {
 
     fn open_test(path: &str) -> Db {
         Db::open_with_policy(path, PersistencePolicy::AllowEphemeral).expect("test database")
+    }
+
+    /// Sonsuz sorgu kesilir ve bağlantı sonraki işler için kullanılabilir kalır.
+    #[test]
+    fn runaway_diagnostic_query_is_interrupted() {
+        let db = open_test(":memory:");
+        let started = std::time::Instant::now();
+        let result = db.query_readonly(
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) \
+             SELECT count(*) FROM c",
+            10,
+        );
+        assert!(result.is_err());
+        assert!(started.elapsed() < QUERY_TIMEOUT * 3);
+        let ok = db
+            .query_readonly("SELECT 1", 10)
+            .expect("bağlantı kullanılabilir");
+        assert_eq!(ok.rows, vec![vec![serde_json::json!(1)]]);
     }
 
     #[test]
