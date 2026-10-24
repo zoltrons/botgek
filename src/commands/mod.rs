@@ -11,6 +11,10 @@
 //! Her iki akış da aynı dönüşüm motorunu ve rol filtrelerini kullanır; WebUI'daki platform
 //! modülü açık/kapalı ayarından bağımsızdır (komut açıkça çağrıldığında her zaman dönüştürür).
 //! X çevirisi komutta varsayılan olarak açıktır; hedef dil WebUI ayarından gelir.
+//!
+//! Eğlence komutları (`/uyum`, `/düello`, `/sayı-tahmini`, `/8top`) [`fun`] modülündedir.
+
+pub mod fun;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,7 +58,11 @@ pub async fn register(http: impl AsRef<Http>) {
     // Geçici ağ hataları komutların tüm süreç ömrü boyunca eksik kalmasına yol açmasın:
     // kısa aralıklarla üç kez denenir. Kalıcı hata bayrağı geri alır (sonraki ready tekrar dener).
     for attempt in 0..3 {
-        match Command::set_global_commands(http.as_ref(), definitions()).await {
+        let commands = definitions()
+            .into_iter()
+            .chain(fun::definitions())
+            .collect();
+        match Command::set_global_commands(http.as_ref(), commands).await {
             Ok(commands) => {
                 info!(
                     count = commands.len(),
@@ -127,8 +135,20 @@ pub async fn handle(
     config: &Config,
     app_settings: &Arc<RwLock<AppSettings>>,
 ) {
-    let Interaction::Command(command) = interaction else {
-        return;
+    let command = match interaction {
+        Interaction::Command(command) if fun::is_fun_command(command) => {
+            return fun::handle_command(ctx, command).await;
+        }
+        Interaction::Component(component)
+            if component.data.custom_id.starts_with(fun::CUSTOM_ID_PREFIX) =>
+        {
+            return fun::handle_component(ctx, component).await;
+        }
+        Interaction::Modal(modal) if modal.data.custom_id.starts_with(fun::CUSTOM_ID_PREFIX) => {
+            return fun::handle_modal(ctx, modal).await;
+        }
+        Interaction::Command(command) => command,
+        _ => return,
     };
     if !is_convert_command(command) {
         return;
