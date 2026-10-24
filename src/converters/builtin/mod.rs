@@ -365,7 +365,8 @@ fn parse_offset(raw: &str) -> Option<i64> {
     Some(sign * (hours * 3_600 + minutes * 60))
 }
 
-fn month_number(name: &str) -> Option<i64> {
+/// İngilizce ay adını (kısaltma veya tam ad) numaraya çevirir.
+pub(super) fn month_number(name: &str) -> Option<i64> {
     match name.get(0..3)?.to_ascii_lowercase().as_str() {
         "jan" => Some(1),
         "feb" => Some(2),

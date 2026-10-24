@@ -20,7 +20,9 @@ use serde_json::Value;
 use tracing::debug;
 
 use super::opengraph::{self, OpenGraph};
-use super::{Author, BuiltinPost, Media, MediaKind, Stats, parse_timestamp, unescape_html};
+use super::{
+    Author, BuiltinPost, Media, MediaKind, Stats, month_number, parse_timestamp, unescape_html,
+};
 use crate::converters::parser::{ParsedPost, Platform};
 
 /// Kalıcı gönderi bağlantısından (`/p/`, `/reel/`, `/reels/`, `/tv/`) tür + kodu çıkarır.
@@ -787,25 +789,6 @@ fn parse_ig_date(description: &str) -> Option<i64> {
     let day: i64 = caps.get(2)?.as_str().parse().ok()?;
     let year: i64 = caps.get(3)?.as_str().parse().ok()?;
     parse_timestamp(&format!("{year:04}-{month:02}-{day:02}T00:00:00Z"))
-}
-
-/// İngilizce ay adını (kısaltma veya tam ad) numaraya çevirir.
-fn month_number(name: &str) -> Option<i64> {
-    match name.get(0..3)?.to_ascii_lowercase().as_str() {
-        "jan" => Some(1),
-        "feb" => Some(2),
-        "mar" => Some(3),
-        "apr" => Some(4),
-        "may" => Some(5),
-        "jun" => Some(6),
-        "jul" => Some(7),
-        "aug" => Some(8),
-        "sep" => Some(9),
-        "oct" => Some(10),
-        "nov" => Some(11),
-        "dec" => Some(12),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
