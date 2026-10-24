@@ -10,7 +10,7 @@ modelini ve tasarım kararlarının nedenlerini açıklar.
 | --- | --- |
 | `src/main.rs` | Süreç başlangıcı, yapılandırma, gateway ve panelin ayağa kaldırılması. |
 | `src/handler.rs` | Mesaj, etkileşim ve tepki olayları; AI tetikleme; orijinal mesajı silme politikası. |
-| `src/commands/` | `/dönüştür` slash komutu ve **Apps → Dönüştür** mesaj komutu; `fun.rs` eğlence oyunları (`/uyum`, `/düello`, `/sayı-tahmini`, `/8top`). |
+| `src/commands/` | `/dönüştür` slash komutu ve **Apps → Dönüştür** mesaj komutu; `fun.rs` eğlence oyunları (`/uyum`, `/düello`, `/sayı-tahmini`, `/8top`, `/bomba`, `/refleks`, `/fal`). |
 | `src/converters/parser.rs` | Desteklenen URL'lerin ayrıştırılması, kanonikleştirme, spoiler ve kullanıcı yorumu. |
 | `src/converters/mod.rs` | Dönüşüm kuyruğu, eşzamanlılık sınırları ve etkileşim akışı. |
 | `src/converters/builtin/` | Platform dönüştürücüleri, medya, çeviri, önizleme, Render ve güvenli HTTP. |

@@ -8,6 +8,10 @@
 //! - `/sayı-tahmini`: bot bir sayı tutar; herkes butondan açılan **modal** ile tahmin eder,
 //!   kart daralan aralığı ve sıcak/soğuk ipuçlarını gösterir.
 //! - `/8top`: sihirli 8 top.
+//! - `/bomba`: sırayla kablo kesme; her güvenli kablo bombanın uzaklığını ipucu olarak verir,
+//!   bombayı kesen kaybeder. Bota meydan okunursa bot ipuçlarını okuyarak oynar.
+//! - `/refleks`: ışık rastgele bir anda yeşile döner; ilk basan kazanır, erken basan elenir.
+//! - `/fal`: kişiye ve güne göre sabit kahve falı.
 //!
 //! Kartlar Components V2 (Container, Media Gallery, Separator) ile ham JSON olarak kurulur;
 //! serenity 0.12 bu bileşenler için builder sunmaz. Etkileşim yanıtı doğrudan
@@ -45,6 +49,12 @@ pub const DUEL_COMMAND: &str = "düello";
 pub const GUESS_COMMAND: &str = "sayı-tahmini";
 /// Sihirli 8 top.
 pub const EIGHT_BALL_COMMAND: &str = "8top";
+/// Bomba imha (kablo kesme) oyunu.
+pub const BOMB_COMMAND: &str = "bomba";
+/// Refleks yarışı.
+pub const REFLEX_COMMAND: &str = "refleks";
+/// Günlük kahve falı.
+pub const FORTUNE_COMMAND: &str = "fal";
 
 /// Bu modülün buton/seçici/modal `custom_id` öneki.
 pub const CUSTOM_ID_PREFIX: &str = "fun:";
@@ -139,6 +149,28 @@ pub fn definitions() -> Vec<CreateCommand> {
                 .required(true)
                 .max_length(200),
             ),
+        everywhere(CreateCommand::new(BOMB_COMMAND))
+            .description("Sırayla kablo kesin; bombayı patlatan kaybeder 💣")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::User,
+                    RIVAL_OPTION,
+                    "Meydan okuduğun kişi",
+                )
+                .required(true),
+            ),
+        everywhere(CreateCommand::new(REFLEX_COMMAND))
+            .description("Işık yeşile dönünce ilk basan kazanır ⚡"),
+        everywhere(CreateCommand::new(FORTUNE_COMMAND))
+            .description("Günlük kahve falına bak ☕")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::User,
+                    PERSON_OPTION,
+                    "Kimin fincanına bakılsın? (boşsa sen)",
+                )
+                .required(false),
+            ),
     ]
 }
 
@@ -156,7 +188,13 @@ pub fn is_fun_command(command: &CommandInteraction) -> bool {
     match command.data.kind {
         CommandType::ChatInput => matches!(
             command.data.name.as_str(),
-            COMPAT_COMMAND | DUEL_COMMAND | GUESS_COMMAND | EIGHT_BALL_COMMAND
+            COMPAT_COMMAND
+                | DUEL_COMMAND
+                | GUESS_COMMAND
+                | EIGHT_BALL_COMMAND
+                | BOMB_COMMAND
+                | REFLEX_COMMAND
+                | FORTUNE_COMMAND
         ),
         CommandType::User => command.data.name == COMPAT_USER_COMMAND,
         _ => false,
@@ -211,6 +249,20 @@ pub async fn handle_command(ctx: &Context, command: &CommandInteraction) {
             let question = string_option(command, QUESTION_OPTION).unwrap_or_default();
             eight_ball_response(invoker.id, question)
         }
+        (_, BOMB_COMMAND) => {
+            let bot_id = ctx.cache.current_user().id;
+            match user_option(command, RIVAL_OPTION) {
+                Some(rival) => start_bomb(command.id, invoker.id, rival, resolved, bot_id),
+                None => notice("Kime meydan okuyorsun? `/bomba rakip:@biri`"),
+            }
+        }
+        (_, REFLEX_COMMAND) => {
+            return start_reflex(ctx, command.id, &command.token, invoker.id).await;
+        }
+        (_, FORTUNE_COMMAND) => {
+            let target = user_option(command, PERSON_OPTION).unwrap_or(invoker.id);
+            fortune_response(target, invoker.id, fortune_day(unix_now()))
+        }
         _ => return,
     };
 
@@ -252,6 +304,28 @@ pub async fn handle_component(ctx: &Context, component: &ComponentInteraction) {
         }
         ["fun", "tahmin", id, "g"] => (guess_modal(id), None),
         ["fun", "tahmin", id, "x"] => (guess_give_up(id, clicker), None),
+        ["fun", "bomba", "rematch", a, b] => {
+            let players = [a, b].map(|id| id.parse().ok().map(UserId::new));
+            match players {
+                [Some(a), Some(b)] if clicker == a || clicker == b => {
+                    let rival = if clicker == a { b } else { a };
+                    let bot_rival = rival == ctx.cache.current_user().id;
+                    (
+                        new_bomb(component.id.get(), clicker, rival, bot_rival),
+                        None,
+                    )
+                }
+                _ => (
+                    notice("Rövanşı yalnızca oyundaki iki kişi isteyebilir 👀"),
+                    None,
+                ),
+            }
+        }
+        ["fun", "bomba", id, code] => (bomb_click(id, code, clicker), None),
+        ["fun", "refleks", "new"] => {
+            return start_reflex(ctx, component.id, &component.token, clicker).await;
+        }
+        ["fun", "refleks", id] => (reflex_click(id, clicker), None),
         _ => return,
     };
 
@@ -1126,6 +1200,649 @@ fn eight_ball_response(asker: UserId, question: &str) -> Value {
     message(RESPONSE_MESSAGE, v2_message(vec![card]))
 }
 
+// ─── Bomba imha ───────────────────────────────────────────────────────────────
+
+/// Bombadaki kablolar: (emoji, ad). Dizideki sıra, ipuçlarındaki uzaklığın da sırasıdır.
+const WIRES: [(&str, &str); 9] = [
+    ("🔴", "Kırmızı"),
+    ("🟠", "Turuncu"),
+    ("🟡", "Sarı"),
+    ("🟢", "Yeşil"),
+    ("🔵", "Mavi"),
+    ("🟣", "Mor"),
+    ("🟤", "Kahverengi"),
+    ("⚫", "Siyah"),
+    ("⚪", "Beyaz"),
+];
+
+/// Güvenli kesilen kablonun bombaya uzaklığı.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Clue {
+    Adjacent,
+    Near,
+    Far,
+}
+
+impl Clue {
+    fn between(wire: usize, bomb: usize) -> Self {
+        match wire.abs_diff(bomb) {
+            0 | 1 => Clue::Adjacent,
+            2 => Clue::Near,
+            _ => Clue::Far,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Clue::Adjacent => "🔥 bomba hemen yanında!",
+            Clue::Near => "♨️ bomba iki kablo ötede",
+            Clue::Far => "❄️ bomba uzakta",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BombResult {
+    Exploded { loser: usize },
+    Forfeit { loser: usize },
+}
+
+struct Bomb {
+    players: [UserId; 2],
+    /// İkinci oyuncu bu bot mu? (bot sırası gelince hemen keser)
+    bot_rival: bool,
+    bomb: usize,
+    /// Sıradaki oyuncunun `players` içindeki yeri.
+    turn: usize,
+    /// Kesilen güvenli kablolar: (oyuncu, kablo, ipucu).
+    cuts: Vec<(usize, usize, Clue)>,
+    result: Option<BombResult>,
+    expires_at: u64,
+}
+
+impl Bomb {
+    fn new(challenger: UserId, rival: UserId, bot_rival: bool, bomb: usize, first: usize) -> Self {
+        let mut game = Self {
+            players: [challenger, rival],
+            bot_rival,
+            bomb,
+            turn: first,
+            cuts: Vec::new(),
+            result: None,
+            expires_at: unix_now() + GAME_TTL.as_secs(),
+        };
+        game.bot_turn();
+        game
+    }
+
+    fn index_of(&self, user: UserId) -> Option<usize> {
+        self.players.iter().position(|player| *player == user)
+    }
+
+    fn is_cut(&self, wire: usize) -> bool {
+        self.cuts.iter().any(|(_, cut, _)| *cut == wire)
+    }
+
+    fn cut(&mut self, player: usize, wire: usize) -> Result<(), &'static str> {
+        if self.result.is_some() {
+            return Err("Bu bomba çoktan patladı 💥");
+        }
+        if player != self.turn {
+            return Err("Sıra sende değil ⏳ Rakibinin kesmesini bekle.");
+        }
+        if wire >= WIRES.len() || self.is_cut(wire) {
+            return Err("Bu kablo zaten kesildi ✂️");
+        }
+        self.apply(player, wire);
+        self.bot_turn();
+        Ok(())
+    }
+
+    fn apply(&mut self, player: usize, wire: usize) {
+        if wire == self.bomb {
+            self.result = Some(BombResult::Exploded { loser: player });
+            return;
+        }
+        self.cuts
+            .push((player, wire, Clue::between(wire, self.bomb)));
+        self.turn = 1 - player;
+    }
+
+    fn bot_turn(&mut self) {
+        if self.bot_rival && self.turn == 1 && self.result.is_none() {
+            let wire = self.bot_choice();
+            self.apply(1, wire);
+        }
+    }
+
+    /// Şu ana kadarki ipuçlarıyla çelişmeyen olası bomba yerleri.
+    fn suspects(&self) -> Vec<usize> {
+        (0..WIRES.len())
+            .filter(|wire| {
+                !self.is_cut(*wire)
+                    && self
+                        .cuts
+                        .iter()
+                        .all(|(_, cut, clue)| Clue::between(*cut, *wire) == *clue)
+            })
+            .collect()
+    }
+
+    /// Bot ipuçlarını okur: kesin güvenli bir kablo varsa onu, yoksa şansına birini keser.
+    fn bot_choice(&self) -> usize {
+        let suspects = self.suspects();
+        let uncut: Vec<usize> = (0..WIRES.len())
+            .filter(|wire| !self.is_cut(*wire))
+            .collect();
+        let safe: Vec<usize> = uncut
+            .iter()
+            .copied()
+            .filter(|wire| !suspects.contains(wire))
+            .collect();
+        let pool = if safe.is_empty() { &uncut } else { &safe };
+        pool[(random_u64() % pool.len() as u64) as usize]
+    }
+
+    fn forfeit(&mut self, player: usize) {
+        self.result = Some(BombResult::Forfeit { loser: player });
+    }
+}
+
+static BOMBS: LazyLock<GameStore<Bomb>> = LazyLock::new(GameStore::new);
+
+fn start_bomb(
+    id: InteractionId,
+    challenger: UserId,
+    rival: UserId,
+    resolved: &CommandDataResolved,
+    bot_id: UserId,
+) -> Value {
+    if rival == challenger {
+        return notice("Kendi bombanı kendin mi keseceksin? Bir rakip seç 💣");
+    }
+    let rival_is_bot = resolved.users.get(&rival).is_some_and(|user| user.bot);
+    if rival_is_bot && rival != bot_id {
+        return notice("Bu bot kablo kesmeye yanaşmıyor 🤖 Bana meydan okuyabilirsin ama!");
+    }
+    new_bomb(id.get(), challenger, rival, rival == bot_id)
+}
+
+fn new_bomb(id: u64, challenger: UserId, rival: UserId, bot_rival: bool) -> Value {
+    let bomb = (random_u64() % WIRES.len() as u64) as usize;
+    let first = (random_u64() % 2) as usize;
+    let game = Bomb::new(challenger, rival, bot_rival, bomb, first);
+    let mut data = bomb_card(id, &game);
+    // Yalnızca davet rakibe bildirim gönderir; kesimler sessizdir.
+    if !bot_rival {
+        data["allowed_mentions"] = allowed_users(&[rival]);
+    }
+    BOMBS.insert(id, game);
+    message(RESPONSE_MESSAGE, data)
+}
+
+fn bomb_click(id: &str, code: &str, clicker: UserId) -> Value {
+    let Ok(id) = id.parse::<u64>() else {
+        return notice("Bu bomba bulunamadı.");
+    };
+    let outcome = BOMBS.with(id, |game| {
+        let Some(index) = game.index_of(clicker) else {
+            return Err("Bu bomba senin değil 👀 `/bomba` ile kendininkini kur.");
+        };
+        if game.bot_rival && index == 1 {
+            return Err("Bot kendi adına keser 🤖");
+        }
+        if code == "x" {
+            if game.result.is_none() {
+                game.forfeit(index);
+            }
+        } else {
+            let Ok(wire) = code.parse::<usize>() else {
+                return Err("Geçersiz kablo.");
+            };
+            game.cut(index, wire)?;
+        }
+        Ok((bomb_card(id, game), game.result.is_some()))
+    });
+
+    match outcome {
+        None => notice("Bu bombanın süresi doldu ⌛ `/bomba` ile yenisini kur."),
+        Some(Err(text)) => notice(text),
+        Some(Ok((card, finished))) => {
+            if finished {
+                BOMBS.remove(id);
+            }
+            message(RESPONSE_UPDATE, card)
+        }
+    }
+}
+
+fn bomb_card(id: u64, game: &Bomb) -> Value {
+    let [a, b] = game.players;
+    let mut children = vec![
+        text(format!(
+            "## 💣 Bomba İmha\n<@{a}> **vs** <@{b}>\n-# Sırayla birer kablo kesin; bombayı kesen kaybeder. Her güvenli kablo, bombanın ne kadar yakında olduğunu fısıldar."
+        )),
+        separator(true),
+    ];
+
+    let strip = WIRES
+        .iter()
+        .enumerate()
+        .map(|(wire, (emoji, _))| match game.result {
+            Some(BombResult::Exploded { .. }) if wire == game.bomb => "💥",
+            Some(BombResult::Forfeit { .. }) if wire == game.bomb => "💣",
+            _ if game.is_cut(wire) => "✂️",
+            _ => *emoji,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    children.push(text(format!("### {strip}")));
+
+    if !game.cuts.is_empty() {
+        let lines = game
+            .cuts
+            .iter()
+            .enumerate()
+            .map(|(number, (player, wire, clue))| {
+                let (emoji, name) = WIRES[*wire];
+                format!(
+                    "`{}.` <@{}> {emoji} {name} → {}",
+                    number + 1,
+                    game.players[*player],
+                    clue.label()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        children.push(text(format!("**Kesilenler**\n{lines}")));
+    }
+
+    let mut accent = 0xE67E22;
+    let mut rows = Vec::new();
+    match game.result {
+        Some(result) => {
+            let line = match result {
+                BombResult::Exploded { loser } => {
+                    accent = 0xED4245;
+                    format!(
+                        "## 💥 BOOM! <@{}> bombayı patlattı, <@{}> kazandı!",
+                        game.players[loser],
+                        game.players[1 - loser]
+                    )
+                }
+                BombResult::Forfeit { loser } => {
+                    accent = 0xFEE75C;
+                    format!(
+                        "## 🏳️ <@{}> kaçtı, <@{}> kazandı!\n-# Bomba {} {} kablodaydı.",
+                        game.players[loser],
+                        game.players[1 - loser],
+                        WIRES[game.bomb].0,
+                        WIRES[game.bomb].1
+                    )
+                }
+            };
+            children.push(separator(true));
+            children.push(text(line));
+            rows.push(row(vec![button(
+                STYLE_PRIMARY,
+                "Rövanş",
+                "🔁",
+                &format!("fun:bomba:rematch:{a}:{b}"),
+            )]));
+        }
+        None => {
+            let last = if WIRES.len() - game.cuts.len() == 1 {
+                " • Son kablo kaldı… 😰"
+            } else {
+                ""
+            };
+            children.push(text(format!(
+                "### ✂️ Sıra: <@{}>{last}\n-# <t:{}:R> sona erer",
+                game.players[game.turn], game.expires_at
+            )));
+            let mut buttons: Vec<Value> = WIRES
+                .iter()
+                .enumerate()
+                .map(|(wire, (emoji, _))| {
+                    let cut = game.is_cut(wire);
+                    json!({
+                        "type": 2,
+                        "style": STYLE_SECONDARY,
+                        "emoji": { "name": if cut { "✂️" } else { *emoji } },
+                        "custom_id": format!("fun:bomba:{id}:{wire}"),
+                        "disabled": cut,
+                    })
+                })
+                .collect();
+            buttons.push(button(
+                STYLE_DANGER,
+                "Kaç",
+                "🏳️",
+                &format!("fun:bomba:{id}:x"),
+            ));
+            let second = buttons.split_off(5);
+            rows.push(row(buttons));
+            rows.push(row(second));
+        }
+    }
+
+    let mut components = vec![container(accent, children)];
+    components.extend(rows);
+    v2_message(components)
+}
+
+// ─── Refleks ──────────────────────────────────────────────────────────────────
+
+/// Işığın yeşile dönmesinden önceki rastgele bekleme aralığı.
+const REFLEX_DELAY_MS: std::ops::Range<u64> = 2_000..7_000;
+/// Yeşil ışıktan sonra kimse basmazsa turun kapanma süresi.
+const REFLEX_WINDOW: Duration = Duration::from_secs(30);
+/// Kartta adı yazılan en fazla erken basan.
+const REFLEX_SHOWN_FALSE_STARTS: usize = 10;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReflexPhase {
+    Waiting,
+    Go { at_ms: u64 },
+    Done,
+}
+
+struct Reflex {
+    host: UserId,
+    phase: ReflexPhase,
+    false_starts: Vec<UserId>,
+    /// Kazanan ve tepki süresi (ms).
+    winner: Option<(UserId, u64)>,
+    expires_at: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReflexClick {
+    FalseStart,
+    AlreadyOut,
+    Won,
+    TooLate,
+}
+
+impl Reflex {
+    fn new(host: UserId) -> Self {
+        Self {
+            host,
+            phase: ReflexPhase::Waiting,
+            false_starts: Vec::new(),
+            winner: None,
+            expires_at: unix_now() + GAME_TTL.as_secs(),
+        }
+    }
+
+    fn click(&mut self, user: UserId, now_ms: u64) -> ReflexClick {
+        if self.false_starts.contains(&user) {
+            return ReflexClick::AlreadyOut;
+        }
+        match self.phase {
+            ReflexPhase::Waiting => {
+                self.false_starts.push(user);
+                ReflexClick::FalseStart
+            }
+            ReflexPhase::Go { at_ms } => {
+                self.winner = Some((user, now_ms.saturating_sub(at_ms)));
+                self.phase = ReflexPhase::Done;
+                ReflexClick::Won
+            }
+            ReflexPhase::Done => ReflexClick::TooLate,
+        }
+    }
+}
+
+static REFLEXES: LazyLock<GameStore<Reflex>> = LazyLock::new(GameStore::new);
+
+/// Turu açar, sonra arka planda ışığı yakar ve süre dolunca kapatır.
+///
+/// Bekleme kartı hiç güncellenmez (erken basanlara yalnızca gizli uyarı gider); böylece
+/// zamanlayıcının "yeşil" düzenlemesi, geç gelen bir tıklama yanıtıyla geri alınamaz.
+async fn start_reflex(ctx: &Context, id: InteractionId, token: &str, host: UserId) {
+    let key = id.get();
+    let game = Reflex::new(host);
+    let response = message(RESPONSE_MESSAGE, reflex_card(key, &game));
+    REFLEXES.insert(key, game);
+    respond(ctx, id, token, &response).await;
+
+    let http = ctx.http.clone();
+    let token = token.to_string();
+    tokio::spawn(async move {
+        let span = REFLEX_DELAY_MS.end - REFLEX_DELAY_MS.start;
+        let delay = REFLEX_DELAY_MS.start + random_u64() % span;
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+
+        let card = REFLEXES
+            .with(key, |game| {
+                (game.phase == ReflexPhase::Waiting).then(|| {
+                    game.phase = ReflexPhase::Go {
+                        at_ms: unix_millis(),
+                    };
+                    reflex_card(key, game)
+                })
+            })
+            .flatten();
+        let Some(card) = card else {
+            return;
+        };
+        if let Err(err) = http
+            .edit_original_interaction_response(&token, &card, Vec::new())
+            .await
+        {
+            warn!(interaction = key, "Refleks ışığı yakılamadı: {err:?}");
+            REFLEXES.remove(key);
+            return;
+        }
+        // Süre, kartın gerçekten değiştiği andan ölçülür.
+        REFLEXES.with(key, |game| {
+            if let ReflexPhase::Go { at_ms } = &mut game.phase {
+                *at_ms = unix_millis();
+            }
+        });
+
+        tokio::time::sleep(REFLEX_WINDOW).await;
+        let card = REFLEXES
+            .with(key, |game| {
+                matches!(game.phase, ReflexPhase::Go { .. }).then(|| {
+                    game.phase = ReflexPhase::Done;
+                    reflex_card(key, game)
+                })
+            })
+            .flatten();
+        if let Some(card) = card {
+            REFLEXES.remove(key);
+            if let Err(err) = http
+                .edit_original_interaction_response(&token, &card, Vec::new())
+                .await
+            {
+                warn!(interaction = key, "Refleks turu kapatılamadı: {err:?}");
+            }
+        }
+    });
+}
+
+fn reflex_click(id: &str, clicker: UserId) -> Value {
+    let Ok(id) = id.parse::<u64>() else {
+        return notice("Bu tur bulunamadı.");
+    };
+    let now = unix_millis();
+    let outcome = REFLEXES.with(id, |game| match game.click(clicker, now) {
+        ReflexClick::FalseStart => Err("🚫 Erken bastın! Bu turda elendin."),
+        ReflexClick::AlreadyOut => Err("Erken bastığın için bu turda yoksun 🙈"),
+        ReflexClick::TooLate => Err("Geç kaldın, tur bitti ⌛"),
+        ReflexClick::Won => Ok(reflex_card(id, game)),
+    });
+    match outcome {
+        None => notice("Bu tur bitti ya da süresi doldu ⌛ `/refleks` ile yenisini başlat."),
+        Some(Err(text)) => notice(text),
+        Some(Ok(card)) => {
+            REFLEXES.remove(id);
+            message(RESPONSE_UPDATE, card)
+        }
+    }
+}
+
+fn reflex_rating(ms: u64) -> &'static str {
+    match ms {
+        0..=249 => "🦅 Şimşek gibi!",
+        250..=399 => "🐆 Çok çevik",
+        400..=699 => "🐇 Fena değil",
+        700..=1199 => "🐢 Biraz uykulu",
+        _ => "🦥 Kahve lazım",
+    }
+}
+
+fn reflex_card(id: u64, game: &Reflex) -> Value {
+    let (accent, mut children, action) = match (game.phase, game.winner) {
+        (ReflexPhase::Waiting, _) => (
+            0xED4245,
+            vec![text(format!(
+                "## 🔴 Bekle…\n<@{}> bir refleks turu başlattı. Işık **yeşile** dönünce ilk basan kazanır!\n-# Erken basan elenir • herkes katılabilir",
+                game.host
+            ))],
+            button(STYLE_DANGER, "Bekle…", "🔴", &format!("fun:refleks:{id}")),
+        ),
+        (ReflexPhase::Go { .. }, _) => (
+            0x57F287,
+            vec![text("## 🟢 ŞİMDİ! BAS!")],
+            button(STYLE_SUCCESS, "BAS!", "🟢", &format!("fun:refleks:{id}")),
+        ),
+        (ReflexPhase::Done, Some((winner, ms))) => (
+            0xF1C40F,
+            vec![text(format!(
+                "## ⚡ <@{winner}> kazandı!\n### `{ms} ms` · {}\n-# Süreye ağ gecikmesi de dahil.",
+                reflex_rating(ms)
+            ))],
+            button(STYLE_PRIMARY, "Yeni tur", "🔁", "fun:refleks:new"),
+        ),
+        (ReflexPhase::Done, None) => (
+            0x99AAB5,
+            vec![text(
+                "## 😴 Kimse basmadı\nIşık yandı, söndü… herkes uyuyakalmış.",
+            )],
+            button(STYLE_PRIMARY, "Yeni tur", "🔁", "fun:refleks:new"),
+        ),
+    };
+
+    if game.phase != ReflexPhase::Waiting && !game.false_starts.is_empty() {
+        let mut names = game
+            .false_starts
+            .iter()
+            .take(REFLEX_SHOWN_FALSE_STARTS)
+            .map(|user| format!("<@{user}>"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let hidden = game
+            .false_starts
+            .len()
+            .saturating_sub(REFLEX_SHOWN_FALSE_STARTS);
+        if hidden > 0 {
+            names.push_str(&format!(" +{hidden}"));
+        }
+        children.push(separator(true));
+        children.push(text(format!("🚫 Erken basanlar: {names}")));
+    }
+
+    v2_message(vec![container(accent, children), row(vec![action])])
+}
+
+// ─── Kahve falı ───────────────────────────────────────────────────────────────
+
+/// Fincanda çıkabilecek şekiller: (emoji, ad, yorum).
+const FORTUNE_SYMBOLS: [(&str, &str, &str); 14] = [
+    ("🐦", "Kuş", "Yakında kapını güzel bir haber çalacak."),
+    ("🐟", "Balık", "Bereket yolda; elin para görecek."),
+    ("🛣️", "Yol", "Uzun ya da kısa, bir yolculuk görünüyor."),
+    ("💍", "Yüzük", "Bir söz, bir bağlılık… belki bir teklif."),
+    (
+        "🧿",
+        "Göz",
+        "Biri seni kıskanıyor; nazarlığını yanından ayırma.",
+    ),
+    ("🌳", "Ağaç", "Köklerin sağlam, büyüme zamanın geldi."),
+    ("🐍", "Yılan", "Çevrende sinsi biri var, sırlarını sakla."),
+    ("⛰️", "Dağ", "Önünde bir engel var ama zirve seni bekliyor."),
+    (
+        "🗝️",
+        "Anahtar",
+        "Uzun süredir kapalı bir kapı açılmak üzere.",
+    ),
+    ("🌙", "Hilal", "Yepyeni bir başlangıç doğuyor."),
+    ("🐎", "At", "Bir dileğin dörtnala gerçekleşmeye geliyor."),
+    ("🏠", "Ev", "Evine huzur geliyor; belki bir taşınma."),
+    ("❤️", "Kalp", "Gönül işleri hareketleniyor."),
+    ("✉️", "Mektup", "Uzaklardan bir mesaj alacaksın."),
+];
+
+const FORTUNE_COLORS: [&str; 8] = [
+    "Lacivert",
+    "Bordo",
+    "Fıstık yeşili",
+    "Hardal",
+    "Lila",
+    "Turkuaz",
+    "Mercan",
+    "Gece mavisi",
+];
+
+/// Türkiye saati (UTC+3): fal yerel gece yarısında tazelenir.
+const FORTUNE_UTC_OFFSET: u64 = 3 * 3600;
+
+fn fortune_day(now: u64) -> u64 {
+    (now + FORTUNE_UTC_OFFSET) / 86_400
+}
+
+/// Kişinin o günkü falı: aynı gün kaç kez bakılsa da aynı çıkar.
+fn fortune_response(user: UserId, asker: UserId, day: u64) -> Value {
+    let seed = splitmix64(user.get() ^ splitmix64(day ^ 0x6b61_6876_6566_616c));
+    let pick = |salt: u64, len: usize| (splitmix64(seed.wrapping_add(salt)) % len as u64) as usize;
+
+    let first = pick(1, FORTUNE_SYMBOLS.len());
+    let mut second = pick(2, FORTUNE_SYMBOLS.len() - 1);
+    if second >= first {
+        second += 1;
+    }
+    let symbols = [first, second]
+        .map(|index| {
+            let (emoji, name, meaning) = FORTUNE_SYMBOLS[index];
+            format!("### {emoji} {name}\n{meaning}")
+        })
+        .join("\n");
+    let meters = [("💗 Aşk", 3), ("💰 Para", 4), ("🌿 Sağlık", 5)]
+        .map(|(name, salt)| {
+            let value = pick(salt, 101) as u8;
+            format!("{name} `{}` %{value}", bar(value, 8))
+        })
+        .join("\n");
+    let refresh = (day + 1) * 86_400 - FORTUNE_UTC_OFFSET;
+
+    let mut footer = format!("-# Fal yalan, gönül hoş olsun • fincan <t:{refresh}:R> tazelenir");
+    if asker != user {
+        footer.push_str(&format!(" • <@{asker}> baktı"));
+    }
+    let card = container(
+        0x6F4E37,
+        vec![
+            text(format!(
+                "## ☕ Kahve Falı\n<@{user}> fincanını kapattı, soğuttu, çevirdi…"
+            )),
+            separator(true),
+            text(symbols),
+            separator(true),
+            text(meters),
+            text(format!(
+                "🍀 Şanslı sayın: **{}** · 🎨 Şanslı rengin: **{}**",
+                pick(6, 99) + 1,
+                FORTUNE_COLORS[pick(7, FORTUNE_COLORS.len())]
+            )),
+            text(footer),
+        ],
+    );
+    message(RESPONSE_MESSAGE, v2_message(vec![card]))
+}
+
 // ─── Ortak yardımcılar ───────────────────────────────────────────────────────
 
 /// Bellekteki oyunlar: süresi dolanlar her erişimde temizlenir.
@@ -1144,6 +1861,18 @@ impl Expiring for Duel {
 }
 
 impl Expiring for Guessing {
+    fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+}
+
+impl Expiring for Bomb {
+    fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+}
+
+impl Expiring for Reflex {
     fn expires_at(&self) -> u64 {
         self.expires_at
     }
@@ -1290,6 +2019,13 @@ fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default()
 }
 
@@ -1542,7 +2278,23 @@ mod tests {
             guessing.guess(user(u64::MAX / 3), value);
         }
 
+        let mut bomb = Bomb::new(user(u64::MAX / 2), user(u64::MAX / 3), false, 8, 0);
+        for wire in 0..7 {
+            bomb.cut(bomb.turn, wire).unwrap();
+        }
+        let mut reflex = Reflex::new(user(u64::MAX / 2));
+        for id in 1..40 {
+            reflex.click(user(u64::MAX - id), 0);
+        }
+        reflex.phase = ReflexPhase::Go { at_ms: 0 };
+        reflex.click(user(1), 180);
+
         let cards = [
+            bomb_card(u64::MAX, &bomb),
+            bomb_card(u64::MAX, &Bomb::new(user(1), user(2), false, 0, 0)),
+            reflex_card(u64::MAX, &reflex),
+            reflex_card(u64::MAX, &Reflex::new(user(1))),
+            fortune_response(user(u64::MAX), user(1), u64::MAX / 86_400 - 1)["data"].clone(),
             compat_card(&profile(1), &profile(2)),
             compat_card(&profile(1), &profile(1)),
             duel_card(u64::MAX, &duel),
@@ -1581,9 +2333,88 @@ mod tests {
     }
 
     #[test]
+    fn clues_measure_distance_to_the_bomb() {
+        assert_eq!(Clue::between(3, 4), Clue::Adjacent);
+        assert_eq!(Clue::between(6, 4), Clue::Near);
+        assert_eq!(Clue::between(0, 4), Clue::Far);
+    }
+
+    #[test]
+    fn bomb_alternates_turns_and_explodes() {
+        let mut game = Bomb::new(user(1), user(2), false, 4, 0);
+        assert_eq!(
+            game.cut(1, 0),
+            Err("Sıra sende değil ⏳ Rakibinin kesmesini bekle.")
+        );
+        game.cut(0, 0).unwrap();
+        assert_eq!(game.turn, 1);
+        assert_eq!(game.cut(1, 0), Err("Bu kablo zaten kesildi ✂️"));
+        game.cut(1, 3).unwrap();
+        assert_eq!(game.cuts[1].2, Clue::Adjacent);
+        game.cut(0, 4).unwrap();
+        assert_eq!(game.result, Some(BombResult::Exploded { loser: 0 }));
+        assert!(game.cut(1, 5).is_err(), "patlamış bomba kesilemez");
+    }
+
+    #[test]
+    fn suspects_follow_the_clues() {
+        let mut game = Bomb::new(user(1), user(2), false, 4, 0);
+        game.cut(0, 3).unwrap(); // bitişik → 2 ya da 4
+        assert_eq!(game.suspects(), vec![2, 4]);
+        game.cut(1, 0).unwrap(); // uzak → 2 elenir
+        assert_eq!(game.suspects(), vec![4]);
+    }
+
+    #[test]
+    fn bot_never_cuts_a_wire_it_knows_is_the_bomb() {
+        for _ in 0..200 {
+            let mut game = Bomb::new(user(1), user(2), true, 4, 0);
+            game.cut(0, 3).unwrap();
+            // "Bitişik" ipucundan sonra bomba 2 ya da 4'tedir; bot kesin güvenli birini keser.
+            assert!(game.result.is_none(), "bot şüpheli kabloyu kesti");
+            let (_, wire, _) = game.cuts[1];
+            assert!(![2, 4].contains(&wire), "bot şüpheli kabloyu kesti: {wire}");
+            assert_eq!(game.turn, 0);
+        }
+    }
+
+    #[test]
+    fn bot_rival_opens_when_it_moves_first() {
+        let game = Bomb::new(user(1), user(2), true, 8, 1);
+        assert_eq!(game.turn, 0);
+        assert_eq!(game.cuts.len(), 1);
+    }
+
+    #[test]
+    fn reflex_punishes_false_starts() {
+        let mut game = Reflex::new(user(1));
+        assert_eq!(game.click(user(2), 10), ReflexClick::FalseStart);
+        assert_eq!(game.click(user(2), 20), ReflexClick::AlreadyOut);
+        game.phase = ReflexPhase::Go { at_ms: 1_000 };
+        assert_eq!(game.click(user(2), 1_200), ReflexClick::AlreadyOut);
+        assert_eq!(game.click(user(3), 1_234), ReflexClick::Won);
+        assert_eq!(game.winner, Some((user(3), 234)));
+        assert_eq!(game.click(user(4), 1_300), ReflexClick::TooLate);
+    }
+
+    #[test]
+    fn fortune_is_stable_within_a_day() {
+        let day = fortune_day(1_700_000_000);
+        let a = fortune_response(user(42), user(42), day);
+        assert_eq!(a, fortune_response(user(42), user(42), day));
+        let days: std::collections::HashSet<String> = (0..10)
+            .map(|offset| fortune_response(user(42), user(42), day + offset).to_string())
+            .collect();
+        assert!(days.len() > 1, "fal günden güne değişmeli");
+        // 21:00 UTC Türkiye'de gece yarısıdır.
+        assert_eq!(fortune_day(20 * 3600 + 3599), 0);
+        assert_eq!(fortune_day(21 * 3600), 1);
+    }
+
+    #[test]
     fn command_definitions_match_discord_schema() {
         let definitions = definitions();
-        assert_eq!(definitions.len(), 5);
+        assert_eq!(definitions.len(), 8);
         for definition in &definitions {
             let json = serde_json::to_value(definition).unwrap();
             let name = json["name"].as_str().unwrap();

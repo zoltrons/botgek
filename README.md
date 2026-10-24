@@ -119,6 +119,9 @@ Ayrıntılı kurulum ve güvenlik notları: [docs/CONFIGURATION.md](docs/CONFIGU
 | `/düello rakip:<@biri>` | Gizli seçimli Taş · Kağıt · Makas; ilk iki turu alan kazanır, rövanş butonu vardır. Bota meydan okunabilir. |
 | `/sayı-tahmini [zorluk]` | Bot bir sayı tutar; herkes butondan açılan pencereyle tahmin eder, kart daralan aralığı ve sıcak/soğuk ipuçlarını gösterir. |
 | `/8top soru:<soru>` | Sihirli 8 top cevabı. |
+| `/bomba rakip:<@biri>` | Sırayla kablo kesilir; her güvenli kablo bombanın uzaklığını (bitişik / iki kablo / uzak) söyler, bombayı kesen kaybeder. Bota meydan okunursa bot ipuçlarını okuyarak oynar. |
+| `/refleks` | Işık rastgele bir anda yeşile döner; ilk basan kazanır, erken basan elenir. Kazananın tepki süresi gösterilir. |
+| `/fal [kişi]` | Kişiye ve güne göre sabit kahve falı: iki fincan şekli, aşk/para/sağlık, şanslı sayı ve renk. Türkiye saatiyle gece yarısı tazelenir. |
 | 🗑️ tepkisi | Kartı, kartı paylaşan kullanıcı veya **Manage Messages** yetkisi olan bir yönetici siler. |
 | Bayrak tepkisi (🇹🇷, 🇬🇧, …) | Proxy mesajını seçilen dile çevirir. Native kartlar kendi çeviri ayarını kullanır. |
 | @bot etiketleme veya bot mesajına yanıt | AI sohbetini tetikler (`OPENROUTER_API_KEY` ve `ai_chat` modülü açıksa). |
