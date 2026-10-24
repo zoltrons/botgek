@@ -13,13 +13,12 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
 const SESSION_TTL: Duration = Duration::from_secs(8 * 3600);
 const COOKIE: &str = "botgek_session";
 const MAX_SESSIONS: usize = 64;
-const MAX_TOKEN_LEN: usize = 512;
+const MAX_TOKEN_LEN: usize = crate::utils::MAX_SECRET_LEN;
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const FAILURES_PER_WINDOW: u32 = 20;
 /// Bounds the per-address failure table so many sources cannot grow it without limit.
@@ -59,16 +58,7 @@ impl Auth {
 
     /// Compares in time independent of both the content and the length of the secret.
     fn token_matches(&self, candidate: &str) -> bool {
-        fn padded(value: &[u8]) -> [u8; MAX_TOKEN_LEN] {
-            let mut buf = [0u8; MAX_TOKEN_LEN];
-            let len = value.len().min(MAX_TOKEN_LEN);
-            buf[..len].copy_from_slice(&value[..len]);
-            buf
-        }
-        let candidate = candidate.as_bytes();
-        let same_len = (self.token.len() as u64).ct_eq(&(candidate.len() as u64));
-        let same_bytes = padded(self.token.as_bytes()).ct_eq(&padded(candidate));
-        bool::from(same_len & same_bytes)
+        crate::utils::secret_matches(&self.token, candidate)
     }
 
     async fn locked_out(&self, ip: IpAddr) -> bool {

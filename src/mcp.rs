@@ -24,7 +24,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
-use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 use crate::converters::builtin::{self, BuiltinPost};
@@ -34,7 +33,7 @@ use crate::store;
 use crate::web::WebState;
 
 /// `MCP_TOKEN` için üst sınır (`ADMIN_TOKEN` ile aynı politika).
-const MAX_TOKEN_LEN: usize = 512;
+const MAX_TOKEN_LEN: usize = crate::utils::MAX_SECRET_LEN;
 /// Modern (oturumsuz) MCP revizyonu.
 const MODERN_VERSION: &str = "2026-07-28";
 /// Kabul edilen eski revizyonlar (`initialize` akışı).
@@ -65,16 +64,7 @@ impl Auth {
 
     /// Uzunluk ve içerikten bağımsız sabit zamanlı karşılaştırma.
     fn verify(&self, candidate: &str) -> bool {
-        fn padded(value: &[u8]) -> [u8; MAX_TOKEN_LEN] {
-            let mut buffer = [0u8; MAX_TOKEN_LEN];
-            let length = value.len().min(MAX_TOKEN_LEN);
-            buffer[..length].copy_from_slice(&value[..length]);
-            buffer
-        }
-        let candidate = candidate.as_bytes();
-        let same_length = (self.token.len() as u64).ct_eq(&(candidate.len() as u64));
-        let same_bytes = padded(self.token.as_bytes()).ct_eq(&padded(candidate));
-        bool::from(same_length & same_bytes)
+        crate::utils::secret_matches(&self.token, candidate)
     }
 }
 
