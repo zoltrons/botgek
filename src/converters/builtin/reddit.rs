@@ -90,30 +90,9 @@ static TOKEN_RETRY_AFTER: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mu
 /// başarısızlık bu süre boyunca hatırlanır ve doğrudan kimliksiz yola düşülür.
 const TOKEN_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
-/// `Basic` kimlik doğrulaması için minimal base64 kodlayıcı (ek bağımlılık yok).
+/// `Basic` kimlik doğrulaması için base64.
 fn base64_ascii(input: &str) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0] as u32;
-        let second = chunk.get(1).copied().unwrap_or(0) as u32;
-        let third = chunk.get(2).copied().unwrap_or(0) as u32;
-        let triple = (first << 16) | (second << 8) | third;
-        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[((triple >> 6) & 0x3F) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[(triple & 0x3F) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
+    crate::utils::base64_encode(input.as_bytes())
 }
 
 /// `installed_client` akışıyla bearer token döner (önbellekten tazeyse ağ isteği yapılmaz).

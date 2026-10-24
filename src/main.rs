@@ -242,6 +242,8 @@ async fn main() {
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_MESSAGE_REACTIONS
+        // AI yanıtlarında sunucu emojileri: sonradan eklenen/silinen emojiler önbelleğe yansısın.
+        | GatewayIntents::GUILD_EMOJIS_AND_STICKERS
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::DIRECT_MESSAGE_REACTIONS;
 

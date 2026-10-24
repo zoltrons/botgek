@@ -486,8 +486,8 @@ impl Handler {
         }
         let should_trigger = should_trigger_ai_chat(
             msg.mentions.iter().any(|u| u.id == bot_id),
-            referenced.as_ref().map(|r| r.author),
-            referenced.as_ref().map(|r| r.content.as_str()),
+            referenced.as_ref().map(|r| r.message.author.id),
+            referenced.as_ref().map(|r| r.message.content.as_str()),
             referenced.as_ref().is_some_and(|r| r.converted),
             bot_id,
         );
@@ -512,13 +512,15 @@ impl Handler {
             return;
         };
 
-        let clean_query = msg
+        // Boş etiket ancak yanıtlanan bir mesaj ya da görsel varsa anlamlıdır ("@bot" + yanıt
+        // = "buna ne dersin?"). Bağlamın kendisi bütçe kontrollerinden sonra toplanır.
+        let bare_mention = msg
             .content
             .replace(&format!("<@{bot_id}>"), "")
             .replace(&format!("<@!{bot_id}>"), "")
             .trim()
-            .to_string();
-        if clean_query.is_empty() {
+            .is_empty();
+        if bare_mention && referenced.is_none() && !crate::ai::discord::has_images(msg) {
             return;
         }
         if !crate::ai::has_capacity() {
@@ -543,20 +545,36 @@ impl Handler {
         // Discord "Yazıyor..." göstergesi
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
-        let content = match crate::ai::query_openrouter(
+        // Yanıt zinciri, yanıtlanan mesaj, görseller ve sunucu emojileri; kimlikler takma ada
+        // çevrilir (bkz. `ai::discord`).
+        let emojis = crate::ai::discord::GuildEmojis::from_cache(ctx, msg.guild_id);
+        let Some(gathered) = crate::ai::discord::gather(
+            ctx,
             &self.http_client,
-            api_key,
-            &settings.ai.model,
-            &settings.ai.system_prompt,
-            &clean_query,
+            msg,
+            referenced.as_ref().map(|r| &r.message),
+            bot_id,
+            &emojis,
         )
         .await
-        {
-            Ok(reply) => truncate_chars(&sanitize_mentions(&reply), DISCORD_CONTENT_LIMIT),
+        else {
+            return;
+        };
+        let prompt = crate::ai::ChatPrompt {
+            model: &settings.ai.model,
+            system_prompt: &settings.ai.system_prompt,
+            user_prompt: &gathered.query,
+            conversation: &gathered.conversation,
+        };
+        let content = match crate::ai::query_openrouter(&self.http_client, api_key, &prompt).await {
+            Ok(reply) => truncate_chars(
+                &sanitize_mentions(&emojis.render(&reply)),
+                DISCORD_CONTENT_LIMIT,
+            ),
             Err(e) => {
                 // Ayrıntı yalnızca log'a yazılır: sunucu yapılandırmasına (.env, API anahtarı)
                 // dair bilgi Discord kullanıcılarına sızdırılmaz.
-                error!("AI yanıtı üretilirken hata oluştu: {:?}", e);
+                error!("AI yanıtı üretilirken hata oluştu: {e}");
                 ai_error_notice(&e).to_string()
             }
         };
@@ -576,10 +594,9 @@ impl Handler {
     }
 }
 
-/// AI tetikleme kararı için yanıtlanan mesajın gereken alanları.
+/// Yanıtlanan mesaj ve AI tetikleme kararı için ondan çıkarılan bilgiler.
 struct ReferencedMessage {
-    author: UserId,
-    content: String,
+    message: Message,
     converted: bool,
     command_response: bool,
 }
@@ -600,11 +617,10 @@ async fn referenced_message_info(
         }
     };
     Some(ReferencedMessage {
-        author: referenced.author.id,
-        content: referenced.content.clone(),
         converted: is_converted_message(referenced, bot_id).await,
         command_response: referenced.author.id == bot_id
             && referenced.interaction_metadata.is_some(),
+        message: referenced.clone(),
     })
 }
 
@@ -620,13 +636,34 @@ async fn claim_ai_cooldown(user: UserId) -> bool {
 }
 
 /// Sağlayıcı hatasını kullanıcıya gösterilecek, sır içermeyen bildirime çevirir.
-fn ai_error_notice(error: &str) -> &'static str {
-    if error.contains("429") || error.contains("504") || error.contains("rate-limited") {
-        "Model sağlayıcısı şu an yoğunluk veya hız sınırı nedeniyle yanıt veremedi. Birkaç saniye sonra tekrar dene."
-    } else if error.contains("401") || error.contains("API key") {
-        "AI servisi yapılandırmasında bir sorun var, bot sahibi bilgilendirildi."
-    } else {
-        "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
+fn ai_error_notice(error: &crate::ai::AiError) -> &'static str {
+    use crate::ai::AiError;
+    match error {
+        AiError::Busy | AiError::RateLimited(_) => {
+            "Model sağlayıcısı şu an yoğunluk veya hız sınırı nedeniyle yanıt veremedi. Birkaç saniye sonra tekrar dene."
+        }
+        AiError::Auth(_)
+        | AiError::Credits(_)
+        | AiError::BadRequest(_)
+        | AiError::InvalidModel(_) => {
+            "AI servisi yapılandırmasında bir sorun var, bot sahibi bilgilendirildi."
+        }
+        AiError::Blocked(_) => {
+            "Bu mesaja yanıt veremiyorum; model sağlayıcısının içerik filtresine takıldı."
+        }
+        AiError::Truncated => {
+            "Model uzun uzun düşündü ama bir cevaba varamadı 🤔 Soruyu biraz daha kısa sorar mısın?"
+        }
+        AiError::NoProvider(_) => {
+            "Gizlilik ayarlarımı (veri saklamayan sağlayıcı) karşılayan bir model şu an bulunamadı. Biraz sonra tekrar dene."
+        }
+        AiError::Network(_)
+        | AiError::Timeout
+        | AiError::Unavailable(_)
+        | AiError::Empty
+        | AiError::Malformed(_) => {
+            "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
+        }
     }
 }
 
@@ -845,9 +882,12 @@ mod tests {
 
     #[test]
     fn ai_error_notice_never_leaks_provider_details() {
-        let notice = ai_error_notice("401 Unauthorized: invalid API key sk-or-123");
+        use crate::ai::AiError;
+        let notice = ai_error_notice(&AiError::Auth("invalid API key sk-or-123".into()));
         assert!(!notice.contains("sk-or") && !notice.contains("401"));
-        assert!(ai_error_notice("HTTP 429").contains("hız sınırı"));
+        let notice = ai_error_notice(&AiError::Credits("Add credits at openrouter.ai".into()));
+        assert!(!notice.contains("openrouter") && !notice.contains("402"));
+        assert!(ai_error_notice(&AiError::RateLimited(String::new())).contains("hız sınırı"));
     }
 
     #[test]

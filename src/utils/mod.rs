@@ -24,6 +24,31 @@ pub fn secret_matches(secret: &str, candidate: &str) -> bool {
     bool::from(same_length & same_bytes)
 }
 
+/// Standart (dolgulu) base64 kodlayıcı; ek bağımlılık gerektirmez.
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0] as u32;
+        let second = chunk.get(1).copied().unwrap_or(0) as u32;
+        let third = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (first << 16) | (second << 8) | third;
+        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((triple >> 6) & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(triple & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// Truncates to `max` characters (not bytes) on a `char` boundary and marks the
 /// cut with an ellipsis.
 /// Metni `max` **karaktere** kısaltır; kısaltıldıysa sonuna `…` ekler.

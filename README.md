@@ -39,7 +39,10 @@ servisi gerekmez.
 - **MCP teşhis sunucusu:** WebUI ile aynı portta `/mcp`; sürüm, metrik, log, ayar, Discord cache'i,
   salt okunur SQL ve Discord'a göndermeyen link önizlemesi. Ayrı servis veya port gerekmez.
 - **İsteğe bağlı AI sohbeti:** OpenRouter üzerinden; bot etiketlendiğinde veya botun mesajına yanıt
-  verildiğinde çalışır. Rol filtresi, kullanıcı başına bekleme ve süreç geneli kapasite sınırı vardır.
+  verildiğinde çalışır. Yanıtlanan mesajı, yanıt zincirini ve görselleri bağlam olarak okur ("@bot
+  özetle", "@bot görselde ne var?"), sunucunun özel emojilerini yanıtlarında kullanır. Gizlilik için
+  kullanıcı kimliği/adı gönderilmez (takma adlar), yalnızca veri saklamayan sağlayıcılar kullanılır.
+  Rol filtresi, kullanıcı başına bekleme ve süreç geneli kapasite sınırı vardır.
 - **Çeviri:** X gönderileri için otomatik çeviri (`tr`, `en`, `de` veya herhangi bir BCP-47 kodu);
   proxy mesajlarında bayrak tepkisiyle anlık çeviri.
 - **Gizlilik kontrolleri:** Hassas içerik varsayılan olarak spoiler'dır; yalnızca NSFW kanallarında

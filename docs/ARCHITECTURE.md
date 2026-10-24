@@ -20,7 +20,7 @@ modelini ve tasarım kararlarının nedenlerini açıklar.
 | `src/web/` | Axum API'si, oturum kimlik doğrulaması ve gömülü panel varlıkları. |
 | `src/mcp.rs` | `/mcp` MCP Streamable HTTP endpoint'i, Bearer kimlik doğrulaması ve araçları. |
 | `src/logs.rs` | MCP için 512 olaylık bellek içi log halkası. |
-| `src/ai/` | OpenRouter istemcisi, model normalizasyonu ve yedek model zinciri. |
+| `src/ai/` | OpenRouter istemcisi: model normalizasyonu, yedek model zinciri, yanıt bağlamı ve türlü hatalar. |
 | `src/policy.rs` | Rol filtresi kararları. |
 | `src/telemetry.rs` | Süreç içi sayaçlar ve gecikme histogramı. |
 | `src/version.rs` | Derleme zamanında gömülen sürüm künyesi. |
@@ -182,7 +182,33 @@ Kurulum, istemci kaydı ve çağrı örnekleri: [MCP.md](MCP.md).
 
 - AI sohbeti yalnızca `OPENROUTER_API_KEY` varsa ve `ai_chat` modülü açıksa çalışır. Bot etiketlendiğinde
   veya botun mesajına yanıt verildiğinde tetiklenir; bot mesajları AI'ı tetiklemez.
-- Model adı OpenRouter biçimine normalize edilir; birincil model hata verirse yedek model zinciri denenir.
+- Model adı OpenRouter biçimine normalize edilir (`openrouter:` öneki ve model sayfası adresi de kabul
+  edilir). İstek `models: [model, "openrouter/free"]` ile gider; birincil model hata verirse OpenRouter
+  aynı istekte ücretsiz yönlendiriciye geçer. Ağ hatası, zaman aşımı, 429/5xx veya boş yanıtta istemci
+  ücretsiz yönlendiriciyle bir kez daha dener; 400/401/402/403 tekrar denenmez.
+- İstek yalnızca bir `system` ve bir `user` mesajı içerir. Bağlam (`src/ai/discord.rs`) kullanıcı
+  mesajına eklenir: yanıtlanan mesaj (en fazla 1.500 karakter, embed metinleri dahil), ondan geriye
+  en fazla 4 mesajlık yanıt zinciri ve kullanıcının ya da yanıtlanan mesajın görselleri (en fazla 3).
+  Bu biçim, `assistant` turuyla başlayan sohbetleri reddeden model şablonlarıyla uyumludur. Görsel
+  varsa içerik metin + `image_url` parçalarına dönüşür; birincil model görsel okuyamıyorsa yedek
+  `openrouter/free` görsel destekleyen ücretsiz bir model seçer. Yalnızca etiket atılıp bir mesaja
+  yanıt verilirse bot o mesaja yorum yapar.
+- En az veri ilkesi: istekte `user` alanı yoktur; konuşanlar ve metindeki etiketler istek içinde
+  tutarlı takma adlara (`Kullanıcı`, `Kişi A`…), rol/kanal etiketleri `@rol` / `#kanal`
+  yer tutucularına çevrilir; dosya adları gönderilmez. Görseller yalnızca Discord alan adlarından,
+  medya vekilinden en uzun kenarı 1.024 px'e küçültülmüş WebP kopya olarak indirilir ve `data:`
+  adresi olarak gömülür; sağlayıcı Discord bağlantısını görmez. `provider.data_collection: "deny"`
+  isteği yalnızca istemi saklamayan / eğitimde kullanmayan sağlayıcılara yönlendirir. Bu politikayı
+  karşılayan sağlayıcı yoksa OpenRouter 404 döner ve kullanıcıya ayrı bir bildirim gösterilir.
+- Sunucunun bot tarafından kullanılabilen (rol kısıtsız, etkin) en fazla 60 özel emojisi sistem
+  istemine `:ad:` olarak yazılır; model yalnızca gerçekten uyduğunda en fazla bir tane kullanmaya
+  yönlendirilir. Modelin yazdığı `:ad:` kodları gönderimden önce `<:ad:id>` biçimine çevrilir; bir
+  yanıtta ikiden fazla özel emoji varsa fazlası atılır. Emoji güncellemeleri `GUILD_EMOJIS_AND_STICKERS` intent'iyle önbelleğe yansır.
+- `reasoning.exclude: true` ile düşünme metni yanıta katılmaz; `max_tokens` 2.048'dir çünkü reasoning
+  modellerinde bütçe düşünmeyi de kapsar. Bütçe düşünmeye giderse (`finish_reason: "length"`, boş
+  içerik) ya da sağlayıcı yanıtın ortasında koparsa yarım metin kanala yazılmaz.
+- Hatalar türlüdür (`AiError`): kullanıcıya gösterilen bildirim türden seçilir, ayrıntı yalnızca loga
+  yazılır. İstek `HTTP-Referer` / `X-OpenRouter-Title` uygulama künyesiyle gönderilir.
 - Kullanıcı başına 3 saniye bekleme, süreç genelinde 2 eşzamanlı istek sınırı vardır. İstem 8.000
   karakterle, yanıt 8.000 karakter ve 1 MiB ile sınırlıdır.
 - X otomatik çevirisinin hedef dili panelden `tr`, `en`, `de` veya BCP-47 uyumlu başka bir kod olarak
