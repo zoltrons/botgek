@@ -83,7 +83,7 @@ fn conversion_sender() -> &'static Sender<ConversionJob> {
 }
 
 /// Ayarlardaki alan adı override'larını (WebUI) `.env` değerleriyle birleştirir.
-fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::PlatformDomains {
+pub(crate) fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::PlatformDomains {
     parser::PlatformDomains {
         tiktok: engine.domain_for("tiktok", config),
         bluesky: engine.domain_for("bluesky", config),

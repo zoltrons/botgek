@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::converters::builtin::{self, BuiltinPost};
-use crate::converters::parser::{self, PlatformDomains};
+use crate::converters::parser;
 use crate::settings::AppSettings;
 use crate::store;
 use crate::web::WebState;
@@ -545,7 +545,7 @@ async fn tool_bot_status(state: &WebState) -> Value {
             "records": store::record_count(),
             "bytes": store::file_bytes(),
             "files": store::file_sizes(),
-            "max_records": 200_000
+            "max_records": store::MAX_RECORDS
         },
         "process": crate::telemetry::process_snapshot(),
         "gateway": crate::telemetry::gateway_snapshot(),
@@ -702,7 +702,7 @@ fn db_stats() -> Value {
         "records": store::record_count(),
         "bytes": store::file_bytes(),
         "files": store::file_sizes(),
-        "max_records": 200_000,
+        "max_records": store::MAX_RECORDS,
         "note": "SQLite WAL; kayıtlar mesaj → paylaşan kullanıcı eşlemesidir."
     })
 }
@@ -746,11 +746,7 @@ async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String
 
     let settings = state.settings.read().await.clone();
     let engine = settings.get_guild_settings(None).engine;
-    let domains = PlatformDomains {
-        tiktok: engine.domain_for("tiktok", &state.config),
-        bluesky: engine.domain_for("bluesky", &state.config),
-        spotify: engine.domain_for("spotify", &state.config),
-    };
+    let domains = crate::converters::resolve_domains(&engine, &state.config);
     let parsed = parser::parse_message_with_domains(&url, &domains)
         .ok_or_else(|| "desteklenen bir bağlantı bulunamadı (X, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv, Tumblr, Facebook, YouTube)".to_string())?;
 
@@ -855,11 +851,7 @@ async fn discord_test_card(state: &WebState, args: &Value) -> Result<Value, Stri
     let _total = crate::telemetry::PhaseTimer::new(crate::telemetry::Phase::Total);
     let settings = state.settings.read().await.clone();
     let engine = settings.get_guild_settings(Some(guild)).engine;
-    let domains = PlatformDomains {
-        tiktok: engine.domain_for("tiktok", &state.config),
-        bluesky: engine.domain_for("bluesky", &state.config),
-        spotify: engine.domain_for("spotify", &state.config),
-    };
+    let domains = crate::converters::resolve_domains(&engine, &state.config);
     let parsed = parser::parse_message_with_domains(&url, &domains)
         .ok_or_else(|| "desteklenen bir bağlantı bulunamadı".to_string())?;
 
@@ -1145,11 +1137,7 @@ mod tests {
         let engine = settings
             .get_guild_settings(Some(GuildId::new(guild_id)))
             .engine;
-        let domains = PlatformDomains {
-            tiktok: engine.domain_for("tiktok", &config),
-            bluesky: engine.domain_for("bluesky", &config),
-            spotify: engine.domain_for("spotify", &config),
-        };
+        let domains = crate::converters::resolve_domains(&engine, &config);
         let parsed = parser::parse_message_with_domains(&url, &domains).expect("parsed url");
         let client = reqwest::Client::new();
         let http = serenity::all::Http::new(&token);
