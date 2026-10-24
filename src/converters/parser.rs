@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex::{Captures, Regex};
 use std::sync::LazyLock;
 
 use crate::config::Config;
@@ -107,11 +107,11 @@ static INSTAGRAM_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 // ==================== REDDIT ====================
 // 1. Standart Gönderi: /r/subreddit/comments/id veya /(u|user)/username/comments/id
 static REDDIT_POST_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\|\|\s*https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
+    Regex::new(r"\|\|\s*https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^/\s|?#]+/([a-zA-Z0-9]+))?(?:/[^\s\|]*)?/?(?:\?[^\s\|]*)?\s*\|\|")
         .expect("Geçersiz Spoiler Reddit Post regex deseni")
 });
 static REDDIT_POST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^\s]*)?/?(?:\?[^\s]*)?")
+    Regex::new(r"https?://(?i:(?:(?:www|old|new|np|m|sh)\.)?reddit\.com)/(r|user|u)/([^/\s]+)/comments/([a-zA-Z0-9]+)(?:/[^/\s?#]+/([a-zA-Z0-9]+))?(?:/[^\s]*)?/?(?:\?[^\s]*)?")
         .expect("Geçersiz Reddit Post regex deseni")
 });
 
@@ -377,325 +377,233 @@ fn extract_user_comment(raw_content: &str, regex: &Regex) -> Option<String> {
     }
 }
 
-/// Twitter/X: **native-only** platform (proxy motoru kaldırıldı), bu yüzden "dönüştürülmüş"
-/// link orijinal linkin kendisidir.
-fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
-    if let Some(caps) = TWITTER_SPOILER_REGEX.captures(raw_content) {
-        let username = caps.get(1).map_or("i", |m| m.as_str());
-        let tweet_id = caps.get(2)?.as_str();
-        let extra = caps
-            .get(3)
-            .map(|m| format!("/{}", m.as_str()))
-            .unwrap_or_default();
-
-        let original_url = format!("https://x.com/{}/status/{}{}", username, tweet_id, extra);
-        let fixed_url = original_url.clone();
-
-        return Some(ParsedPost {
-            platform: Platform::Twitter,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &TWITTER_SPOILER_REGEX),
-            original_url,
-            fixed_url,
-        });
+/// Bir platformun spoiler (`||link||`) ve düz desenini sırayla dener; ilk eşleşen desenin
+/// yakalamalarından `build` ile (orijinal, dönüştürülmüş) adres çifti kurulur.
+///
+/// Spoiler deseni önce denenir, çünkü düz desen `||` içindeki bağlantıyla da eşleşir.
+/// `build` `None` dönerse bu çift için düz desen denenmez (bağlantı biçimsizdir).
+fn match_pair(
+    raw_content: &str,
+    platform: Platform,
+    spoiler: &Regex,
+    plain: &Regex,
+    build: impl Fn(&Captures<'_>) -> Option<(String, String)>,
+) -> Option<ParsedPost> {
+    for (regex, is_spoiler) in [(spoiler, true), (plain, false)] {
+        if let Some(caps) = regex.captures(raw_content) {
+            let (original_url, fixed_url) = build(&caps)?;
+            return Some(ParsedPost {
+                platform,
+                is_spoiler,
+                user_comment: extract_user_comment(raw_content, regex),
+                original_url,
+                fixed_url,
+            });
+        }
     }
-
-    if let Some(caps) = TWITTER_REGEX.captures(raw_content) {
-        let username = caps.get(1).map_or("i", |m| m.as_str());
-        let tweet_id = caps.get(2)?.as_str();
-        let extra = caps
-            .get(3)
-            .map(|m| format!("/{}", m.as_str()))
-            .unwrap_or_default();
-
-        let original_url = format!("https://x.com/{}/status/{}{}", username, tweet_id, extra);
-        let fixed_url = original_url.clone();
-
-        return Some(ParsedPost {
-            platform: Platform::Twitter,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &TWITTER_REGEX),
-            original_url,
-            fixed_url,
-        });
-    }
-
     None
+}
+
+/// Native-only platformlarda (proxy motoru yok) dönüştürülmüş bağlantı orijinalin kendisidir.
+fn native(original_url: String) -> Option<(String, String)> {
+    Some((original_url.clone(), original_url))
+}
+
+/// Genel desenler bağlantının tamamını spoiler'da ilk grupta, düz biçimde eşleşmenin kendisinde taşır.
+fn whole_link<'h>(caps: &Captures<'h>) -> Option<&'h str> {
+    caps.get(1).or_else(|| caps.get(0)).map(|m| m.as_str())
+}
+
+/// Twitter/X: **native-only** platform (proxy motoru kaldırıldı).
+fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
+    match_pair(
+        raw_content,
+        Platform::Twitter,
+        &TWITTER_SPOILER_REGEX,
+        &TWITTER_REGEX,
+        |caps| {
+            let username = caps.get(1).map_or("i", |m| m.as_str());
+            let tweet_id = caps.get(2)?.as_str();
+            let extra = caps
+                .get(3)
+                .map(|m| format!("/{}", m.as_str()))
+                .unwrap_or_default();
+            native(format!("https://x.com/{username}/status/{tweet_id}{extra}"))
+        },
+    )
 }
 
 fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
     // 1. @user/(video|photo)/id
-    if let Some(caps) = TIKTOK_VIDEO_SPOILER_REGEX.captures(raw_content) {
-        let user = caps.get(1)?.as_str();
-        let kind = caps.get(2)?.as_str();
-        let id = caps.get(3)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::TikTok,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &TIKTOK_VIDEO_SPOILER_REGEX),
-            original_url: format!("https://www.tiktok.com/@{}/{}/{}", user, kind, id),
-            fixed_url: format!("https://{}/@{}/{}/{}", domain, user, kind, id),
-        });
-    }
-    if let Some(caps) = TIKTOK_VIDEO_REGEX.captures(raw_content) {
-        let user = caps.get(1)?.as_str();
-        let kind = caps.get(2)?.as_str();
-        let id = caps.get(3)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::TikTok,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &TIKTOK_VIDEO_REGEX),
-            original_url: format!("https://www.tiktok.com/@{}/{}/{}", user, kind, id),
-            fixed_url: format!("https://{}/@{}/{}/{}", domain, user, kind, id),
-        });
-    }
-
+    match_pair(
+        raw_content,
+        Platform::TikTok,
+        &TIKTOK_VIDEO_SPOILER_REGEX,
+        &TIKTOK_VIDEO_REGEX,
+        |caps| {
+            let (user, kind, id) = (
+                caps.get(1)?.as_str(),
+                caps.get(2)?.as_str(),
+                caps.get(3)?.as_str(),
+            );
+            Some((
+                format!("https://www.tiktok.com/@{user}/{kind}/{id}"),
+                format!("https://{domain}/@{user}/{kind}/{id}"),
+            ))
+        },
+    )
     // 2. /t/id
-    if let Some(caps) = TIKTOK_T_SPOILER_REGEX.captures(raw_content) {
-        let id = caps.get(1)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::TikTok,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &TIKTOK_T_SPOILER_REGEX),
-            original_url: format!("https://www.tiktok.com/t/{}", id),
-            fixed_url: format!("https://{}/t/{}", domain, id),
-        });
-    }
-    if let Some(caps) = TIKTOK_T_REGEX.captures(raw_content) {
-        let id = caps.get(1)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::TikTok,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &TIKTOK_T_REGEX),
-            original_url: format!("https://www.tiktok.com/t/{}", id),
-            fixed_url: format!("https://{}/t/{}", domain, id),
-        });
-    }
-
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::TikTok,
+            &TIKTOK_T_SPOILER_REGEX,
+            &TIKTOK_T_REGEX,
+            |caps| {
+                let id = caps.get(1)?.as_str();
+                Some((
+                    format!("https://www.tiktok.com/t/{id}"),
+                    format!("https://{domain}/t/{id}"),
+                ))
+            },
+        )
+    })
     // 3. vm.tiktok.com veya vt.tiktok.com
-    if let Some(caps) = TIKTOK_SHORT_SPOILER_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str().to_ascii_lowercase();
-        let id = caps.get(2)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::TikTok,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &TIKTOK_SHORT_SPOILER_REGEX),
-            original_url: format!("https://{}.tiktok.com/{}", sub, id),
-            fixed_url: format!("https://{}.{}/{}", sub, domain, id),
-        });
-    }
-    if let Some(caps) = TIKTOK_SHORT_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str().to_ascii_lowercase();
-        let id = caps.get(2)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::TikTok,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &TIKTOK_SHORT_REGEX),
-            original_url: format!("https://{}.tiktok.com/{}", sub, id),
-            fixed_url: format!("https://{}.{}/{}", sub, domain, id),
-        });
-    }
-
-    None
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::TikTok,
+            &TIKTOK_SHORT_SPOILER_REGEX,
+            &TIKTOK_SHORT_REGEX,
+            |caps| {
+                let sub = caps.get(1)?.as_str().to_ascii_lowercase();
+                let id = caps.get(2)?.as_str();
+                Some((
+                    format!("https://{sub}.tiktok.com/{id}"),
+                    format!("https://{sub}.{domain}/{id}"),
+                ))
+            },
+        )
+    })
 }
 
 /// Instagram: **native-only** platform (proxy motoru kaldırıldı).
 fn parse_instagram(raw_content: &str) -> Option<ParsedPost> {
-    if let Some(caps) = INSTAGRAM_SPOILER_REGEX.captures(raw_content) {
-        let kind = caps.get(1)?.as_str();
-        let id = caps.get(2)?.as_str();
-        let original_url = format!("https://www.instagram.com/{}/{}", kind, id);
-        return Some(ParsedPost {
-            platform: Platform::Instagram,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &INSTAGRAM_SPOILER_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-    if let Some(caps) = INSTAGRAM_REGEX.captures(raw_content) {
-        let kind = caps.get(1)?.as_str();
-        let id = caps.get(2)?.as_str();
-        let original_url = format!("https://www.instagram.com/{}/{}", kind, id);
-        return Some(ParsedPost {
-            platform: Platform::Instagram,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &INSTAGRAM_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-    None
+    match_pair(
+        raw_content,
+        Platform::Instagram,
+        &INSTAGRAM_SPOILER_REGEX,
+        &INSTAGRAM_REGEX,
+        |caps| {
+            let kind = caps.get(1)?.as_str();
+            let id = caps.get(2)?.as_str();
+            native(format!("https://www.instagram.com/{kind}/{id}"))
+        },
+    )
 }
 
 /// Reddit: **native-only** platform (proxy motoru kaldırıldı).
 fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
-    // 1. /r/sub/comments/id veya /(u|user)/username/comments/id (Spoiler)
-    if let Some(caps) = REDDIT_POST_SPOILER_REGEX.captures(raw_content) {
-        let prefix = caps.get(1)?.as_str();
-        let target = caps.get(2)?.as_str();
-        let id = caps.get(3)?.as_str();
-        let section = if prefix == "u" { "user" } else { prefix };
-        let original_url = format!(
-            "https://www.reddit.com/{}/{}/comments/{}",
-            section, target, id
-        );
-        return Some(ParsedPost {
-            platform: Platform::Reddit,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &REDDIT_POST_SPOILER_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-    // 1. /r/sub/comments/id veya /(u|user)/username/comments/id (Normal)
-    if let Some(caps) = REDDIT_POST_REGEX.captures(raw_content) {
-        let prefix = caps.get(1)?.as_str();
-        let target = caps.get(2)?.as_str();
-        let id = caps.get(3)?.as_str();
-        let section = if prefix == "u" { "user" } else { prefix };
-        let original_url = format!(
-            "https://www.reddit.com/{}/{}/comments/{}",
-            section, target, id
-        );
-        return Some(ParsedPost {
-            platform: Platform::Reddit,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &REDDIT_POST_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-
-    // 2. /r/sub/s/share_id (Mobil Paylaşım Linki - Spoiler)
-    if let Some(caps) = REDDIT_SHARE_SPOILER_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str();
-        let share_id = caps.get(2)?.as_str();
-        let original_url = format!("https://www.reddit.com/r/{}/s/{}", sub, share_id);
-        return Some(ParsedPost {
-            platform: Platform::Reddit,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &REDDIT_SHARE_SPOILER_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-    // 2. /r/sub/s/share_id (Mobil Paylaşım Linki - Normal)
-    if let Some(caps) = REDDIT_SHARE_REGEX.captures(raw_content) {
-        let sub = caps.get(1)?.as_str();
-        let share_id = caps.get(2)?.as_str();
-        let original_url = format!("https://www.reddit.com/r/{}/s/{}", sub, share_id);
-        return Some(ParsedPost {
-            platform: Platform::Reddit,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &REDDIT_SHARE_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-
-    // 3. redd.it/id veya /comments/id (Kısa Linkler - Spoiler)
-    if let Some(caps) = REDDIT_SHORT_SPOILER_REGEX.captures(raw_content) {
-        let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
-        let original_url = format!("https://redd.it/{}", id);
-        return Some(ParsedPost {
-            platform: Platform::Reddit,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &REDDIT_SHORT_SPOILER_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-    // 3. redd.it/id veya /comments/id (Kısa Linkler - Normal)
-    if let Some(caps) = REDDIT_SHORT_REGEX.captures(raw_content) {
-        let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
-        let original_url = format!("https://redd.it/{}", id);
-        return Some(ParsedPost {
-            platform: Platform::Reddit,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &REDDIT_SHORT_REGEX),
-            fixed_url: original_url.clone(),
-            original_url,
-        });
-    }
-
-    None
+    // 1. /r/sub/comments/id veya /(u|user)/username/comments/id
+    match_pair(
+        raw_content,
+        Platform::Reddit,
+        &REDDIT_POST_SPOILER_REGEX,
+        &REDDIT_POST_REGEX,
+        |caps| {
+            let prefix = caps.get(1)?.as_str();
+            let target = caps.get(2)?.as_str();
+            let id = caps.get(3)?.as_str();
+            let section = if prefix == "u" { "user" } else { prefix };
+            // Yorum bağlantısında yorum kimliği korunur: kart yorumu bağlamıyla gösterir
+            // (`reddit::comment_id_from_url`). Kullanıcı metni taşımamak için başlık `_` olur.
+            let comment = caps
+                .get(4)
+                .map(|comment| format!("/_/{}", comment.as_str()))
+                .unwrap_or_default();
+            native(format!(
+                "https://www.reddit.com/{section}/{target}/comments/{id}{comment}"
+            ))
+        },
+    )
+    // 2. /r/sub/s/share_id (Mobil Paylaşım Linki)
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::Reddit,
+            &REDDIT_SHARE_SPOILER_REGEX,
+            &REDDIT_SHARE_REGEX,
+            |caps| {
+                let sub = caps.get(1)?.as_str();
+                let share_id = caps.get(2)?.as_str();
+                native(format!("https://www.reddit.com/r/{sub}/s/{share_id}"))
+            },
+        )
+    })
+    // 3. redd.it/id veya /comments/id (Kısa Linkler)
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::Reddit,
+            &REDDIT_SHORT_SPOILER_REGEX,
+            &REDDIT_SHORT_REGEX,
+            |caps| {
+                let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
+                native(format!("https://redd.it/{id}"))
+            },
+        )
+    })
 }
 
 fn parse_bluesky(raw_content: &str, domain: &str) -> Option<ParsedPost> {
-    if let Some(caps) = BLUESKY_SPOILER_REGEX.captures(raw_content) {
-        let handle = caps.get(1)?.as_str();
-        let rkey = caps.get(2)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::Bluesky,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &BLUESKY_SPOILER_REGEX),
-            original_url: format!("https://bsky.app/profile/{}/post/{}", handle, rkey),
-            fixed_url: format!("https://{}/profile/{}/post/{}", domain, handle, rkey),
-        });
-    }
-    if let Some(caps) = BLUESKY_REGEX.captures(raw_content) {
-        let handle = caps.get(1)?.as_str();
-        let rkey = caps.get(2)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::Bluesky,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &BLUESKY_REGEX),
-            original_url: format!("https://bsky.app/profile/{}/post/{}", handle, rkey),
-            fixed_url: format!("https://{}/profile/{}/post/{}", domain, handle, rkey),
-        });
-    }
-    None
+    match_pair(
+        raw_content,
+        Platform::Bluesky,
+        &BLUESKY_SPOILER_REGEX,
+        &BLUESKY_REGEX,
+        |caps| {
+            let handle = caps.get(1)?.as_str();
+            let rkey = caps.get(2)?.as_str();
+            Some((
+                format!("https://bsky.app/profile/{handle}/post/{rkey}"),
+                format!("https://{domain}/profile/{handle}/post/{rkey}"),
+            ))
+        },
+    )
 }
 
 fn parse_spotify(raw_content: &str, domain: &str) -> Option<ParsedPost> {
-    // 1. Track / album / playlist / artist (spoiler)
-    if let Some(caps) = SPOTIFY_SPOILER_REGEX.captures(raw_content) {
-        let kind = caps.get(1)?.as_str();
-        let id = caps.get(2)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::Spotify,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &SPOTIFY_SPOILER_REGEX),
-            original_url: format!("https://open.spotify.com/{kind}/{id}"),
-            fixed_url: format!("https://{domain}/{kind}/{id}"),
-        });
-    }
-    // 1. Track / album / playlist / artist (normal)
-    if let Some(caps) = SPOTIFY_REGEX.captures(raw_content) {
-        let kind = caps.get(1)?.as_str();
-        let id = caps.get(2)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::Spotify,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &SPOTIFY_REGEX),
-            original_url: format!("https://open.spotify.com/{kind}/{id}"),
-            fixed_url: format!("https://{domain}/{kind}/{id}"),
-        });
-    }
-    // 2. spotify.link kısa link (spoiler)
-    if let Some(caps) = SPOTIFY_SHORT_SPOILER_REGEX.captures(raw_content) {
-        let token = caps.get(1)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::Spotify,
-            is_spoiler: true,
-            user_comment: extract_user_comment(raw_content, &SPOTIFY_SHORT_SPOILER_REGEX),
-            original_url: format!("https://spotify.link/{token}"),
-            fixed_url: format!("https://{domain}/{token}"),
-        });
-    }
-    // 2. spotify.link kısa link (normal)
-    if let Some(caps) = SPOTIFY_SHORT_REGEX.captures(raw_content) {
-        let token = caps.get(1)?.as_str();
-        return Some(ParsedPost {
-            platform: Platform::Spotify,
-            is_spoiler: false,
-            user_comment: extract_user_comment(raw_content, &SPOTIFY_SHORT_REGEX),
-            original_url: format!("https://spotify.link/{token}"),
-            fixed_url: format!("https://{domain}/{token}"),
-        });
-    }
-    None
+    // 1. Track / album / playlist / artist
+    match_pair(
+        raw_content,
+        Platform::Spotify,
+        &SPOTIFY_SPOILER_REGEX,
+        &SPOTIFY_REGEX,
+        |caps| {
+            let kind = caps.get(1)?.as_str();
+            let id = caps.get(2)?.as_str();
+            Some((
+                format!("https://open.spotify.com/{kind}/{id}"),
+                format!("https://{domain}/{kind}/{id}"),
+            ))
+        },
+    )
+    // 2. spotify.link kısa link
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::Spotify,
+            &SPOTIFY_SHORT_SPOILER_REGEX,
+            &SPOTIFY_SHORT_REGEX,
+            |caps| {
+                let token = caps.get(1)?.as_str();
+                Some((
+                    format!("https://spotify.link/{token}"),
+                    format!("https://{domain}/{token}"),
+                ))
+            },
+        )
+    })
 }
 
 fn canonical_clip_url(raw: &str) -> Option<String> {
@@ -706,23 +614,13 @@ fn canonical_clip_url(raw: &str) -> Option<String> {
 }
 
 fn parse_twitch(raw_content: &str) -> Option<ParsedPost> {
-    for (regex, spoiler) in [
-        (&*TWITCH_CLIP_SPOILER_REGEX, true),
-        (&*TWITCH_CLIP_REGEX, false),
-    ] {
-        if let Some(caps) = regex.captures(raw_content) {
-            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
-            let original_url = canonical_clip_url(raw)?;
-            return Some(ParsedPost {
-                platform: Platform::Twitch,
-                is_spoiler: spoiler,
-                user_comment: extract_user_comment(raw_content, regex),
-                fixed_url: original_url.clone(),
-                original_url,
-            });
-        }
-    }
-    None
+    match_pair(
+        raw_content,
+        Platform::Twitch,
+        &TWITCH_CLIP_SPOILER_REGEX,
+        &TWITCH_CLIP_REGEX,
+        |caps| native(canonical_clip_url(whole_link(caps)?)?),
+    )
 }
 
 fn canonical_path_url(raw: &str, host: &str) -> Option<String> {
@@ -733,23 +631,13 @@ fn canonical_path_url(raw: &str, host: &str) -> Option<String> {
 }
 
 fn parse_pixiv(raw_content: &str) -> Option<ParsedPost> {
-    for (regex, spoiler) in [
-        (&*PIXIV_ARTWORK_SPOILER_REGEX, true),
-        (&*PIXIV_ARTWORK_REGEX, false),
-    ] {
-        if let Some(caps) = regex.captures(raw_content) {
-            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
-            let original_url = canonical_path_url(raw, "www.pixiv.net")?;
-            return Some(ParsedPost {
-                platform: Platform::Pixiv,
-                is_spoiler: spoiler,
-                user_comment: extract_user_comment(raw_content, regex),
-                fixed_url: original_url.clone(),
-                original_url,
-            });
-        }
-    }
-    None
+    match_pair(
+        raw_content,
+        Platform::Pixiv,
+        &PIXIV_ARTWORK_SPOILER_REGEX,
+        &PIXIV_ARTWORK_REGEX,
+        |caps| native(canonical_path_url(whole_link(caps)?, "www.pixiv.net")?),
+    )
 }
 
 fn tumblr_canonical(raw: &str) -> Option<String> {
@@ -782,33 +670,23 @@ fn tumblr_canonical(raw: &str) -> Option<String> {
 }
 
 fn parse_tumblr(raw_content: &str) -> Option<ParsedPost> {
-    for (regex, spoiler) in [
-        (&*TUMBLR_POST_SPOILER_REGEX, true),
-        (&*TUMBLR_POST_REGEX, false),
-    ] {
-        if let Some(caps) = regex.captures(raw_content) {
-            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
-            let original_url = tumblr_canonical(raw)?;
-            return Some(ParsedPost {
-                platform: Platform::Tumblr,
-                is_spoiler: spoiler,
-                user_comment: extract_user_comment(raw_content, regex),
-                fixed_url: original_url.clone(),
-                original_url,
-            });
-        }
-    }
-    None
+    match_pair(
+        raw_content,
+        Platform::Tumblr,
+        &TUMBLR_POST_SPOILER_REGEX,
+        &TUMBLR_POST_REGEX,
+        |caps| native(tumblr_canonical(whole_link(caps)?)?),
+    )
 }
 
 fn parse_facebook(raw_content: &str) -> Option<ParsedPost> {
-    for (regex, spoiler) in [
-        (&*FACEBOOK_POST_SPOILER_REGEX, true),
-        (&*FACEBOOK_POST_REGEX, false),
-    ] {
-        if let Some(caps) = regex.captures(raw_content) {
-            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
-            let raw = raw.trim_end_matches(['.', ',', '!', ';']);
+    match_pair(
+        raw_content,
+        Platform::Facebook,
+        &FACEBOOK_POST_SPOILER_REGEX,
+        &FACEBOOK_POST_REGEX,
+        |caps| {
+            let raw = whole_link(caps)?.trim_end_matches(['.', ',', '!', ';']);
             let parsed = url::Url::parse(raw).ok()?;
             let mut original_url = format!("https://www.facebook.com{}", parsed.path());
             if let Some(query) = parsed.query()
@@ -817,36 +695,19 @@ fn parse_facebook(raw_content: &str) -> Option<ParsedPost> {
                 original_url.push('?');
                 original_url.push_str(query);
             }
-            return Some(ParsedPost {
-                platform: Platform::Facebook,
-                is_spoiler: spoiler,
-                user_comment: extract_user_comment(raw_content, regex),
-                fixed_url: original_url.clone(),
-                original_url,
-            });
-        }
-    }
-    None
+            native(original_url)
+        },
+    )
 }
 
 fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
-    for (regex, spoiler) in [
-        (&*YOUTUBE_COMMUNITY_SPOILER_REGEX, true),
-        (&*YOUTUBE_COMMUNITY_REGEX, false),
-    ] {
-        if let Some(caps) = regex.captures(raw_content) {
-            let raw = caps.get(1).or_else(|| caps.get(0))?.as_str();
-            let original_url = canonical_path_url(raw, "www.youtube.com")?;
-            return Some(ParsedPost {
-                platform: Platform::YouTube,
-                is_spoiler: spoiler,
-                user_comment: extract_user_comment(raw_content, regex),
-                fixed_url: original_url.clone(),
-                original_url,
-            });
-        }
-    }
-    None
+    match_pair(
+        raw_content,
+        Platform::YouTube,
+        &YOUTUBE_COMMUNITY_SPOILER_REGEX,
+        &YOUTUBE_COMMUNITY_REGEX,
+        |caps| native(canonical_path_url(whole_link(caps)?, "www.youtube.com")?),
+    )
 }
 
 #[cfg(test)]
