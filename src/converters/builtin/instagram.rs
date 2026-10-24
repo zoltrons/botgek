@@ -121,6 +121,10 @@ const SESSION_API_BASES: [(&str, &str); 2] = [
 const SESSION_USER_AGENT: &str = "Instagram 273.0.0.16.70 (iPhone15,2; iOS 17_5_1; en_US; en-US; scale=3.00; 1290x2796; 470085518)";
 /// Oturum yanıtı için okunacak en büyük gövde (1 MB) — video listesi + açıklama fazlasıyla sığar.
 const SESSION_MAX_BODY_BYTES: usize = 1024 * 1024;
+/// Oturum denemelerinin **toplam** süresi. Denemeler sıralıdır (uç × çerez biçimi); her biri
+/// [`super::REQUEST_TIMEOUT`] alabildiğinden sınır olmadan yanıt vermeyen bir uç, herkese
+/// açık kaynaklar çoktan hazırken kartı dört kat bekletebiliyordu.
+const SESSION_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Oturum API'sinden çözülen medya ve kartı zenginleştiren alanlar.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -129,6 +133,7 @@ struct SessionMedia {
     media: Vec<Media>,
     username: Option<String>,
     full_name: Option<String>,
+    avatar: Option<String>,
     is_verified: bool,
     caption: Option<String>,
     likes: Option<u64>,
@@ -165,18 +170,29 @@ fn shortcode_to_pk(shortcode: &str) -> Option<u64> {
 /// Oturum API'sinden gönderi verisini çeker (yalnızca çerez tanımlıysa anlamlıdır).
 ///
 /// Herhangi bir hata (çerez geçersiz, gönderi gizli, ağ hatası, giriş yönlendirmesi) `None`
-/// döner: kart yine herkese açık kaynaklarla üretilir, akış hiçbir durumda bozulmaz.
+/// döner: kart yine herkese açık kaynaklarla üretilir, akış hiçbir durumda bozulmaz. Tüm
+/// denemeler birlikte [`SESSION_TOTAL_TIMEOUT`] ile sınırlıdır.
 async fn fetch_session_media(
     client: &reqwest::Client,
     code: &str,
     sessionid: Option<&str>,
 ) -> Option<SessionMedia> {
-    let token = sessionid
-        .map(str::trim)
-        .filter(|t| !t.is_empty())?
-        .to_string();
+    let token = sessionid.map(str::trim).filter(|t| !t.is_empty())?;
     let pk = shortcode_to_pk(code)?;
+    match tokio::time::timeout(SESSION_TOTAL_TIMEOUT, try_session_bases(client, pk, token)).await {
+        Ok(session) => session,
+        Err(_) => {
+            debug!(
+                "Instagram oturum verisi {} sn içinde gelmedi",
+                SESSION_TOTAL_TIMEOUT.as_secs()
+            );
+            None
+        }
+    }
+}
 
+/// Uç noktalarını sırayla, her birinde çerezin ham ve çözülmüş biçimini dener.
+async fn try_session_bases(client: &reqwest::Client, pk: u64, token: &str) -> Option<SessionMedia> {
     // Tarayıcı çerezi `%3A` ile kodlanmış olabilir: ham değer ve çözülmüş biçim denenir.
     let decoded = token.replace("%3A", ":").replace("%3a", ":");
     let mut cookies = vec![format!("sessionid={token}")];
@@ -184,72 +200,84 @@ async fn fetch_session_media(
         cookies.push(format!("sessionid={decoded}"));
     }
 
-    // Denemeler **sahiplenilmiş** String'lerle önceden kurulur: döngü boyunca yerel bir
-    // değişkeni ödünç tutan bir iterator `await` üzerinden taşınırsa future `Send` kalmaz
-    // (serenity'nin olay döngüsü `Send` ister) — bu yüzden ödünç yerine sahiplik kullanılır.
-    let mut attempts: Vec<(String, String, String)> = Vec::new();
     for (base, app_id) in SESSION_API_BASES {
-        for cookie in &cookies {
-            attempts.push((base.to_string(), app_id.to_string(), cookie.clone()));
+        let url = format!("{base}/{pk}/info/");
+        for cookie in cookies.clone() {
+            match session_attempt(client, &url, app_id, cookie).await {
+                SessionAttempt::Found(session) => return Some(session),
+                SessionAttempt::Rejected => continue,
+                // Uç erişilemiyorsa çerezin diğer biçimi de aynı sonuca varır: sıradaki uca geç.
+                SessionAttempt::Unreachable => break,
+            }
         }
     }
+    None
+}
 
-    for (base, app_id, cookie) in attempts {
-        let url = format!("{base}/{pk}/info/");
-        let response = client
-            .get(&url)
-            .header("user-agent", SESSION_USER_AGENT)
-            .header("x-ig-app-id", app_id.as_str())
-            .header("x-ig-www-claim", "0")
-            .header("x-asbd-id", "359341")
-            .header("x-ig-capabilities", "3brTvw8=")
-            .header("x-ig-connection-type", "WIFI")
-            .header("accept", "*/*")
-            .header("cookie", cookie.as_str())
-            .timeout(super::REQUEST_TIMEOUT)
-            .send()
-            .await;
+enum SessionAttempt {
+    Found(SessionMedia),
+    /// Uç yanıt verdi ama bu çerezle gönderi gelmedi (giriş sayfası, 401, boş yanıt).
+    Rejected,
+    /// Bağlantı kurulamadı ya da zaman aşımı.
+    Unreachable,
+}
 
-        let response = match response {
-            Ok(response) => response,
-            Err(err) => {
-                debug!("Instagram oturum isteği başarısız ({url}): {err}");
-                continue;
-            }
-        };
-        if !response.status().is_success() {
-            // Çerez geçersizse Instagram giriş sayfasına yönlendirir (3xx) ya da 401 döner.
-            debug!(
-                "Instagram oturum isteği reddedildi ({}): {url}",
-                response.status()
-            );
-            continue;
+async fn session_attempt(
+    client: &reqwest::Client,
+    url: &str,
+    app_id: &str,
+    cookie: String,
+) -> SessionAttempt {
+    let response = client
+        .get(url)
+        .header("user-agent", SESSION_USER_AGENT)
+        .header("x-ig-app-id", app_id)
+        .header("x-ig-www-claim", "0")
+        .header("x-asbd-id", "359341")
+        .header("x-ig-capabilities", "3brTvw8=")
+        .header("x-ig-connection-type", "WIFI")
+        .header("accept", "*/*")
+        .header("cookie", cookie)
+        .timeout(super::REQUEST_TIMEOUT)
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(err) => {
+            debug!("Instagram oturum isteği başarısız ({url}): {err}");
+            return SessionAttempt::Unreachable;
         }
-
-        let body = match read_body_limited(response, SESSION_MAX_BODY_BYTES).await {
-            Some(body) => body,
-            None => continue,
-        };
-        let json: Value = match serde_json::from_str(&body) {
-            Ok(json) => json,
-            Err(err) => {
-                debug!("Instagram oturum yanıtı çözümlenemedi ({url}): {err}");
-                continue;
-            }
-        };
-        if let Some(session) = parse_session_media(&json)
-            && !session.media.is_empty()
-        {
+    };
+    if !response.status().is_success() {
+        // Çerez geçersizse Instagram giriş sayfasına yönlendirir (3xx) ya da 401 döner.
+        debug!(
+            "Instagram oturum isteği reddedildi ({}): {url}",
+            response.status()
+        );
+        return SessionAttempt::Rejected;
+    }
+    let Some(body) = read_body_limited(response, SESSION_MAX_BODY_BYTES).await else {
+        return SessionAttempt::Rejected;
+    };
+    // Geçersiz çerezde yönlendirilen giriş sayfası HTML'dir; JSON olarak çözülemez.
+    let json: Value = match serde_json::from_str(&body) {
+        Ok(json) => json,
+        Err(err) => {
+            debug!("Instagram oturum yanıtı çözümlenemedi ({url}): {err}");
+            return SessionAttempt::Rejected;
+        }
+    };
+    match parse_session_media(&json) {
+        Some(session) if !session.media.is_empty() => {
             debug!(
                 "Instagram oturum verisi alındı ({url}): {} medya, video: {}",
                 session.media.len(),
                 session.has_video()
             );
-            return Some(session);
+            SessionAttempt::Found(session)
         }
+        _ => SessionAttempt::Rejected,
     }
-
-    None
 }
 
 /// Yanıt gövdesini sınırlı okuyup UTF-8 metne çevirir (`None` = boş/çok büyük/geçersiz gövde).
@@ -289,6 +317,7 @@ fn parse_session_media(json: &Value) -> Option<SessionMedia> {
         media,
         username: string_field(user, "username"),
         full_name: string_field(user, "full_name"),
+        avatar: string_field(user, "profile_pic_url"),
         is_verified: user
             .and_then(|u| u.get("is_verified"))
             .and_then(Value::as_bool)
@@ -348,7 +377,9 @@ fn push_session_node(out: &mut Vec<Media>, node: &Value) {
             duration: node
                 .get("video_duration")
                 .and_then(Value::as_f64)
-                .map(|seconds| seconds.round() as u64),
+                .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+                // Diğer platformlarla aynı: süre saniyeye yukarı yuvarlanır.
+                .map(|seconds| seconds.ceil() as u64),
         });
     } else if let Some(image) = poster {
         out.push(Media {
@@ -385,6 +416,39 @@ fn largest_candidate_url(image_versions: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|url| !url.is_empty())
+}
+
+/// Kalıcı bağlantının türü. `/reels/` Instagram'da `/reel/`'e yönlendirildiği için aynı
+/// türdür; istekler doğrudan kanonik yola gider (fazladan yönlendirme yok).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostKind {
+    Post,
+    Reel,
+    Tv,
+}
+
+impl PostKind {
+    fn from_path(segment: &str) -> Option<Self> {
+        match segment {
+            "p" => Some(Self::Post),
+            "reel" | "reels" => Some(Self::Reel),
+            "tv" => Some(Self::Tv),
+            _ => None,
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            Self::Post => "p",
+            Self::Reel => "reel",
+            Self::Tv => "tv",
+        }
+    }
+
+    /// Bağlantının kendisi videoyu işaret ediyor mu?
+    fn is_video(self) -> bool {
+        matches!(self, Self::Reel | Self::Tv)
+    }
 }
 
 /// Embed (SSR) sayfasından çıkarılan alanlar.
@@ -425,8 +489,9 @@ pub async fn fetch(
         )
     })?;
 
-    let embed_url = format!("https://www.instagram.com/{kind}/{code}/embed/captioned/");
-    let page_url = format!("https://www.instagram.com/{kind}/{code}/");
+    let path = kind.path();
+    let embed_url = format!("https://www.instagram.com/{path}/{code}/embed/captioned/");
+    let page_url = format!("https://www.instagram.com/{path}/{code}/");
 
     // Üç uç **paralel** istenir: toplam gecikme tek isteğin gecikmesi kadardır.
     let (embed_html, page_html, session) = tokio::join!(
@@ -436,10 +501,12 @@ pub async fn fetch(
     );
 
     let embed = embed_html
+        .inspect_err(|err| debug!("Instagram embed sayfası alınamadı: {err}"))
         .ok()
         .map(|html| parse_embed(&html))
         .filter(EmbedData::is_useful);
     let graph = page_html
+        .inspect_err(|err| debug!("Instagram gönderi sayfası alınamadı: {err}"))
         .ok()
         .map(|html| opengraph::parse_open_graph(&html))
         .filter(graph_is_useful);
@@ -451,7 +518,7 @@ pub async fn fetch(
         ));
     }
 
-    Ok(build_post(parsed, &kind, embed, graph, session))
+    Ok(build_post(parsed, kind, embed, graph, session))
 }
 
 /// OpenGraph verisi kart üretmeye yetiyor mu? (Giriş duvarı yalnızca site adını döndürür.)
@@ -460,10 +527,10 @@ fn graph_is_useful(graph: &OpenGraph) -> bool {
 }
 
 /// Kalıcı bağlantıdan gönderi türü ve kodunu çıkarır.
-fn parse_permalink(url: &str) -> Option<(String, String)> {
+fn parse_permalink(url: &str) -> Option<(PostKind, String)> {
     let caps = PERMALINK_REGEX.captures(url)?;
     Some((
-        caps.get(1)?.as_str().to_string(),
+        PostKind::from_path(caps.get(1)?.as_str())?,
         caps.get(2)?.as_str().to_string(),
     ))
 }
@@ -514,9 +581,9 @@ fn first_capture(regex: &Regex, html: &str) -> Option<String> {
 }
 
 /// Regex'in ilk yakalama grubunu kompakt sayıya çevirir (`975K` → 975000).
-fn number_from(regex: &Regex, html: &str) -> Option<u64> {
+fn number_from(regex: &Regex, text: &str) -> Option<u64> {
     regex
-        .captures(html)
+        .captures(text)
         .and_then(|c| c.get(1))
         .and_then(|m| parse_compact_number(m.as_str()))
 }
@@ -535,7 +602,8 @@ fn parse_compact_number(raw: &str) -> Option<u64> {
     if !value.is_finite() || value < 0.0 {
         return None;
     }
-    Some((value * multiplier) as u64)
+    // Yuvarlanır: `1.15K` kayan noktada 1149.999… olur ve kesilince 1149 çıkıyordu.
+    Some((value * multiplier).round() as u64)
 }
 
 /// Embed açıklamasını düz metne çevirir: kullanıcı adı bağlantısı atılır, `<br />` satır sonu
@@ -573,67 +641,42 @@ fn clean_caption(raw: &str) -> String {
 /// metrik/ad bilgileri (varsa) oturum API'sinden tamamlanır.
 fn build_post(
     parsed: &ParsedPost,
-    kind: &str,
+    kind: PostKind,
     embed: Option<EmbedData>,
     graph: Option<OpenGraph>,
     session: Option<SessionMedia>,
 ) -> BuiltinPost {
     let embed = embed.unwrap_or_default();
     let graph = graph.unwrap_or_default();
+    let description = graph.description.as_deref();
 
-    // Kullanıcı adı: embed > og:url yolu.
-    let username = embed
-        .username
-        .clone()
-        .or_else(|| graph.url.as_deref().and_then(username_from_og_url))
-        .unwrap_or_default();
-
-    // Görünen ad: og:title'ın `<Ad> on Instagram: ...` kısmı; yoksa kullanıcı adı.
-    let name = graph
-        .title
-        .as_deref()
-        .and_then(display_name_from_title)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| username.clone());
-    let name = if name.trim().is_empty() {
-        "Instagram".to_string()
-    } else {
-        name
-    };
-
-    let mut author = Author::new(name, username.clone());
-    author.verified = embed.verified;
-    author.avatar = embed.avatar.clone();
-    author.profile_url =
-        (!username.is_empty()).then(|| format!("https://www.instagram.com/{username}/"));
-
-    let mut post = BuiltinPost::new(Platform::Instagram, parsed.original_url.clone(), author);
+    let mut post = BuiltinPost::new(
+        Platform::Instagram,
+        parsed.original_url.clone(),
+        author(&embed, &graph, session.as_ref()),
+    );
 
     // Açıklama: embed caption öncelikli; yoksa og:description arındırılır.
     post.text = embed
         .caption
         .clone()
-        .or_else(|| {
-            graph
-                .description
-                .as_deref()
-                .and_then(caption_from_og_description)
-        })
+        .or_else(|| description.and_then(caption_from_og_description))
         .unwrap_or_default();
 
     // Tarih: og:description içindeki `... on August 26, 2022: ...`.
-    post.created_at = graph.description.as_deref().and_then(parse_ig_date);
+    post.created_at = description.and_then(parse_ig_date);
 
     // Metrikler: embed (tam sayı) öncelikli; yoksa og (kısaltmalı: 975K).
-    let likes = embed
-        .likes
-        .or_else(|| stat_from_description(&OG_LIKES_REGEX, graph.description.as_deref()));
-    let comments = embed
-        .comments
-        .or_else(|| stat_from_description(&OG_COMMENTS_REGEX, graph.description.as_deref()));
+    let og_stat = |regex: &Regex| description.and_then(|text| number_from(regex, text));
     post.stats = Stats {
-        replies: comments.unwrap_or(0),
-        likes: likes.unwrap_or(0),
+        replies: embed
+            .comments
+            .or_else(|| og_stat(&OG_COMMENTS_REGEX))
+            .unwrap_or(0),
+        likes: embed
+            .likes
+            .or_else(|| og_stat(&OG_LIKES_REGEX))
+            .unwrap_or(0),
         ..Stats::default()
     };
 
@@ -659,59 +702,70 @@ fn build_post(
     }
 
     // Medya: oturum API'si (varsa) kesin kaynaktır — reel/video mp4'ü ve carousel'in tamamı.
+    let session_reel = session.as_ref().is_some_and(|session| session.is_reel);
     if let Some(session) = session {
-        apply_session(&mut post, session, kind);
+        apply_session(&mut post, session);
     }
 
     // Video/reel göstergesi: mp4 gömülemediğinde kart kapak + etiket gösterir.
-    let has_video = post.media.iter().any(Media::is_video);
-    if post.extra_label.is_none() && (is_video_post(&embed.media_type, kind) || has_video) {
-        post.extra_label = Some(video_label(kind).to_string());
+    let video = post.media.iter().any(Media::is_video)
+        || embed.media_type.as_deref() == Some("GraphVideo")
+        || kind.is_video();
+    if video {
+        let reel = session_reel || kind == PostKind::Reel;
+        post.extra_label = Some(if reel { "Reel" } else { "Video" }.to_string());
     }
 
     post
 }
 
-/// Oturum API'sinden gelen veriyi karta uygular.
+/// Yazar kimliği tüm kaynaklardan tek seferde çözülür.
+///
+/// Kullanıcı adı: embed > og:url yolu > oturum API'si. Görünen ad: og:title > oturum
+/// API'sinin `full_name`'i > kullanıcı adı > "Instagram". (Eskiden ad önce "Instagram" yer
+/// tutucusuna düşüyor, oturumun gerçek adı bu yer tutucunun yerine geçemiyordu.)
+fn author(embed: &EmbedData, graph: &OpenGraph, session: Option<&SessionMedia>) -> Author {
+    let nonblank = |value: &Option<String>| value.clone().filter(|v| !v.trim().is_empty());
+    let username = nonblank(&embed.username)
+        .or_else(|| graph.url.as_deref().and_then(username_from_og_url))
+        .or_else(|| session.and_then(|s| nonblank(&s.username)))
+        .unwrap_or_default();
+    let name = graph
+        .title
+        .as_deref()
+        .and_then(display_name_from_title)
+        .or_else(|| session.and_then(|s| nonblank(&s.full_name)))
+        .or_else(|| (!username.is_empty()).then(|| username.clone()))
+        .unwrap_or_else(|| "Instagram".to_string());
+
+    let mut author = Author::new(name, username.clone());
+    author.verified = embed.verified || session.is_some_and(|s| s.is_verified);
+    author.avatar = embed
+        .avatar
+        .clone()
+        .or_else(|| session.and_then(|s| s.avatar.clone()));
+    author.profile_url =
+        (!username.is_empty()).then(|| format!("https://www.instagram.com/{username}/"));
+    author
+}
+
+/// Oturum API'sinden gelen medya, metin, tarih ve metrikleri karta uygular.
 ///
 /// Medya **kesin kaynak** olarak değiştirilir (reel/video mp4'ü kartın içinde oynar,
-/// carousel'in tüm öğeleri galeriye girer). Metin/istatistik alanları yalnızca mevcut
-/// değer yoksa doldurulur — herkese açık kaynaklardan gelen veri korunur.
-fn apply_session(post: &mut BuiltinPost, session: SessionMedia, kind: &str) {
+/// carousel'in tüm öğeleri galeriye girer). Açıklama ve tarih yalnızca eksikse doldurulur;
+/// metrikler API'nin kesin değerleriyle değişir. (Yazar kimliği [`author`]'da çözülür.)
+fn apply_session(post: &mut BuiltinPost, session: SessionMedia) {
     if !session.media.is_empty() {
         post.media = session.media;
     }
-
-    if let Some(username) = session.username.filter(|u| !u.is_empty()) {
-        if post.author.handle.is_empty() {
-            post.author.handle = username.clone();
-        }
-        if post.author.profile_url.is_none() {
-            post.author.profile_url = Some(format!("https://www.instagram.com/{username}/"));
-        }
-    }
-
-    // Görünen ad: og:title'dan bir ad gelmediyse (ad, kullanıcı adına eşitse) API'den alınır.
-    if let Some(full_name) = session.full_name.filter(|n| !n.trim().is_empty())
-        && (post.author.name.trim().is_empty() || post.author.name == post.author.handle)
-    {
-        post.author.name = full_name;
-    }
-
-    if session.is_verified {
-        post.author.verified = true;
-    }
-
     if post.text.trim().is_empty()
         && let Some(caption) = session.caption.filter(|c| !c.trim().is_empty())
     {
         post.text = caption;
     }
-
     if post.created_at.is_none() {
         post.created_at = session.taken_at;
     }
-
     if let Some(likes) = session.likes.filter(|v| *v > 0) {
         post.stats.likes = likes;
     }
@@ -721,36 +775,6 @@ fn apply_session(post: &mut BuiltinPost, session: SessionMedia, kind: &str) {
     if let Some(views) = session.views.filter(|v| *v > 0) {
         post.stats.views = Some(views);
     }
-
-    if post.media.iter().any(Media::is_video) {
-        let label = if session.is_reel || matches!(kind, "reel" | "reels") {
-            "Reel"
-        } else {
-            "Video"
-        };
-        post.extra_label = Some(label.to_string());
-    }
-}
-
-/// Gönderi video/reel mi? (Embed türü `GraphVideo` veya link türü `reel`/`reels`/`tv`.)
-fn is_video_post(media_type: &Option<String>, kind: &str) -> bool {
-    media_type.as_deref() == Some("GraphVideo") || matches!(kind, "reel" | "reels" | "tv")
-}
-
-/// Video gönderisi için kart etiketi.
-fn video_label(kind: &str) -> &'static str {
-    match kind {
-        "reel" | "reels" => "Reel",
-        _ => "Video",
-    }
-}
-
-/// og:description içindeki `975K likes` / `16K comments` değerini çıkarır.
-fn stat_from_description(regex: &Regex, description: Option<&str>) -> Option<u64> {
-    regex
-        .captures(description?)
-        .and_then(|c| c.get(1))
-        .and_then(|m| parse_compact_number(m.as_str()))
 }
 
 /// og:title'ın `<Ad> on Instagram: "..."` biçiminden görünen adı çıkarır.
@@ -840,16 +864,22 @@ mod tests {
     fn permalink_is_parsed() {
         assert_eq!(
             parse_permalink("https://www.instagram.com/reel/C3abcXYZ123/?igsh=abcdef"),
-            Some(("reel".to_string(), "C3abcXYZ123".to_string()))
+            Some((PostKind::Reel, "C3abcXYZ123".to_string()))
         );
         assert_eq!(
             parse_permalink("https://instagram.com/p/BsOGulcndj-"),
-            Some(("p".to_string(), "BsOGulcndj-".to_string()))
+            Some((PostKind::Post, "BsOGulcndj-".to_string()))
         );
         assert_eq!(
             parse_permalink("https://www.instagram.com/tv/BkfuX9UB-eK/"),
-            Some(("tv".to_string(), "BkfuX9UB-eK".to_string()))
+            Some((PostKind::Tv, "BkfuX9UB-eK".to_string()))
         );
+        assert_eq!(
+            parse_permalink("https://www.instagram.com/reels/C3abcXYZ123/"),
+            Some((PostKind::Reel, "C3abcXYZ123".to_string())),
+            "/reels/ kanonik /reel/ yoluna iner"
+        );
+        assert_eq!(PostKind::Reel.path(), "reel");
         assert_eq!(parse_permalink("https://x.com/kullanici/status/1"), None);
     }
 
@@ -861,6 +891,9 @@ mod tests {
         assert_eq!(parse_compact_number("2b"), Some(2_000_000_000));
         assert_eq!(parse_compact_number("12"), Some(12));
         assert_eq!(parse_compact_number(""), None);
+        // Kayan nokta hatası kesilmez, yuvarlanır (1.15 × 1000 = 1149.999…).
+        assert_eq!(parse_compact_number("1.15K"), Some(1_150));
+        assert_eq!(parse_compact_number("2.3M"), Some(2_300_000));
     }
 
     /// Oturum API'si (`/media/{pk}/info/`) yanıtı: reel (video).
@@ -938,7 +971,11 @@ mod tests {
             session.media[0].poster.as_deref(),
             Some("https://cdn/cover.jpg")
         );
-        assert_eq!(session.media[0].duration, Some(12));
+        assert_eq!(
+            session.media[0].duration,
+            Some(13),
+            "12,34 sn → 13 (yukarı)"
+        );
         assert_eq!(session.media[0].width, Some(1080));
         assert_eq!(session.media[0].height, Some(1920));
 
@@ -979,7 +1016,7 @@ mod tests {
         let session = parse_session_media(&serde_json::from_str(SESSION_REEL).unwrap()).unwrap();
         let post = build_post(
             &parsed("reel", "DbOKxSpolaP"),
-            "reel",
+            PostKind::Reel,
             Some(parse_embed(EMBED_REEL)),
             None,
             Some(session),
@@ -1043,14 +1080,8 @@ mod tests {
     #[test]
     fn open_graph_helpers_are_parsed() {
         let desc = "975K likes, 16K comments - instagram on August 26, 2022: \"Gingerton\". ";
-        assert_eq!(
-            stat_from_description(&OG_LIKES_REGEX, Some(desc)),
-            Some(975_000)
-        );
-        assert_eq!(
-            stat_from_description(&OG_COMMENTS_REGEX, Some(desc)),
-            Some(16_000)
-        );
+        assert_eq!(number_from(&OG_LIKES_REGEX, desc), Some(975_000));
+        assert_eq!(number_from(&OG_COMMENTS_REGEX, desc), Some(16_000));
         assert_eq!(parse_ig_date(desc), parse_timestamp("2022-08-26T00:00:00Z"));
         assert_eq!(
             caption_from_og_description(desc).as_deref(),
@@ -1084,7 +1115,7 @@ mod tests {
 
         let post = build_post(
             &parsed("p", "BsOGulcndj-"),
-            "p",
+            PostKind::Post,
             Some(parse_embed(EMBED_PHOTO)),
             Some(graph),
             None,
@@ -1115,7 +1146,7 @@ mod tests {
     fn reel_post_is_labelled_as_video() {
         let post = build_post(
             &parsed("reel", "Chunk8-jurw"),
-            "reel",
+            PostKind::Reel,
             Some(parse_embed(EMBED_REEL)),
             None,
             None,
@@ -1143,7 +1174,7 @@ mod tests {
 
         let post = build_post(
             &parsed("reel", "CDUMkliABpa"),
-            "reel",
+            PostKind::Reel,
             None,
             Some(graph),
             None,
@@ -1157,6 +1188,37 @@ mod tests {
         assert_eq!(post.extra_label.as_deref(), Some("Reel"));
         assert_eq!(post.media.len(), 1);
         assert_eq!(post.created_at, parse_timestamp("2023-03-02T00:00:00Z"));
+    }
+
+    #[test]
+    fn session_identity_fills_a_post_with_no_public_author() {
+        let mut session =
+            parse_session_media(&serde_json::from_str(SESSION_REEL).unwrap()).unwrap();
+        session.avatar = Some("https://cdn/avatar.jpg".to_string());
+        let post = build_post(
+            &parsed("reel", "DbOKxSpolaP"),
+            PostKind::Reel,
+            None,
+            None,
+            Some(session),
+        );
+        // Herkese açık kaynak yokken ad "Instagram" yer tutucusunda takılı kalmaz.
+        assert_eq!(post.author.name, "Efe ince");
+        assert_eq!(post.author.handle, "efewissiex");
+        assert_eq!(
+            post.author.avatar.as_deref(),
+            Some("https://cdn/avatar.jpg")
+        );
+        assert_eq!(
+            post.author.profile_url.as_deref(),
+            Some("https://www.instagram.com/efewissiex/")
+        );
+        assert!(post.author.verified);
+        assert_eq!(post.text, "Have you ever experienced this before?");
+
+        let empty = build_post(&parsed("p", "x"), PostKind::Post, None, None, None);
+        assert_eq!(empty.author.name, "Instagram");
+        assert!(empty.author.profile_url.is_none());
     }
 
     /// Canlı kaynak testi: Instagram'ın herkese açık uçları gerçek veri döndürmeli.
