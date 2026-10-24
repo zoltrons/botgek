@@ -779,6 +779,26 @@ pub struct GuildOverride {
     pub channels: HashMap<String, ChannelOverride>,
 }
 
+/// Anahtarları Discord kimliğinin kanonik ondalık biçimine çevirir; geçersiz/sıfır kimlikler atılır.
+///
+/// Ayarlar `GuildId::to_string()` ile arandığından `"042"` veya `"+42"` gibi elle yazılmış
+/// anahtarlar doğrulamadan geçip hiçbir mesajla eşleşmiyor, override sessizce etkisiz kalıyordu.
+/// İki anahtar aynı kimliğe düşerse kanonik yazılmış olan korunur.
+fn canonicalize_ids<T>(map: &mut HashMap<String, T>) {
+    let entries: Vec<(String, T)> = map.drain().collect();
+    for (key, value) in entries {
+        let Some(id) = key.parse::<u64>().ok().filter(|id| *id > 0) else {
+            continue;
+        };
+        let canonical = id.to_string();
+        if key == canonical {
+            map.insert(canonical, value);
+        } else {
+            map.entry(canonical).or_insert(value);
+        }
+    }
+}
+
 /// AI model adını 128, sistem istemini 4000 **karaktere** sınırlar (panel sayacıyla aynı birim).
 fn bound_ai_text(model: &mut String, system_prompt: &mut String) {
     for (text, max) in [(model, 128), (system_prompt, 4000)] {
@@ -959,8 +979,7 @@ impl AppSettings {
 
     /// Normalize sparse channel entries and discard malformed/non-positive Discord IDs.
     pub fn sanitize_channels(&mut self) {
-        self.guilds
-            .retain(|id, _| id.parse::<u64>().is_ok_and(|n| n > 0));
+        canonicalize_ids(&mut self.guilds);
         // Elle düzenlenmiş dosyadaki sınırsız istem her mesajda kopyalanırdı: panelle aynı sınırlar yüklemede de uygulanır.
         bound_ai_text(&mut self.ai.model, &mut self.ai.system_prompt);
         for guild in self.guilds.values_mut() {
@@ -973,9 +992,7 @@ impl AppSettings {
             if let Some(ai) = guild.ai.as_mut() {
                 bound_ai_text(&mut ai.model, &mut ai.system_prompt);
             }
-            guild
-                .channels
-                .retain(|id, _| id.parse::<u64>().is_ok_and(|n| n > 0));
+            canonicalize_ids(&mut guild.channels);
             for channel in guild.channels.values_mut() {
                 channel.sanitize();
             }
@@ -1398,6 +1415,28 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hand_written_ids_are_canonicalized() {
+        let mut map: HashMap<String, u8> = HashMap::new();
+        for (key, value) in [
+            ("042", 1),
+            ("+7", 2),
+            ("0", 3),
+            ("bad", 4),
+            ("9", 5),
+            ("09", 6),
+        ] {
+            map.insert(key.into(), value);
+        }
+        canonicalize_ids(&mut map);
+        let mut entries: Vec<_> = map.into_iter().collect();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![("42".into(), 1), ("7".into(), 2), ("9".into(), 5)]
+        );
+    }
 
     #[test]
     fn shared_browser_fixtures_match_rust_resolution() {
