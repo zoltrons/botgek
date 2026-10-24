@@ -50,13 +50,20 @@ pub static CONVERSION_QUEUE_SATURATED: AtomicU64 = AtomicU64::new(0);
 pub static CONVERSION_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
 
 const LIMITS: [u64; 8] = [100, 250, 500, 1_000, 2_500, 5_000, 10_000, u64::MAX];
-const PLATFORMS: [&str; 6] = [
+/// `builtin::platform_key` değerlerinin tamamı. Eksik bir platformun dönüşümleri hiç sayılmaz
+/// ve metrikte 0 başarı / 0 hata olarak görünürdü (ör. loglarda başarısız Twitch klipleri).
+const PLATFORMS: [&str; 11] = [
     "twitter",
     "tiktok",
     "instagram",
     "reddit",
     "bluesky",
     "spotify",
+    "twitch",
+    "pixiv",
+    "tumblr",
+    "facebook",
+    "youtube",
 ];
 
 struct Counters {
@@ -65,7 +72,7 @@ struct Counters {
     buckets: [AtomicU64; 8],
 }
 
-static COUNTERS: LazyLock<[Counters; 6]> = LazyLock::new(|| {
+static COUNTERS: LazyLock<[Counters; PLATFORMS.len()]> = LazyLock::new(|| {
     std::array::from_fn(|_| Counters {
         ok: AtomicU64::new(0),
         failed: AtomicU64::new(0),
@@ -867,11 +874,17 @@ fn http_snapshot() -> Value {
         .iter()
         .map(|host| {
             let metrics = &HOSTS[*host as usize];
+            let requests = metrics.requests.load(RELAXED);
+            let success = metrics.success.load(RELAXED);
+            let errors = metrics.errors.load(RELAXED);
             json!({
                 "host": host.name(),
-                "requests": metrics.requests.load(RELAXED),
-                "success": metrics.success.load(RELAXED),
-                "errors": metrics.errors.load(RELAXED),
+                "requests": requests,
+                "success": success,
+                "errors": errors,
+                // Ne başarı ne hata: hâlâ süren ya da planlayıcının iptal ettiği (ör. gereksiz
+                // kalan spekülatif çeviri) istekler. Ayrı gösterilmezse sayaçlar tutmuyor gibi görünür.
+                "unfinished": requests.saturating_sub(success.saturating_add(errors)),
                 "bytes": metrics.bytes.load(RELAXED),
                 "latency_ms": metrics.latency.snapshot()
             })
@@ -1088,6 +1101,27 @@ pub fn detailed_snapshot() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_platform_has_conversion_counters() {
+        use crate::converters::parser::Platform;
+        for platform in [
+            Platform::Twitter,
+            Platform::TikTok,
+            Platform::Instagram,
+            Platform::Reddit,
+            Platform::Bluesky,
+            Platform::Spotify,
+            Platform::Twitch,
+            Platform::Pixiv,
+            Platform::Tumblr,
+            Platform::Facebook,
+            Platform::YouTube,
+        ] {
+            let key = crate::converters::builtin::platform_key(platform);
+            assert!(PLATFORMS.contains(&key), "{key} sayılmıyor");
+        }
+    }
 
     #[test]
     fn histogram_percentiles_are_bounded_and_monotonic() {
