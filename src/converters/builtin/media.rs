@@ -188,17 +188,17 @@ pub async fn download_video(
         return super::reddit_video::merge(client, url, max_bytes).await;
     }
 
-    download(client, url, max_bytes).await
+    download(url, max_bytes).await
 }
 
 /// URL'deki medyayı indirir. Boyut `max_bytes`'ı aşarsa ya da içerik medya değilse
 /// (HTML hata sayfası vb.) `None` döner; böylece mesaj gönderimi bozulmaz.
-pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Option<MediaFile> {
+pub async fn download(url: &str, max_bytes: u64) -> Option<MediaFile> {
     use crate::telemetry::{self, HttpHost};
     let host = HttpHost::classify(url);
     telemetry::http_request(host);
     let started = std::time::Instant::now();
-    let result = download_inner(client, url, max_bytes).await;
+    let result = download_inner(url, max_bytes).await;
     match &result {
         Some(file) => telemetry::http_success(host, started.elapsed(), file.bytes.len()),
         None => telemetry::http_error(host, started.elapsed()),
@@ -206,22 +206,18 @@ pub async fn download(client: &reqwest::Client, url: &str, max_bytes: u64) -> Op
     result
 }
 
-async fn download_inner(client: &reqwest::Client, url: &str, max_bytes: u64) -> Option<MediaFile> {
+/// Medya adresleri kaynak API'lerinden (oEmbed, gönderi JSON'u) gelir ve indirilen dosya
+/// Discord'a yüklenir: istek bu yüzden ortak istemciyle değil, yalnızca herkese açık IP'lere
+/// sabitlenen ve her yönlendirmeyi doğrulayan [`super::safe_http::public_get`] ile atılır.
+/// Aksi hâlde bir alan adı ya da yönlendirme sunucunun iç ağındaki bir adresi okutabilirdi.
+async fn download_inner(url: &str, max_bytes: u64) -> Option<MediaFile> {
     if !url.starts_with("https://") {
         return None;
     }
 
-    let response = client
-        .get(download_url(url))
-        .header("user-agent", USER_AGENT)
-        .timeout(MEDIA_TIMEOUT)
-        .send()
+    let (_, response) = super::safe_http::public_get(&download_url(url), MEDIA_TIMEOUT, USER_AGENT)
         .await
         .ok()?;
-
-    if !response.status().is_success() {
-        return None;
-    }
     if let Some(len) = response.content_length()
         && len > max_bytes
     {

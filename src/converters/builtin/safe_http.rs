@@ -51,6 +51,27 @@ fn validate_url(url: &Url) -> Result<(), String> {
 }
 
 pub async fn preview(raw: &str) -> Result<(String, String), String> {
+    let (url, mut response) = public_get(raw, Duration::from_secs(2), super::USER_AGENT).await?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "preview body failed")? {
+        if bytes.len() + chunk.len() > super::MAX_BODY_BYTES {
+            return Err("preview body too large".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes)
+        .map(|text| (url.to_string(), text))
+        .map_err(|_| "preview is not UTF-8".into())
+}
+
+/// Güvenilmeyen bir adrese GET atar: her hop'ta adres doğrulanır, DNS sonucu yalnızca herkese
+/// açık IP'lerden oluşmalıdır ve bağlantı tam bu adreslere sabitlenir. En fazla üç yönlendirme
+/// elle izlenir. Başarılı (2xx) yanıt, varılan son adresle birlikte döner; gövde okunmamıştır.
+pub async fn public_get(
+    raw: &str,
+    timeout: Duration,
+    user_agent: &str,
+) -> Result<(Url, reqwest::Response), String> {
     let mut url = Url::parse(raw).map_err(|_| "invalid preview URL")?;
     for _ in 0..=3 {
         validate_url(&url)?;
@@ -74,12 +95,12 @@ pub async fn preview(raw: &str) -> Result<(String, String), String> {
             .no_proxy()
             .redirect(Policy::none())
             .resolve_to_addrs(host, &addresses)
-            .timeout(Duration::from_secs(2))
+            .timeout(timeout)
             .build()
             .map_err(|_| "preview client failed")?;
-        let mut response = client
+        let response = client
             .get(url.clone())
-            .header("user-agent", super::USER_AGENT)
+            .header("user-agent", user_agent)
             .send()
             .await
             .map_err(|_| "preview request failed")?;
@@ -95,16 +116,7 @@ pub async fn preview(raw: &str) -> Result<(String, String), String> {
         if !response.status().is_success() {
             return Err("preview response rejected".into());
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| "preview body failed")? {
-            if bytes.len() + chunk.len() > super::MAX_BODY_BYTES {
-                return Err("preview body too large".into());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        return String::from_utf8(bytes)
-            .map(|text| (url.to_string(), text))
-            .map_err(|_| "preview is not UTF-8".into());
+        return Ok((url, response));
     }
     Err("too many preview redirects".into())
 }
