@@ -14,6 +14,7 @@ use std::sync::LazyLock;
 use tracing::{debug, warn};
 
 use super::media::card_image_url;
+use super::preview::meta_value;
 use super::translate::needs_translation;
 use super::{
     Author, BuiltinPost, LinkPreview, Media, MediaKind, Stats, Translation, parse_timestamp,
@@ -75,13 +76,8 @@ pub async fn fetch(
     parsed: &ParsedPost,
     engine: &EngineSettings,
 ) -> Result<BuiltinPost, String> {
-    let captures = TWEET_URL_REGEX
-        .captures(&parsed.original_url)
+    let id = extract_tweet_id(&parsed.original_url)
         .ok_or_else(|| format!("Twitter kimliği çözümlenemedi: {}", parsed.original_url))?;
-    let id = captures
-        .get(2)
-        .map(|m| m.as_str().to_string())
-        .ok_or_else(|| format!("Twitter gönderi kimliği yok: {}", parsed.original_url))?;
 
     // `max_video_bytes` platforma bağlı değildir; anahtar sözleşmeyi açık tutar.
     let video_budget =
@@ -242,30 +238,51 @@ fn is_own_host(host: &str) -> bool {
 /// Adresten alan adını çıkarır (`www.` ve alt alan adı olmadan): `https://www.bbc.com/x` →
 /// `bbc.com`. Site adı bildirmeyen sayfalar için yedek etikettir.
 fn host_label(url: &str) -> Option<String> {
-    let host = url
-        .split("://")
-        .nth(1)?
-        .split(['/', '?', '#'])
-        .next()?
-        .rsplit('@')
-        .next()?
-        .split(':')
-        .next()?
-        .trim()
-        .trim_start_matches("www.");
-    if host.is_empty() || is_own_host(host) {
-        return None;
-    }
-    Some(host.to_string())
+    let url = url::Url::parse(url).ok()?;
+    let host = url.host_str()?.trim_start_matches("www.");
+    (!host.is_empty() && !is_own_host(host)).then(|| host.to_string())
 }
 
-/// Meta etiketi değerini karta uygun hale getirir: kırpılır, boşlar `None` olur, uzun
-/// metinler sınıra kadar kesilir.
-fn meta_value(value: Option<String>, limit: usize) -> Option<String> {
-    value
-        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|text| !text.is_empty())
-        .map(|text| crate::utils::truncate_chars(&text, limit))
+/// Üç kaynağın ortak yazar biçimi: boş görünen ad kullanıcı adına düşer, profil adresi
+/// yalnızca kullanıcı adı varsa kurulur.
+fn x_author(name: Option<&str>, handle: &str, avatar: Option<String>, verified: bool) -> Author {
+    let name = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(handle);
+    let mut author = Author::new(name, handle);
+    author.avatar = avatar;
+    author.verified = verified;
+    author.profile_url = (!handle.is_empty()).then(|| format!("https://x.com/{handle}"));
+    author
+}
+
+/// Kimlik ve kullanıcı adından kanonik gönderi adresi. Kimlik sayısal olmalıdır; adres
+/// biçimine uymayan (ya da boş) kullanıcı adı yerine X'in `i` yolu kullanılır.
+fn status_url(handle: Option<&str>, id: &str) -> Option<String> {
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let handle = handle
+        .filter(|handle| {
+            !handle.is_empty()
+                && handle
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+        .unwrap_or("i");
+    Some(format!("https://x.com/{handle}/status/{id}"))
+}
+
+/// Kaynakların `twitter.com` adreslerini kartta tek biçime (`x.com`) indirir.
+fn canonical_x_url(url: &str) -> String {
+    url.replace("://twitter.com/", "://x.com/")
+}
+
+/// Milisaniye süreyi saniyeye yukarı yuvarlar; tüm kaynaklarda aynı süre gösterilir
+/// (13,65 sn'lik video her yerde "0:14").
+fn duration_secs(millis: u64) -> u64 {
+    millis.div_ceil(1000)
 }
 
 /// Gönderi verisini seçilen kaynaktan çeker.
@@ -504,26 +521,93 @@ struct HttpFetcher {
 static SOURCE_RESULTS: LazyLock<source_cache::SourceCache<pipeline::Snapshot>> =
     LazyLock::new(|| source_cache::SourceCache::new(Duration::from_secs(600), 512));
 
+/// Planlayıcının istediği kaynak; önbellek anahtarının ilk parçası.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Vx,
+    Fx,
+    Syndication,
+}
+
+impl Source {
+    fn name(self) -> &'static str {
+        match self {
+            Source::Vx => "vx",
+            Source::Fx => "fx",
+            Source::Syndication => "syndication",
+        }
+    }
+}
+
+/// İsteği kaynağa, adrese ve (yalnızca vx'te) dil ekine ayırır.
+fn split_request(request: &pipeline::Request) -> (Source, &str, Option<&str>) {
+    match request {
+        pipeline::Request::Vx { url, language } => (Source::Vx, url, language.as_deref()),
+        pipeline::Request::Fx { url } => (Source::Fx, url, None),
+        pipeline::Request::Syndication { url } => (Source::Syndication, url, None),
+    }
+}
+
 impl HttpFetcher {
-    fn key(&self, source: &str, id: &str, language: Option<&str>) -> String {
+    fn key(&self, source: Source, id: &str, language: Option<&str>) -> String {
         format!(
-            "{source}:{id}:{}:{}:{}:{}",
+            "{}:{id}:{}:{}:{}:{}",
+            source.name(),
             language.unwrap_or("original"),
             self.translation_target,
             self.translate_english,
             self.video_budget
         )
     }
+
+    async fn fetch_source(
+        &self,
+        source: Source,
+        url: &str,
+        id: &str,
+        language: Option<&str>,
+    ) -> Result<pipeline::Snapshot, String> {
+        let unknown = |post| pipeline::Snapshot {
+            post,
+            nested_hint: plan::NestedHint::Unknown,
+        };
+        match source {
+            Source::Vx => {
+                from_vxtwitter(
+                    &self.client,
+                    url,
+                    id,
+                    language,
+                    &self.translation_target,
+                    self.translate_english,
+                )
+                .await
+            }
+            Source::Fx => from_fxtwitter(
+                &self.client,
+                url,
+                id,
+                None,
+                &self.translation_target,
+                self.video_budget,
+                self.translate_english,
+            )
+            .await
+            .map(unknown),
+            Source::Syndication => from_syndication(&self.client, url, id, self.video_budget)
+                .await
+                .map(unknown),
+        }
+    }
 }
 
 #[serenity::all::async_trait]
 impl pipeline::Fetcher for HttpFetcher {
     async fn cached(&self, request: &pipeline::Request) -> Option<pipeline::Snapshot> {
-        let (source, url, language) = match request {
-            pipeline::Request::Vx { url, language } => ("vx", url, language.as_deref()),
-            pipeline::Request::Fx { url } => ("fx", url, None),
-            pipeline::Request::Syndication { .. } => return None,
-        };
+        let (source, url, language) = split_request(request);
+        if source == Source::Syndication {
+            return None;
+        }
         let id = extract_tweet_id(url)?;
         SOURCE_RESULTS
             .get(&self.key(source, &id, language))
@@ -532,56 +616,19 @@ impl pipeline::Fetcher for HttpFetcher {
     }
 
     async fn fetch(&self, request: pipeline::Request) -> Result<pipeline::Snapshot, String> {
-        let (source, url, language) = match request {
-            pipeline::Request::Vx { url, language } => ("vx", url, language),
-            pipeline::Request::Fx { url } => ("fx", url, None),
-            pipeline::Request::Syndication { url } => ("syndication", url, None),
-        };
-        let id = extract_tweet_id(&url).ok_or_else(|| "X request has no tweet id".to_string())?;
+        let (source, url, language) = split_request(&request);
+        let id = extract_tweet_id(url).ok_or_else(|| "X request has no tweet id".to_string())?;
         // ID-based keys reuse a standalone tweet when it appears as a quote elsewhere.
         // Target/source/budget remain isolated; spoiler/NSFW decisions happen only later.
-        let key = self.key(source, &id, language.as_deref());
+        let key = self.key(source, &id, language);
         let started = Instant::now();
         let result = SOURCE_RESULTS
-            .get_or_fetch(key, || async {
-                if source == "vx" {
-                    from_vxtwitter(
-                        &self.client,
-                        &url,
-                        &id,
-                        language.as_deref(),
-                        &self.translation_target,
-                        self.translate_english,
-                    )
-                    .await
-                } else if source == "fx" {
-                    from_fxtwitter(
-                        &self.client,
-                        &url,
-                        &id,
-                        None,
-                        &self.translation_target,
-                        self.video_budget,
-                        self.translate_english,
-                    )
-                    .await
-                    .map(|post| pipeline::Snapshot {
-                        post,
-                        nested_hint: plan::NestedHint::Unknown,
-                    })
-                } else {
-                    from_syndication(&self.client, &url, &id, self.video_budget)
-                        .await
-                        .map(|post| pipeline::Snapshot {
-                            post,
-                            nested_hint: plan::NestedHint::Unknown,
-                        })
-                }
-            })
+            .get_or_fetch(key, || self.fetch_source(source, url, &id, language))
             .await;
         debug!(
-            "X source={source} id={id} language={} elapsed_ms={} ok={}",
-            language.as_deref().unwrap_or("original"),
+            "X source={} id={id} language={} elapsed_ms={} ok={}",
+            source.name(),
+            language.unwrap_or("original"),
             started.elapsed().as_millis(),
             result.is_ok(),
         );
@@ -619,10 +666,8 @@ async fn from_vxtwitter(
         // vx yoldaki kullanıcı adını yalnızca adres biçimi için kullanır; her segment çalışır.
         .unwrap_or_else(|| "Twitter".to_string());
     let url = format!("{VXTWITTER_URL}/{handle}/status/{id}{language_suffix}");
-    let value = super::get_json(client, &url).await?;
-    let nested_hint = vx_nested_hint(&value);
-    let tweet: VxTweet = serde_json::from_value(value)
-        .map_err(|e| format!("vxtwitter yanıtı çözümlenemedi ({id}): {e}"))?;
+    let tweet: VxTweet = super::get_json_as(client, &url).await?;
+    let nested_hint = vx_nested_hint(&tweet);
 
     if tweet.tweet_id.is_none() {
         return Err(format!("vxtwitter yanıtında gönderi kimliği yok: {id}"));
@@ -636,15 +681,12 @@ async fn from_vxtwitter(
 
 /// An explicit qrtURL:null is evidence that the inline middle tweet has no quote.
 /// A URL points straight to the third tweet; a missing field is unknown, not absent.
-fn vx_nested_hint(value: &serde_json::Value) -> plan::NestedHint {
-    let tweet = value
-        .get("retweet")
-        .filter(|value| value.is_object())
-        .unwrap_or(value);
-    let Some(quote) = tweet.get("qrt").filter(|value| value.is_object()) else {
+fn vx_nested_hint(tweet: &VxTweet) -> plan::NestedHint {
+    let tweet = tweet.retweet.as_deref().unwrap_or(tweet);
+    let Some(quote) = tweet.qrt.as_deref() else {
         return plan::NestedHint::Absent;
     };
-    match quote.get("qrtURL") {
+    match &quote.qrt_url {
         Some(serde_json::Value::Null) => plan::NestedHint::Absent,
         Some(serde_json::Value::String(url)) => {
             let valid = url::Url::parse(url).ok().is_some_and(|parsed| {
@@ -663,6 +705,14 @@ fn vx_nested_hint(value: &serde_json::Value) -> plan::NestedHint {
         }
         _ => plan::NestedHint::Unknown,
     }
+}
+
+/// Alanın hiç gelmemesini (`None`) açık `null` değerinden (`Some(Null)`) ayırır.
+fn present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 /// vxtwitter JSON gönderi şeması. Şema içeriğe göre değişkendir (görsel/video/alıntı);
@@ -696,6 +746,9 @@ struct VxTweet {
     translation: Option<VxTranslation>,
     /// Saf retweet: vx gerçek içeriği buraya koyar, dış metni boşatır.
     retweet: Option<Box<VxTweet>>,
+    /// Alıntının kendi alıntısının adresi: yok / `null` / adres ayrımı [`vx_nested_hint`]'te.
+    #[serde(rename = "qrtURL", deserialize_with = "present_value")]
+    qrt_url: Option<serde_json::Value>,
 }
 
 /// vxtwitter gönderisini [`BuiltinPost`]'a çevirir.
@@ -708,7 +761,7 @@ fn vx_to_post(
     translation_target: &str,
     translate_english: bool,
 ) -> Result<BuiltinPost, String> {
-    let handle = tweet.user_screen_name.clone().unwrap_or_default();
+    let handle = tweet.user_screen_name.as_deref().unwrap_or_default();
 
     // Saf retweet: vx gerçek içeriği `retweet` objesine koyar ve dış metni boşatır.
     if let Some(inner) = tweet.retweet.as_deref() {
@@ -718,41 +771,17 @@ fn vx_to_post(
         return Ok(inner_post);
     }
 
-    let mut author = Author::new(
-        tweet
-            .user_name
-            .clone()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| handle.clone()),
-        handle.clone(),
+    let author = x_author(
+        tweet.user_name.as_deref(),
+        handle,
+        tweet.user_profile_image_url.clone(),
+        false,
     );
-    author.avatar = tweet.user_profile_image_url.clone();
-    author.profile_url = if handle.is_empty() {
-        None
-    } else {
-        Some(format!("https://x.com/{handle}"))
-    };
-
     let url = tweet
         .tweet_url
         .clone()
         .filter(|url| !url.trim().is_empty())
-        .or_else(|| {
-            let id = tweet
-                .tweet_id
-                .as_deref()
-                .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))?;
-            let handle = if !handle.is_empty()
-                && handle
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-            {
-                handle.as_str()
-            } else {
-                "i"
-            };
-            Some(format!("https://x.com/{handle}/status/{id}"))
-        })
+        .or_else(|| status_url(Some(handle), tweet.tweet_id.as_deref()?))
         .unwrap_or_else(|| fallback_url.to_string());
     let mut post = BuiltinPost::new(Platform::Twitter, url, author);
 
@@ -823,7 +852,7 @@ fn vx_media(item: &VxMedia) -> Option<Media> {
         .size
         .as_ref()
         .map_or((None, None), |s| (s.width, s.height));
-    let duration = item.duration_millis.map(|ms| ms.div_ceil(1000));
+    let duration = item.duration_millis.map(duration_secs);
 
     let kind = match item.kind.as_deref() {
         Some("video") => MediaKind::Video,
@@ -1177,9 +1206,7 @@ async fn from_syndication(
         "{SYNDICATION_URL}?id={id}&token={}&lang=en",
         syndication_token(id)
     );
-    let value = super::get_json(client, &url).await?;
-    let tweet: SyndicationTweet = serde_json::from_value(value)
-        .map_err(|e| format!("Syndication yanıtı çözümlenemedi ({id}): {e}"))?;
+    let tweet: SyndicationTweet = super::get_json_as(client, &url).await?;
 
     if tweet.is_empty() {
         return Err(format!(
@@ -1196,21 +1223,14 @@ fn syndication_to_post(
     max_video_bytes: u64,
 ) -> Result<BuiltinPost, String> {
     let user = tweet.user.as_ref();
-    let handle = user.and_then(|u| u.screen_name.clone()).unwrap_or_default();
-    let mut author = Author::new(
-        user.and_then(|u| u.name.clone())
-            .unwrap_or_else(|| handle.clone()),
-        handle.clone(),
+    let author = x_author(
+        user.and_then(|u| u.name.as_deref()),
+        user.and_then(|u| u.screen_name.as_deref())
+            .unwrap_or_default(),
+        user.and_then(|u| u.profile_image_url_https.clone()),
+        user.and_then(|u| u.is_blue_verified.or(u.verified))
+            .unwrap_or(false),
     );
-    author.avatar = user.and_then(|u| u.profile_image_url_https.clone());
-    author.verified = user
-        .and_then(|u| u.is_blue_verified.or(u.verified))
-        .unwrap_or(false);
-    author.profile_url = if handle.is_empty() {
-        None
-    } else {
-        Some(format!("https://x.com/{handle}"))
-    };
 
     let mut post = BuiltinPost::new(Platform::Twitter, url, author);
 
@@ -1243,21 +1263,16 @@ fn syndication_to_post(
     post.sensitive = tweet.possibly_sensitive.unwrap_or(false);
     post.media = syndication_media(tweet, max_video_bytes);
 
-    if let Some(quoted) = tweet.quoted_tweet.as_deref() {
-        let quoted_url = quoted.id_str.as_deref().map(|quoted_id| {
-            let quoted_handle = quoted
-                .user
-                .as_ref()
-                .and_then(|u| u.screen_name.as_deref())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("i");
-            format!("https://x.com/{quoted_handle}/status/{quoted_id}")
-        });
-        if let Some(quoted_url) = quoted_url
-            && let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url, max_video_bytes)
-        {
-            post.quote = Some(Box::new(quoted_post));
-        }
+    if let Some(quoted) = tweet.quoted_tweet.as_deref()
+        && let Some(quoted_url) = quoted.id_str.as_deref().and_then(|quoted_id| {
+            status_url(
+                quoted.user.as_ref().and_then(|u| u.screen_name.as_deref()),
+                quoted_id,
+            )
+        })
+        && let Ok(quoted_post) = syndication_to_post(quoted, &quoted_url, max_video_bytes)
+    {
+        post.quote = Some(Box::new(quoted_post));
     }
 
     Ok(post)
@@ -1277,22 +1292,41 @@ fn cut_to_display_range(text: &str, range: Option<&[usize]>) -> String {
 }
 
 /// `entities.urls` içindeki `t.co` kısa linklerini gerçek adresleriyle değiştirir.
+///
+/// Metin tek geçişte taranır ve her kısa link **tam** eşleşmeyle aranır: art arda
+/// `replace` çağrıları hem metni her bağlantı için yeniden kopyalıyor hem de bir kısa
+/// link başka birinin önekiyse (`t.co/abc` ↔ `t.co/abcd`) uzun olanı bozuyordu.
 fn expand_url_entities(text: &str, entities: Option<&SyndicationEntities>) -> String {
-    let mut out = text.to_string();
-    if let Some(urls) = entities.and_then(|e| e.urls.as_deref()) {
-        for entity in urls {
-            if let (Some(short), Some(expanded)) =
-                (entity.url.as_deref(), entity.expanded_url.as_deref())
-            {
-                if short == expanded {
-                    continue;
-                }
-                out = out.replace(short, expanded);
-                out = out.replace(&short.replace("http://", "https://"), expanded);
-            }
-        }
+    static SHORT_LINK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"https?://t\.co/[A-Za-z0-9]+").expect("geçerli t.co regex"));
+    let Some(urls) = entities.and_then(|e| e.urls.as_deref()) else {
+        return text.to_string();
+    };
+    // Şema farkı yok sayılır: X metinde `https://`, varlıkta bazen `http://` verir.
+    let path = |url: &str| {
+        url.split_once("://")
+            .map_or(url, |(_, rest)| rest)
+            .to_owned()
+    };
+    let expansions: std::collections::HashMap<String, &str> = urls
+        .iter()
+        .filter_map(|entity| {
+            Some((
+                path(entity.url.as_deref()?),
+                entity.expanded_url.as_deref()?,
+            ))
+        })
+        .collect();
+    if expansions.is_empty() {
+        return text.to_string();
     }
-    out
+    SHORT_LINK
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            expansions
+                .get(&path(&caps[0]))
+                .map_or_else(|| caps[0].to_string(), |expanded| (*expanded).to_string())
+        })
+        .into_owned()
 }
 
 /// `mediaDetails` (varsa) veya `photos` + `video` alanlarından medya listesi üretir.
@@ -1335,7 +1369,7 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
             poster: video.poster.as_deref().map(card_image_url),
             width: None,
             height: None,
-            duration: video.duration_ms.map(|ms| ms / 1000),
+            duration: video.duration_ms.map(duration_secs),
         });
     }
     media
@@ -1375,7 +1409,7 @@ fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> O
                 poster: detail.media_url_https.as_deref().map(card_image_url),
                 width,
                 height,
-                duration: video_info.duration_millis.map(|ms| ms / 1000),
+                duration: video_info.duration_millis.map(duration_secs),
             })
         }
         _ => None,
@@ -1495,9 +1529,7 @@ async fn from_fxtwitter(
     // Dil eki (`/tr`) verildiğinde yanıt orijinal metinle birlikte X'in çevirisini de içerir.
     let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
     let url = format!("{FXTWITTER_URL}/i/status/{id}{language_suffix}");
-    let value = super::get_json(client, &url).await?;
-    let response: FxResponse = serde_json::from_value(value)
-        .map_err(|e| format!("fxtwitter yanıtı çözümlenemedi ({id}): {e}"))?;
+    let response: FxResponse = super::get_json_as(client, &url).await?;
 
     if let Some(code) = response.code
         && code != 200
@@ -1529,28 +1561,16 @@ fn fx_to_post_with_target(
     translate_english: bool,
 ) -> Result<BuiltinPost, String> {
     let user = tweet.author.as_ref();
-    let handle = user.and_then(|a| a.screen_name.clone()).unwrap_or_default();
-    let mut author = Author::new(
-        user.and_then(|a| a.name.clone())
-            .unwrap_or_else(|| handle.clone()),
-        handle.clone(),
+    let author = x_author(
+        user.and_then(|a| a.name.as_deref()),
+        user.and_then(|a| a.screen_name.as_deref())
+            .unwrap_or_default(),
+        user.and_then(|a| a.avatar_url.clone()),
+        user.and_then(|a| a.verification.as_ref())
+            .and_then(|v| v.verified)
+            .unwrap_or(false),
     );
-    author.avatar = user.and_then(|a| a.avatar_url.clone());
-    author.verified = user
-        .and_then(|a| a.verification.as_ref())
-        .and_then(|v| v.verified)
-        .unwrap_or(false);
-    author.profile_url = if handle.is_empty() {
-        None
-    } else {
-        Some(format!("https://x.com/{handle}"))
-    };
-
-    let url = tweet
-        .url
-        .clone()
-        .unwrap_or_else(|| fallback_url.to_string())
-        .replace("://twitter.com/", "://x.com/");
+    let url = canonical_x_url(tweet.url.as_deref().unwrap_or(fallback_url));
 
     let mut post = BuiltinPost::new(Platform::Twitter, url, author);
     post.text = strip_trailing_media_links(&tweet.text.clone().unwrap_or_default());
@@ -1574,34 +1594,30 @@ fn fx_to_post_with_target(
         .filter(|text| !text.is_empty());
     post.media = fx_media(tweet.media.as_ref(), max_video_bytes);
 
-    if let Some(quoted) = tweet.quote.as_deref() {
-        let quoted_url = quoted
+    if let Some(quoted) = tweet.quote.as_deref()
+        && let Some(quoted_url) = quoted
             .url
             .as_deref()
             .filter(|u| !u.trim().is_empty())
-            .map(|u| u.replace("://twitter.com/", "://x.com/"))
+            .map(canonical_x_url)
             .or_else(|| {
-                let id = quoted.id.as_deref()?;
-                let handle = quoted
-                    .author
-                    .as_ref()
-                    .and_then(|a| a.screen_name.as_deref())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("i");
-                Some(format!("https://x.com/{handle}/status/{id}"))
+                status_url(
+                    quoted
+                        .author
+                        .as_ref()
+                        .and_then(|a| a.screen_name.as_deref()),
+                    quoted.id.as_deref()?,
+                )
             })
-            .unwrap_or_default();
-        if !quoted_url.is_empty()
-            && let Ok(quoted_post) = fx_to_post_with_target(
-                quoted,
-                &quoted_url,
-                max_video_bytes,
-                translation_target,
-                translate_english,
-            )
-        {
-            post.quote = Some(Box::new(quoted_post));
-        }
+        && let Ok(quoted_post) = fx_to_post_with_target(
+            quoted,
+            &quoted_url,
+            max_video_bytes,
+            translation_target,
+            translate_english,
+        )
+    {
+        post.quote = Some(Box::new(quoted_post));
     }
 
     // Alıntılanan gönderi de kendi `fx_to_post` çağrısında çevrilir.
@@ -1697,9 +1713,7 @@ fn fx_media(media: Option<&FxMedia>, video_budget: u64) -> Vec<Media> {
 ///
 /// `None` dönerse gönderinin kendi `url` alanı kullanılır (tek varyant verilmiş demektir).
 fn pick_fx_video(item: &FxMediaItem, max_bytes: u64) -> Option<String> {
-    let duration_ms = item
-        .duration
-        .map(|seconds| (seconds.max(0.0) * 1000.0).round() as u64);
+    let duration_ms = fx_duration_ms(item);
 
     let candidates: Vec<VideoCandidate> = item
         .formats
@@ -1745,8 +1759,15 @@ fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
         poster: item.thumbnail_url.clone(),
         width: item.width,
         height: item.height,
-        duration: item.duration.map(|seconds| seconds.round() as u64),
+        duration: fx_duration_ms(item).map(duration_secs),
     })
+}
+
+/// FxTwitter süreyi saniye (ondalıklı) verir; diğer kaynaklarla aynı birime çevrilir.
+fn fx_duration_ms(item: &FxMediaItem) -> Option<u64> {
+    item.duration
+        .filter(|seconds| seconds.is_finite())
+        .map(|seconds| (seconds.max(0.0) * 1000.0).round() as u64)
 }
 
 #[cfg(test)]
@@ -1971,33 +1992,35 @@ mod tests {
         assert_eq!(NESTED_QUOTE_TIMEOUT, Duration::from_millis(700));
     }
 
+    fn hint(json: serde_json::Value) -> plan::NestedHint {
+        vx_nested_hint(&serde_json::from_value(json).expect("örnek vx JSON geçerli olmalı"))
+    }
+
     #[test]
     fn vx_quote_topology_distinguishes_absent_unknown_and_direct_third_post() {
         assert_eq!(
-            vx_nested_hint(&serde_json::json!({"qrt": null})),
+            hint(serde_json::json!({"qrt": null})),
             plan::NestedHint::Absent
         );
         assert_eq!(
-            vx_nested_hint(&serde_json::json!({"qrt": {"qrtURL": null}})),
+            hint(serde_json::json!({"qrt": {"qrtURL": null}})),
             plan::NestedHint::Absent
         );
         assert_eq!(
-            vx_nested_hint(&serde_json::json!({"qrt": {}})),
+            hint(serde_json::json!({"qrt": {}})),
             plan::NestedHint::Unknown
         );
         let url = "https://twitter.com/i/status/3";
         assert_eq!(
-            vx_nested_hint(&serde_json::json!({"qrt": {"qrtURL": url}})),
+            hint(serde_json::json!({"qrt": {"qrtURL": url}})),
             plan::NestedHint::Present(url.to_string()),
         );
         assert_eq!(
-            vx_nested_hint(
-                &serde_json::json!({"qrt": {"qrtURL": "https://untrusted.test/x.com/a/status/3"}})
-            ),
+            hint(serde_json::json!({"qrt": {"qrtURL": "https://untrusted.test/x.com/a/status/3"}})),
             plan::NestedHint::Unknown,
         );
         assert_eq!(
-            vx_nested_hint(&serde_json::json!({"retweet": {"qrt": {"qrtURL": url}}})),
+            hint(serde_json::json!({"retweet": {"qrt": {"qrtURL": url}}})),
             plan::NestedHint::Present(url.to_string()),
         );
     }
@@ -2677,5 +2700,75 @@ mod tests {
         .unwrap();
         let post = syndication_to_post(&doubly, "https://x.com/ad/status/2", u64::MAX).unwrap();
         assert_eq!(post.text, "&lt;");
+    }
+
+    #[test]
+    fn short_links_expand_exactly_even_when_one_prefixes_another() {
+        let entities: SyndicationEntities = serde_json::from_value(serde_json::json!({
+            "urls": [
+                { "url": "https://t.co/abc", "expanded_url": "https://kisa.test" },
+                { "url": "http://t.co/abcd", "expanded_url": "https://uzun.test/yol" },
+                { "url": "https://t.co/zzz" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            expand_url_entities(
+                "bak https://t.co/abcd ve https://t.co/abc, https://t.co/zzz https://t.co/yok",
+                Some(&entities)
+            ),
+            "bak https://uzun.test/yol ve https://kisa.test, https://t.co/zzz https://t.co/yok"
+        );
+        assert_eq!(expand_url_entities("düz metin", None), "düz metin");
+    }
+
+    #[test]
+    fn status_urls_are_canonical_and_validated() {
+        assert_eq!(
+            status_url(Some("biri_1"), "42").as_deref(),
+            Some("https://x.com/biri_1/status/42")
+        );
+        // Adres biçimine uymayan ya da boş kullanıcı adı X'in `i` yoluna düşer.
+        assert_eq!(
+            status_url(Some("kötü/../ad"), "42").as_deref(),
+            Some("https://x.com/i/status/42")
+        );
+        assert_eq!(
+            status_url(None, "42").as_deref(),
+            Some("https://x.com/i/status/42")
+        );
+        assert_eq!(status_url(Some("biri"), "42?x=1"), None);
+        assert_eq!(status_url(Some("biri"), ""), None);
+        assert_eq!(
+            canonical_x_url("https://twitter.com/a/status/1"),
+            "https://x.com/a/status/1"
+        );
+    }
+
+    #[test]
+    fn blank_display_names_fall_back_to_the_handle() {
+        let author = x_author(Some("   "), "kullanici", None, true);
+        assert_eq!(author.name, "kullanici");
+        assert!(author.verified);
+        assert_eq!(
+            author.profile_url.as_deref(),
+            Some("https://x.com/kullanici")
+        );
+        assert!(x_author(None, "", None, false).profile_url.is_none());
+    }
+
+    #[test]
+    fn video_durations_round_the_same_way_for_every_source() {
+        assert_eq!(duration_secs(13_650), 14);
+        assert_eq!(duration_secs(13_000), 13);
+        assert_eq!(duration_secs(0), 0);
+
+        let item = |seconds: f64| FxMediaItem {
+            duration: Some(seconds),
+            ..FxMediaItem::default()
+        };
+        assert_eq!(fx_duration_ms(&item(13.65)).map(duration_secs), Some(14));
+        assert_eq!(fx_duration_ms(&item(f64::NAN)), None);
+        assert_eq!(fx_duration_ms(&item(-3.0)), Some(0));
     }
 }

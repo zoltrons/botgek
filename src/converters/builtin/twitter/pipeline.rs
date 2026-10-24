@@ -64,20 +64,36 @@ enum Work {
     Preview(String),
 }
 
+/// İşin kimliği: aynı gönderiye (kimliğe) giden iki iş aynı anahtarı paylaşır, böylece
+/// farklı biçimde yazılmış adresler (`twitter.com` / `x.com`) aynı isteği iki kez başlatmaz.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum WorkKey {
+    Rich,
+    TranslatedRoot,
+    Metadata,
+    Fx,
+    Translation(String),
+    Direct(String),
+    Inspect(String),
+    Preview(String),
+}
+
 impl Work {
-    fn key(&self) -> String {
+    fn key(&self) -> WorkKey {
         match self {
-            Self::Rich => "rich".to_string(),
-            Self::TranslatedRoot => "translated-root".to_string(),
-            Self::Metadata => "metadata".to_string(),
-            Self::Fx => "fx".to_string(),
-            Self::Translation(url) => format!("translation:{}", identity(url)),
-            Self::Quote(QuoteFetch::Direct(url)) => format!("direct:{}", identity(url)),
-            Self::Quote(QuoteFetch::Inspect(url)) => format!("inspect:{}", identity(url)),
-            Self::Preview(url) => format!("preview:{}", identity(url)),
+            Self::Rich => WorkKey::Rich,
+            Self::TranslatedRoot => WorkKey::TranslatedRoot,
+            Self::Metadata => WorkKey::Metadata,
+            Self::Fx => WorkKey::Fx,
+            Self::Translation(url) => WorkKey::Translation(identity(url)),
+            Self::Quote(QuoteFetch::Direct(url)) => WorkKey::Direct(identity(url)),
+            Self::Quote(QuoteFetch::Inspect(url)) => WorkKey::Inspect(identity(url)),
+            Self::Preview(url) => WorkKey::Preview(identity(url)),
         }
     }
 }
+
+type Pending = HashMap<WorkKey, (Work, AbortHandle)>;
 
 fn identity(url: &str) -> String {
     extract_tweet_id(url).unwrap_or_else(|| url.to_string())
@@ -85,7 +101,7 @@ fn identity(url: &str) -> String {
 
 fn spawn<F: Fetcher>(
     tasks: &mut JoinSet<(Work, Result<Outcome, String>)>,
-    pending: &mut HashMap<String, (Work, AbortHandle)>,
+    pending: &mut Pending,
     fetcher: F,
     work: Work,
     request: Request,
@@ -115,7 +131,7 @@ fn spawn<F: Fetcher>(
 /// başlar ve zenginleştirme bütçesiyle sınırlıdır.
 fn spawn_preview<F: Fetcher>(
     tasks: &mut JoinSet<(Work, Result<Outcome, String>)>,
-    pending: &mut HashMap<String, (Work, AbortHandle)>,
+    pending: &mut Pending,
     fetcher: F,
     url: String,
 ) {
@@ -263,7 +279,7 @@ async fn acquire_with_budgets<F: Fetcher>(
             for translation_url in &plan.translation_urls {
                 // The root /language response includes its inline first quote. Do not
                 // request their translations again while that same work is in flight.
-                let covered_by_root = pending.contains_key("translated-root")
+                let covered_by_root = pending.contains_key(&WorkKey::TranslatedRoot)
                     && (identity(translation_url) == identity(&snapshot.post.url)
                         || snapshot.post.quote.as_deref().is_some_and(|quote| {
                             identity(translation_url) == identity(&quote.url)
@@ -289,7 +305,7 @@ async fn acquire_with_budgets<F: Fetcher>(
             // quote from Syndication while that evidence is already on the way.
             let inspecting_translation = matches!(plan.quote.as_ref(), Some(QuoteFetch::Inspect(url))
                 if pending.contains_key(&Work::Translation(url.clone()).key())
-                    || (pending.contains_key("translated-root") && translation_needed(&plan, url, &checked)));
+                    || (pending.contains_key(&WorkKey::TranslatedRoot) && translation_needed(&plan, url, &checked)));
             if rich_finished
                 && !inspecting_translation
                 && let Some(quote) = plan.quote.as_ref()
@@ -394,7 +410,8 @@ async fn acquire_with_budgets<F: Fetcher>(
         pending.remove(&work.key());
         if matches!(work, Work::Rich | Work::TranslatedRoot) {
             rich_finished |= matches!(&result, Ok(Outcome::Snapshot(_)))
-                || (!pending.contains_key("rich") && !pending.contains_key("translated-root"));
+                || (!pending.contains_key(&WorkKey::Rich)
+                    && !pending.contains_key(&WorkKey::TranslatedRoot));
         }
         if matches!(work, Work::TranslatedRoot) {
             // Even an error must not cause the exact same language URL to be retried
@@ -420,7 +437,7 @@ async fn acquire_with_budgets<F: Fetcher>(
             Err(reason) => {
                 // Önizleme isteğe bağlıdır: başarısızlığı hata listesine yazılmaz.
                 if !matches!(work, Work::Preview(_)) {
-                    debug!(work = %work.key(), "X acquisition request failed: {reason}");
+                    debug!(work = ?work.key(), "X acquisition request failed: {reason}");
                     failures.push(reason);
                 }
             }
