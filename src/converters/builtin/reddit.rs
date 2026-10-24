@@ -23,11 +23,11 @@ use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use super::{
-    Author, BuiltinPost, LinkPreview, MAX_BODY_BYTES, Media, MediaKind, REQUEST_TIMEOUT, Stats,
-};
+use super::preview::meta_value;
+use super::{Author, BuiltinPost, LinkPreview, Media, MediaKind, REQUEST_TIMEOUT, Stats};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
+use serde::de::DeserializeOwned;
 use url::Url;
 
 /// Reddit, tarayıcı dışı istekleri 403 ile engeller. fxreddit servisinin de kullandığı,
@@ -165,7 +165,7 @@ async fn request_token(client: &reqwest::Client, client_id: &str) -> Option<Stri
         }
     };
 
-    let json = read_json_response(response, OAUTH_TOKEN_URL).await.ok()?;
+    let json: serde_json::Value = read_json_response(response, OAUTH_TOKEN_URL).await.ok()?;
     let token = json.get("access_token")?.as_str()?.to_string();
     let expires_in = json
         .get("expires_in")
@@ -202,7 +202,7 @@ pub async fn fetch(
     if let Some(token) = oauth_token(client, client_id).await {
         let url = format!("{OAUTH_API_BASE}/comments/{id}?{query}");
         match get_json_with_bearer(client, &url, &token).await {
-            Ok(value) => match listings_to_post(value, comment_id) {
+            Ok(listings) => match listings_to_post(listings, comment_id) {
                 Ok(mut post) => {
                     fill_link_preview(&mut post).await;
                     return Ok(post);
@@ -215,8 +215,8 @@ pub async fn fetch(
 
     // 2) Kimliksiz yol: engellenmemiş IP'lerde (ör. ev bağlantısı) çalışır.
     let url = format!("https://www.reddit.com/comments/{id}.json?{query}");
-    let value = get_reddit_json(client, &url).await?;
-    let mut post = listings_to_post(value, comment_id)?;
+    let listings = get_reddit_json(client, &url).await?;
+    let mut post = listings_to_post(listings, comment_id)?;
     fill_link_preview(&mut post).await;
     Ok(post)
 }
@@ -235,12 +235,9 @@ fn comments_query(comment_id: Option<&str>) -> String {
 
 /// JSON gönderi listesini karta çevirir (crosspost ise asıl içerik ebeveyn gönderdedir).
 fn listings_to_post(
-    value: serde_json::Value,
+    listings: Vec<RedditListing>,
     comment_id: Option<&str>,
 ) -> Result<BuiltinPost, String> {
-    let listings: Vec<RedditListing> =
-        serde_json::from_value(value).map_err(|e| format!("Reddit yanıtı çözümlenemedi: {e}"))?;
-
     let post = listings
         .first()
         .and_then(|listing| listing.data.children.first())
@@ -385,7 +382,10 @@ fn quote_lines(text: &str) -> String {
 
 /// Kimliksiz JSON isteği. Tarayıcı kılığındaki User-Agent, Reddit'in bot isteklerine
 /// uyguladığı 403 engelinin önüne geçmeye çalışır (engellenen IP'lerde OAuth devreye girer).
-async fn get_reddit_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
+async fn get_reddit_json<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<T, String> {
     let response = client
         .get(url)
         .header("user-agent", REDDIT_USER_AGENT)
@@ -406,11 +406,11 @@ async fn get_reddit_json(client: &reqwest::Client, url: &str) -> Result<serde_js
 }
 
 /// OAuth API isteği (`Authorization: bearer`).
-pub(super) async fn get_json_with_bearer(
+pub(super) async fn get_json_with_bearer<T: DeserializeOwned>(
     client: &reqwest::Client,
     url: &str,
     token: &str,
-) -> Result<serde_json::Value, String> {
+) -> Result<T, String> {
     let response = client
         .get(url)
         .header("authorization", format!("bearer {token}"))
@@ -446,37 +446,28 @@ async fn invalidate_token(token: &str) {
     }
 }
 
-/// Yanıt gövdesini `MAX_BODY_BYTES` sınırıyla okuyup JSON'a çevirir.
-async fn read_json_response(
-    mut response: reqwest::Response,
+/// Yanıt gövdesini sınırlı okuyup doğrudan `T`'ye çözümler (ara `Value` ağacı kurulmaz).
+async fn read_json_response<T: DeserializeOwned>(
+    response: reqwest::Response,
     url: &str,
-) -> Result<serde_json::Value, String> {
-    if let Some(len) = response.content_length()
-        && len > MAX_BODY_BYTES as u64
-    {
-        return Err(format!("Yanıt çok büyük ({url}): {len} bayt"));
-    }
-
-    let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("Yanıt gövdesi okunamadı ({url}): {e}"))?
-    {
-        if body.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err(format!("Yanıt gövdesi sınırı aşıldı ({url})"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-
-    let text = String::from_utf8(body).map_err(|_| format!("Yanıt UTF-8 değil ({url}"))?;
+) -> Result<T, String> {
+    let text = super::read_limited_text(response, url).await?;
     serde_json::from_str(&text).map_err(|e| format!("JSON çözümlenemedi ({url}): {e}"))
 }
 
 fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
-    let author_name = content.author.clone().unwrap_or_default();
-    let mut author = Author::new(format!("u/{author_name}"), String::new());
-    author.profile_url = Some(format!("https://www.reddit.com/user/{author_name}"));
+    // Silinmiş hesaplar `[deleted]` (ya da hiç) gelir: profil bağlantısı kurulmaz, aksi hâlde
+    // kart `reddit.com/user/[deleted]` gibi bozuk bir adrese gidiyordu.
+    let author_name = content
+        .author
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != "[deleted]");
+    let mut author = Author::new(
+        author_name.map_or_else(|| "u/[deleted]".to_string(), |name| format!("u/{name}")),
+        String::new(),
+    );
+    author.profile_url = author_name.map(|name| format!("https://www.reddit.com/user/{name}"));
 
     let permalink = content
         .permalink
@@ -507,7 +498,8 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
         .unwrap_or_default();
     // Galeri görsellerinin kendi açıklamaları (görsel üstüne yazılan metin) karta girer:
     // galeri bileşeni yalnızca görsel taşıdığı için açıklamalar metne numaralı eklenir.
-    let captions = gallery_captions(content);
+    // Numara, kartta görünen görselin sırasıdır (açıklama ve medya aynı geçişte üretilir).
+    let (media, captions) = reddit_media(content);
     if captions.iter().any(|caption| !caption.is_empty()) {
         if !built.text.is_empty() {
             built.text.push_str("\n\n");
@@ -535,7 +527,7 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
         quotes: 0,
         views: None,
     };
-    built.media = reddit_media(content);
+    built.media = media;
     if built.media.is_empty()
         && let Some(redgifs_url) = redgifs_source_url(content).and_then(|url| redgifs_link(&url))
     {
@@ -583,17 +575,23 @@ fn reddit_extra_label(post: &RedditPost) -> Option<String> {
     }
 }
 
-/// Gönderi medyasını çıkarır: galeri > video > doğrudan görsel > önizleme görseli.
-fn reddit_media(post: &RedditPost) -> Vec<Media> {
-    if post.is_gallery.unwrap_or(false)
-        && let Some(gallery) = gallery_media(post)
-        && !gallery.is_empty()
-    {
-        return gallery;
+/// Gönderi medyasını çıkarır: galeri > Redgifs > video > doğrudan görsel > önizleme görseli.
+///
+/// İkinci değer galeri açıklamalarıdır (medyayla aynı sırada; galeri dışında boş).
+fn reddit_media(post: &RedditPost) -> (Vec<Media>, Vec<String>) {
+    if post.is_gallery.unwrap_or(false) {
+        let (media, captions): (Vec<Media>, Vec<String>) = gallery(post).into_iter().unzip();
+        if !media.is_empty() {
+            return (media, captions);
+        }
     }
+    (single_media(post).into_iter().collect(), Vec::new())
+}
 
+/// Galeri olmayan gönderinin tek medyası.
+fn single_media(post: &RedditPost) -> Option<Media> {
     if let Some(media) = redgifs_media(post) {
-        return vec![media];
+        return Some(media);
     }
 
     // Gönderinin videosu `media` **veya** `secure_media` altında olabilir (fxreddit de ikisini
@@ -606,80 +604,61 @@ fn reddit_media(post: &RedditPost) -> Vec<Media> {
     if let Some(video) = reddit_video
         && let Some(url) = video.fallback_url.as_deref()
     {
-        return vec![Media {
+        return Some(Media {
             kind: MediaKind::Video,
             url: unescape_url(url),
             poster: preview_image(post),
             width: video.width,
             height: video.height,
             duration: video.duration,
-        }];
+        });
     }
 
+    let source = preview_source(post);
     if let Some(url) = direct_image_url(post) {
-        let (width, height) = preview_dimensions(post);
-        return vec![Media {
+        return Some(Media {
             kind: MediaKind::Image,
             url,
             poster: None,
-            width,
-            height,
+            width: source.and_then(|source| source.width),
+            height: source.and_then(|source| source.height),
             duration: None,
-        }];
+        });
     }
 
-    if let Some(url) = preview_image(post) {
-        return vec![Media {
-            kind: MediaKind::Image,
-            url,
-            poster: None,
-            width: None,
-            height: None,
-            duration: None,
-        }];
-    }
-
-    Vec::new()
+    preview_image(post).map(|url| Media {
+        kind: MediaKind::Image,
+        url,
+        poster: None,
+        width: None,
+        height: None,
+        duration: None,
+    })
 }
 
 /// Redgifs embeds are accepted only from the service's HTTPS host family. Page links become a
 /// canonical link preview; direct mp4/HLS URLs already present in the payload can be rendered.
 fn redgifs_media(post: &RedditPost) -> Option<Media> {
-    let candidate = post
-        .media
-        .as_ref()
-        .and_then(|media| media.redgifs.as_ref().or(media.oembed.as_ref()))
-        .and_then(|media| {
-            media
+    // `media` ya da `secure_media`: kapak görseli de videonun bulunduğu kaynaktan okunur.
+    [post.media.as_ref(), post.secure_media.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|media| media.redgifs.as_ref().or(media.oembed.as_ref()))
+        .find_map(|embed| {
+            let candidate = embed
                 .video_url
                 .as_deref()
-                .or(media.url.as_deref())
-                .or(media.hls_url.as_deref())
+                .or(embed.url.as_deref())
+                .or(embed.hls_url.as_deref())?;
+            Some(Media {
+                kind: MediaKind::Video,
+                url: allowed_redgifs_asset(candidate)?,
+                poster: embed.thumbnail_url.clone(),
+                width: None,
+                height: None,
+                duration: None,
+            })
         })
-        .or_else(|| {
-            post.secure_media
-                .as_ref()
-                .and_then(|media| media.redgifs.as_ref().or(media.oembed.as_ref()))
-                .and_then(|media| {
-                    media
-                        .video_url
-                        .as_deref()
-                        .or(media.url.as_deref())
-                        .or(media.hls_url.as_deref())
-                })
-        })?;
-    allowed_redgifs_asset(candidate).map(|url| Media {
-        kind: MediaKind::Video,
-        url,
-        poster: post
-            .media
-            .as_ref()
-            .and_then(|media| media.redgifs.as_ref().or(media.oembed.as_ref()))
-            .and_then(|media| media.thumbnail_url.clone()),
-        width: None,
-        height: None,
-        duration: None,
-    })
 }
 
 fn redgifs_source_url(post: &RedditPost) -> Option<String> {
@@ -753,14 +732,6 @@ fn host_label(raw: &str) -> Option<String> {
     (!host.is_empty()).then_some(host)
 }
 
-/// OG değerini tek satıra indirip sınıra kısaltır.
-fn meta_value(value: Option<String>, limit: usize) -> Option<String> {
-    value
-        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|text| !text.is_empty())
-        .map(|text| truncate_chars(&text, limit))
-}
-
 /// Harici bağlantı satırının başlık/site alanlarını hedef sayfanın OG verisinden doldurur.
 ///
 /// Kart **bekletilmez** ([`LINK_PREVIEW_TIMEOUT`]) ve önizleme alınamazsa hata verilmez:
@@ -815,66 +786,57 @@ fn direct_image_url(post: &RedditPost) -> Option<String> {
     is_image.then(|| unescape_url(url))
 }
 
+/// `preview.images[0].source`: önizleme görseli ve boyutları.
+fn preview_source(post: &RedditPost) -> Option<&RedditImageSource> {
+    post.preview
+        .as_ref()?
+        .images
+        .as_ref()?
+        .first()?
+        .source
+        .as_ref()
+}
+
 /// `preview.images[0].source.url` (HTML kaçışlı `&amp;` temizlenir).
 fn preview_image(post: &RedditPost) -> Option<String> {
-    let raw = post
-        .preview
-        .as_ref()
-        .and_then(|preview| preview.images.as_ref())
-        .and_then(|images| images.first())
-        .and_then(|image| image.source.as_ref())
-        .and_then(|source| source.url.clone())?;
-    Some(unescape_url(&raw))
+    preview_source(post)?.url.as_deref().map(unescape_url)
 }
 
-fn preview_dimensions(post: &RedditPost) -> (Option<u32>, Option<u32>) {
-    let source = post
-        .preview
-        .as_ref()
-        .and_then(|preview| preview.images.as_ref())
-        .and_then(|images| images.first())
-        .and_then(|image| image.source.as_ref());
-    match source {
-        Some(source) => (source.width, source.height),
-        None => (None, None),
-    }
-}
-
-/// Galeri görsellerinin kendi açıklamalarını **görsel sırasıyla** döner (boşlar `""`).
+/// Galeri öğeleri kartta görünecek sırayla: (medya, açıklama; yoksa `""`).
 ///
-/// Reddit'te her galeri görselinin üstüne açıklama yazılabilir (`gallery_data.items[*].caption`
-/// veya `media_metadata[*].caption`). V2 kartın galeri bileşeni yalnızca görsel taşıdığı için
-/// bu açıklamalar gönderi metnine numaralı olarak eklenir; aksi hâlde kartta hiç görünmez.
-fn gallery_captions(post: &RedditPost) -> Vec<String> {
-    let meta = post.media_metadata.as_ref();
-    let items = post
+/// Sıra `gallery_data.items`'tır; yoksa `media_metadata` anahtarları **sıralanarak** kullanılır
+/// (`HashMap` sırası her çalıştırmada değişir). Açıklama önce `gallery_data.items[i].caption`,
+/// yoksa `media_metadata[id].caption`'dır. Medya ve açıklama aynı geçişte üretildiği için
+/// işlenemeyen (ör. yüklenmesi başarısız) bir öğe açıklama numaralarını kaydırmaz.
+fn gallery(post: &RedditPost) -> Vec<(Media, String)> {
+    let Some(metadata) = post.media_metadata.as_ref() else {
+        return Vec::new();
+    };
+    let order: Vec<(&str, Option<&str>)> = match post
         .gallery_data
         .as_ref()
-        .and_then(|data| data.items.as_ref());
-
-    // Sıra: `gallery_data.items` (yoksa medya meta anahtarları) — medya listesiyle aynı kural.
-    let order: Vec<String> = items
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.media_id.clone())
-                .collect()
-        })
-        .or_else(|| meta.map(|meta| meta.keys().cloned().collect()))
-        .unwrap_or_default();
+        .and_then(|data| data.items.as_ref())
+    {
+        Some(items) => items
+            .iter()
+            .filter_map(|item| Some((item.media_id.as_deref()?, item.caption.as_deref())))
+            .collect(),
+        None => {
+            let mut ids: Vec<&str> = metadata.keys().map(String::as_str).collect();
+            ids.sort_unstable();
+            ids.into_iter().map(|id| (id, None)).collect()
+        }
+    };
 
     order
-        .iter()
-        .enumerate()
-        .map(|(index, media_id)| {
-            // Önce `gallery_data.items[i].caption`, yoksa `media_metadata[id].caption`.
-            let from_item = items
-                .and_then(|items| items.get(index))
-                .and_then(|item| item.caption.as_deref());
-            let from_meta = meta
-                .and_then(|meta| meta.get(media_id))
-                .and_then(|entry| entry.caption.as_deref());
-            clean_caption(from_item.or(from_meta))
+        .into_iter()
+        .filter_map(|(media_id, item_caption)| {
+            let meta = metadata.get(media_id)?;
+            let media = gallery_item_to_media(meta)?;
+            Some((
+                media,
+                clean_caption(item_caption.or(meta.caption.as_deref())),
+            ))
         })
         .collect()
 }
@@ -888,30 +850,6 @@ fn clean_caption(caption: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or_default()
-}
-
-/// Galeri gönderilerinde `media_metadata` + `gallery_data` sıralamasını kullanır.
-fn gallery_media(post: &RedditPost) -> Option<Vec<Media>> {
-    let metadata = post.media_metadata.as_ref()?;
-    let order: Vec<String> = post
-        .gallery_data
-        .as_ref()
-        .and_then(|data| data.items.as_ref())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.media_id.clone())
-                .collect()
-        })
-        .unwrap_or_else(|| metadata.keys().cloned().collect());
-
-    let media: Vec<Media> = order
-        .iter()
-        .filter_map(|media_id| metadata.get(media_id))
-        .filter_map(gallery_item_to_media)
-        .collect();
-
-    (!media.is_empty()).then_some(media)
 }
 
 fn gallery_item_to_media(item: &MediaMeta) -> Option<Media> {
@@ -998,17 +936,15 @@ struct RedditPost {
 #[serde(untagged)]
 enum RedditReplies {
     Listing { data: Option<RedditListingData> },
-    Empty(serde_json::Value),
+    Empty(serde::de::IgnoredAny),
 }
 
 impl RedditReplies {
     fn listing(&self) -> Option<&RedditListingData> {
         match self {
             Self::Listing { data } => data.as_ref(),
-            Self::Empty(value) => {
-                let _ = value;
-                None
-            }
+            // Yanıtsız yorumlarda Reddit `replies: ""` gönderir.
+            Self::Empty(_) => None,
         }
     }
 }
@@ -1423,6 +1359,104 @@ mod tests {
     }
 
     #[test]
+    fn gallery_captions_stay_aligned_when_an_item_cannot_be_shown() {
+        // İkinci öğenin kimliği yok, üçüncüsünün kaynağı yok (yükleme başarısız):
+        // açıklama numaraları kartta görünen görsellerle aynı kalmalı.
+        let json = r#"[{ "data": { "children": [{ "data": {
+            "id": "gap1", "title": "Galeri", "author": "foto",
+            "permalink": "/r/pics/comments/gap1/galeri/",
+            "is_gallery": true,
+            "gallery_data": { "items": [
+                { "media_id": "a", "caption": "A açıklaması" },
+                { "caption": "kimliksiz öğe" },
+                { "media_id": "bozuk", "caption": "gösterilemeyen öğe" },
+                { "media_id": "c", "caption": "C açıklaması" }
+            ] },
+            "media_metadata": {
+                "a": { "e": "Image", "s": { "u": "https://i.redd.it/a.jpg" } },
+                "bozuk": { "status": "failed" },
+                "c": { "e": "Image", "s": { "u": "https://i.redd.it/c.jpg" } }
+            }
+        }}]}}]"#;
+        let post = parse(json);
+        assert_eq!(post.media.len(), 2);
+        assert_eq!(post.media[1].url, "https://i.redd.it/c.jpg");
+        assert!(post.text.contains("1. A açıklaması"), "{}", post.text);
+        assert!(post.text.contains("2. C açıklaması"), "{}", post.text);
+        assert!(!post.text.contains("gösterilemeyen"), "{}", post.text);
+    }
+
+    #[test]
+    fn gallery_without_gallery_data_has_a_stable_order() {
+        let json = r#"[{ "data": { "children": [{ "data": {
+            "id": "ord1", "title": "Galeri", "author": "foto",
+            "permalink": "/r/pics/comments/ord1/galeri/",
+            "is_gallery": true,
+            "media_metadata": {
+                "c": { "e": "Image", "s": { "u": "https://i.redd.it/c.jpg" } },
+                "a": { "e": "Image", "s": { "u": "https://i.redd.it/a.jpg" } },
+                "b": { "e": "Image", "s": { "u": "https://i.redd.it/b.jpg" } }
+            }
+        }}]}}]"#;
+        for _ in 0..5 {
+            let urls: Vec<String> = parse(json).media.into_iter().map(|m| m.url).collect();
+            assert_eq!(
+                urls,
+                vec![
+                    "https://i.redd.it/a.jpg",
+                    "https://i.redd.it/b.jpg",
+                    "https://i.redd.it/c.jpg"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn deleted_authors_get_no_profile_link() {
+        for author in [r#""[deleted]""#, "null", r#""  ""#] {
+            let json = format!(
+                r#"[{{ "data": {{ "children": [{{ "data": {{
+                    "id": "del1", "title": "Başlık", "author": {author},
+                    "permalink": "/r/test/comments/del1/baslik/"
+                }}}}]}}}}]"#
+            );
+            let post = parse(&json);
+            assert_eq!(post.author.name, "u/[deleted]", "author: {author}");
+            assert!(post.author.profile_url.is_none(), "author: {author}");
+        }
+        let post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "ok1", "title": "Başlık", "author": "biri",
+                "permalink": "/r/test/comments/ok1/baslik/"
+            }}]}}]"#,
+        );
+        assert_eq!(
+            post.author.profile_url.as_deref(),
+            Some("https://www.reddit.com/user/biri")
+        );
+    }
+
+    #[test]
+    fn redgifs_poster_comes_from_the_same_embed_as_the_video() {
+        let post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "rg1", "title": "Klip", "author": "biri",
+                "permalink": "/r/test/comments/rg1/klip/",
+                "secure_media": { "oembed": {
+                    "video_url": "https://media.redgifs.com/Klip.mp4",
+                    "thumbnail_url": "https://media.redgifs.com/Klip-poster.jpg"
+                } }
+            }}]}}]"#,
+        );
+        assert_eq!(post.media.len(), 1);
+        assert_eq!(post.media[0].url, "https://media.redgifs.com/Klip.mp4");
+        assert_eq!(
+            post.media[0].poster.as_deref(),
+            Some("https://media.redgifs.com/Klip-poster.jpg")
+        );
+    }
+
+    #[test]
     fn crosspost_uses_parent_content() {
         let json = r#"[{ "data": { "children": [{ "data": {
             "id": "cp1",
@@ -1705,7 +1739,7 @@ mod tests {
         assert!(!token.is_empty());
 
         // Gönderi kimliği canlı listeden alınır: test silinmiş gönderilere bağlı kalmaz.
-        let listing = get_json_with_bearer(
+        let listing: serde_json::Value = get_json_with_bearer(
             &client,
             "https://oauth.reddit.com/r/videos/hot?limit=5&raw_json=1",
             &token,

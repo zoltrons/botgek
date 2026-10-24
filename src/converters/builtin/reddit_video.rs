@@ -579,10 +579,22 @@ async fn render_variant(
     size_guard: Option<u64>,
 ) -> Result<Option<Vec<u8>>, HlsError> {
     let video_url = master_url.join(video_uri).map_err(hls_err)?;
-    let video_text = source
-        .read_text(&SourceLocation::Url(video_url.clone()))
-        .await?
-        .content;
+    let audio_url = audio_uri
+        .map(|uri| master_url.join(uri))
+        .transpose()
+        .map_err(hls_err)?;
+    // Video ve ses listeleri **aynı anda** istenir: sıralı istemek 5 sn'lik birleştirme
+    // bütçesinden her varyantta bir gidiş-dönüş daha yiyordu. Boyut tahmini varyantı elerse
+    // ses listesi boşa gitmiş olur; bu küçük bir metin isteğidir.
+    let video_location = SourceLocation::Url(video_url.clone());
+    let audio_location = audio_url.clone().map(SourceLocation::Url);
+    let (video_text, audio_text) = tokio::join!(source.read_text(&video_location), async {
+        match &audio_location {
+            Some(location) => Some(source.read_text(location).await),
+            None => None,
+        }
+    });
+    let video_text = video_text?.content;
 
     if let Some(bandwidth) = size_guard {
         let estimate = estimated_bytes(bandwidth, playlist_duration_secs(&video_text));
@@ -611,12 +623,8 @@ async fn render_variant(
     );
     let mut audio_track = None;
 
-    if let Some(audio_uri) = audio_uri {
-        let audio_url = master_url.join(audio_uri).map_err(hls_err)?;
-        let audio_text = source
-            .read_text(&SourceLocation::Url(audio_url.clone()))
-            .await?
-            .content;
+    if let (Some(audio_url), Some(audio_text)) = (audio_url, audio_text) {
+        let audio_text = audio_text?.content;
         let audio_id_input = InputId::new("audio").map_err(hls_err)?;
         let audio_snapshot = parse_playlist_snapshot(
             &TextResource {
@@ -895,7 +903,7 @@ CMAF_720.m3u8"#;
         let token =
             super::super::reddit::oauth_token(client, super::super::reddit::DEFAULT_CLIENT_ID)
                 .await?;
-        let listing = super::super::reddit::get_json_with_bearer(
+        let listing: serde_json::Value = super::super::reddit::get_json_with_bearer(
             client,
             "https://oauth.reddit.com/r/nextfuckinglevel/hot?limit=25&raw_json=1",
             &token,
