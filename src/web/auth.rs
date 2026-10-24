@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -62,6 +62,7 @@ impl Auth {
     }
 
     async fn locked_out(&self, ip: IpAddr) -> bool {
+        let ip = rate_key(ip);
         let mut failures = self.failures.lock().await;
         failures.retain(|_, (started, _)| started.elapsed() < FAILURE_WINDOW);
         failures
@@ -70,6 +71,7 @@ impl Auth {
     }
 
     async fn record_failure(&self, ip: IpAddr) {
+        let ip = rate_key(ip);
         let mut failures = self.failures.lock().await;
         if failures.len() >= MAX_TRACKED_ADDRESSES && !failures.contains_key(&ip) {
             return;
@@ -83,6 +85,19 @@ impl Auth {
             "{COOKIE}={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={age}{}",
             if self.secure { "; Secure" } else { "" }
         )
+    }
+}
+
+/// Deneme sayacının anahtarı. Tek bir IPv6 istemcisi genellikle koca bir /64 bloğuna sahiptir;
+/// tam adresle saymak, her denemede adres değiştirerek kilidi atlatmaya izin veriyordu.
+/// IPv4 ile eşlenmiş IPv6 adresleri (`::ffff:a.b.c.d`) de IPv4 adresi olarak sayılır.
+fn rate_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(Ipv6Addr::from_bits(v6.to_bits() & !u128::from(u64::MAX))),
+        },
     }
 }
 
@@ -258,5 +273,24 @@ mod tests {
         }
         assert!(auth.locked_out(attacker).await);
         assert!(!auth.locked_out(admin).await);
+    }
+
+    /// Aynı /64 içindeki adres değişimi kilidi atlatamaz; komşu /64 etkilenmez.
+    #[tokio::test]
+    async fn ipv6_failures_are_counted_per_prefix() {
+        let auth = Auth::new("a".repeat(32), false).unwrap();
+        for host in 0..FAILURES_PER_WINDOW {
+            let ip: IpAddr = format!("2001:db8:1:2::{:x}", host + 1).parse().unwrap();
+            auth.record_failure(ip).await;
+        }
+        assert!(
+            auth.locked_out("2001:db8:1:2:ffff::1".parse().unwrap())
+                .await
+        );
+        assert!(!auth.locked_out("2001:db8:1:3::1".parse().unwrap()).await);
+        assert_eq!(
+            rate_key("::ffff:203.0.113.7".parse().unwrap()),
+            "203.0.113.7".parse::<IpAddr>().unwrap()
+        );
     }
 }
