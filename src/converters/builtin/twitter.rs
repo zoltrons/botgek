@@ -382,8 +382,8 @@ fn should_populate_nested_quote(post: &BuiltinPost) -> bool {
 /// kaybetmemek için bu süreden sonra da aynı FxTwitter isteği tamamlanana kadar beklenir. Böylece
 /// notlar kapalıyken yavaş ya da askıda kalan uç kartı 12 sn'ye kadar (istek zaman aşımı) geciktiremez.
 ///
-/// Hızlı yol **hata verirse** FxTwitter ikinci kez istenmez: kaynak `syndication` ise doğrudan
-/// X ucu kullanılır (eskiden yavaş yol aynı isteği bir kez daha atıyordu).
+/// Hızlı yol **hata verirse** FxTwitter ikinci kez istenmez; yavaş yanıtta olduğu gibi X ucu
+/// kullanılır. (Bu yol yalnızca çevirisiz FxTwitter kaynağında çalışır; çeviri planlayıcıdadır.)
 async fn fetch_fx_fast(
     client: &reqwest::Client,
     original_url: &str,
@@ -391,17 +391,13 @@ async fn fetch_fx_fast(
     engine: &EngineSettings,
     max_video_bytes: u64,
 ) -> Result<BuiltinPost, String> {
-    let source = engine.twitter_source;
-    let translate = engine.auto_translate;
-    let translation_target = &engine.translation_target;
     let show_community_note = engine.show_community_note;
-    let language = translate.then_some(translation_target.as_str());
     let fx = from_fxtwitter(
         client,
         original_url,
         id,
-        language,
-        translation_target,
+        None,
+        &engine.translation_target,
         max_video_bytes,
         engine.translate_english,
     );
@@ -410,24 +406,9 @@ async fn fetch_fx_fast(
     match tokio::time::timeout(HEDGE_DELAY, &mut fx).await {
         Ok(Ok(post)) => return Ok(post),
         Ok(Err(err)) => {
+            // Eskiden hızlı bir hata kartı hiç üretmiyordu; oysa aynı FxTwitter yavaş kalsaydı
+            // X ucu devreye girecekti. Hata da gecikme gibi X ucuna düşer.
             warn!("FxTwitter isteği başarısız ({id}): {err}");
-            if source == TwitterSource::Fxtwitter {
-                // Dil ekli uç sorun çıkarmış olabilir: bir kez dil olmadan denenir.
-                // Dil yoksa ilk istek zaten dilsizdi; aynı isteği tekrarlamak yalnızca gecikme ekler.
-                if language.is_none() {
-                    return Err(err);
-                }
-                return from_fxtwitter(
-                    client,
-                    original_url,
-                    id,
-                    None,
-                    translation_target,
-                    max_video_bytes,
-                    engine.translate_english,
-                )
-                .await;
-            }
             return from_syndication(client, original_url, id, max_video_bytes)
                 .await
                 .map_err(|sy_err| format!("{err} | {sy_err}"));
