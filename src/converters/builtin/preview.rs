@@ -332,7 +332,19 @@ pub(super) fn from_html(
                 .as_deref()
                 .is_none_or(|text| generic(text, platform)))
     {
-        return Err("no meaningful public post metadata".into());
+        // Reddedilen başlık hataya eklenir: sayfa sunucunun ağından farklı gelebiliyor (giriş,
+        // onay veya bot sayfası) ve log, hangisi olduğunu ancak böyle gösterir.
+        return Err(format!(
+            "no meaningful public post metadata (title: {:?}, description: {})",
+            title
+                .as_deref()
+                .map(|text| crate::utils::truncate_chars(&plain_text(text), 80)),
+            if description.is_some() {
+                "generic"
+            } else {
+                "none"
+            },
+        ));
     }
     let title = title.map(|value| plain_text(&value));
     let description = description
