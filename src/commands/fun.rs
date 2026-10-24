@@ -2380,9 +2380,18 @@ mod tests {
 
     #[test]
     fn bot_rival_opens_when_it_moves_first() {
-        let game = Bomb::new(user(1), user(2), true, 8, 1);
-        assert_eq!(game.turn, 0);
-        assert_eq!(game.cuts.len(), 1);
+        for _ in 0..50 {
+            let game = Bomb::new(user(1), user(2), true, 8, 1);
+            // İlk hamlede ipucu yoktur: bot bombayı da kesebilir (1/9), bu oyunun kuralıdır.
+            match game.result {
+                Some(BombResult::Exploded { loser }) => assert_eq!(loser, 1),
+                Some(other) => panic!("beklenmeyen sonuç: {other:?}"),
+                None => {
+                    assert_eq!(game.turn, 0);
+                    assert_eq!(game.cuts.len(), 1);
+                }
+            }
+        }
     }
 
     #[test]
