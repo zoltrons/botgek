@@ -44,6 +44,12 @@ reqwest = { version = "0.13", default-features = false, features = [
 # Reddit videolarında video + ses rendition'larını tek MP4'te birleştirir (çok-izli oturum).
 # `default-source` kapalı: HTTP kaynağı kendi reqwest istemcimizle sağlanır; yeniden kodlama yoktur.
 hls-transmux = { version = "0.10", default-features = false }
+# Spotify önizlemesi: kapak (JPEG) + 30 sn MP3 → sesli tek MP4. Saf Rust; ses yeniden kodlanmaz,
+# görüntü tek kayıpsız I-kare (I_PCM) olarak kodlanır.
+less-avc = "0.1.5"
+shiguredo_mp4 = "2026.5.0"
+zune-jpeg = "0.5.15"
+zune-core = "0.5"
 url = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

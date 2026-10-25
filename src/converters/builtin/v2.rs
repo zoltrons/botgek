@@ -175,7 +175,7 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
 
     let mut children: Vec<Value> = match &card.post.custom_card {
         // Platforma özel kart (ör. Spotify): çocuk bileşenler platform modülünde hazır üretilir.
-        Some(custom) => custom.components.clone(),
+        Some(custom) => custom_children(custom, card.resolved),
         None => generic_children(card),
     };
     // Custom cards are cached as source data and must receive the same per-send decision as
@@ -215,6 +215,21 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
     }
 
     payload
+}
+
+/// Platforma özel kartın bileşenleri. Gönderimde ek olarak üretilen video (Spotify: kapak +
+/// 30 sn önizleme) ilk bölümün hemen altında galeri olarak oynar. Yalnızca **ek** kullanılır:
+/// uzak bağlantı (Spotify'da MP3) galeride oynamaz. Spoiler, ardından ağaç genelinde uygulanır.
+fn custom_children(custom: &super::CustomCard, resolved: &ResolvedMedia) -> Vec<Value> {
+    let mut children = custom.components.clone();
+    if let Some(reference) = &resolved.attached_video {
+        let gallery = json!({
+            "type": TYPE_MEDIA_GALLERY,
+            "items": [media_item(reference, false)],
+        });
+        children.insert(children.len().min(1), gallery);
+    }
+    children
 }
 
 /// Gönderinin içindeki harici bağlantının önizlemesi (X'in "link kartı").
@@ -992,6 +1007,53 @@ mod tests {
             post.custom_card.as_ref().unwrap().components,
             source_components,
             "cached custom card is not mutated"
+        );
+    }
+
+    #[test]
+    fn custom_card_plays_attached_video_below_its_section_only() {
+        let mut post = sample_post();
+        post.custom_card = Some(crate::converters::builtin::CustomCard {
+            components: vec![
+                json!({"type": TYPE_SECTION, "components": [], "accessory": {}}),
+                json!({"type": TYPE_SEPARATOR}),
+            ],
+            accent_color: None,
+        });
+        let options = options();
+        let emojis = emojis();
+
+        // Uzak bağlantı (Spotify'da MP3) galeriye girmez.
+        let remote_only = ResolvedMedia {
+            video_link: Some("https://p.scdn.co/mp3-preview/abc".to_string()),
+            ..ResolvedMedia::default()
+        };
+        let payload = build_payload(&card(&post, &options, &remote_only, &emojis));
+        assert!(gallery_urls(&payload).is_empty());
+
+        let attached = ResolvedMedia {
+            attached_video: Some("attachment://spotify-preview.mp4".to_string()),
+            ..remote_only
+        };
+        let payload = build_payload(&card(&post, &options, &attached, &emojis));
+        let children = container(&payload)["components"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(children[0]["type"], TYPE_SECTION);
+        assert_eq!(children[1]["type"], TYPE_MEDIA_GALLERY);
+        assert_eq!(children[2]["type"], TYPE_SEPARATOR);
+        assert_eq!(
+            gallery_urls(&payload),
+            vec!["attachment://spotify-preview.mp4"]
+        );
+
+        // Hassas gönderide galeri öğesi de spoiler olur.
+        post.sensitive = true;
+        let payload = build_payload(&card(&post, &options, &attached, &emojis));
+        assert_eq!(
+            container(&payload)["components"][1]["items"][0]["spoiler"],
+            true
         );
     }
 

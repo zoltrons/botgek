@@ -176,9 +176,13 @@ pub fn gif_convert_url(url: &str) -> Option<String> {
 /// birleştirmeyi dener (`reddit_video::merge`; proje ffmpeg kullanmaz, birleştirme saf Rust
 /// transmux ile yapılır). Birleştirme başarısız/doluysa None döner: renderer uzak videoyu
 /// korur; sessiz MP4'ü yeniden indirip yüklemek gereksiz trafik ve bellek tüketirdi.
+///
+/// **Spotify** önizlemesi (`p.scdn.co`) MP3'tür: `poster` (kapak) ile sesli tek MP4'e çevrilir
+/// (`spotify_video::build`); kapak yoksa ya da üretim başarısızsa None döner.
 pub async fn download_video(
     client: &reqwest::Client,
     url: &str,
+    poster: Option<&str>,
     max_bytes: u64,
 ) -> Option<MediaFile> {
     if url::Url::parse(url)
@@ -186,6 +190,9 @@ pub async fn download_video(
         .is_some_and(|url| url.host_str() == Some("v.redd.it"))
     {
         return super::reddit_video::merge(client, url, max_bytes).await;
+    }
+    if super::spotify_video::is_preview_url(url) {
+        return super::spotify_video::build(url, poster?, max_bytes).await;
     }
 
     download(url, max_bytes).await

@@ -21,6 +21,7 @@ pub mod reddit_video;
 pub mod render;
 mod safe_http;
 pub mod spotify;
+pub mod spotify_video;
 pub mod tiktok;
 pub mod translate;
 mod transport;

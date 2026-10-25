@@ -81,8 +81,11 @@ pub const VIDEO_MERGE_BUDGET: Duration = Duration::from_millis(5_000);
 /// playlist'lerinde gelir, sesli oynatma ancak ikisi indirilip tek MP4'e birleştirilerek
 /// mümkündür. Bu yüzden bu platformlarda video indirme **medya yöntemi ayarından bağımsız**
 /// olarak zorunludur (görseller ayarı izlemeye devam eder).
+///
+/// Spotify önizlemesi MP3'tür ve kartta oynamaz; kapakla tek MP4'e çevrilip ek olarak
+/// gönderilir (bkz. `spotify_video`).
 fn video_requires_download(platform_key: &str) -> bool {
-    platform_key == "reddit"
+    matches!(platform_key, "reddit" | "spotify")
 }
 
 /// Ayarlardan türetilen render davranışı (**tek mod: doğrudan**).
@@ -103,8 +106,8 @@ impl RenderOptions {
     /// Platforma göre uyarlanmış render seçenekleri.
     ///
     /// Kart tek modda çalışır: **hiçbir medya indirilmez** (görseller/GIF'ler CDN
-    /// bağlantısıyla kartın içinde gösterilir). **Tek istisna** sesi ayrı akışta gelen
-    /// Reddit videosudur ([`Self::video_requires_download`]).
+    /// bağlantısıyla kartın içinde gösterilir). **İstisnalar** sesi ayrı akışta gelen
+    /// Reddit videosu ve Spotify önizlemesidir ([`Self::video_requires_download`]).
     pub fn from_engine(engine: &EngineSettings, platform_key: &str) -> Self {
         Self {
             video_requires_download: video_requires_download(platform_key),
@@ -237,7 +240,8 @@ fn push_media(plan: &mut MediaPlan, media: &Media, max_images: usize) {
 /// Planı uygular: **hiçbir medya indirilmez** (görseller/GIF'ler CDN bağlantısıyla kartta
 /// gösterilir). **Tek istisna** sesi ayrı akışta gelen Reddit videosudur: sesli oynatma için
 /// video+ses birleştirilir ve sonuç mesaja **ek** olarak gönderilir; bütçe dolarsa video
-/// kartta uzak bağlantıyla (sessiz) oynar.
+/// kartta uzak bağlantıyla (sessiz) oynar. Spotify önizlemesi de aynı yoldan kapakla MP4'e
+/// çevrilir; üretilemezse Spotify kartı uzak bağlantıyı kullanmaz (bkz. `v2::build_payload`).
 pub async fn resolve_media(
     client: &reqwest::Client,
     post: &BuiltinPost,
@@ -252,12 +256,20 @@ pub async fn resolve_media(
         return resolved;
     };
 
-    // `download_video`: Reddit videolarında video+ses birleştirmesini dener (ffmpeg'siz).
+    // `download_video`: Reddit videolarında video+ses birleştirmesini, Spotify önizlemesinde
+    // kapak+ses MP4 üretimini dener (ffmpeg'siz). Spotify için kapak, medyanın posteridir.
     let max_bytes = options.max_video_bytes();
+    let poster = post
+        .media
+        .iter()
+        .find(|media| media.url == *video_url)
+        .and_then(|media| media.poster.clone());
     let handle = {
         let client = client.clone();
         let url = video_url.clone();
-        tokio::spawn(async move { media::download_video(&client, &url, max_bytes).await })
+        tokio::spawn(async move {
+            media::download_video(&client, &url, poster.as_deref(), max_bytes).await
+        })
     };
 
     match within(options.video_budget(), handle).await {
@@ -426,13 +438,17 @@ mod tests {
     }
 
     #[test]
-    fn only_reddit_requires_a_video_download() {
+    fn only_reddit_and_spotify_require_a_video_download() {
         let engine = EngineSettings::default();
         assert!(
             RenderOptions::from_engine(&engine, "reddit").video_requires_download,
             "Reddit: ses ayrı akışta → video zorunlu indirilir"
         );
-        for platform in ["twitter", "instagram", "tiktok", "bluesky", "spotify"] {
+        assert!(
+            RenderOptions::from_engine(&engine, "spotify").video_requires_download,
+            "Spotify: MP3 önizleme kapakla MP4'e çevrilir"
+        );
+        for platform in ["twitter", "instagram", "tiktok", "bluesky"] {
             assert!(
                 !RenderOptions::from_engine(&engine, platform).video_requires_download,
                 "{platform}: indirme yok"

@@ -18,7 +18,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use super::render::{escape_markdown, format_count};
-use super::{Author, BuiltinPost, CustomCard, MAX_BODY_BYTES};
+use super::{Author, BuiltinPost, CustomCard, MAX_BODY_BYTES, Media, MediaKind};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const SPOTIFY_OPEN: &str = "https://open.spotify.com";
@@ -108,6 +108,9 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     // fetched card plain is important because the post is cached and may be requested both
     // with and without a user spoiler.
     post.custom_card = Some(build_card(&view, &target.open_url));
+    if let Some(media) = preview_media(&view) {
+        post.media.push(media);
+    }
     Ok(post)
 }
 
@@ -224,12 +227,17 @@ struct EntityView {
     /// Alt detay parçaları (ör. `["3:21", "Çıkış 2025-03-14"]`).
     details: Vec<String>,
     image: Option<String>,
+    /// 30 sn önizleme sesi (`audioPreview.url`, MP3).
+    preview: Option<String>,
 }
 
 impl EntityView {
     fn from(entity: &Value, kind: &str) -> Self {
         let title = json_str(entity, "name").or_else(|| json_str(entity, "title"));
         let image = best_image(entity);
+        let preview = entity
+            .get("audioPreview")
+            .and_then(|preview| json_str(preview, "url"));
         let duration = entity
             .get("duration")
             .and_then(Value::as_u64)
@@ -288,8 +296,30 @@ impl EntityView {
             subtitle,
             details,
             image,
+            preview,
         }
     }
+}
+
+/// Önizleme + kapak varsa karta video olarak eklenecek medya: gönderimde
+/// `spotify_video` MP3'ü kapakla tek MP4'e çevirir ve kartın galerisinde oynatır.
+fn preview_media(view: &EntityView) -> Option<Media> {
+    let preview = view
+        .preview
+        .as_deref()
+        .filter(|url| url.starts_with("https://"))?;
+    let cover = view
+        .image
+        .as_deref()
+        .filter(|url| url.starts_with("https://"))?;
+    Some(Media {
+        kind: MediaKind::Video,
+        url: preview.to_string(),
+        poster: Some(cover.to_string()),
+        width: None,
+        height: None,
+        duration: None,
+    })
 }
 
 /// Components V2 kart gövdesini (bölüm + ayraç + buton satırı) üretir.
@@ -298,8 +328,8 @@ impl EntityView {
 /// `render::apply_visibility` tarafından uygulanır (aynı gönderi hem spoiler'lı hem spoiler'sız
 /// kanalda gösterilebilir).
 ///
-/// Buton satırı: Spotify (asıl) + Apple Music ve YouTube Music aramaları. Discord V2
-/// mesajlarında 30 sn önizleme satır içi oynatılamadığı için harici müzik servisleri sunulur.
+/// Buton satırı: Spotify (asıl) + Apple Music ve YouTube Music aramaları. 30 sn önizleme
+/// kartta değil, gönderimde üretilen video olarak bölümün altına eklenir (bkz. [`preview_media`]).
 fn build_card(view: &EntityView, open_url: &str) -> CustomCard {
     let title = escape_markdown(view.title.as_deref().unwrap_or("Spotify"));
     let subtitle_line = match view
@@ -516,6 +546,14 @@ mod tests {
         );
         assert_eq!(view.details, vec!["3:33", "Çıkış 1987-11-12"]);
 
+        let media = preview_media(&view).expect("önizleme + kapak → video medyası");
+        assert_eq!(media.kind, MediaKind::Video);
+        assert_eq!(media.url, "https://p.scdn.co/mp3-preview/abc.mp3");
+        assert_eq!(
+            media.poster.as_deref(),
+            Some("https://i.scdn.co/image/large.jpg")
+        );
+
         let card = build_card(
             &view,
             "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
@@ -563,6 +601,10 @@ mod tests {
         let view = EntityView::from(&entity, "playlist");
         assert_eq!(view.title.as_deref(), Some("Keşfet"));
         assert!(view.subtitle.is_none());
+        assert!(
+            preview_media(&view).is_none(),
+            "önizleme yoksa video da yok"
+        );
 
         let card = build_card(&view, "https://open.spotify.com/playlist/x");
         // Görsel yoksa bölüm erişilebilirliği bir bağlantı butonu olur.
