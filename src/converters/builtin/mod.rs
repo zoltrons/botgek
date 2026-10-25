@@ -445,6 +445,25 @@ pub fn encode_component(value: &str) -> String {
 /// HTML varlıklarını (`&amp;`, `&#39;`, `&quot;` ...) düz metne çevirir.
 ///
 /// Tek geçişte soldan sağa çözülür: çözülen bir varlığın çıktısı yeniden taranmaz, böylece `&amp;lt;` kaynakta olduğu gibi `&lt;` kalır (çift çözme yok).
+/// `975K`, `1.5M`, `60,279,326`, `16.7k` gibi kısaltmalı sayaçları tam sayıya çevirir.
+///
+/// Binlik ayırıcı olarak virgül ve boşluklar (normal/bölünmez) atılır; sonuç yuvarlanır
+/// (`1.15K` kayan noktada 1149.999… olur, kesilseydi 1149 çıkardı).
+pub(super) fn parse_compact_count(raw: &str) -> Option<u64> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|ch| !matches!(ch, ',' | ' ' | '\u{a0}'))
+        .collect();
+    let (digits, multiplier) = match cleaned.chars().last()? {
+        'K' | 'k' => (&cleaned[..cleaned.len() - 1], 1_000.0),
+        'M' | 'm' => (&cleaned[..cleaned.len() - 1], 1_000_000.0),
+        'B' | 'b' => (&cleaned[..cleaned.len() - 1], 1_000_000_000.0),
+        _ => (cleaned.as_str(), 1.0),
+    };
+    let value: f64 = digits.parse().ok()?;
+    (value.is_finite() && value >= 0.0).then(|| (value * multiplier).round() as u64)
+}
+
 pub fn unescape_html(text: &str) -> String {
     // En uzun desteklenen varlık `&#x10FFFF;` / `&#1114111;`; daha uzak `;` aranmaz.
     const MAX_ENTITY_LEN: usize = 10;

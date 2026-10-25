@@ -21,7 +21,8 @@ use tracing::debug;
 
 use super::opengraph::{self, OpenGraph};
 use super::{
-    Author, BuiltinPost, Media, MediaKind, Stats, month_number, parse_timestamp, unescape_html,
+    Author, BuiltinPost, Media, MediaKind, Stats, month_number, parse_compact_count,
+    parse_timestamp, unescape_html,
 };
 use crate::converters::parser::{ParsedPost, Platform};
 
@@ -585,25 +586,7 @@ fn number_from(regex: &Regex, text: &str) -> Option<u64> {
     regex
         .captures(text)
         .and_then(|c| c.get(1))
-        .and_then(|m| parse_compact_number(m.as_str()))
-}
-
-/// `975K`, `1.5M`, `60,279,326` gibi metinleri sayıya çevirir.
-fn parse_compact_number(raw: &str) -> Option<u64> {
-    let cleaned = raw.trim().replace(',', "");
-    let last = cleaned.chars().last()?;
-    let (digits, multiplier) = match last {
-        'K' | 'k' => (&cleaned[..cleaned.len() - 1], 1_000.0),
-        'M' | 'm' => (&cleaned[..cleaned.len() - 1], 1_000_000.0),
-        'B' | 'b' => (&cleaned[..cleaned.len() - 1], 1_000_000_000.0),
-        _ => (cleaned.as_str(), 1.0),
-    };
-    let value: f64 = digits.trim().parse().ok()?;
-    if !value.is_finite() || value < 0.0 {
-        return None;
-    }
-    // Yuvarlanır: `1.15K` kayan noktada 1149.999… olur ve kesilince 1149 çıkıyordu.
-    Some((value * multiplier).round() as u64)
+        .and_then(|m| parse_compact_count(m.as_str()))
 }
 
 /// Embed açıklamasını düz metne çevirir: kullanıcı adı bağlantısı atılır, `<br />` satır sonu
@@ -885,15 +868,15 @@ mod tests {
 
     #[test]
     fn compact_numbers_are_parsed() {
-        assert_eq!(parse_compact_number("60,279,326"), Some(60_279_326));
-        assert_eq!(parse_compact_number("975K"), Some(975_000));
-        assert_eq!(parse_compact_number("1.5M"), Some(1_500_000));
-        assert_eq!(parse_compact_number("2b"), Some(2_000_000_000));
-        assert_eq!(parse_compact_number("12"), Some(12));
-        assert_eq!(parse_compact_number(""), None);
+        assert_eq!(parse_compact_count("60,279,326"), Some(60_279_326));
+        assert_eq!(parse_compact_count("975K"), Some(975_000));
+        assert_eq!(parse_compact_count("1.5M"), Some(1_500_000));
+        assert_eq!(parse_compact_count("2b"), Some(2_000_000_000));
+        assert_eq!(parse_compact_count("12"), Some(12));
+        assert_eq!(parse_compact_count(""), None);
         // Kayan nokta hatası kesilmez, yuvarlanır (1.15 × 1000 = 1149.999…).
-        assert_eq!(parse_compact_number("1.15K"), Some(1_150));
-        assert_eq!(parse_compact_number("2.3M"), Some(2_300_000));
+        assert_eq!(parse_compact_count("1.15K"), Some(1_150));
+        assert_eq!(parse_compact_count("2.3M"), Some(2_300_000));
     }
 
     /// Oturum API'si (`/media/{pk}/info/`) yanıtı: reel (video).

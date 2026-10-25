@@ -874,9 +874,8 @@ fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
 /// Bağlantı tek yol parçalı bir Letterboxd kullanıcı profili mi? (`/{kullanıcı}/`)
 ///
 /// Film/inceleme/liste alt sayfaları, sabit üst düzey yollar ve kullanıcı adı olmayan
-/// adresler `None` döner. Sondaki noktalama (`...`, `,`, `!`) adresin parçası sayılmaz.
+/// adresler `None` döner. Adres kırpılmış gelmelidir (sondaki noktalamayı çağıran atar).
 pub(crate) fn letterboxd_profile_user(raw: &str) -> Option<String> {
-    let raw = raw.trim_end_matches(URL_TRAILING_PUNCTUATION);
     let url = url::Url::parse(raw).ok()?;
     if !matches!(url.scheme(), "http" | "https")
         || !matches!(
@@ -917,14 +916,20 @@ fn parse_letterboxd_profile(raw_content: &str) -> Option<ParsedPost> {
         let Some(user) = letterboxd_profile_user(trimmed) else {
             continue;
         };
-        let end = candidate.start() + trimmed.len();
-        let is_spoiler = raw_content[..candidate.start()].trim_end().ends_with("||")
-            && raw_content[end..].trim_start().starts_with("||");
+        let (mut start, mut end) = (candidate.start(), candidate.start() + trimmed.len());
+        let before = raw_content[..start].trim_end();
+        let after = raw_content[end..].trim_start();
+        let is_spoiler = before.ends_with("||") && after.starts_with("||");
+        if is_spoiler {
+            // `||` işaretleri de bağlantıyla birlikte yorumdan çıkarılır.
+            start = before.len() - 2;
+            end = raw_content.len() - after.len() + 2;
+        }
         let url = format!("https://letterboxd.com/{user}/");
         return Some(ParsedPost {
             platform: Platform::Letterboxd,
             is_spoiler,
-            user_comment: extract_user_comment_span(raw_content, candidate.start(), end),
+            user_comment: extract_user_comment_span(raw_content, start, end),
             original_url: url.clone(),
             fixed_url: url,
         });
@@ -992,6 +997,13 @@ mod tests {
             parse("https://letterboxd.com/biri/films/ ve https://letterboxd.com/hollieamanda/"),
             Some(("https://letterboxd.com/hollieamanda/".into(), false))
         );
+        // Spoiler işaretleri yorumda kalmaz.
+        let spoiler = parse_letterboxd("||https://letterboxd.com/hollieamanda/||").unwrap();
+        assert!(spoiler.is_spoiler);
+        assert_eq!(spoiler.user_comment, None);
+        let spoiler =
+            parse_letterboxd("bak || https://letterboxd.com/hollieamanda/ || işte").unwrap();
+        assert_eq!(spoiler.user_comment.as_deref(), Some("bak  işte"));
         // Profil bağlantısı yorumdan temizlenir, kalan metin yorum olur.
         let with_comment =
             parse_letterboxd("bak https://letterboxd.com/hollieamanda/ ne güzel").unwrap();

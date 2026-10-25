@@ -214,13 +214,14 @@ impl Target {
         }
     }
 
+    /// Filmin sayfası; profil hedefinde film yoktur.
     fn film_url(&self) -> Option<String> {
-        self.slug().map(|slug| format!("{LETTERBOXD}/film/{slug}/"))
+        self.slug().map(film_page_url)
     }
 
     fn url(&self) -> String {
         match self {
-            Self::Film { slug } => format!("{LETTERBOXD}/film/{slug}/"),
+            Self::Film { slug } => film_page_url(slug),
             Self::Review { user, slug, entry } => {
                 let entry = entry.map(|n| format!("{n}/")).unwrap_or_default();
                 format!("{LETTERBOXD}/{user}/film/{slug}/{entry}")
@@ -228,6 +229,10 @@ impl Target {
             Self::Profile { user } => format!("{LETTERBOXD}/{user}/"),
         }
     }
+}
+
+fn film_page_url(slug: &str) -> String {
+    format!("{LETTERBOXD}/film/{slug}/")
 }
 
 /// Bir Letterboxd sayfası: varılan adres ve (yalnızca 2xx'te) gövde.
@@ -240,8 +245,8 @@ struct Page {
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
     let (target, page) = resolve(client, &parsed.original_url).await?;
     match &target {
-        Target::Film { .. } => {
-            let film_url = target.film_url().unwrap_or_else(|| target.url());
+        Target::Film { slug } => {
+            let film_url = film_page_url(slug);
             let html = page
                 .body
                 .as_deref()
@@ -249,7 +254,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
             let film = parse_film(html, &film_url)?;
             Ok(film_post(&film, None))
         }
-        Target::Review { user, .. } => {
+        Target::Review { user, slug, .. } => {
             if let Some(html) = page.body.as_deref()
                 && let Some(review) = parse_review(html, &target)
             {
@@ -260,7 +265,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
                 "Letterboxd inceleme sayfası okunamadı, film kartına düşülüyor: {}",
                 target.url()
             );
-            let film_url = target.film_url().unwrap_or_else(|| target.url());
+            let film_url = film_page_url(slug);
             let film_page = get_page(client, &film_url).await?;
             let html = film_page
                 .body
@@ -602,10 +607,6 @@ impl ProfileStats {
         push(self.followers, "takipçi");
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
-
-    fn summary(&self) -> String {
-        self.line().unwrap_or_default()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -664,9 +665,7 @@ fn parse_profile(html: &str, target: &Target) -> Result<Profile, String> {
         .and_then(|caps| caps.get(1))
         .map(|inner| inner.as_str())
         .unwrap_or_default();
-    let name =
-        first_capture(&PROFILE_LABEL_REGEX, h1).filter(|name| !name.eq_ignore_ascii_case(user));
-    let name = name.unwrap_or_else(|| user.clone());
+    let name = first_capture(&PROFILE_LABEL_REGEX, h1).unwrap_or_else(|| user.clone());
     let badge = first_capture(&PROFILE_BADGE_REGEX, h1);
     let avatar = first_capture(&PROFILE_AVATAR_REGEX, html)
         .or_else(|| first_capture(&OG_IMAGE_REGEX, html))
@@ -792,24 +791,9 @@ fn format_profile_count(value: u64) -> String {
     out
 }
 
-/// `2,590`, `16.7K`, `1,2 M` gibi profil sayaçlarını tam sayıya çevirir.
+/// `2,590`, `16.7K`, `1.2M` gibi profil sayaçlarını tam sayıya çevirir (HTML varlıkları çözülür).
 fn parse_stat_count(raw: &str) -> Option<u64> {
-    let text: String = unescape_html(raw)
-        .chars()
-        .filter(|ch| !matches!(ch, ',' | ' ' | '\u{a0}'))
-        .collect();
-    let lower = text.to_ascii_lowercase();
-    let (number, scale) = if let Some(number) = lower.strip_suffix('k') {
-        (number, 1_000.0)
-    } else if let Some(number) = lower.strip_suffix('m') {
-        (number, 1_000_000.0)
-    } else if let Some(number) = lower.strip_suffix('b') {
-        (number, 1_000_000_000.0)
-    } else {
-        (lower.as_str(), 1.0)
-    };
-    let value: f64 = number.parse().ok()?;
-    (value.is_finite() && value >= 0.0).then(|| (value * scale).round() as u64)
+    super::parse_compact_count(&unescape_html(raw))
 }
 
 /// Küçük avatar varyantını kartta keskin görünen 1000×1000 varyantına çevirir (aynı dosya).
@@ -924,22 +908,13 @@ fn thumbnail(url: &str, alt: &str) -> Value {
     json!({ "type": TYPE_THUMBNAIL, "media": { "url": url }, "description": alt })
 }
 
-/// Aksesuarı isteğe bağlı bölüm (profil avatarı yoksa aksesuar eklenmez).
-fn section_with_accessory(children: Vec<Value>, accessory: Option<Value>) -> Value {
-    let mut section = json!({ "type": TYPE_SECTION, "components": children });
-    if let Some(accessory) = accessory {
-        section["accessory"] = accessory;
-    }
-    section
-}
-
 /// Posterli bölüm; poster yoksa erişilebilirlik bir bağlantı butonu olur.
 fn section(children: Vec<Value>, poster: Option<&str>, fallback_url: &str, alt: &str) -> Value {
     let accessory = match poster {
         Some(url) => thumbnail(url, alt),
         None => link_button("Letterboxd", fallback_url),
     };
-    section_with_accessory(children, Some(accessory))
+    json!({ "type": TYPE_SECTION, "components": children, "accessory": accessory })
 }
 
 /// Paragraflar korunarak kısaltılır; kısaldıysa sonuna Letterboxd'a yönlendiren not eklenir.
@@ -1209,11 +1184,13 @@ fn profile_card(profile: &Profile) -> CustomCard {
         section_children.push(text(format!("-# {}", meta.join(" · "))));
     }
 
-    let accessory = profile
-        .avatar
-        .as_deref()
-        .map(|url| thumbnail(url, &format!("{} avatarı", profile.name)));
-    let mut components = vec![section_with_accessory(section_children, accessory)];
+    // Discord'da Section aksesuarı zorunludur: avatar yoksa profil bağlantı butonu konur.
+    let mut components = vec![section(
+        section_children,
+        profile.avatar.as_deref(),
+        &profile.url,
+        &format!("{} avatarı", profile.name),
+    )];
 
     if let Some(bio) = &profile.bio {
         components.push(text(escape_markdown(&bounded(bio, BIO_LIMIT))));
@@ -1258,7 +1235,8 @@ fn profile_post(profile: &Profile) -> BuiltinPost {
         .bio
         .clone()
         .filter(|bio| !bio.is_empty())
-        .unwrap_or_else(|| profile.stats.summary());
+        .or_else(|| profile.stats.line())
+        .unwrap_or_default();
     post.extra_label = Some("Letterboxd".to_string());
     post.custom_card = Some(profile_card(profile));
     post
@@ -1638,10 +1616,13 @@ mod tests {
             contents(&card)
         );
         assert!(!contents(&card).contains("Favori"));
-        assert!(
-            card.components[0].get("accessory").is_none(),
-            "avatar yoksa aksesuar eklenmemeli"
+        // Discord, aksesuarsız Section içeren mesajı reddeder: avatar yoksa bağlantı butonu.
+        let accessory = &card.components[0]["accessory"];
+        assert_eq!(
+            accessory["type"], TYPE_BUTTON,
+            "avatar yoksa buton aksesuar olmalı"
         );
+        assert_eq!(accessory["url"], "https://letterboxd.com/yeniuye/");
     }
 
     #[test]
