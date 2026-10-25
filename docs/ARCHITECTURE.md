@@ -120,14 +120,17 @@ değişmez.
 - Tumblr önce fxtumblr uyumlu renderer'ı (`FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`) dener; böylece
   NPF/reblog zinciri ve çoklu medya tek güvenli render görselinde korunur. Renderer erişilemezse public
   OG fallback kullanılır.
-- Letterboxd kartları sayfanın JSON-LD verisinden kurulur. Film kartı (yeşil) posteri, Letterboxd
-  ortalamasını yıldız ve oy sayısıyla, slogan, açıklama, tür/süre/ülke, oyuncular ve Letterboxd / Fragman
-  / IMDb / TMDB butonlarını gösterir. İnceleme kartı (turuncu) kullanıcının yıldızlarını, kalbini,
-  izleme tarihini, yeniden izlemeyi, beğeni sayısını ve metni gösterir; spoiler uyarılı incelemelerde
-  metin `||…||` arkasındadır. Numaralı yeniden izleme kayıtları (`/{kullanıcı}/film/{slug}/{n}/`)
-  Letterboxd tarafından botlara kapalıdır (403); bu durumda film kartı, incelemenin sahibini ve
-  bağlantısını belirterek gösterilir. `boxd.it` kısa linkleri varılan adresten hedefe çözülür.
-  İstekler botun kendi User-Agent'ıyla yapılır; film ve numarasız inceleme sayfaları buna açıktır.
+- Letterboxd kartları herkese açık sayfalardan kurulur. Film kartı (yeşil) JSON-LD'den posteri,
+  Letterboxd ortalamasını yıldız ve oy sayısıyla, slogan, açıklama, tür/süre/ülke, oyuncuları ve
+  Letterboxd / Fragman / IMDb / TMDB butonlarını gösterir. İnceleme kartı (turuncu) kullanıcının
+  yıldızlarını, kalbini, izleme tarihini, yeniden izlemeyi, beğeni sayısını ve metni gösterir;
+  spoiler uyarılı incelemelerde metin `||…||` arkasındadır. Profil kartı (mavi) HTML'den görünen
+  adı, `@kullanıcı`yı, rozeti (Pro/Patron/HQ), bio'yu, istatistikleri (film / bu yıl / liste /
+  takip / takipçi), konumu, harici bağlantıları, favori filmleri ve son etkinliği gösterir.
+  Cloudflare, profil ve numaralı inceleme sayfalarını sıradan User-Agent'lara 403 ile kapatır;
+  istekler Discord'un bağlantı botu tanıtıcısıyla (sonuna botun kendi adı eklenerek) yapılır.
+  Sayfa yine okunamazsa inceleme kartı, sahibini bağlantısıyla belirten film kartına düşer.
+  `boxd.it` kısa linkleri varılan adresten hedefe çözülür.
 - X GIF'leri vxTwitter gifconvert üzerinden animasyonlu AVIF bağlantısına dönüştürülür; yerel ffmpeg yolu
   yoktur. Görseller ve GIF'ler doğrudan CDN bağlantılarıdır; X görsellerinde `name=orig` kullanılır.
 - Reddit videolarında video ve ses saf Rust ile MP4'e birleştirilir. Başarısızlıkta uzak, sessiz video

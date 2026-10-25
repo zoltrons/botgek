@@ -1,4 +1,4 @@
-//! Letterboxd film ve kullanıcı incelemesi kartları (native, Components V2).
+//! Letterboxd film, kullanıcı incelemesi ve kullanıcı profili kartları (native, Components V2).
 //!
 //! Veri giriş/API anahtarı gerektirmeyen herkese açık sayfalardan okunur:
 //! - **Film sayfası** (`/film/{slug}/`): JSON-LD `Movie` nesnesi başlık, poster, yönetmen,
@@ -7,11 +7,16 @@
 //! - **İnceleme sayfası** (`/{kullanıcı}/film/{slug}/`): JSON-LD `Review` nesnesi yazarı,
 //!   puanı, metni (paragraflarıyla) ve tarihi taşır; HTML'den beğeni sayısı, kalp, yeniden
 //!   izleme, izleme tarihi ve spoiler uyarısı okunur.
+//! - **Profil sayfası** (`/{kullanıcı}/`): JSON-LD yoktur. HTML'den görünen ad, avatar, rozet
+//!   (Pro/Patron/HQ), bio, istatistikler (film, bu yıl, liste, takip, takipçi), konum,
+//!   favori filmler ve son etkinlik okunur.
 //!
-//! Numaralı yeniden izleme kayıtları (`/{kullanıcı}/film/{slug}/{n}/`) Cloudflare tarafından
-//! botlara kapatılmıştır (her User-Agent'ta 403). Bu durumda kart filmin kendisini gösterir ve
-//! incelemenin kime ait olduğunu, bağlantısıyla birlikte belirtir. `boxd.it` kısa linkleri
-//! hedefe çözülür; yanıt engellenmiş olsa bile varılan adres hedefi belirler.
+//! Cloudflare, Letterboxd'un profil ve numaralı inceleme sayfalarını sıradan User-Agent'lara
+//! 403 ile kapatır. Discord'un bağlantı botu tanıtıcısı bu kuraldan muaftır; bot da çıktısını
+//! Discord kartı olarak ürettiği için aynı tanıtıcıyı kullanır ve sonuna kendi adını ekler
+//! (bkz. [`LETTERBOXD_USER_AGENT`]). Sayfa yine okunamazsa inceleme kartı, incelemenin kime
+//! ait olduğunu bağlantısıyla belirten film kartına düşer. `boxd.it` kısa linkleri hedefe
+//! çözülür; yanıt engellenmiş olsa bile varılan adres hedefi belirler.
 
 use std::sync::LazyLock;
 
@@ -21,7 +26,7 @@ use tracing::debug;
 
 use super::render::{escape_markdown, format_count};
 use super::{Author, BuiltinPost, CustomCard, REQUEST_TIMEOUT, USER_AGENT, unescape_html};
-use crate::converters::parser::{ParsedPost, Platform};
+use crate::converters::parser::{ParsedPost, Platform, letterboxd_profile_user};
 use crate::utils::truncate_chars;
 
 const LETTERBOXD: &str = "https://letterboxd.com";
@@ -29,12 +34,26 @@ const LETTERBOXD: &str = "https://letterboxd.com";
 const LETTERBOXD_GREEN: u32 = 0x00E054;
 /// Letterboxd turuncusu: kullanıcı incelemesi kartı.
 const LETTERBOXD_ORANGE: u32 = 0xFF8000;
+/// Letterboxd mavisi (logodaki üç noktadan): kullanıcı profili kartı.
+const LETTERBOXD_BLUE: u32 = 0x40BCF4;
+
+/// Cloudflare, profil ve numaralı inceleme sayfalarını sıradan User-Agent'lara 403 ile kapatır.
+/// Discord'un bağlantı botu tanıtıcısı bu kapıdan geçer; sonuna botun kendi adı eklenir ki
+/// istekler tamamen anonim görünmesin ve sunucu tarafında ayırt edilebilsin.
+static LETTERBOXD_USER_AGENT: LazyLock<String> = LazyLock::new(|| {
+    format!("Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com) {USER_AGENT}")
+});
 
 /// Kartta gösterilen açıklama ve inceleme metni sınırları.
 const SYNOPSIS_LIMIT: usize = 600;
 const REVIEW_LIMIT: usize = 1_500;
+/// Profil bio'su ve listeleri için kart sınırları.
+const BIO_LIMIT: usize = 800;
 const MAX_CAST: usize = 5;
 const MAX_GENRES: usize = 4;
+const MAX_FAVORITES: usize = 4;
+const MAX_RECENT: usize = 4;
+const MAX_PROFILE_LINKS: usize = 2;
 
 // Components V2 bileşen türleri (yalnızca burada kullanılanlar).
 const TYPE_ACTION_ROW: u64 = 1;
@@ -96,7 +115,63 @@ static AVATAR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli avatar regex")
 });
 
-/// Kart hedefi: film, kullanıcı incelemesi (yeniden izlemede kayıt numarasıyla).
+// ── Profil sayfası ─────────────────────────────────────────────────────────────
+static PROFILE_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<(?:div|section) class="profile-header[^"]*"[^>]*>"#)
+        .expect("geçerli profil başlığı regex")
+});
+static PROFILE_H1_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<h1 class="person-display-name[^"]*"[^>]*>(.*?)</h1>"#)
+        .expect("geçerli profil adı regex")
+});
+static PROFILE_LABEL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<span class="label">(.*?)</span>"#).expect("geçerli profil etiketi regex")
+});
+static PROFILE_BADGE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<span class="badge[^"]*">(.*?)</span>"#).expect("geçerli rozet regex")
+});
+static PROFILE_AVATAR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<div class="profile-avatar">.*?<img src="([^"]+)""#)
+        .expect("geçerli profil avatarı regex")
+});
+static PROFILE_BIO_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<div class="[^"]*js-bio-content[^"]*"[^>]*>(.*?)</div>"#)
+        .expect("geçerli profil bio regex")
+});
+static PROFILE_STAT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?s)<h4 class="profile-statistic[^"]*"[^>]*>.*?<span class="value">([^<]+)</span><span[^>]*>([^<]+)</span>"#,
+    )
+    .expect("geçerli profil istatistiği regex")
+});
+static PROFILE_METADATUM_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<(?:div|a) class="metadatum[^"]*"[^>]*>(.*?)</(?:div|a)>"#)
+        .expect("geçerli profil meta regex")
+});
+static PROFILE_HREF_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<a [^>]*href="(https?://[^"]+)""#).expect("geçerli profil bağlantısı regex")
+});
+static PROFILE_ITEM_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)data-item-name="([^"]+)"[^>]*?data-item-link="([^"]+)""#)
+        .expect("geçerli profil öğesi regex")
+});
+static PROFILE_TARGET_LINK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"data-target-link="([^"]+)""#).expect("geçerli profil etkinlik bağlantısı regex")
+});
+static PROFILE_RATED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"class="rating rated-([0-9]{1,2})""#).expect("geçerli profil puanı regex")
+});
+/// Bio HTML'ini paragraflara çevirirken blok ve satır kıran etiketler.
+static PROFILE_PARAGRAPH_BREAK_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)</p\s*>|</div\s*>").expect("geçerli paragraf kırma regex"));
+static PROFILE_BR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<br\s*/?>").expect("geçerli satır kırma regex"));
+static OG_IMAGE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)<meta\s+property="og:image"\s+content="([^"]+)""#)
+        .expect("geçerli og:image regex")
+});
+
+/// Kart hedefi: film, kullanıcı incelemesi (yeniden izlemede kayıt numarasıyla), profil.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Target {
     Film {
@@ -107,10 +182,18 @@ enum Target {
         slug: String,
         entry: Option<u32>,
     },
+    Profile {
+        user: String,
+    },
 }
 
 impl Target {
     fn from_url(url: &str) -> Option<Self> {
+        // Profil yolu tek parçadır; `letterboxd_profile_user` film/inceleme alt yollarını,
+        // sabit sayfaları (`/films/`, `/about/` …) ve geçersiz adları eler.
+        if let Some(user) = letterboxd_profile_user(url) {
+            return Some(Self::Profile { user });
+        }
         let caps = TARGET_REGEX.captures(url)?;
         if let Some(slug) = caps.get(1) {
             return Some(Self::Film {
@@ -124,23 +207,25 @@ impl Target {
         })
     }
 
-    fn slug(&self) -> &str {
+    fn slug(&self) -> Option<&str> {
         match self {
-            Self::Film { slug } | Self::Review { slug, .. } => slug,
+            Self::Film { slug } | Self::Review { slug, .. } => Some(slug),
+            Self::Profile { .. } => None,
         }
     }
 
-    fn film_url(&self) -> String {
-        format!("{LETTERBOXD}/film/{}/", self.slug())
+    fn film_url(&self) -> Option<String> {
+        self.slug().map(|slug| format!("{LETTERBOXD}/film/{slug}/"))
     }
 
     fn url(&self) -> String {
         match self {
-            Self::Film { .. } => self.film_url(),
+            Self::Film { slug } => format!("{LETTERBOXD}/film/{slug}/"),
             Self::Review { user, slug, entry } => {
                 let entry = entry.map(|n| format!("{n}/")).unwrap_or_default();
                 format!("{LETTERBOXD}/{user}/film/{slug}/{entry}")
             }
+            Self::Profile { user } => format!("{LETTERBOXD}/{user}/"),
         }
     }
 }
@@ -156,10 +241,12 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let (target, page) = resolve(client, &parsed.original_url).await?;
     match &target {
         Target::Film { .. } => {
-            let html = page.body.as_deref().ok_or_else(|| {
-                format!("Letterboxd film sayfası alınamadı: {}", target.film_url())
-            })?;
-            let film = parse_film(html, &target.film_url())?;
+            let film_url = target.film_url().unwrap_or_else(|| target.url());
+            let html = page
+                .body
+                .as_deref()
+                .ok_or_else(|| format!("Letterboxd film sayfası alınamadı: {film_url}"))?;
+            let film = parse_film(html, &film_url)?;
             Ok(film_post(&film, None))
         }
         Target::Review { user, .. } => {
@@ -173,11 +260,12 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
                 "Letterboxd inceleme sayfası okunamadı, film kartına düşülüyor: {}",
                 target.url()
             );
-            let film_page = get_page(client, &target.film_url()).await?;
-            let html = film_page.body.ok_or_else(|| {
-                format!("Letterboxd film sayfası alınamadı: {}", target.film_url())
-            })?;
-            let film = parse_film(&html, &target.film_url())?;
+            let film_url = target.film_url().unwrap_or_else(|| target.url());
+            let film_page = get_page(client, &film_url).await?;
+            let html = film_page
+                .body
+                .ok_or_else(|| format!("Letterboxd film sayfası alınamadı: {film_url}"))?;
+            let film = parse_film(&html, &film_url)?;
             Ok(film_post(
                 &film,
                 Some(ReviewLink {
@@ -185,6 +273,16 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
                     url: target.url(),
                 }),
             ))
+        }
+        Target::Profile { .. } => {
+            let html = page.body.as_deref().ok_or_else(|| {
+                format!(
+                    "Letterboxd profil sayfası alınamadı (Cloudflare engeli olabilir): {}",
+                    target.url()
+                )
+            })?;
+            let profile = parse_profile(html, &target)?;
+            Ok(profile_post(&profile))
         }
     }
 }
@@ -201,10 +299,13 @@ async fn resolve(client: &reqwest::Client, original_url: &str) -> Result<(Target
 
 /// Sayfayı indirir. Durum 2xx değilse gövde okunmaz ama varılan adres yine döner (kısa link
 /// çözümü ve engelli inceleme yedeği bunu kullanır). Yalnızca `letterboxd.com`'a varılabilir.
+///
+/// User-Agent bilinçli olarak Discord'un bağlantı botu tanıtıcısıdır: Cloudflare, profil ve
+/// numaralı inceleme sayfalarında sıradan tanıtıcıları 403 ile durduruyor.
 async fn get_page(client: &reqwest::Client, url: &str) -> Result<Page, String> {
     let response = client
         .get(url)
-        .header("user-agent", USER_AGENT)
+        .header("user-agent", LETTERBOXD_USER_AGENT.as_str())
         .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
         .header("accept-language", "en-US,en;q=0.9")
         .timeout(REQUEST_TIMEOUT)
@@ -469,10 +570,314 @@ fn parse_review(html: &str, target: &Target) -> Option<Review> {
             .filter(|count| *count > 0),
         film_title: text_of(item, "name")?,
         film_year: first_capture(&YEAR_REGEX, html),
-        film_url: target.film_url(),
+        film_url: target.film_url()?,
         poster: https_image(text_of(item, "image").map(|url| large_poster(&url))),
         director: names_of(item, "director").into_iter().next(),
     })
+}
+
+// ─── Profil ayrıştırma ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ProfileStats {
+    films: Option<u64>,
+    this_year: Option<u64>,
+    lists: Option<u64>,
+    following: Option<u64>,
+    followers: Option<u64>,
+}
+
+impl ProfileStats {
+    fn line(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        let mut push = |count: Option<u64>, label: &str| {
+            if let Some(count) = count {
+                parts.push(format!("**{}** {label}", format_profile_count(count)));
+            }
+        };
+        push(self.films, "film");
+        push(self.this_year, "bu yıl");
+        push(self.lists, "liste");
+        push(self.following, "takip");
+        push(self.followers, "takipçi");
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    fn summary(&self) -> String {
+        self.line().unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProfileLink {
+    label: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProfileFilm {
+    title: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ProfileActivity {
+    title: String,
+    url: String,
+    rating: Option<f64>,
+    liked: bool,
+    rewatch: bool,
+    review: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Profile {
+    url: String,
+    user: String,
+    name: String,
+    badge: Option<String>,
+    avatar: Option<String>,
+    bio: Option<String>,
+    location: Option<String>,
+    links: Vec<ProfileLink>,
+    stats: ProfileStats,
+    favorites: Vec<ProfileFilm>,
+    recent: Vec<ProfileActivity>,
+}
+
+/// Profil sayfasını HTML'den okur. Sayfa gerçekten bir profil değilse (404/engel/başka
+/// sayfa) `Err` döner; kart üretilmez.
+fn parse_profile(html: &str, target: &Target) -> Result<Profile, String> {
+    let Target::Profile { user } = target else {
+        return Err(format!(
+            "Letterboxd profil hedefi bekleniyordu: {}",
+            target.url()
+        ));
+    };
+    let url = target.url();
+    if !PROFILE_HEADER_REGEX.is_match(html) {
+        return Err(format!("Letterboxd profil verisi bulunamadı: {url}"));
+    }
+
+    let h1 = PROFILE_H1_REGEX
+        .captures(html)
+        .and_then(|caps| caps.get(1))
+        .map(|inner| inner.as_str())
+        .unwrap_or_default();
+    let name =
+        first_capture(&PROFILE_LABEL_REGEX, h1).filter(|name| !name.eq_ignore_ascii_case(user));
+    let name = name.unwrap_or_else(|| user.clone());
+    let badge = first_capture(&PROFILE_BADGE_REGEX, h1);
+    let avatar = first_capture(&PROFILE_AVATAR_REGEX, html)
+        .or_else(|| first_capture(&OG_IMAGE_REGEX, html))
+        .map(|url| large_avatar(&url))
+        .filter(|url| url.starts_with("https://"));
+    let bio = PROFILE_BIO_REGEX
+        .captures(html)
+        .and_then(|caps| caps.get(1))
+        .map(|inner| html_to_text(inner.as_str()))
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+
+    let mut stats = ProfileStats::default();
+    for caps in PROFILE_STAT_REGEX.captures_iter(html) {
+        let Some(value) = parse_stat_count(&caps[1]) else {
+            continue;
+        };
+        match caps[2].trim().to_ascii_lowercase().as_str() {
+            "films" => stats.films = Some(value),
+            "this year" => stats.this_year = Some(value),
+            "lists" => stats.lists = Some(value),
+            "following" => stats.following = Some(value),
+            "followers" => stats.followers = Some(value),
+            _ => {}
+        }
+    }
+
+    let (location, links) = profile_metadata(html);
+    let favorites = profile_favorites(html);
+    let recent = profile_recent(html);
+
+    Ok(Profile {
+        url,
+        user: user.clone(),
+        name,
+        badge,
+        avatar,
+        bio,
+        location,
+        links,
+        stats,
+        favorites,
+        recent,
+    })
+}
+
+/// Profil başlığındaki konum ve harici bağlantılar (`profile-metadata`).
+fn profile_metadata(html: &str) -> (Option<String>, Vec<ProfileLink>) {
+    let mut location = None;
+    let mut links = Vec::new();
+    for caps in PROFILE_METADATUM_REGEX.captures_iter(html) {
+        let whole = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+        // `-has-no-label` yalnızca ikon taşır; etiketi olmayan bağlantı kartta anlamsız görünür.
+        if whole.contains("-has-no-label") {
+            continue;
+        }
+        let inner = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let Some(label) = first_capture(&PROFILE_LABEL_REGEX, inner) else {
+            continue;
+        };
+        let href = PROFILE_HREF_REGEX
+            .captures(whole)
+            .and_then(|caps| caps.get(1))
+            .and_then(|url| safe_external_link(url.as_str()));
+        match href {
+            Some(url) => {
+                if links.len() < MAX_PROFILE_LINKS {
+                    links.push(ProfileLink { label, url });
+                }
+            }
+            None => {
+                if location.is_none() {
+                    location = Some(label);
+                }
+            }
+        }
+    }
+    (location, links)
+}
+
+/// Yalnızca `https` harici bağlantı kabul edilir; Markdown bağlantı hedefini bozabilecek
+/// karakterler (`(`, `)`, boşluk) elenir.
+fn safe_external_link(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return None;
+    }
+    let text = url.to_string();
+    (!text
+        .chars()
+        .any(|ch| ch.is_whitespace() || matches!(ch, '(' | ')' | '<' | '>' | '|')))
+    .then_some(text)
+}
+
+/// Profil sayfasının `id`'li bölümünü keser (favoriler, son etkinlik).
+fn profile_section<'a>(html: &'a str, id: &str) -> Option<&'a str> {
+    let marker = format!("<section id=\"{id}\"");
+    let start = html.find(&marker)?;
+    let end = html[start..].find("</section>")?;
+    Some(&html[start..start + end])
+}
+
+/// Letterboxd gövde HTML'ini düz metne çevirir: paragraflar korunur, etiketler ve varlıklar
+/// çözülür.
+fn html_to_text(raw: &str) -> String {
+    let blocks = PROFILE_PARAGRAPH_BREAK_REGEX.replace_all(raw, "\n\n");
+    let breaks = PROFILE_BR_REGEX.replace_all(&blocks, "\n");
+    let stripped = TAG_REGEX.replace_all(&breaks, "");
+    unescape_html(&stripped)
+}
+
+/// Profil sayaçlarını binlik ayırıcıyla yazar (`2.590`, `16.700`); sayaçların tam değeri
+/// Letterboxd'da göründüğü gibi korunur.
+fn format_profile_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push('.');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// `2,590`, `16.7K`, `1,2 M` gibi profil sayaçlarını tam sayıya çevirir.
+fn parse_stat_count(raw: &str) -> Option<u64> {
+    let text: String = unescape_html(raw)
+        .chars()
+        .filter(|ch| !matches!(ch, ',' | ' ' | '\u{a0}'))
+        .collect();
+    let lower = text.to_ascii_lowercase();
+    let (number, scale) = if let Some(number) = lower.strip_suffix('k') {
+        (number, 1_000.0)
+    } else if let Some(number) = lower.strip_suffix('m') {
+        (number, 1_000_000.0)
+    } else if let Some(number) = lower.strip_suffix('b') {
+        (number, 1_000_000_000.0)
+    } else {
+        (lower.as_str(), 1.0)
+    };
+    let value: f64 = number.parse().ok()?;
+    (value.is_finite() && value >= 0.0).then(|| (value * scale).round() as u64)
+}
+
+/// Küçük avatar varyantını kartta keskin görünen 1000×1000 varyantına çevirir (aynı dosya).
+fn large_avatar(url: &str) -> String {
+    url.replace("-0-220-0-220-crop", "-0-1000-0-1000-crop")
+        .replace("-0-110-0-110-crop", "-0-1000-0-1000-crop")
+}
+
+/// Letterboxd içi bir yolu (veya mutlak `letterboxd.com` adresini) güvenli bir adrese çevirir;
+/// başka alan adlarına giden değerler kabul edilmez.
+fn letterboxd_url(path: &str) -> Option<String> {
+    let path = path.trim();
+    let url = if path.starts_with("http://") || path.starts_with("https://") {
+        url::Url::parse(path).ok()?
+    } else {
+        url::Url::parse(LETTERBOXD).ok()?.join(path).ok()?
+    };
+    (url.scheme() == "https" && url.host_str() == Some("letterboxd.com")).then(|| url.to_string())
+}
+
+/// Profildeki favori filmler (en fazla dört poster).
+fn profile_favorites(html: &str) -> Vec<ProfileFilm> {
+    let Some(section) = profile_section(html, "favourites") else {
+        return Vec::new();
+    };
+    PROFILE_ITEM_REGEX
+        .captures_iter(section)
+        .filter_map(|caps| {
+            let title = unescape_html(&caps[1]).trim().to_string();
+            let url = letterboxd_url(&caps[2])?;
+            (!title.is_empty()).then_some(ProfileFilm { title, url })
+        })
+        .take(MAX_FAVORITES)
+        .collect()
+}
+
+/// Profildeki son etkinlik (film, puan, kalp, yeniden izleme, inceleme).
+fn profile_recent(html: &str) -> Vec<ProfileActivity> {
+    let Some(section) = profile_section(html, "recent-activity") else {
+        return Vec::new();
+    };
+    section
+        .split("<li class=\"griditem\">")
+        .skip(1)
+        .filter_map(|chunk| {
+            let caps = PROFILE_ITEM_REGEX.captures(chunk)?;
+            let title = unescape_html(&caps[1]).trim().to_string();
+            let film_url = letterboxd_url(&caps[2])?;
+            let url = PROFILE_TARGET_LINK_REGEX
+                .captures(chunk)
+                .and_then(|caps| letterboxd_url(&caps[1]))
+                .unwrap_or_else(|| film_url.clone());
+            let rating = PROFILE_RATED_REGEX
+                .captures(chunk)
+                .and_then(|caps| caps[1].parse::<u32>().ok())
+                .filter(|score| (1..=10).contains(score))
+                .map(|score| f64::from(score) / 2.0);
+            (!title.is_empty()).then_some(ProfileActivity {
+                title,
+                url,
+                rating,
+                liked: chunk.contains(r#"class="rating liked""#),
+                rewatch: chunk.contains("icon-rewatch"),
+                review: chunk.contains("icon-review"),
+            })
+        })
+        .take(MAX_RECENT)
+        .collect()
 }
 
 // ─── Kartlar ─────────────────────────────────────────────────────────────────
@@ -514,13 +919,27 @@ fn link_button(label: &str, url: &str) -> Value {
     json!({ "type": TYPE_BUTTON, "style": STYLE_LINK, "label": label, "url": url })
 }
 
+/// Posteri/avatarı taşıyan küçük görsel (Section aksesuarı).
+fn thumbnail(url: &str, alt: &str) -> Value {
+    json!({ "type": TYPE_THUMBNAIL, "media": { "url": url }, "description": alt })
+}
+
+/// Aksesuarı isteğe bağlı bölüm (profil avatarı yoksa aksesuar eklenmez).
+fn section_with_accessory(children: Vec<Value>, accessory: Option<Value>) -> Value {
+    let mut section = json!({ "type": TYPE_SECTION, "components": children });
+    if let Some(accessory) = accessory {
+        section["accessory"] = accessory;
+    }
+    section
+}
+
 /// Posterli bölüm; poster yoksa erişilebilirlik bir bağlantı butonu olur.
 fn section(children: Vec<Value>, poster: Option<&str>, fallback_url: &str, alt: &str) -> Value {
     let accessory = match poster {
-        Some(url) => json!({ "type": TYPE_THUMBNAIL, "media": { "url": url }, "description": alt }),
+        Some(url) => thumbnail(url, alt),
         None => link_button("Letterboxd", fallback_url),
     };
-    json!({ "type": TYPE_SECTION, "components": children, "accessory": accessory })
+    section_with_accessory(children, Some(accessory))
 }
 
 /// Paragraflar korunarak kısaltılır; kısaldıysa sonuna Letterboxd'a yönlendiren not eklenir.
@@ -739,6 +1158,112 @@ fn review_card(review: &Review) -> CustomCard {
     }
 }
 
+/// Son etkinlik satırı: yıldızlar, filmin bağlantısı ve varsa kalp/yeniden izleme işaretleri.
+fn activity_line(activity: &ProfileActivity) -> String {
+    let mut line = String::new();
+    if let Some(rating) = activity.rating {
+        line.push_str(&stars(rating));
+        line.push(' ');
+    }
+    line.push_str(&format!(
+        "[{}]({})",
+        escape_markdown(&activity.title),
+        activity.url
+    ));
+    if activity.liked {
+        line.push_str(" ♥");
+    }
+    if activity.rewatch {
+        line.push_str(" 🔁");
+    }
+    if activity.review {
+        line.push_str(" 📝");
+    }
+    line
+}
+
+fn profile_subpage(user: &str, page: &str) -> String {
+    format!("{LETTERBOXD}/{user}/{page}/")
+}
+
+fn profile_card(profile: &Profile) -> CustomCard {
+    let mut header = format!("### [{}]({})", escape_markdown(&profile.name), profile.url);
+    let mut byline = format!("@{}", escape_markdown(&profile.user));
+    if let Some(badge) = &profile.badge {
+        byline.push_str(&format!(" · {}", escape_markdown(badge)));
+    }
+    header.push_str(&format!("\n-# {byline}"));
+
+    let mut section_children = vec![text(header)];
+    if let Some(stats) = profile.stats.line() {
+        section_children.push(text(stats));
+    }
+    let mut meta = Vec::new();
+    if let Some(location) = &profile.location {
+        meta.push(format!("📍 {}", escape_markdown(location)));
+    }
+    for link in &profile.links {
+        meta.push(format!("[{}]({})", escape_markdown(&link.label), link.url));
+    }
+    if !meta.is_empty() {
+        section_children.push(text(format!("-# {}", meta.join(" · "))));
+    }
+
+    let accessory = profile
+        .avatar
+        .as_deref()
+        .map(|url| thumbnail(url, &format!("{} avatarı", profile.name)));
+    let mut components = vec![section_with_accessory(section_children, accessory)];
+
+    if let Some(bio) = &profile.bio {
+        components.push(text(escape_markdown(&bounded(bio, BIO_LIMIT))));
+    }
+    if !profile.favorites.is_empty() {
+        let favorites = profile
+            .favorites
+            .iter()
+            .map(|film| format!("[{}]({})", escape_markdown(&film.title), film.url))
+            .collect::<Vec<_>>()
+            .join(", ");
+        components.push(text(format!("**Favori filmler:** {favorites}")));
+    }
+    if !profile.recent.is_empty() {
+        let mut lines = vec!["**Son etkinlik**".to_string()];
+        lines.extend(profile.recent.iter().map(activity_line));
+        components.push(text(lines.join("\n")));
+    }
+
+    let buttons = vec![
+        link_button("Letterboxd", &profile.url),
+        link_button("Filmler", &profile_subpage(&profile.user, "films")),
+        link_button("Günlük", &profile_subpage(&profile.user, "diary")),
+        link_button("Listeler", &profile_subpage(&profile.user, "lists")),
+    ];
+    components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
+    components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
+
+    CustomCard {
+        components,
+        accent_color: Some(LETTERBOXD_BLUE),
+    }
+}
+
+fn profile_post(profile: &Profile) -> BuiltinPost {
+    let mut author = Author::new(profile.name.clone(), "");
+    author.avatar = profile.avatar.clone();
+    author.profile_url = Some(profile.url.clone());
+    let mut post = BuiltinPost::new(Platform::Letterboxd, profile.url.clone(), author);
+    post.title = Some(format!("{} (@{})", profile.name, profile.user));
+    post.text = profile
+        .bio
+        .clone()
+        .filter(|bio| !bio.is_empty())
+        .unwrap_or_else(|| profile.stats.summary());
+    post.extra_label = Some("Letterboxd".to_string());
+    post.custom_card = Some(profile_card(profile));
+    post
+}
+
 fn film_post(film: &Film, review: Option<ReviewLink>) -> BuiltinPost {
     let url = review
         .as_ref()
@@ -806,11 +1331,73 @@ mod tests {
         <svg aria-label="Liked"></svg>
         </body></html>"##;
 
+    /// Canlı profil sayfasından kısaltılmış örnek (rozet, bio, istatistik, favoriler, etkinlik).
+    const PROFILE_HTML: &str = r##"<html><head>
+        <meta property="og:image" content="https://a.ltrbxd.com/resized/avatar/upload/1/8/3/2/2/6/shard/avtr-0-1000-0-1000-crop.jpg?v=6791db69be">
+        </head><body>
+        <div class="profile-header js-profile-header -is-not-mini-nav" data-person="hollieamanda">
+            <div class="profile-summary js-profile-summary -pending">
+                <div class="profile-avatar">
+                    <span class="avatar -a110 -large" > <img src="https://a.ltrbxd.com/resized/avatar/upload/1/8/3/2/2/6/shard/avtr-0-220-0-220-crop.jpg?v=6791db69be" alt="hollie amanda" width="110" height="110" /> </span>
+                </div>
+                <div class="profile-name-and-actions js-profile-name-and-actions">
+                    <h1 class="person-display-name js-display-name">
+                        <span class="displayname tooltip" title="hollieamanda"><span class="label">hollie amanda</span></span><span class="_inline-tail tail">&nbsp;<span class="badge -patron ">Patron</span></span>
+                    </h1>
+                </div>
+            </div>
+            <div class="profile-info js-profile-info">
+                <div class="profile-stats js-profile-stats">
+                    <h4 class="profile-statistic statistic"><a href="/hollieamanda/films/" class="thousands"><span class="value">2,590</span><span class="definition title-all-caps -small">Films</span></a></h4>
+                    <h4 class="profile-statistic statistic"><a href="/hollieamanda/diary/for/2026/"><span class="value">64</span><span class="definition title-all-caps -small">This year</span></a></h4>
+                    <h4 class="profile-statistic statistic"><a href="/hollieamanda/lists/"><span class="value">14</span><span class="definition title-all-caps -small">Lists</span></a></h4>
+                    <h4 class="profile-statistic statistic"><a href="/hollieamanda/following/"><span class="value">396</span><span class="definition title-all-caps -small">Following</span></a></h4>
+                    <h4 class="profile-statistic statistic"><a href="/hollieamanda/followers/" class="thousands"><span class="value">16,700</span><span class="definition title-all-caps -small">Followers</span></a></h4>
+                </div>
+                <div class="bio js-bio">
+                    <div class="js-collapsible-text body-text -small -reset js-bio-content" data-full-text-url="/s/full-text/person:183226/">
+                        <p>i watch movie, i have an epiphany, i forget about it the next day. that&#039;s just who i am</p>
+                    </div>
+                </div>
+                <div class="profile-metadata js-profile-metadata">
+                    <div class="metadatum -has-label"><svg role="presentation" width="8" height="16"><path d="M4 2"/></svg><span class="label">halifax, ns</span></div>
+                    <a class="metadatum -has-label" href="https://instagram.com/hollie.amanda" rel="me nofollow noopener noreferrer" target="_blank"><svg role="presentation" width="14" height="16"><path d="M8 7"/></svg><span class="label">instagram.com</span></a>
+                </div>
+            </div>
+        </div>
+        <div class="cols-2"><div class="col-16">
+        <section id="favourites" class="section"><h2 class="section-heading">Favorite films</h2><div class="poster-grid"><ul class="grid -p150">
+            <li class="griditem"><div class="favourite-production-poster-container"><div class="react-component" data-item-name="Her (2013)" data-item-slug="her" data-item-link="/film/her/" data-item-full-display-name="Her (2013)"></div></div></li>
+            <li class="griditem"><div class="favourite-production-poster-container"><div class="react-component" data-item-name="Harold and Maude (1971)" data-item-slug="harold-and-maude" data-item-link="/film/harold-and-maude/"></div></div></li>
+            <li class="griditem"><div class="favourite-production-poster-container"><div class="react-component" data-item-name="Twin Peaks: Fire Walk with Me (1992)" data-item-slug="twin-peaks-fire-walk-with-me" data-item-link="/film/twin-peaks-fire-walk-with-me/"></div></div></li>
+            <li class="griditem"><div class="favourite-production-poster-container"><div class="react-component" data-item-name="Suspiria (1977)" data-item-slug="suspiria" data-item-link="/film/suspiria/"></div></div></li>
+        </ul></div></section>
+        <section id="recent-activity" class="section -tinyicons"><h2 class="section-heading"><a href="/hollieamanda/activity/">Recent activity</a></h2><div class="poster-grid"><ul class="grid -p150">
+            <li class="griditem"><div class="viewing-poster-container" data-owner="hollieamanda"><div class="react-component" data-item-name="Over the Garden Wall (2014)" data-item-slug="over-the-garden-wall-2014" data-item-link="/film/over-the-garden-wall-2014/" data-target-link="/hollieamanda/film/over-the-garden-wall-2014/"></div><p class="poster-viewingdata"><span class="rating rated-8"> ★★★★ </span><span class="rating liked"> </span></p></div></li>
+            <li class="griditem"><div class="viewing-poster-container" data-owner="hollieamanda"><div class="react-component" data-item-name="The Devils (1971)" data-item-slug="the-devils" data-item-link="/film/the-devils/" data-target-link="/hollieamanda/film/the-devils/1/"></div><p class="poster-viewingdata"><span class="rating rated-8"> ★★★★ </span><span class="rating liked"> </span><span class="has-icon icon-rewatch rewatch-small icon-16"></span></p></div></li>
+            <li class="griditem"><div class="viewing-poster-container" data-owner="hollieamanda"><div class="react-component" data-item-name="You Can See Everything (2026)" data-item-slug="you-can-see-everything" data-item-link="/film/you-can-see-everything/" data-target-link="/hollieamanda/film/you-can-see-everything/"></div><p class="poster-viewingdata"><span class="rating rated-9"> ★★★★½ </span><a href="/hollieamanda/film/you-can-see-everything/" class="has-icon icon-review review-small icon-16 tooltip" title="Review"></a></p></div></li>
+        </ul></div></section>
+        </div></div>
+        </body></html>"##;
+
+    /// Biyografisi, istatistiği, favorisi ve etkinliği olmayan asgari profil.
+    const MINIMAL_PROFILE_HTML: &str = r##"<html><head></head><body>
+        <div class="profile-header js-profile-header" data-person="yeniuye">
+            <h1 class="person-display-name js-display-name"><span class="displayname tooltip" title="yeniuye"><span class="label">Yeni Üye</span></span></h1>
+        </div>
+        </body></html>"##;
+
     fn review_target() -> Target {
         Target::Review {
             user: "hollieamanda".into(),
             slug: "parasite-2019".into(),
             entry: None,
+        }
+    }
+
+    fn profile_target() -> Target {
+        Target::Profile {
+            user: "hollieamanda".into(),
         }
     }
 
@@ -870,9 +1457,228 @@ mod tests {
             rewatch.url(),
             "https://letterboxd.com/biri_1/film/heat-1995/2/"
         );
-        assert_eq!(rewatch.film_url(), "https://letterboxd.com/film/heat-1995/");
+        assert_eq!(
+            rewatch.film_url().as_deref(),
+            Some("https://letterboxd.com/film/heat-1995/")
+        );
+        assert_eq!(
+            Target::from_url("https://letterboxd.com/hollieamanda/"),
+            Some(Target::Profile {
+                user: "hollieamanda".into()
+            })
+        );
+        assert_eq!(
+            Target::from_url("https://letterboxd.com/hollieamanda/?utm_source=profil"),
+            Some(Target::Profile {
+                user: "hollieamanda".into()
+            })
+        );
+        assert_eq!(
+            Target::from_url("https://letterboxd.com/hollieamanda/")
+                .unwrap()
+                .url(),
+            "https://letterboxd.com/hollieamanda/"
+        );
+        assert!(
+            Target::from_url("https://letterboxd.com/hollieamanda/")
+                .unwrap()
+                .film_url()
+                .is_none()
+        );
+        assert_eq!(
+            Target::from_url("https://letterboxd.com/hollieamanda/films/"),
+            None
+        );
+        assert_eq!(Target::from_url("https://letterboxd.com/films/"), None);
+        assert_eq!(Target::from_url("https://letterboxd.com/about/"), None);
         assert_eq!(Target::from_url("https://boxd.it/2bg8"), None);
         assert_eq!(Target::from_url("https://evil.test/film/x/"), None);
+    }
+
+    #[test]
+    fn profile_page_is_parsed() {
+        let profile = parse_profile(PROFILE_HTML, &profile_target()).unwrap();
+        assert_eq!(profile.user, "hollieamanda");
+        assert_eq!(profile.name, "hollie amanda");
+        assert_eq!(profile.badge.as_deref(), Some("Patron"));
+        assert_eq!(profile.url, "https://letterboxd.com/hollieamanda/");
+        assert!(
+            profile
+                .avatar
+                .as_deref()
+                .unwrap()
+                .contains("-0-1000-0-1000-crop")
+        );
+        assert_eq!(
+            profile.bio.as_deref(),
+            Some(
+                "i watch movie, i have an epiphany, i forget about it the next day. that's just who i am"
+            )
+        );
+        assert_eq!(profile.location.as_deref(), Some("halifax, ns"));
+        assert_eq!(
+            profile.links,
+            vec![ProfileLink {
+                label: "instagram.com".into(),
+                url: "https://instagram.com/hollie.amanda".into()
+            }]
+        );
+        assert_eq!(
+            profile.stats,
+            ProfileStats {
+                films: Some(2_590),
+                this_year: Some(64),
+                lists: Some(14),
+                following: Some(396),
+                followers: Some(16_700),
+            }
+        );
+        assert_eq!(
+            profile.stats.line().as_deref(),
+            Some(
+                "**2.590** film · **64** bu yıl · **14** liste · **396** takip · **16.700** takipçi"
+            )
+        );
+        assert_eq!(profile.favorites.len(), 4);
+        assert_eq!(profile.favorites[0].title, "Her (2013)");
+        assert_eq!(profile.favorites[0].url, "https://letterboxd.com/film/her/");
+        assert_eq!(profile.recent.len(), 3);
+        assert_eq!(profile.recent[0].rating, Some(4.0));
+        assert!(profile.recent[0].liked);
+        assert_eq!(
+            profile.recent[0].url,
+            "https://letterboxd.com/hollieamanda/film/over-the-garden-wall-2014/"
+        );
+        assert!(profile.recent[1].rewatch);
+        assert_eq!(
+            profile.recent[1].url,
+            "https://letterboxd.com/hollieamanda/film/the-devils/1/"
+        );
+        assert!(profile.recent[2].review);
+        assert_eq!(profile.recent[2].rating, Some(4.5));
+        assert!(parse_profile("<html></html>", &profile_target()).is_err());
+    }
+
+    #[test]
+    fn profile_card_shows_stats_bio_favourites_and_activity() {
+        let profile = parse_profile(PROFILE_HTML, &profile_target()).unwrap();
+        let card = profile_card(&profile);
+        assert_eq!(card.accent_color, Some(LETTERBOXD_BLUE));
+        assert_eq!(card.components[0]["type"], TYPE_SECTION);
+        assert_eq!(card.components[0]["accessory"]["type"], TYPE_THUMBNAIL);
+        let text = contents(&card);
+        assert!(
+            text.contains("### [hollie amanda](https://letterboxd.com/hollieamanda/)"),
+            "{text}"
+        );
+        assert!(text.contains("-# @hollieamanda · Patron"), "{text}");
+        assert!(
+            text.contains(
+                "**2.590** film · **64** bu yıl · **14** liste · **396** takip · **16.700** takipçi"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("📍 halifax, ns"), "{text}");
+        assert!(
+            text.contains("[instagram.com](https://instagram.com/hollie.amanda)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("**Favori filmler:** [Her (2013)](https://letterboxd.com/film/her/)"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "★★★★ [Over the Garden Wall (2014)](https://letterboxd.com/hollieamanda/film/over-the-garden-wall-2014/) ♥"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "★★★★ [The Devils (1971)](https://letterboxd.com/hollieamanda/film/the-devils/1/) ♥ 🔁"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "★★★★½ [You Can See Everything (2026)](https://letterboxd.com/hollieamanda/film/you-can-see-everything/) 📝"
+            ),
+            "{text}"
+        );
+        let labels: Vec<String> = buttons(&card).into_iter().map(|(label, _)| label).collect();
+        assert_eq!(labels, vec!["Letterboxd", "Filmler", "Günlük", "Listeler"]);
+        let urls: Vec<String> = buttons(&card).into_iter().map(|(_, url)| url).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://letterboxd.com/hollieamanda/",
+                "https://letterboxd.com/hollieamanda/films/",
+                "https://letterboxd.com/hollieamanda/diary/",
+                "https://letterboxd.com/hollieamanda/lists/",
+            ]
+        );
+    }
+
+    #[test]
+    fn minimal_profile_still_renders_a_base_card() {
+        let target = Target::Profile {
+            user: "yeniuye".into(),
+        };
+        let profile = parse_profile(MINIMAL_PROFILE_HTML, &target).unwrap();
+        assert_eq!(profile.name, "Yeni Üye");
+        assert!(profile.badge.is_none());
+        assert!(profile.bio.is_none());
+        assert!(profile.stats.line().is_none());
+        assert!(profile.favorites.is_empty());
+        assert!(profile.recent.is_empty());
+        let card = profile_card(&profile);
+        assert!(
+            contents(&card).contains("### [Yeni Üye](https://letterboxd.com/yeniuye/)"),
+            "{}",
+            contents(&card)
+        );
+        assert!(!contents(&card).contains("Favori"));
+        assert!(
+            card.components[0].get("accessory").is_none(),
+            "avatar yoksa aksesuar eklenmemeli"
+        );
+    }
+
+    #[test]
+    fn profile_requests_carry_the_cloudflare_safe_user_agent() {
+        assert!(
+            LETTERBOXD_USER_AGENT.starts_with("Mozilla/5.0 (compatible; Discordbot/2.0;"),
+            "{}",
+            *LETTERBOXD_USER_AGENT
+        );
+        assert!(
+            LETTERBOXD_USER_AGENT.ends_with(USER_AGENT),
+            "bot kimliği tanıtıcının sonunda kalmalı: {}",
+            *LETTERBOXD_USER_AGENT
+        );
+    }
+
+    #[test]
+    fn profile_counts_accept_letterboxd_suffixes() {
+        assert_eq!(parse_stat_count("2,590"), Some(2_590));
+        assert_eq!(parse_stat_count("16.7K"), Some(16_700));
+        assert_eq!(parse_stat_count("1.2M"), Some(1_200_000));
+        assert_eq!(parse_stat_count("0"), Some(0));
+        assert_eq!(parse_stat_count("bilinmeyen"), None);
+        assert_eq!(format_profile_count(2_590), "2.590");
+        assert_eq!(format_profile_count(16_700), "16.700");
+    }
+
+    #[test]
+    fn untrusted_profile_text_cannot_break_out_of_the_card_markdown() {
+        let mut profile = parse_profile(PROFILE_HTML, &profile_target()).unwrap();
+        profile.name = "Kötü](https://evil.test)".into();
+        profile.bio = Some("bio ](https://evil.test) | sonrası".into());
+        profile.favorites[0].title = "Film](https://evil.test)".into();
+        let text = contents(&profile_card(&profile));
+        assert!(!text.contains("[Kötü](https://evil.test)"), "{text}");
+        assert!(!text.contains("[Film](https://evil.test)"), "{text}");
+        assert!(!text.contains("bio ](https://evil.test)"), "{text}");
     }
 
     #[test]
@@ -1056,7 +1862,7 @@ mod tests {
     /// Canlı kaynak testi: Letterboxd'un herkese açık sayfaları gerçek veri döndürmeli.
     #[tokio::test]
     #[ignore = "requires live Letterboxd access; run explicitly"]
-    async fn live_film_review_and_short_link() {
+    async fn live_film_review_profile_and_short_link() {
         let client = reqwest::Client::builder()
             .tls_backend_rustls()
             .timeout(std::time::Duration::from_secs(15))
@@ -1085,20 +1891,38 @@ mod tests {
         .expect("inceleme kartı üretilmeli");
         assert_eq!(review.author.name, "hollie amanda");
 
+        let profile = fetch(&client, &parsed("https://letterboxd.com/hollieamanda/"))
+            .await
+            .expect("profil kartı üretilmeli");
+        assert_eq!(profile.author.name, "hollie amanda");
+        assert_eq!(
+            profile.author.profile_url.as_deref(),
+            Some("https://letterboxd.com/hollieamanda/")
+        );
+        let profile_text = contents(profile.custom_card.as_ref().unwrap());
+        assert!(profile_text.contains("takipçi"), "{profile_text}");
+
         let short = fetch(&client, &parsed("https://boxd.it/2bg8"))
             .await
             .expect("kısa link çözülmeli");
         assert!(short.url.starts_with("https://letterboxd.com/film/"));
 
-        let blocked = fetch(
+        // Kısa link bir profile de çözülebilir.
+        let short_profile = fetch(&client, &parsed("https://boxd.it/7GEH"))
+            .await
+            .expect("profil kısa linki çözülmeli");
+        assert_eq!(
+            short_profile.author.profile_url.as_deref(),
+            Some("https://letterboxd.com/hollieamanda/")
+        );
+
+        // Numaralı yeniden izleme kaydı, Cloudflare'e takılmayan tanıtıcıyla okunur.
+        let rewatch = fetch(
             &client,
             &parsed("https://letterboxd.com/demiadejuyigbe/film/parasite-2019/2/"),
         )
         .await
-        .expect("engelli inceleme film kartına düşmeli");
-        assert!(
-            contents(blocked.custom_card.as_ref().unwrap())
-                .contains("adlı kullanıcının incelemesi")
-        );
+        .expect("numaralı inceleme kartı üretilmeli");
+        assert_eq!(rewatch.author.name, "demi adejuyigbe");
     }
 }

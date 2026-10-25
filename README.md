@@ -67,7 +67,7 @@ servisi gerekmez.
 | Tumblr | Gönderi | Native |
 | Facebook | Gönderi, video | Native |
 | YouTube | Topluluk gönderisi (Community Post) | Native |
-| Letterboxd | Film, kullanıcı incelemesi, `boxd.it` kısa link | Native |
+| Letterboxd | Film, kullanıcı incelemesi, kullanıcı profili, `boxd.it` kısa link | Native |
 
 Native-only platformlarda proxy motoru ve proxy yedeği yoktur. TikTok, Bluesky ve Spotify için panelden
 native veya proxy seçilebilir. X verisi için `vxtwitter` (varsayılan), `fxtwitter`, `syndication` ya da

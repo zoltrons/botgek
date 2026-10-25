@@ -248,6 +248,79 @@ static LETTERBOXD_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static LETTERBOXD_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?i:boxd\.it)/([A-Za-z0-9]+)").expect("geçerli boxd.it regex")
 });
+// Kullanıcı profili: /{kullanıcı}/ (tek yol parçası). Aday adresler burada toplanır; film,
+// inceleme ve alt sayfalar ayrıştırıcıda yol doğrulamasıyla elenir.
+static LETTERBOXD_PROFILE_CANDIDATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.)?letterboxd\.com/[^\s<>()|]*")
+        .expect("geçerli Letterboxd profil aday regex")
+});
+/// Letterboxd'un üst düzey sabit yolları: bunlar bir kullanıcı adı değildir, profil sayfası
+/// sayılmamalıdır (ör. `/films/`, `/about/`, `/settings/`).
+const LETTERBOXD_RESERVED_PROFILE_SEGMENTS: &[&str] = &[
+    "about",
+    "account",
+    "activity",
+    "advertise",
+    "api",
+    "api-beta",
+    "apps",
+    "contact",
+    "country",
+    "create-account",
+    "crew",
+    "decade",
+    "diary",
+    "dmca",
+    "export",
+    "film",
+    "films",
+    "followers",
+    "following",
+    "genre",
+    "gift-guide",
+    "guidelines",
+    "help",
+    "import",
+    "incoming",
+    "invite",
+    "journal",
+    "language",
+    "likes",
+    "list",
+    "lists",
+    "logout",
+    "members",
+    "network",
+    "news",
+    "notifications",
+    "person",
+    "podcast",
+    "privacy",
+    "pro",
+    "register",
+    "review",
+    "reviews",
+    "robots.txt",
+    "rss",
+    "s",
+    "search",
+    "settings",
+    "showdown",
+    "sign-in",
+    "signin",
+    "stats",
+    "studio",
+    "support",
+    "tags",
+    "terms",
+    "theme",
+    "welcome",
+    "watchlist",
+    "year-in-review",
+];
+
+/// Adres sonuna yapışan noktalama (`...`, `,`, `!`): profil bağlantısının parçası değildir.
+const URL_TRAILING_PUNCTUATION: [char; 8] = ['.', ',', ';', ':', '!', '?', '"', '\''];
 
 /// Characters that would prematurely close or corrupt the Markdown link the
 /// converter wraps these URLs in (`[:](url)` / `[**Platform**](<url>)`).
@@ -392,9 +465,18 @@ fn extract_user_comment(raw_content: &str, regex: &Regex) -> Option<String> {
         let cleaned = raw_content.trim();
         return (!cleaned.is_empty()).then(|| cleaned.to_string());
     };
-    let (mut start, mut end) = (found.start(), found.end());
-    // `<url>` Discord'un önizleme bastırma sözdizimidir; bağlantı yine dönüştürülür ama açılı parantezler yorumda artık kalmamalı.
-    // Sorgu desenleri `>`'yi eşleşmeye katabildiği için kapanış ayrıca aranmaz, yalnızca hemen ardındaysa alınır.
+    extract_user_comment_span(raw_content, found.start(), found.end())
+}
+
+/// `start..end` aralığındaki bağlantıyı metinden çıkarıp kalanı yorum olarak döndürür.
+///
+/// `<url>` Discord'un önizleme bastırma sözdizimidir; bağlantı yine dönüştürülür ama açılı
+/// parantezler yorumda artık kalmamalı.
+fn extract_user_comment_span(
+    raw_content: &str,
+    mut start: usize,
+    mut end: usize,
+) -> Option<String> {
     if raw_content[..start].ends_with('<') {
         start -= 1;
         if raw_content[end..].starts_with('>') {
@@ -744,9 +826,9 @@ fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
-/// Letterboxd: **native-only**. Kullanıcı incelemesi film sayfasından önce denenir; kısa
-/// linkler (`boxd.it`) hedefe native motorda çözülür. Adresler kanonik biçime indirilir
-/// (sorgu, parça ve alt sayfa atılır).
+/// Letterboxd: **native-only**. Kullanıcı profili, kullanıcı incelemesi ve film sayfası
+/// desteklenir; kısa linkler (`boxd.it`) hedefe native motorda çözülür. Adresler kanonik
+/// biçime indirilir (sorgu, parça ve alt sayfa atılır).
 fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
     match_pair(
         raw_content,
@@ -786,6 +868,68 @@ fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
             |caps| native(format!("https://boxd.it/{}", caps.get(1)?.as_str())),
         )
     })
+    .or_else(|| parse_letterboxd_profile(raw_content))
+}
+
+/// Bağlantı tek yol parçalı bir Letterboxd kullanıcı profili mi? (`/{kullanıcı}/`)
+///
+/// Film/inceleme/liste alt sayfaları, sabit üst düzey yollar ve kullanıcı adı olmayan
+/// adresler `None` döner. Sondaki noktalama (`...`, `,`, `!`) adresin parçası sayılmaz.
+pub(crate) fn letterboxd_profile_user(raw: &str) -> Option<String> {
+    let raw = raw.trim_end_matches(URL_TRAILING_PUNCTUATION);
+    let url = url::Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !matches!(
+            url.host_str(),
+            Some("letterboxd.com" | "www.letterboxd.com")
+        )
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    let mut segments = url.path_segments()?.filter(|segment| !segment.is_empty());
+    let user = segments.next()?;
+    if segments.next().is_some()
+        || user.len() > 30
+        || !user
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return None;
+    }
+    let lower = user.to_ascii_lowercase();
+    if LETTERBOXD_RESERVED_PROFILE_SEGMENTS.contains(&lower.as_str()) {
+        return None;
+    }
+    Some(user.to_string())
+}
+
+/// Mesajdaki ilk geçerli Letterboxd profil bağlantısını bulur.
+///
+/// Aday adresler tek tek doğrulanır: ilk eşleşme bir alt sayfa olsa bile (`/u/films/`)
+/// aramak vazgeçmez, sonraki adaya geçer. Spoiler biçimi (`||url||`) bağlantının hemen
+/// çevresindeki ayırıcılardan anlaşılır.
+fn parse_letterboxd_profile(raw_content: &str) -> Option<ParsedPost> {
+    for candidate in LETTERBOXD_PROFILE_CANDIDATE_REGEX.find_iter(raw_content) {
+        let token = candidate.as_str();
+        let trimmed = token.trim_end_matches(URL_TRAILING_PUNCTUATION);
+        let Some(user) = letterboxd_profile_user(trimmed) else {
+            continue;
+        };
+        let end = candidate.start() + trimmed.len();
+        let is_spoiler = raw_content[..candidate.start()].trim_end().ends_with("||")
+            && raw_content[end..].trim_start().starts_with("||");
+        let url = format!("https://letterboxd.com/{user}/");
+        return Some(ParsedPost {
+            platform: Platform::Letterboxd,
+            is_spoiler,
+            user_comment: extract_user_comment_span(raw_content, candidate.start(), end),
+            original_url: url.clone(),
+            fixed_url: url,
+        });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -818,9 +962,40 @@ mod tests {
             parse("https://boxd.it/2bg8"),
             Some(("https://boxd.it/2bg8".into(), false))
         );
-        // Profil, liste ve arama sayfaları dönüştürülmez.
-        assert_eq!(parse("https://letterboxd.com/hollieamanda/"), None);
+        // Profil tek yol parçasıysa dönüştürülür; film, liste ve arama alt sayfaları ve
+        // Letterboxd'un sabit üst düzey yolları profil sayılmaz.
+        assert_eq!(
+            parse("https://letterboxd.com/hollieamanda/"),
+            Some(("https://letterboxd.com/hollieamanda/".into(), false))
+        );
+        assert_eq!(
+            parse("profil: https://letterboxd.com/hollieamanda"),
+            Some(("https://letterboxd.com/hollieamanda/".into(), false))
+        );
+        assert_eq!(
+            parse("||https://letterboxd.com/hollieamanda/?ref=spoiler||"),
+            Some(("https://letterboxd.com/hollieamanda/".into(), true))
+        );
+        assert_eq!(parse("https://letterboxd.com/hollieamanda/films/"), None);
+        assert_eq!(
+            parse("https://letterboxd.com/hollieamanda/film/parasite-2019/"),
+            Some((
+                "https://letterboxd.com/hollieamanda/film/parasite-2019/".into(),
+                false
+            ))
+        );
+        assert_eq!(parse("https://letterboxd.com/films/"), None);
+        assert_eq!(parse("https://letterboxd.com/about/"), None);
         assert_eq!(parse("https://letterboxd.com/biri/list/en-iyiler/"), None);
+        // Alt sayfa ilk aday olsa da aynı mesajdaki geçerli profil bulunur.
+        assert_eq!(
+            parse("https://letterboxd.com/biri/films/ ve https://letterboxd.com/hollieamanda/"),
+            Some(("https://letterboxd.com/hollieamanda/".into(), false))
+        );
+        // Profil bağlantısı yorumdan temizlenir, kalan metin yorum olur.
+        let with_comment =
+            parse_letterboxd("bak https://letterboxd.com/hollieamanda/ ne güzel").unwrap();
+        assert_eq!(with_comment.user_comment.as_deref(), Some("bak  ne güzel"));
         let parsed = parse_message_with_domains(
             "https://letterboxd.com/film/heat-1995/",
             &PlatformDomains::default(),
