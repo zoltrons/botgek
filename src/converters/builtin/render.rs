@@ -255,6 +255,9 @@ pub async fn resolve_media(
     options: &RenderOptions,
 ) -> ResolvedMedia {
     let mut resolved = direct_media(plan);
+    if post.platform == crate::converters::parser::Platform::Pixiv {
+        attach_pixiv_images(post, &mut resolved, options).await;
+    }
     if !options.video_requires_download {
         return resolved;
     }
@@ -341,6 +344,51 @@ pub fn remote_gif_url(url: &str) -> String {
 /// Bir indirme görevini **süre bütçesi** içinde bekler. Bütçe dolarsa görev iptal edilir
 /// (yarıda kalan indirme ağ trafiğini de tüketmez) ve `None` döner; çağıran taraf uzak
 /// bağlantıya düşerek kartı yine anında gönderir.
+/// Tek Pixiv görseli için indirme sınırı: dört sayfa birlikte Discord'un dosya sınırını aşmaz.
+const PIXIV_IMAGE_LIMIT: u64 = DISCORD_FILE_LIMIT / 4;
+
+/// Pixiv görselleri yalnızca Pixiv Referer'ıyla verilir ve Discord bu başlığı gönderemez;
+/// Referer istemeyen ayna da önbelleğinde olmayan görseli Discord'un bekleme süresinden geç
+/// verir. Görseller bu yüzden paralel indirilip mesaja ek olarak konur. Bütçe içinde
+/// indirilemeyen görsel aynadan gösterilir.
+async fn attach_pixiv_images(
+    post: &BuiltinPost,
+    resolved: &mut ResolvedMedia,
+    options: &RenderOptions,
+) {
+    let deadline = tokio::time::Instant::now() + options.video_budget();
+    let handles: Vec<_> = resolved
+        .images
+        .iter()
+        .map(|url| {
+            let url = url.clone();
+            tokio::spawn(async move {
+                let headers = super::pixiv::image_headers(&url)?;
+                media::download_with(&url, PIXIV_IMAGE_LIMIT, &headers).await
+            })
+        })
+        .collect();
+    let urls = std::mem::take(&mut resolved.images);
+    for (url, handle) in urls.into_iter().zip(handles) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match within(remaining, handle).await {
+            Some(file) => {
+                let name = attachment_name(&file.filename, post.sensitive);
+                resolved
+                    .attachments
+                    .push(media::to_attachment(file, post.sensitive));
+                resolved.images.push(format!("attachment://{name}"));
+            }
+            None => {
+                debug!("Pixiv görseli indirilemedi, aynadan gösteriliyor: {url}");
+                resolved
+                    .images
+                    .push(super::pixiv::mirror(&url).unwrap_or(url));
+            }
+        }
+    }
+}
+
 async fn within<T>(budget: Duration, mut handle: tokio::task::JoinHandle<Option<T>>) -> Option<T> {
     match tokio::time::timeout(budget, &mut handle).await {
         Ok(Ok(value)) => value,
@@ -717,5 +765,57 @@ mod tests {
             image: image.map(str::to_string),
             site_name: Some("example.com".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn pixiv_images_that_cannot_be_downloaded_fall_back_to_the_mirror() {
+        let mut post = sample_post();
+        post.platform = Platform::Pixiv;
+        let options = RenderOptions::from_engine(&EngineSettings::default(), "pixiv");
+        // Pixiv görseli olmayan adres indirilmez; aynası da olmadığı için olduğu gibi kalır.
+        let mut resolved = ResolvedMedia {
+            images: vec![
+                "https://i.pximg.net/img-master/a b.jpg".to_string(),
+                "https://cdn.example/x.jpg".to_string(),
+            ],
+            ..ResolvedMedia::default()
+        };
+        attach_pixiv_images(&post, &mut resolved, &options).await;
+        assert!(resolved.attachments.is_empty());
+        assert_eq!(
+            resolved.images,
+            [
+                "https://i.pximg.net/img-master/a b.jpg",
+                "https://cdn.example/x.jpg"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Pixiv access; run explicitly"]
+    async fn live_pixiv_images_are_attached() {
+        let mut post = sample_post();
+        post.platform = Platform::Pixiv;
+        let options = RenderOptions::from_engine(&EngineSettings::default(), "pixiv");
+        let mut resolved = ResolvedMedia {
+            images: (0..4)
+                .map(|page| {
+                    format!(
+                        "https://i.pximg.net/img-master/img/2026/10/24/00/01/14/151194171_p{page}_master1200.jpg"
+                    )
+                })
+                .collect(),
+            ..ResolvedMedia::default()
+        };
+        let started = std::time::Instant::now();
+        attach_pixiv_images(&post, &mut resolved, &options).await;
+        println!("{:?} {:?}", started.elapsed(), resolved.images);
+        assert_eq!(resolved.attachments.len(), 4);
+        assert!(
+            resolved
+                .images
+                .iter()
+                .all(|url| url.starts_with("attachment://"))
+        );
     }
 }

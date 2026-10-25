@@ -208,7 +208,11 @@ pub async fn download(url: &str, max_bytes: u64) -> Option<MediaFile> {
 }
 
 /// [`download`] ile aynı; her istekte ek başlıklar gönderir (TikTok çerezi ve Referer).
-async fn download_with(url: &str, max_bytes: u64, headers: &[(&str, String)]) -> Option<MediaFile> {
+pub(super) async fn download_with(
+    url: &str,
+    max_bytes: u64,
+    headers: &[(&str, String)],
+) -> Option<MediaFile> {
     use crate::telemetry::{self, HttpHost};
     let host = HttpHost::classify(url);
     telemetry::http_request(host);

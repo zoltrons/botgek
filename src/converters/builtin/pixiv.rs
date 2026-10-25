@@ -2,9 +2,12 @@
 //! okunur (oturum gerektirmez). Başlık, açıklama, etiketler, sanatçı, tarih, beğeni/yer imi/
 //! izlenme/yorum sayıları ve çok sayfalı eserlerin tüm sayfaları (`/pages`) alınır.
 //!
-//! `i.pximg.net` yalnızca Pixiv'in `Referer`'ı ile görsel verir; Discord'un medya vekili bu
-//! başlığı göndermediği için görseller aynı yolu birebir sunan `i.pixiv.re` aynasından
-//! gösterilir. Uç nokta belgelenmemiştir: okunamazsa sayfanın genel önizlemesine düşülür.
+//! `i.pximg.net` yalnızca Pixiv'in `Referer`'ı ile görsel verir ve Discord'un medya vekili bu
+//! başlığı gönderemez. Görseller bu yüzden gönderimde [`image_headers`] ile indirilip mesaja
+//! ek olarak konur (bkz. `render::resolve_media`). İndirilemeyen görsel aynı yolu sunan
+//! `i.pixiv.re` aynasından gösterilir; ayna önbelleğinde olmayan görseli birkaç saniyede verdiği
+//! için Discord'da kırık kalabildiğinden yalnızca yedektir. Uç nokta belgelenmemiştir: okunamazsa
+//! sayfanın genel önizlemesine düşülür.
 
 use serde::Deserialize;
 use tracing::debug;
@@ -133,14 +136,25 @@ fn artwork_id(url: &str) -> Option<String> {
     valid.then(|| id.to_string())
 }
 
-/// `i.pximg.net` adresini aynaya taşır; başka bir ana bilgisayar kabul edilmez.
-fn mirror(url: &str) -> Option<String> {
+/// `i.pximg.net` görselinin yolu; yalnızca güvenli karakterler kabul edilir.
+fn pximg_path(url: &str) -> Option<&str> {
     let path = url.strip_prefix(PXIMG)?;
     let safe = !path.is_empty()
         && path
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"/_-.".contains(&b));
-    safe.then(|| format!("{IMAGE_MIRROR}{path}"))
+    safe.then_some(path)
+}
+
+/// `i.pximg.net` adresinin ayna karşılığı (indirilemeyen görselin yedeği).
+pub fn mirror(url: &str) -> Option<String> {
+    pximg_path(url).map(|path| format!("{IMAGE_MIRROR}{path}"))
+}
+
+/// Pixiv görselini indirmek için gereken başlıklar; Pixiv görseli değilse `None`.
+pub fn image_headers(url: &str) -> Option<Vec<(&'static str, String)>> {
+    pximg_path(url)?;
+    Some(vec![("referer", format!("{PIXIV}/"))])
 }
 
 /// Açıklama HTML'idir: satır sonları korunur, `jump.php` yönlendirmeleri hedef adrese açılır,
@@ -199,7 +213,10 @@ fn tag_line(illust: &Illust) -> Option<String> {
 fn image(url: &Urls, width: Option<u32>, height: Option<u32>) -> Option<Media> {
     Some(Media {
         kind: MediaKind::Image,
-        url: mirror(url.regular.as_deref()?)?,
+        url: url
+            .regular
+            .clone()
+            .filter(|url| pximg_path(url).is_some())?,
         poster: None,
         width,
         height,
@@ -319,13 +336,23 @@ mod tests {
     }
 
     #[test]
-    fn images_use_the_referer_free_mirror_only_for_pximg() {
+    fn only_pximg_images_get_the_referer_and_the_mirror_fallback() {
+        let url = "https://i.pximg.net/img-master/img/2026/1_p0_master1200.jpg";
         assert_eq!(
-            mirror("https://i.pximg.net/img-master/img/2026/1_p0_master1200.jpg").as_deref(),
+            mirror(url).as_deref(),
             Some("https://i.pixiv.re/img-master/img/2026/1_p0_master1200.jpg")
         );
-        assert_eq!(mirror("https://evil.example/a.jpg"), None);
-        assert_eq!(mirror("https://i.pximg.net/a.jpg?x=1"), None);
+        assert_eq!(
+            image_headers(url),
+            Some(vec![("referer", "https://www.pixiv.net/".to_string())])
+        );
+        for foreign in [
+            "https://evil.example/a.jpg",
+            "https://i.pximg.net/a.jpg?x=1",
+        ] {
+            assert_eq!(mirror(foreign), None);
+            assert_eq!(image_headers(foreign), None);
+        }
     }
 
     #[test]
@@ -371,7 +398,7 @@ mod tests {
         );
         assert!(!post.sensitive);
         assert_eq!(post.media.len(), 2);
-        assert!(post.media[1].url.starts_with("https://i.pixiv.re/"));
+        assert!(post.media[1].url.starts_with("https://i.pximg.net/"));
         assert!(post.media[1].url.ends_with("_p1_master1200.jpg"));
     }
 
