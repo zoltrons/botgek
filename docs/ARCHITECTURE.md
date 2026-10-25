@@ -125,6 +125,18 @@ değişmez.
   ~24 saat geçerli imzalı 720p MP4. Video imzanın süresi dolmasın diye mesaja dosya olarak eklenir;
   Discord sınırına ya da süre bütçesine sığmazsa imzalı adres kartta uzaktan oynar. Uç nokta
   belgelenmemiştir; sorgu başarısız olursa public OG önizlemesine düşülür.
+- Pixiv eserleri sitenin web istemcisinin `/ajax/illust/{id}` ve `/pages` uç noktalarından okunur:
+  başlık, açıklama, etiketler, sanatçı, tarih, beğeni/yer imi/izlenme/yorum ve tüm sayfalar; R-18
+  eserler hassas işaretlenir. `i.pximg.net` Pixiv `Referer`'ı olmadan 403 verdiği için görseller aynı
+  yolu sunan `i.pixiv.re` aynasından gösterilir.
+- YouTube topluluk gönderileri gönderi sayfasının (`hl=en`) `ytInitialData` nesnesindeki
+  `backstagePostRenderer`'dan okunur: kanal, bağlantıları korunmuş metin, tam beğeni sayısı, görsel(ler),
+  paylaşılan video ve anket. YouTube yalnızca göreli tarih verdiği için kart zamanı yaklaşıktır.
+- Facebook gönderileri botun kendi User-Agent'ıyla alınan hafif sayfanın OpenGraph etiketlerinden
+  (metin, `og:title` önekindeki izlenme/tepki sayıları, kapak, `og:url`'deki sayfa adı) okunur; video
+  ve reel'lerde gömme oynatıcı (`/plugins/video.php`) sayfa adını ve imzalı MP4'ü verir. Tarayıcı
+  User-Agent'ı 2 MB'ı aşan tam uygulamayı döndürür.
+- Bu üç uç nokta belgelenmemiştir; okunamazlarsa public OG önizlemesine düşülür.
 - Letterboxd kartları herkese açık sayfalardan kurulur. Film kartı (yeşil) JSON-LD'den posteri,
   Letterboxd ortalamasını yıldız ve oy sayısıyla, slogan, açıklama, tür/süre/ülke, oyuncuları ve
   Letterboxd / Fragman / IMDb / TMDB butonlarını gösterir. İnceleme kartı (turuncu) kullanıcının

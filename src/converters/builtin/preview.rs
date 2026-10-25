@@ -234,6 +234,19 @@ pub(super) fn meta_value(value: Option<String>, limit: usize) -> Option<String> 
         .map(|text| crate::utils::truncate_chars(&text, limit))
 }
 
+/// Sayfalarda kısaltılmış İngilizce sayıyı okur: `2.7M` → 2_700_000, `66K`, `1,234`.
+pub(super) fn parse_compact_count(raw: &str) -> Option<u64> {
+    let raw = raw.trim().replace(',', "");
+    let (number, scale) = match raw.chars().last()?.to_ascii_uppercase() {
+        'K' => (&raw[..raw.len() - 1], 1e3),
+        'M' => (&raw[..raw.len() - 1], 1e6),
+        'B' => (&raw[..raw.len() - 1], 1e9),
+        _ => (raw.as_str(), 1.0),
+    };
+    let value: f64 = number.trim().parse().ok()?;
+    (value.is_finite() && value >= 0.0).then(|| (value * scale).round() as u64)
+}
+
 pub(super) fn plain_text(raw: &str) -> String {
     raw.chars()
         .filter(|ch| !ch.is_control() || *ch == '\n')

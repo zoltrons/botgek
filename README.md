@@ -63,10 +63,10 @@ servisi gerekmez.
 | TikTok | Video | Native / proxy |
 | Spotify | Parça, albüm, çalma listesi, sanatçı, kısa link | Native / proxy |
 | Twitch | Klip (kart içinde video) | Native |
-| Pixiv | Çizim | Native |
+| Pixiv | Çizim (tüm sayfalar, etiketler) | Native |
 | Tumblr | Gönderi | Native |
-| Facebook | Gönderi, video | Native |
-| YouTube | Topluluk gönderisi (Community Post) | Native |
+| Facebook | Gönderi, video, reel (kart içinde video) | Native |
+| YouTube | Topluluk gönderisi (görsel, video, anket) | Native |
 | Letterboxd | Film, kullanıcı incelemesi, kullanıcı profili, `boxd.it` kısa link | Native |
 
 Native-only platformlarda proxy motoru ve proxy yedeği yoktur. TikTok, Bluesky ve Spotify için panelden
