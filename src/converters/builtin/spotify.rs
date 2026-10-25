@@ -30,6 +30,11 @@ const BROWSER_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0";
 /// Spotify yeşili (`0x1DB954`).
 const SPOTIFY_GREEN: u32 = 0x1DB954;
+/// Buton logoları: botun kendi (application) emojileri — her sunucuda görünür. Kart
+/// gönderimden bağımsız önbelleğe alındığı için ayar değil sabittir (Bluesky logosu gibi).
+const SPOTIFY_EMOJI: (&str, &str) = ("spotify", "1563861508482666616");
+const APPLE_MUSIC_EMOJI: (&str, &str) = ("applemusic", "1563861231931236452");
+const YOUTUBE_MUSIC_EMOJI: (&str, &str) = ("youtubemusic", "1563862603413983365");
 /// Dış isteklere zaman aşımı.
 const TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -423,7 +428,7 @@ fn build_card(view: &EntityView, open_url: &str) -> CustomCard {
             "media": { "url": image },
             "description": "Spotify kapak görseli",
         }),
-        None => link_button("Spotify", open_url),
+        None => link_button("Spotify", open_url, SPOTIFY_EMOJI),
     };
 
     let mut components = vec![json!({
@@ -440,9 +445,17 @@ fn build_card(view: &EntityView, open_url: &str) -> CustomCard {
     }
 
     let buttons = vec![
-        link_button("Spotify", open_url),
-        link_button("Apple Music", &apple_music_search_url(view)),
-        link_button("YouTube Music", &youtube_music_search_url(view)),
+        link_button("Spotify", open_url, SPOTIFY_EMOJI),
+        link_button(
+            "Apple Music",
+            &apple_music_search_url(view),
+            APPLE_MUSIC_EMOJI,
+        ),
+        link_button(
+            "YouTube Music",
+            &youtube_music_search_url(view),
+            YOUTUBE_MUSIC_EMOJI,
+        ),
     ];
 
     let button_row = json!({ "type": TYPE_ACTION_ROW, "components": buttons });
@@ -667,9 +680,15 @@ fn text_component(content: impl Into<String>) -> Value {
     json!({ "type": TYPE_TEXT_DISPLAY, "content": content.into() })
 }
 
-/// `{"type": 2, "style": 5, ...}` — bağlantı (link) butonu.
-fn link_button(label: &str, url: &str) -> Value {
-    json!({ "type": 2, "style": 5, "label": label, "url": url })
+/// `{"type": 2, "style": 5, ...}` — platform logolu bağlantı (link) butonu.
+fn link_button(label: &str, url: &str, (emoji_name, emoji_id): (&str, &str)) -> Value {
+    json!({
+        "type": 2,
+        "style": 5,
+        "label": label,
+        "url": url,
+        "emoji": { "name": emoji_name, "id": emoji_id },
+    })
 }
 
 /// Nesne alanından boş olmayan metin okur.
@@ -871,6 +890,11 @@ mod tests {
         for button in buttons {
             assert_eq!(button["style"], 5);
         }
+        // Her butonda platform logosu (botun application emojisi) etiketin yanında durur.
+        assert_eq!(buttons[0]["emoji"]["id"], SPOTIFY_EMOJI.1);
+        assert_eq!(buttons[1]["emoji"]["id"], APPLE_MUSIC_EMOJI.1);
+        assert_eq!(buttons[2]["emoji"]["name"], "youtubemusic");
+        assert_eq!(buttons[2]["label"], "YouTube Music");
     }
 
     #[test]
