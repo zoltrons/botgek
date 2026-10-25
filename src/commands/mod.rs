@@ -21,14 +21,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serenity::all::{
     Command, CommandData, CommandDataOptionValue, CommandInteraction, CommandOptionType,
-    CommandType, Context, CreateCommand, CreateCommandOption, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse, Http, InstallationContext,
-    Interaction, InteractionContext, MessageId, User,
+    CommandType, ComponentInteraction, Context, CreateCommand, CreateCommandOption,
+    CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse, Http,
+    InstallationContext, Interaction, InteractionContext, MessageId, User,
 };
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
+use crate::converters::builtin::{raw, spotify};
 use crate::converters::{self, ConvertError};
 use crate::settings::AppSettings;
 
@@ -146,6 +147,14 @@ pub async fn handle(
         }
         Interaction::Modal(modal) if modal.data.custom_id.starts_with(fun::CUSTOM_ID_PREFIX) => {
             return fun::handle_modal(ctx, modal).await;
+        }
+        Interaction::Component(component)
+            if component
+                .data
+                .custom_id
+                .starts_with(spotify::PAGE_CUSTOM_ID_PREFIX) =>
+        {
+            return spotify_page(ctx, component, http_client).await;
         }
         Interaction::Command(command) => command,
         _ => return,
@@ -291,6 +300,59 @@ fn string_option<'a>(data: &'a CommandData, name: &str) -> Option<&'a str> {
 }
 
 /// Yalnızca komutu kullanan kişiye görünen kısa yanıt.
+/// Spotify kartındaki parça listesi sayfa butonu: mesaj yerinde güncellenir.
+///
+/// Önce "güncelleme ertelendi" (type 6) yanıtı verilir (embed yeniden çekilirken üç saniyelik
+/// pencere kaçmasın), mesaj ham JSON olarak okunur, yalnızca liste + sayfa butonları değiştirilir
+/// ve `@original` düzenlenir. Sayfa herkes için değişir; tıklayan kişiye yetki aranmaz.
+async fn spotify_page(ctx: &Context, component: &ComponentInteraction, client: &reqwest::Client) {
+    let deferred = ctx
+        .http
+        .create_interaction_response(
+            component.id,
+            &component.token,
+            &serde_json::json!({ "type": 6 }),
+            Vec::new(),
+        )
+        .await;
+    if let Err(err) = deferred {
+        warn!(interaction = %component.id, "Spotify sayfa etkileşimi ertelenemedi: {err:?}");
+        return;
+    }
+
+    let application_id = component.application_id.get();
+    let result = async {
+        let message = raw::get_interaction_original(client, application_id, &component.token)
+            .await
+            .map_err(|err| format!("mesaj okunamadı: {err:?}"))?;
+        let mut components = message
+            .get("components")
+            .cloned()
+            .ok_or("mesajda bileşen yok")?;
+        spotify::turn_page(client, &component.data.custom_id, &mut components).await?;
+        let payload = serde_json::json!({
+            "components": components,
+            "allowed_mentions": { "parse": [] },
+        });
+        raw::edit_interaction_response(client, application_id, &component.token, &payload, &[])
+            .await
+            .map_err(|err| format!("mesaj düzenlenemedi: {err:?}"))
+    }
+    .await;
+
+    if let Err(err) = result {
+        warn!(interaction = %component.id, "Spotify sayfası değiştirilemedi: {err}");
+        let body = serde_json::json!({
+            "content": "Sayfa değiştirilemedi, biraz sonra tekrar dene.",
+            "flags": 64,
+        });
+        let _ = ctx
+            .http
+            .create_followup_message(&component.token, &body, Vec::new())
+            .await;
+    }
+}
+
 async fn reply_ephemeral(ctx: &Context, command: &CommandInteraction, content: &str) {
     let builder = CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()

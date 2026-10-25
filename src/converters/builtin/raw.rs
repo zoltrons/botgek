@@ -106,6 +106,26 @@ pub async fn edit_interaction_response(
     }
 }
 
+/// Etkileşimin bağlı olduğu mesajı **ham JSON** olarak okur.
+///
+/// Bileşen etkileşiminde `@original`, butonun bulunduğu mesajdır. Serenity 0.12 mesaj
+/// modelinde Components V2 bileşenleri (Container / Section / Text Display) korunmadığı için
+/// mesajı yerinde güncelleyen işleyiciler bileşen ağacını buradan alır.
+pub async fn get_interaction_original(
+    client: &reqwest::Client,
+    application_id: u64,
+    token: &str,
+) -> Result<serde_json::Value, DiscordError> {
+    let url = format!("{API_BASE}/webhooks/{application_id}/{token}/messages/@original");
+    let request = client
+        .get(url)
+        .header("user-agent", DISCORD_USER_AGENT)
+        .timeout(Duration::from_secs(10));
+    let body =
+        super::transport::send(client, request, format!("interaction:{application_id}")).await?;
+    serde_json::from_str(&body).map_err(|_| DiscordError::Ambiguous)
+}
+
 /// Webhook çalıştırma adresi.
 ///
 /// `wait=true`: Discord oluşan mesajı yanıt olarak döner (mesaj kimliği 🗑️ silme kaydı için

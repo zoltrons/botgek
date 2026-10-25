@@ -105,6 +105,10 @@ impl LinkPreview {
 pub struct CustomCard {
     pub components: Vec<serde_json::Value>,
     pub accent_color: Option<u32>,
+    /// Gönderimde video eki üretilebildiğinde `components` yerine kullanılan düzen (ör. Spotify:
+    /// kapak videoda göründüğü için küçük görselsiz, kompakt başlık). Video ilk bileşenin
+    /// altına eklenir. `None`: video olsa da `components` kullanılır.
+    pub video_components: Option<Vec<serde_json::Value>>,
 }
 
 /// Render katmanının platformdan bağımsız girdisi.

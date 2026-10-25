@@ -1049,6 +1049,7 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     CustomCard {
         components,
         accent_color: Some(LETTERBOXD_GREEN),
+        video_components: None,
     }
 }
 
@@ -1130,6 +1131,7 @@ fn review_card(review: &Review) -> CustomCard {
     CustomCard {
         components,
         accent_color: Some(LETTERBOXD_ORANGE),
+        video_components: None,
     }
 }
 
@@ -1222,6 +1224,7 @@ fn profile_card(profile: &Profile) -> CustomCard {
     CustomCard {
         components,
         accent_color: Some(LETTERBOXD_BLUE),
+        video_components: None,
     }
 }
 

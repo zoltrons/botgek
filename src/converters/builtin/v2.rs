@@ -218,17 +218,23 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
 }
 
 /// Platforma özel kartın bileşenleri. Gönderimde ek olarak üretilen video (Spotify: kapak +
-/// 30 sn önizleme) ilk bölümün hemen altında galeri olarak oynar. Yalnızca **ek** kullanılır:
+/// 30 sn önizleme) ilk bileşenin hemen altında galeri olarak oynar; kart bu durum için ayrı bir
+/// düzen verdiyse (`video_components`) o kullanılır. Yalnızca **ek** kullanılır:
 /// uzak bağlantı (Spotify'da MP3) galeride oynamaz. Spoiler, ardından ağaç genelinde uygulanır.
 fn custom_children(custom: &super::CustomCard, resolved: &ResolvedMedia) -> Vec<Value> {
-    let mut children = custom.components.clone();
-    if let Some(reference) = &resolved.attached_video {
-        let gallery = json!({
-            "type": TYPE_MEDIA_GALLERY,
-            "items": [media_item(reference, false)],
-        });
-        children.insert(children.len().min(1), gallery);
-    }
+    let Some(reference) = &resolved.attached_video else {
+        return custom.components.clone();
+    };
+    // Video varken platformun kompakt düzeni (varsa) kullanılır.
+    let mut children = custom
+        .video_components
+        .clone()
+        .unwrap_or_else(|| custom.components.clone());
+    let gallery = json!({
+        "type": TYPE_MEDIA_GALLERY,
+        "items": [media_item(reference, false)],
+    });
+    children.insert(children.len().min(1), gallery);
     children
 }
 
@@ -994,6 +1000,7 @@ mod tests {
         post.custom_card = Some(crate::converters::builtin::CustomCard {
             components: source_components.clone(),
             accent_color: None,
+            video_components: None,
         });
         post.sensitive = true;
         let options = options();
@@ -1019,6 +1026,7 @@ mod tests {
                 json!({"type": TYPE_SEPARATOR}),
             ],
             accent_color: None,
+            video_components: None,
         });
         let options = options();
         let emojis = emojis();
@@ -1033,7 +1041,7 @@ mod tests {
 
         let attached = ResolvedMedia {
             attached_video: Some("attachment://spotify-preview.mp4".to_string()),
-            ..remote_only
+            ..remote_only.clone()
         };
         let payload = build_payload(&card(&post, &options, &attached, &emojis));
         let children = container(&payload)["components"]
@@ -1046,6 +1054,25 @@ mod tests {
         assert_eq!(
             gallery_urls(&payload),
             vec!["attachment://spotify-preview.mp4"]
+        );
+
+        // Kart video için ayrı düzen verdiyse o kullanılır; galeri ilk bileşenin altına girer.
+        post.custom_card.as_mut().unwrap().video_components = Some(vec![
+            json!({"type": TYPE_TEXT_DISPLAY, "content": "kompakt"}),
+        ]);
+        let payload = build_payload(&card(&post, &options, &attached, &emojis));
+        let children = container(&payload)["components"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0]["content"], "kompakt");
+        assert_eq!(children[1]["type"], TYPE_MEDIA_GALLERY);
+        let payload = build_payload(&card(&post, &options, &remote_only, &emojis));
+        assert_eq!(
+            container(&payload)["components"][0]["type"],
+            TYPE_SECTION,
+            "video yoksa kompakt düzen kullanılmaz"
         );
 
         // Hassas gönderide galeri öğesi de spoiler olur.
