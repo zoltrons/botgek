@@ -37,6 +37,88 @@ const LETTERBOXD_ORANGE: u32 = 0xFF8000;
 /// Letterboxd mavisi (logodaki üç noktadan): kullanıcı profili kartı.
 const LETTERBOXD_BLUE: u32 = 0x40BCF4;
 
+/// Botun kendi (application) emojisi: her sunucuda görünür. Kart gönderimden bağımsız
+/// önbelleğe alınan kaynak veri olduğu için ikonlar ayar değil sabittir (Spotify logoları gibi).
+#[derive(Debug, Clone, Copy)]
+struct Emoji {
+    name: &'static str,
+    id: &'static str,
+}
+
+impl Emoji {
+    /// Metin içindeki biçim: `<:ad:id>`.
+    fn tag(self) -> String {
+        format!("<:{}:{}>", self.name, self.id)
+    }
+
+    /// Buton `emoji` alanı.
+    fn json(self) -> Value {
+        json!({ "name": self.name, "id": self.id })
+    }
+}
+
+// Letterboxd'un kendi sprite'ından üretilen ikonlar.
+const EMOJI_LOGO: Emoji = Emoji {
+    name: "letterboxd",
+    id: "1563865506841362505",
+};
+const EMOJI_STAR: Emoji = Emoji {
+    name: "lb_star",
+    id: "1563865502881808486",
+};
+const EMOJI_HALF: Emoji = Emoji {
+    name: "lb_half",
+    id: "1563865487144914995",
+};
+const EMOJI_LIKE: Emoji = Emoji {
+    name: "lb_like",
+    id: "1563865488831029358",
+};
+const EMOJI_REWATCH: Emoji = Emoji {
+    name: "lb_rewatch",
+    id: "1563865499153072229",
+};
+const EMOJI_REVIEW: Emoji = Emoji {
+    name: "lb_review",
+    id: "1563865497492131860",
+};
+const EMOJI_SPOILER: Emoji = Emoji {
+    name: "lb_spoiler",
+    id: "1563865500931330179",
+};
+const EMOJI_WATCHED: Emoji = Emoji {
+    name: "lb_watched",
+    id: "1563865505725685790",
+};
+const EMOJI_LIKES: Emoji = Emoji {
+    name: "lb_likes",
+    id: "1563865490441506826",
+};
+const EMOJI_PLAY: Emoji = Emoji {
+    name: "lb_play",
+    id: "1563865496019927101",
+};
+const EMOJI_FILMS: Emoji = Emoji {
+    name: "lb_films",
+    id: "1563865484900962304",
+};
+const EMOJI_THIS_YEAR: Emoji = Emoji {
+    name: "lb_thisyear",
+    id: "1563865504420986910",
+};
+const EMOJI_LISTS: Emoji = Emoji {
+    name: "lb_lists",
+    id: "1563865491725099060",
+};
+const EMOJI_PEOPLE: Emoji = Emoji {
+    name: "lb_people",
+    id: "1563865494522437662",
+};
+const EMOJI_PATRON: Emoji = Emoji {
+    name: "lb_patron",
+    id: "1563865493029257216",
+};
+
 /// Cloudflare, profil ve numaralı inceleme sayfalarını sıradan User-Agent'lara 403 ile kapatır.
 /// Discord'un bağlantı botu tanıtıcısı bu kapıdan geçer; sonuna botun kendi adı eklenir ki
 /// istekler tamamen anonim görünmesin ve sunucu tarafında ayırt edilebilsin.
@@ -593,18 +675,33 @@ struct ProfileStats {
 }
 
 impl ProfileStats {
+    /// Düz metin özet (gönderi metni yedeği).
     fn line(&self) -> Option<String> {
+        self.render(false)
+    }
+
+    /// Kart satırı: her sayının önünde Letterboxd'un profil sekmesi ikonu.
+    fn card_line(&self) -> Option<String> {
+        self.render(true)
+    }
+
+    fn render(&self, icons: bool) -> Option<String> {
         let mut parts = Vec::new();
-        let mut push = |count: Option<u64>, label: &str| {
+        let mut push = |count: Option<u64>, icon: Emoji, label: &str| {
             if let Some(count) = count {
-                parts.push(format!("**{}** {label}", format_profile_count(count)));
+                let count = format_profile_count(count);
+                parts.push(if icons {
+                    format!("{} **{count}** {label}", icon.tag())
+                } else {
+                    format!("**{count}** {label}")
+                });
             }
         };
-        push(self.films, "film");
-        push(self.this_year, "bu yıl");
-        push(self.lists, "liste");
-        push(self.following, "takip");
-        push(self.followers, "takipçi");
+        push(self.films, EMOJI_FILMS, "film");
+        push(self.this_year, EMOJI_THIS_YEAR, "bu yıl");
+        push(self.lists, EMOJI_LISTS, "liste");
+        push(self.following, EMOJI_PEOPLE, "takip");
+        push(self.followers, EMOJI_PEOPLE, "takipçi");
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
 }
@@ -866,14 +963,15 @@ fn profile_recent(html: &str) -> Vec<ProfileActivity> {
 
 // ─── Kartlar ─────────────────────────────────────────────────────────────────
 
-/// Puanı Letterboxd'un yıldız diliyle yazar: en yakın yarım yıldıza yuvarlanır (`★★★★½`).
+/// Puanı Letterboxd'un yeşil yıldızlarıyla yazar: en yakın yarım yıldıza yuvarlanır
+/// (`★★★★½` → dört yıldız ve `½` emojisi).
 fn stars(rating: f64) -> String {
     let halves = (rating * 2.0).round().clamp(1.0, 10.0) as usize;
-    format!(
-        "{}{}",
-        "★".repeat(halves / 2),
-        if halves % 2 == 1 { "½" } else { "" }
-    )
+    let mut out = EMOJI_STAR.tag().repeat(halves / 2);
+    if halves % 2 == 1 {
+        out.push_str(&EMOJI_HALF.tag());
+    }
+    out
 }
 
 fn runtime_label(minutes: u32) -> String {
@@ -899,8 +997,14 @@ fn text(content: impl Into<String>) -> Value {
     json!({ "type": TYPE_TEXT_DISPLAY, "content": content.into() })
 }
 
-fn link_button(label: &str, url: &str) -> Value {
-    json!({ "type": TYPE_BUTTON, "style": STYLE_LINK, "label": label, "url": url })
+/// Bağlantı butonu; ikon verilirse etiketin solunda Letterboxd ikonu durur.
+fn link_button(label: &str, url: &str, icon: Option<Emoji>) -> Value {
+    let mut button =
+        json!({ "type": TYPE_BUTTON, "style": STYLE_LINK, "label": label, "url": url });
+    if let Some(icon) = icon {
+        button["emoji"] = icon.json();
+    }
+    button
 }
 
 /// Posteri/avatarı taşıyan küçük görsel (Section aksesuarı).
@@ -912,7 +1016,7 @@ fn thumbnail(url: &str, alt: &str) -> Value {
 fn section(children: Vec<Value>, poster: Option<&str>, fallback_url: &str, alt: &str) -> Value {
     let accessory = match poster {
         Some(url) => thumbnail(url, alt),
-        None => link_button("Letterboxd", fallback_url),
+        None => link_button("Letterboxd", fallback_url, Some(EMOJI_LOGO)),
     };
     json!({ "type": TYPE_SECTION, "components": children, "accessory": accessory })
 }
@@ -981,7 +1085,8 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     let mut components = Vec::new();
     if let Some(review) = review {
         components.push(text(format!(
-            "-# 📝 [{}]({}) adlı kullanıcının incelemesi · Letterboxd bu sayfayı botlara kapattığı için film gösteriliyor",
+            "-# {} [{}]({}) adlı kullanıcının incelemesi · Letterboxd bu sayfayı botlara kapattığı için film gösteriliyor",
+            EMOJI_REVIEW.tag(),
             escape_markdown(&review.user),
             review.url
         )));
@@ -1031,17 +1136,21 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
 
     let mut buttons = Vec::new();
     if let Some(review) = review {
-        buttons.push(link_button("İncelemeyi aç", &review.url));
+        buttons.push(link_button(
+            "İncelemeyi aç",
+            &review.url,
+            Some(EMOJI_REVIEW),
+        ));
     }
-    buttons.push(link_button("Letterboxd", &film.url));
+    buttons.push(link_button("Letterboxd", &film.url, Some(EMOJI_LOGO)));
     if let Some(trailer) = &film.trailer {
-        buttons.push(link_button("Fragman", trailer));
+        buttons.push(link_button("Fragman", trailer, Some(EMOJI_PLAY)));
     }
     if let Some(imdb) = &film.imdb {
-        buttons.push(link_button("IMDb", imdb));
+        buttons.push(link_button("IMDb", imdb, None));
     }
     if let Some(tmdb) = &film.tmdb {
-        buttons.push(link_button("TMDB", tmdb));
+        buttons.push(link_button("TMDB", tmdb, None));
     }
     components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
     components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
@@ -1056,7 +1165,10 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
 fn review_card(review: &Review) -> CustomCard {
     let mut verdict = review.rating.map(stars).unwrap_or_default();
     if review.liked {
-        verdict.push_str(if verdict.is_empty() { "♥" } else { " ♥" });
+        if !verdict.is_empty() {
+            verdict.push(' ');
+        }
+        verdict.push_str(&EMOJI_LIKE.tag());
     }
     let mut film = format!(
         "[{}]({})",
@@ -1079,15 +1191,23 @@ fn review_card(review: &Review) -> CustomCard {
 
     let mut meta: Vec<String> = Vec::new();
     match (review.watched, review.published) {
-        (Some(date), _) => meta.push(format!("{} izledi", date_label(date))),
+        (Some(date), _) => meta.push(format!(
+            "{} {} izledi",
+            EMOJI_WATCHED.tag(),
+            date_label(date)
+        )),
         (None, Some(date)) => meta.push(format!("{} yazdı", date_label(date))),
         (None, None) => {}
     }
     if review.rewatch {
-        meta.push("🔁 Yeniden izleme".to_string());
+        meta.push(format!("{} Yeniden izleme", EMOJI_REWATCH.tag()));
     }
     if let Some(likes) = review.likes {
-        meta.push(format!("{} beğeni", format_count(likes)));
+        meta.push(format!(
+            "{} {} beğeni",
+            EMOJI_LIKES.tag(),
+            format_count(likes)
+        ));
     }
     if let Some(director) = &review.director {
         meta.push(format!("Yönetmen: {}", escape_markdown(director)));
@@ -1112,7 +1232,7 @@ fn review_card(review: &Review) -> CustomCard {
         Some(body) if !body.is_empty() => {
             let body = escape_markdown(&body);
             components.push(text(if review.spoiler {
-                format!("⚠️ **Spoiler içerir**\n||{body}||")
+                format!("{} **Spoiler içerir**\n||{body}||", EMOJI_SPOILER.tag())
             } else {
                 body
             }));
@@ -1123,8 +1243,8 @@ fn review_card(review: &Review) -> CustomCard {
     components.push(json!({
         "type": TYPE_ACTION_ROW,
         "components": [
-            link_button("İncelemeyi aç", &review.url),
-            link_button("Filmi aç", &review.film_url),
+            link_button("İncelemeyi aç", &review.url, Some(EMOJI_REVIEW)),
+            link_button("Filmi aç", &review.film_url, Some(EMOJI_LOGO)),
         ],
     }));
 
@@ -1147,14 +1267,15 @@ fn activity_line(activity: &ProfileActivity) -> String {
         escape_markdown(&activity.title),
         activity.url
     ));
-    if activity.liked {
-        line.push_str(" ♥");
-    }
-    if activity.rewatch {
-        line.push_str(" 🔁");
-    }
-    if activity.review {
-        line.push_str(" 📝");
+    for (flag, icon) in [
+        (activity.liked, EMOJI_LIKE),
+        (activity.rewatch, EMOJI_REWATCH),
+        (activity.review, EMOJI_REVIEW),
+    ] {
+        if flag {
+            line.push(' ');
+            line.push_str(&icon.tag());
+        }
     }
     line
 }
@@ -1167,12 +1288,18 @@ fn profile_card(profile: &Profile) -> CustomCard {
     let mut header = format!("### [{}]({})", escape_markdown(&profile.name), profile.url);
     let mut byline = format!("@{}", escape_markdown(&profile.user));
     if let Some(badge) = &profile.badge {
-        byline.push_str(&format!(" · {}", escape_markdown(badge)));
+        // Patron rozetine Letterboxd'un tacı eşlik eder; diğer rozetler (Pro, HQ) yalnızca yazı.
+        let crown = if badge.eq_ignore_ascii_case("patron") {
+            format!("{} ", EMOJI_PATRON.tag())
+        } else {
+            String::new()
+        };
+        byline.push_str(&format!(" · {crown}{}", escape_markdown(badge)));
     }
     header.push_str(&format!("\n-# {byline}"));
 
     let mut section_children = vec![text(header)];
-    if let Some(stats) = profile.stats.line() {
+    if let Some(stats) = profile.stats.card_line() {
         section_children.push(text(stats));
     }
     let mut meta = Vec::new();
@@ -1213,10 +1340,22 @@ fn profile_card(profile: &Profile) -> CustomCard {
     }
 
     let buttons = vec![
-        link_button("Letterboxd", &profile.url),
-        link_button("Filmler", &profile_subpage(&profile.user, "films")),
-        link_button("Günlük", &profile_subpage(&profile.user, "diary")),
-        link_button("Listeler", &profile_subpage(&profile.user, "lists")),
+        link_button("Letterboxd", &profile.url, Some(EMOJI_LOGO)),
+        link_button(
+            "Filmler",
+            &profile_subpage(&profile.user, "films"),
+            Some(EMOJI_FILMS),
+        ),
+        link_button(
+            "Günlük",
+            &profile_subpage(&profile.user, "diary"),
+            Some(EMOJI_THIS_YEAR),
+        ),
+        link_button(
+            "Listeler",
+            &profile_subpage(&profile.user, "lists"),
+            Some(EMOJI_LISTS),
+        ),
     ];
     components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
     components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
@@ -1400,7 +1539,48 @@ mod tests {
         card.components
             .iter()
             .for_each(|component| walk(component, &mut out));
-        out
+        readable(&out)
+    }
+
+    /// Emoji etiketlerini okunur işaretlere çevirir: testler yerleşimi `★★★★½ ♥` gibi
+    /// okunur biçimde doğrular (etiketlerin kendisi `icons_are_bot_emojis` testinde).
+    fn readable(text: &str) -> String {
+        [
+            (EMOJI_LOGO, "LB"),
+            (EMOJI_STAR, "★"),
+            (EMOJI_HALF, "½"),
+            (EMOJI_LIKE, "♥"),
+            (EMOJI_REWATCH, "🔁"),
+            (EMOJI_REVIEW, "📝"),
+            (EMOJI_SPOILER, "⚠️"),
+            (EMOJI_WATCHED, "👁"),
+            (EMOJI_LIKES, "♡"),
+            (EMOJI_PLAY, "▶"),
+            (EMOJI_FILMS, "🎞"),
+            (EMOJI_THIS_YEAR, "📅"),
+            (EMOJI_LISTS, "▦"),
+            (EMOJI_PEOPLE, "👤"),
+            (EMOJI_PATRON, "👑"),
+        ]
+        .iter()
+        .fold(text.to_string(), |acc, (emoji, mark)| {
+            acc.replace(&emoji.tag(), mark)
+        })
+    }
+
+    /// Butonların ikon adları (ikonsuz buton boş ad döner).
+    fn button_icons(card: &CustomCard) -> Vec<String> {
+        card.components
+            .iter()
+            .filter(|component| component["type"] == TYPE_ACTION_ROW)
+            .flat_map(|row| row["components"].as_array().cloned().unwrap_or_default())
+            .map(|button| {
+                button["emoji"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
     }
 
     fn buttons(card: &CustomCard) -> Vec<(String, String)> {
@@ -1552,10 +1732,10 @@ mod tests {
             text.contains("### [hollie amanda](https://letterboxd.com/hollieamanda/)"),
             "{text}"
         );
-        assert!(text.contains("-# @hollieamanda · Patron"), "{text}");
+        assert!(text.contains("-# @hollieamanda · 👑 Patron"), "{text}");
         assert!(
             text.contains(
-                "**2.590** film · **64** bu yıl · **14** liste · **396** takip · **16.700** takipçi"
+                "🎞 **2.590** film · 📅 **64** bu yıl · ▦ **14** liste · 👤 **396** takip · 👤 **16.700** takipçi"
             ),
             "{text}"
         );
@@ -1588,6 +1768,10 @@ mod tests {
         );
         let labels: Vec<String> = buttons(&card).into_iter().map(|(label, _)| label).collect();
         assert_eq!(labels, vec!["Letterboxd", "Filmler", "Günlük", "Listeler"]);
+        assert_eq!(
+            button_icons(&card),
+            vec!["letterboxd", "lb_films", "lb_thisyear", "lb_lists"]
+        );
         let urls: Vec<String> = buttons(&card).into_iter().map(|(_, url)| url).collect();
         assert_eq!(
             urls,
@@ -1727,6 +1911,8 @@ mod tests {
         );
         let labels: Vec<String> = buttons(&card).into_iter().map(|(label, _)| label).collect();
         assert_eq!(labels, vec!["Letterboxd", "Fragman", "IMDb", "TMDB"]);
+        // IMDb ve TMDB logoları Letterboxd sprite'ında yok: yalnızca yazı.
+        assert_eq!(button_icons(&card), vec!["letterboxd", "lb_play", "", ""]);
     }
 
     #[test]
@@ -1770,7 +1956,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("9 Ağu 2019 izledi · 43.6K beğeni · Yönetmen: Bong Joon Ho"),
+            text.contains("👁 9 Ağu 2019 izledi · ♡ 43.6K beğeni · Yönetmen: Bong Joon Ho"),
             "{text}"
         );
         assert!(
@@ -1811,11 +1997,26 @@ mod tests {
     }
 
     #[test]
+    fn icons_are_bot_emojis() {
+        assert_eq!(EMOJI_STAR.tag(), "<:lb_star:1563865502881808486>");
+        assert_eq!(
+            stars(1.5),
+            "<:lb_star:1563865502881808486><:lb_half:1563865487144914995>"
+        );
+        let button = link_button("Letterboxd", LETTERBOXD, Some(EMOJI_LOGO));
+        assert_eq!(
+            button["emoji"],
+            json!({ "name": "letterboxd", "id": "1563865506841362505" })
+        );
+        assert!(link_button("IMDb", LETTERBOXD, None).get("emoji").is_none());
+    }
+
+    #[test]
     fn helpers_format_like_letterboxd() {
-        assert_eq!(stars(4.51), "★★★★½");
-        assert_eq!(stars(3.0), "★★★");
-        assert_eq!(stars(0.5), "½");
-        assert_eq!(stars(4.2), "★★★★");
+        assert_eq!(readable(&stars(4.51)), "★★★★½");
+        assert_eq!(readable(&stars(3.0)), "★★★");
+        assert_eq!(readable(&stars(0.5)), "½");
+        assert_eq!(readable(&stars(4.2)), "★★★★");
         assert_eq!(iso_minutes("PT2H13M"), Some(133));
         assert_eq!(iso_minutes("PT95M"), Some(95));
         assert_eq!(iso_minutes("PT2H"), Some(120));
