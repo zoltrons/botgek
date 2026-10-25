@@ -120,6 +120,11 @@ değişmez.
 - Tumblr önce fxtumblr uyumlu renderer'ı (`FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`) dener; böylece
   NPF/reblog zinciri ve çoklu medya tek güvenli render görselinde korunur. Renderer erişilemezse public
   OG fallback kullanılır.
+- Twitch klipleri Twitch web oynatıcısının GraphQL uç noktasından (`gql.twitch.tv`, sitenin public
+  istemci kimliği) tek sorguyla okunur: başlık, yayıncı, oyun, izlenme, süre, klipleyen, VOD anı ve
+  ~24 saat geçerli imzalı 720p MP4. Video imzanın süresi dolmasın diye mesaja dosya olarak eklenir;
+  Discord sınırına ya da süre bütçesine sığmazsa imzalı adres kartta uzaktan oynar. Uç nokta
+  belgelenmemiştir; sorgu başarısız olursa public OG önizlemesine düşülür.
 - Letterboxd kartları herkese açık sayfalardan kurulur. Film kartı (yeşil) JSON-LD'den posteri,
   Letterboxd ortalamasını yıldız ve oy sayısıyla, slogan, açıklama, tür/süre/ülke, oyuncuları ve
   Letterboxd / Fragman / IMDb / TMDB butonlarını gösterir. İnceleme kartı (turuncu) kullanıcının

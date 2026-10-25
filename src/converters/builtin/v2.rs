@@ -175,7 +175,7 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
 
     let mut children: Vec<Value> = match &card.post.custom_card {
         // Platforma özel kart (ör. Spotify): çocuk bileşenler platform modülünde hazır üretilir.
-        Some(custom) => custom_children(custom, card.resolved),
+        Some(custom) => custom_children(custom, card.resolved, card.post.platform),
         None => generic_children(card),
     };
     // Custom cards are cached as source data and must receive the same per-send decision as
@@ -219,10 +219,19 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
 
 /// Platforma özel kartın bileşenleri. Gönderimde ek olarak üretilen video (Spotify: kapak +
 /// 30 sn önizleme) ilk bileşenin hemen altında galeri olarak oynar; kart bu durum için ayrı bir
-/// düzen verdiyse (`video_components`) o kullanılır. Yalnızca **ek** kullanılır:
-/// uzak bağlantı (Spotify'da MP3) galeride oynamaz. Spoiler, ardından ağaç genelinde uygulanır.
-fn custom_children(custom: &super::CustomCard, resolved: &ResolvedMedia) -> Vec<Value> {
-    let Some(reference) = &resolved.attached_video else {
+/// düzen verdiyse (`video_components`) o kullanılır. Spotify'da yalnızca **ek** kullanılır
+/// (uzak bağlantı MP3'tür, galeride oynamaz); Twitch klibi ek olarak sığmazsa imzalı MP4
+/// adresi kartta uzaktan oynar. Spoiler, ardından ağaç genelinde uygulanır.
+fn custom_children(
+    custom: &super::CustomCard,
+    resolved: &ResolvedMedia,
+    platform: Platform,
+) -> Vec<Value> {
+    let remote = match platform {
+        Platform::Twitch => resolved.video_link.as_ref(),
+        _ => None,
+    };
+    let Some(reference) = resolved.attached_video.as_ref().or(remote) else {
         return custom.components.clone();
     };
     // Video varken platformun kompakt düzeni (varsa) kullanılır.
@@ -1038,6 +1047,19 @@ mod tests {
         };
         let payload = build_payload(&card(&post, &options, &remote_only, &emojis));
         assert!(gallery_urls(&payload).is_empty());
+
+        // Twitch klibi ek olarak sığmazsa imzalı MP4 adresi kartta uzaktan oynar.
+        let mut twitch = post.clone();
+        twitch.platform = Platform::Twitch;
+        let signed = ResolvedMedia {
+            video_link: Some("https://cdn/720/index.mp4?sig=a&token=b".to_string()),
+            ..ResolvedMedia::default()
+        };
+        let payload = build_payload(&card(&twitch, &options, &signed, &emojis));
+        assert_eq!(
+            gallery_urls(&payload),
+            vec!["https://cdn/720/index.mp4?sig=a&token=b"]
+        );
 
         let attached = ResolvedMedia {
             attached_video: Some("attachment://spotify-preview.mp4".to_string()),

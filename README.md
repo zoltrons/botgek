@@ -62,7 +62,7 @@ servisi gerekmez.
 | Bluesky | Gönderi | Native / proxy |
 | TikTok | Video | Native / proxy |
 | Spotify | Parça, albüm, çalma listesi, sanatçı, kısa link | Native / proxy |
-| Twitch | Klip | Native |
+| Twitch | Klip (kart içinde video) | Native |
 | Pixiv | Çizim | Native |
 | Tumblr | Gönderi | Native |
 | Facebook | Gönderi, video | Native |

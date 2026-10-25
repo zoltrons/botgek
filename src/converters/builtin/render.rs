@@ -84,8 +84,11 @@ pub const VIDEO_MERGE_BUDGET: Duration = Duration::from_millis(5_000);
 ///
 /// Spotify önizlemesi MP3'tür ve kartta oynamaz; kapakla tek MP4'e çevrilip ek olarak
 /// gönderilir (bkz. `spotify_video`).
+///
+/// Twitch klibinin MP4 adresi ~24 saat geçerli bir imza taşır: dosya olarak eklenir ki
+/// imza süresi dolunca eski mesajlarda video kaybolmasın (sığmazsa imzalı adres oynar).
 fn video_requires_download(platform_key: &str) -> bool {
-    matches!(platform_key, "reddit" | "spotify")
+    matches!(platform_key, "reddit" | "spotify" | "twitch")
 }
 
 /// Ayarlardan türetilen render davranışı (**tek mod: doğrudan**).
@@ -438,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn only_reddit_and_spotify_require_a_video_download() {
+    fn only_reddit_spotify_and_twitch_require_a_video_download() {
         let engine = EngineSettings::default();
         assert!(
             RenderOptions::from_engine(&engine, "reddit").video_requires_download,
@@ -447,6 +450,10 @@ mod tests {
         assert!(
             RenderOptions::from_engine(&engine, "spotify").video_requires_download,
             "Spotify: MP3 önizleme kapakla MP4'e çevrilir"
+        );
+        assert!(
+            RenderOptions::from_engine(&engine, "twitch").video_requires_download,
+            "Twitch: imzalı adresin süresi dolar → dosya olarak eklenir"
         );
         for platform in ["twitter", "instagram", "tiktok", "bluesky"] {
             assert!(
