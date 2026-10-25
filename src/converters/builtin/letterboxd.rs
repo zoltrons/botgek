@@ -192,6 +192,12 @@ static LIKES_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)review-like".{0,800}?data-count="([0-9]{1,12})""#)
         .expect("geçerli beğeni regex")
 });
+/// Poster bileşeninin çözülecek poster bilgisi (JSON, HTML varlıklarıyla kaçışlı). Sahibi
+/// özel poster seçtiyse `preferredAlternativePosterId` taşır.
+static RESOLVABLE_POSTER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"data-resolvable-poster-path='([^']{1,2000})'")
+        .expect("geçerli çözülebilir poster regex")
+});
 static AVATAR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<a class="avatar[^"]*" href="/([A-Za-z0-9_]+)/"\s*>\s*<img src="(https://a\.ltrbxd\.com/[^"]+)""#)
         .expect("geçerli avatar regex")
@@ -338,8 +344,14 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
         }
         Target::Review { user, slug, .. } => {
             if let Some(html) = page.body.as_deref()
-                && let Some(review) = parse_review(html, &target)
+                && let Some(mut review) = parse_review(html, &target)
             {
+                // İnceleme sahibinin seçtiği özel poster (Patron/Pro): varsayılanın yerine geçer.
+                if let Some(path) = custom_poster_path(html, slug)
+                    && let Some(poster) = resolve_poster(client, &path).await
+                {
+                    review.poster = Some(poster);
+                }
                 return Ok(review_post(&review));
             }
             // İnceleme sayfası engellendi ya da okunamadı: film kartı + inceleme notu.
@@ -418,7 +430,53 @@ async fn get_page(client: &reqwest::Client, url: &str) -> Result<Page, String> {
     })
 }
 
+/// Letterboxd'un poster çözücüsü (`…/poster/std/{id}/600/`) özel posterin CDN adresini döner;
+/// sayfa bunu tarayıcıda çözer. Hata olursa `None`: kart varsayılan posterle kalır.
+async fn resolve_poster(client: &reqwest::Client, path: &str) -> Option<String> {
+    let url = format!("{LETTERBOXD}{path}");
+    let body = match get_page(client, &url).await {
+        Ok(page) => page.body?,
+        Err(error) => {
+            debug!("Letterboxd özel posteri çözülemedi: {error}");
+            return None;
+        }
+    };
+    let value: Value = serde_json::from_str(&body).ok()?;
+    text_of(&value, "url").filter(|url| url.starts_with("https://a.ltrbxd.com/"))
+}
+
 // ─── Ayrıştırma ──────────────────────────────────────────────────────────────
+
+/// İncelenen filmin özel posteri için çözücü yolu. Sayfadaki diğer posterler (kullanıcının
+/// başka filmleri) atlanır: yalnızca `posteredBaseLink` bu filme çıkan kayıt sayılır.
+fn custom_poster_path(html: &str, slug: &str) -> Option<String> {
+    let base = format!("/film/{slug}/");
+    RESOLVABLE_POSTER_REGEX
+        .captures_iter(html)
+        .find_map(|caps| {
+            let value: Value = serde_json::from_str(&unescape_html(&caps[1])).ok()?;
+            if value.get("posteredBaseLink").and_then(Value::as_str) != Some(base.as_str()) {
+                return None;
+            }
+            let id = match value.get("preferredAlternativePosterId")? {
+                Value::String(id) => id.clone(),
+                Value::Number(id) => id.to_string(),
+                _ => return None,
+            };
+            if id.is_empty() || id.len() > 12 || !id.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let mut path = format!("{base}poster/std/{id}/600/");
+            if let Some(key) = value
+                .get("cacheBustingKey")
+                .and_then(Value::as_str)
+                .filter(|key| key.len() <= 16 && key.bytes().all(|b| b.is_ascii_alphanumeric()))
+            {
+                path.push_str(&format!("?k={key}"));
+            }
+            Some(path)
+        })
+}
 
 /// Sayfadaki `@type` uyan ilk JSON-LD nesnesi (Letterboxd onu `/* <![CDATA[ */` ile sarar).
 fn json_ld(html: &str, kind: &str) -> Option<Value> {
@@ -1997,6 +2055,28 @@ mod tests {
     }
 
     #[test]
+    fn custom_poster_is_read_only_for_the_reviewed_film() {
+        // Kullanıcının başka filmi önce gelir; varsayılan posterli kayıt özel poster sayılmaz.
+        let html = r#"
+            <div data-resolvable-poster-path='{&quot;preferredAlternativePosterId&quot;:&quot;665014&quot;,&quot;posteredBaseLink&quot;:&quot;/film/hoard/&quot;,&quot;hasDefaultPoster&quot;:true,&quot;cacheBustingKey&quot;:&quot;571a9ff2&quot;}'></div>
+            <div data-resolvable-poster-path='{&quot;preferredAlternativePosterId&quot;:&quot;333479&quot;,&quot;postered&quot;:{&quot;uid&quot;:&quot;film:710352&quot;},&quot;posteredBaseLink&quot;:&quot;/film/poor-things-2023/&quot;,&quot;hasDefaultPoster&quot;:true,&quot;cacheBustingKey&quot;:&quot;70debc79&quot;}'></div>
+        "#;
+        assert_eq!(
+            custom_poster_path(html, "poor-things-2023").as_deref(),
+            Some("/film/poor-things-2023/poster/std/333479/600/?k=70debc79")
+        );
+        assert_eq!(custom_poster_path(html, "barbie"), None);
+
+        let default_only = r#"<div data-resolvable-poster-path='{&quot;posteredBaseLink&quot;:&quot;/film/parasite-2019/&quot;,&quot;hasDefaultPoster&quot;:true}'></div>"#;
+        assert_eq!(custom_poster_path(default_only, "parasite-2019"), None);
+        assert_eq!(custom_poster_path(REVIEW_HTML, "parasite-2019"), None);
+
+        // Kimlik yalnızca rakam olabilir: yol enjeksiyonu kabul edilmez.
+        let hostile = r#"<div data-resolvable-poster-path='{&quot;preferredAlternativePosterId&quot;:&quot;1/../../x&quot;,&quot;posteredBaseLink&quot;:&quot;/film/barbie/&quot;}'></div>"#;
+        assert_eq!(custom_poster_path(hostile, "barbie"), None);
+    }
+
+    #[test]
     fn icons_are_bot_emojis() {
         assert_eq!(EMOJI_STAR.tag(), "<:lb_star:1563865502881808486>");
         assert_eq!(
@@ -2109,5 +2189,29 @@ mod tests {
         .await
         .expect("numaralı inceleme kartı üretilmeli");
         assert_eq!(rewatch.author.name, "demi adejuyigbe");
+
+        // Özel poster seçen kullanıcının incelemesi kendi posteriyle, diğeri varsayılanla gelir.
+        let poster = |post: &BuiltinPost| {
+            post.custom_card.as_ref().unwrap().components[0]["accessory"]["media"]["url"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let custom = fetch(
+            &client,
+            &parsed("https://letterboxd.com/ashonfilm/film/poor-things-2023/"),
+        )
+        .await
+        .expect("özel posterli inceleme kartı üretilmeli");
+        assert!(
+            poster(&custom).contains("/alternative-poster/"),
+            "{}",
+            poster(&custom)
+        );
+        assert!(
+            poster(&review).contains("/film-poster/"),
+            "{}",
+            poster(&review)
+        );
     }
 }
