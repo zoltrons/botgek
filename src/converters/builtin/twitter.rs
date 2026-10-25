@@ -2507,7 +2507,6 @@ mod tests {
         let parsed = ParsedPost {
             platform: Platform::Twitter,
             original_url: "https://x.com/firstshowing/status/2106814102412968268".to_string(),
-            fixed_url: "https://x.com/firstshowing/status/2106814102412968268".to_string(),
             is_spoiler: false,
             user_comment: None,
         };

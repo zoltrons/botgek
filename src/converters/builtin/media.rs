@@ -194,6 +194,9 @@ pub async fn download_video(
     if super::spotify_video::is_preview_url(url) {
         return super::spotify_video::build(url, poster?, max_bytes).await;
     }
+    if let Some(headers) = super::tiktok::video_headers(url) {
+        return download_with(url, max_bytes, &headers).await;
+    }
 
     download(url, max_bytes).await
 }
@@ -201,11 +204,16 @@ pub async fn download_video(
 /// URL'deki medyayı indirir. Boyut `max_bytes`'ı aşarsa ya da içerik medya değilse
 /// (HTML hata sayfası vb.) `None` döner; böylece mesaj gönderimi bozulmaz.
 pub async fn download(url: &str, max_bytes: u64) -> Option<MediaFile> {
+    download_with(url, max_bytes, &[]).await
+}
+
+/// [`download`] ile aynı; her istekte ek başlıklar gönderir (TikTok çerezi ve Referer).
+async fn download_with(url: &str, max_bytes: u64, headers: &[(&str, String)]) -> Option<MediaFile> {
     use crate::telemetry::{self, HttpHost};
     let host = HttpHost::classify(url);
     telemetry::http_request(host);
     let started = std::time::Instant::now();
-    let result = download_inner(url, max_bytes).await;
+    let result = download_inner(url, max_bytes, headers).await;
     match &result {
         Some(file) => telemetry::http_success(host, started.elapsed(), file.bytes.len()),
         None => telemetry::http_error(host, started.elapsed()),
@@ -217,14 +225,19 @@ pub async fn download(url: &str, max_bytes: u64) -> Option<MediaFile> {
 /// Discord'a yüklenir: istek bu yüzden ortak istemciyle değil, yalnızca herkese açık IP'lere
 /// sabitlenen ve her yönlendirmeyi doğrulayan [`super::safe_http::public_get`] ile atılır.
 /// Aksi hâlde bir alan adı ya da yönlendirme sunucunun iç ağındaki bir adresi okutabilirdi.
-async fn download_inner(url: &str, max_bytes: u64) -> Option<MediaFile> {
+async fn download_inner(
+    url: &str,
+    max_bytes: u64,
+    headers: &[(&str, String)],
+) -> Option<MediaFile> {
     if !url.starts_with("https://") {
         return None;
     }
 
-    let (_, response) = super::safe_http::public_get(&download_url(url), MEDIA_TIMEOUT, USER_AGENT)
-        .await
-        .ok()?;
+    let (_, response) =
+        super::safe_http::public_get_with(&download_url(url), MEDIA_TIMEOUT, USER_AGENT, headers)
+            .await
+            .ok()?;
     if let Some(len) = response.content_length()
         && len > max_bytes
     {

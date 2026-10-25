@@ -1,9 +1,8 @@
-//! Bot içi (native) link dönüştürme motoru.
+//! Bot içi (native) link dönüştürme motoru: botun tek dönüştürme yolu.
 //!
-//! Proxy motoru linki `fixupx.com` benzeri bir önizleme servisine çevirip Discord'un
-//! kendi embed'ini üretmesini bekler. Bu motor ise gönderi verisini doğrudan kaynaktan
-//! (X syndication/fxtwitter, Reddit JSON, Bluesky XRPC, TikTok oEmbed) çeker; başlık,
-//! metin, metrikler, alıntı ve medyayı kendisi indirip `CreateEmbed` olarak gönderir.
+//! Gönderi verisi doğrudan kaynaktan (X syndication/fxtwitter, Reddit JSON, Bluesky XRPC,
+//! TikTok sayfası, Spotify, Pixiv, YouTube, Facebook ...) çekilir; başlık, metin, metrikler,
+//! alıntı ve medya Components V2 kartı olarak gönderilir.
 
 pub mod bluesky;
 pub mod cache;
@@ -1204,8 +1203,8 @@ fn should_impersonate(engine: &EngineSettings, is_reply: bool) -> bool {
     engine.impersonate_user && !(is_reply && engine.impersonate_skip_replies)
 }
 
-/// Yanıt bağlantısı: bot, kullanıcının yanıt verdiği **aynı mesaja** yanıt verir (proxy
-/// motoruyla aynı davranış). `fail_if_not_exists: false` sayesinde referans mesaj
+/// Yanıt bağlantısı: bot, kullanıcının yanıt verdiği **aynı mesaja** yanıt verir.
+/// `fail_if_not_exists: false` sayesinde referans mesaj
 /// silinmişse de mesaj gönderilir.
 fn reply_reference(msg: &Message) -> Option<serde_json::Value> {
     let reference = msg.message_reference.as_ref()?;
@@ -1229,15 +1228,6 @@ fn reply_reference(msg: &Message) -> Option<serde_json::Value> {
 /// ekranında "hayalet" (ghost) olarak kalır (bilinen Discord istemci davranışı —
 /// discord-api-docs #850). Silme bu yüzden mesaj en az bu yaşa gelene kadar ertelenir.
 const DELETE_MIN_AGE: Duration = Duration::from_millis(1200);
-
-/// Orijinal mesajı **arka planda** siler: REST silme isteği kart gönderimini/dönüşümü
-/// bloklamaz. Silme [`delete_user_message`] üzerinden yapılır; o da mesajın
-/// [`DELETE_MIN_AGE`] yaşını doldurmasını bekler (hayalet mesaj önlemi).
-pub fn spawn_delete(ctx: &Context, msg: &Message) {
-    let ctx = ctx.clone();
-    let msg = msg.clone();
-    tokio::spawn(async move { delete_user_message(&ctx, &msg).await });
-}
 
 /// Orijinal mesajı siler; zaten silinmişse sessizce geçer (🗑️ reaksiyonu
 /// yeni mesaja eklenir, bu yüzden mükerrer silme denemesi hata üretmez).
@@ -1316,16 +1306,16 @@ pub struct InteractionDelivery {
 pub enum HandleResult {
     /// Kart gönderildi.
     Sent,
-    /// Kaynak çözümlenemedi veya Discord isteği kesin olarak reddedildi; proxy yedeği denenebilir.
+    /// Kaynak çözümlenemedi veya Discord isteği kesin olarak reddedildi; özgün mesaj kalır.
     Failed,
     /// Native iş kapasitesi dolu; bu istek için kart üretilmedi.
     Busy,
     /// Gönderim sonucu belirsiz (ağ hatası / yanıtsız POST). Yeniden denemek mükerrer mesaj
-    /// oluşturabileceği için proxy yedeği de denenmez.
+    /// oluşturabileceği için tekrar denenmez.
     Ambiguous,
 }
 
-/// Native embed akışı. `Failed` dönerse çağıran taraf (ayar açıksa) proxy motoruna düşer.
+/// Native kart akışı. `Failed` dönerse özgün mesaj olduğu gibi bırakılır.
 pub async fn handle(
     ctx: &Context,
     msg: &Message,
@@ -1355,8 +1345,8 @@ pub async fn handle(
         .as_ref()
         .map(|_| spawn_webhook_warmup(ctx, client, config, msg));
 
-    // Orijinal mesaj burada **silinmez**: silme, kart gönderildikten sonra yapılır (native
-    // akışta `finish()`, hata durumunda proxy akışı). Erken silmek, gönderenin istemcisi
+    // Orijinal mesaj burada **silinmez**: silme, kart gönderildikten sonra `finish()` içinde
+    // yapılır. Erken silmek, gönderenin istemcisi
     // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
     // bıraktığı için artık kullanılmaz (bkz. [`delete_user_message`]).
     let fetch_started = std::time::Instant::now();
@@ -1471,7 +1461,7 @@ pub async fn handle(
         Err(err) => {
             error!("Components V2 kartı gönderilemedi: {err}");
             crate::telemetry::record(platform_key(parsed.platform), false, started.elapsed());
-            // A lost POST response may already have created a message. Do not proxy-resend.
+            // A lost POST response may already have created a message. Do not resend.
             if err.safe_fallback() {
                 HandleResult::Failed
             } else {
@@ -1485,7 +1475,7 @@ pub async fn handle(
 ///
 /// Kart bot adına gönderildiğinde (`tag_sender`) paylaşanın etiketi kartın üstünde `<@id>`
 /// olarak durur; **ping atmaması** için izinli kullanıcı listesinden çıkarılır (Discord
-/// böylece etiketi düz `@kullanıcı` metni olarak gösterir — proxy/klasik akıştaki davranış).
+/// böylece etiketi düz `@kullanıcı` metni olarak gösterir).
 fn card_allowed_mentions(msg: &Message, tag_sender: bool) -> Option<serde_json::Value> {
     let mut value = serde_json::to_value(build_selective_allowed_mentions(msg)).ok()?;
     if !tag_sender {
@@ -1735,7 +1725,6 @@ mod message_tests {
         let parsed = ParsedPost {
             platform: Platform::Twitter,
             original_url: "https://x.com/test/status/1".to_string(),
-            fixed_url: "https://x.com/test/status/1".to_string(),
             is_spoiler: false,
             user_comment: None,
         };
@@ -2054,11 +2043,8 @@ mod message_tests {
 
     #[test]
     fn translation_cache_keys_separate_english_override() {
-        let parsed = super::super::parser::parse_message_with_domains(
-            "https://x.com/kullanici/status/1",
-            &super::super::parser::PlatformDomains::default(),
-        )
-        .expect("X bağlantısı çözümlenmeli");
+        let parsed = super::super::parser::parse_message("https://x.com/kullanici/status/1")
+            .expect("X bağlantısı çözümlenmeli");
 
         let mut engine = EngineSettings::default();
         let normal = post_cache_key(&parsed, &engine);

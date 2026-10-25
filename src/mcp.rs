@@ -555,9 +555,6 @@ async fn tool_bot_status(state: &WebState) -> Value {
         },
         "config": {
             "delete_original": state.config.delete_original,
-            "tiktok_domain": state.config.tiktok_domain,
-            "bluesky_domain": state.config.bluesky_domain,
-            "spotify_domain": state.config.spotify_domain,
             "ai_configured": state.config.openrouter_api_key.is_some(),
             "instagram_sessionid_set": state.config.instagram_sessionid.is_some(),
             "reddit_client_id": state.config.reddit_client_id
@@ -746,8 +743,7 @@ async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String
 
     let settings = state.settings.read().await.clone();
     let engine = settings.get_guild_settings(None).engine;
-    let domains = crate::converters::resolve_domains(&engine, &state.config);
-    let parsed = parser::parse_message_with_domains(&url, &domains)
+    let parsed = parser::parse_message(&url)
         .ok_or_else(|| "desteklenen bir bağlantı bulunamadı (X, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv, Tumblr, Facebook, YouTube, Letterboxd)".to_string())?;
 
     let started = Instant::now();
@@ -772,7 +768,6 @@ async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String
         "parsed": {
             "platform": builtin::platform_key(parsed.platform),
             "original_url": parsed.original_url,
-            "fixed_url": parsed.fixed_url,
             "is_spoiler": parsed.is_spoiler,
             "user_comment": parsed.user_comment
         },
@@ -851,8 +846,7 @@ async fn discord_test_card(state: &WebState, args: &Value) -> Result<Value, Stri
     let _total = crate::telemetry::PhaseTimer::new(crate::telemetry::Phase::Total);
     let settings = state.settings.read().await.clone();
     let engine = settings.get_guild_settings(Some(guild)).engine;
-    let domains = crate::converters::resolve_domains(&engine, &state.config);
-    let parsed = parser::parse_message_with_domains(&url, &domains)
+    let parsed = parser::parse_message(&url)
         .ok_or_else(|| "desteklenen bir bağlantı bulunamadı".to_string())?;
 
     let fetch_started = Instant::now();
@@ -1137,8 +1131,7 @@ mod tests {
         let engine = settings
             .get_guild_settings(Some(GuildId::new(guild_id)))
             .engine;
-        let domains = crate::converters::resolve_domains(&engine, &config);
-        let parsed = parser::parse_message_with_domains(&url, &domains).expect("parsed url");
+        let parsed = parser::parse_message(&url).expect("parsed url");
         let client = reqwest::Client::new();
         let http = serenity::all::Http::new(&token);
         let fetched = builtin::fetch(&client, &parsed, &engine, &config)

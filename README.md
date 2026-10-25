@@ -23,9 +23,10 @@ servisi gerekmez.
 
 ## Öne çıkanlar
 
-- **Native kartlar:** X/Twitter, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook, YouTube Community
-  Post ve Letterboxd bağlantıları Components V2 kartına dönüşür. TikTok, Bluesky ve Spotify native modda aynı kartı
-  kullanır; bu üç platform için proxy modu da seçilebilir. Klasik embed fallback'i yoktur.
+- **Yalnızca native kartlar:** X/Twitter, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv,
+  Tumblr, Facebook, YouTube Community Post ve Letterboxd bağlantılarının hepsi botun kendi Components V2
+  kartına dönüşür. Harici önizleme (proxy) servisi ve klasik embed fallback'i yoktur; kart üretilemezse
+  özgün mesaj olduğu gibi kalır.
 - **Saf Rust medya hattı:** Reddit videolarında görüntü ve ses saf Rust ile tek MP4'e birleştirilir;
   ffmpeg veya yerel bir yardımcı ikili kullanılmaz.
 - **Gecikme bütçesi:** Kart için hedef **1 saniyedir**. Veri, medya, çeviri, alıntı ve bağlantı önizlemesi
@@ -43,8 +44,7 @@ servisi gerekmez.
   özetle", "@bot görselde ne var?"), sunucunun özel emojilerini yanıtlarında kullanır. Gizlilik için
   kullanıcı kimliği/adı gönderilmez (takma adlar), yalnızca veri saklamayan sağlayıcılar kullanılır.
   Rol filtresi, kullanıcı başına bekleme ve süreç geneli kapasite sınırı vardır.
-- **Çeviri:** X gönderileri için otomatik çeviri (`tr`, `en`, `de` veya herhangi bir BCP-47 kodu);
-  proxy mesajlarında bayrak tepkisiyle anlık çeviri.
+- **Çeviri:** X gönderileri için otomatik çeviri (`tr`, `en`, `de` veya herhangi bir BCP-47 kodu).
 - **Gizlilik kontrolleri:** Hassas içerik varsayılan olarak spoiler'dır; yalnızca NSFW kanallarında
   isteğe bağlı açılabilir.
 - **Tek komut:** `/dönüştür` DM'ler dâhil her yerde çalışır; **Apps → Dönüştür** mesaj komutu aynı işi
@@ -59,9 +59,9 @@ servisi gerekmez.
 | X (Twitter) | Gönderi, alıntı, medya | Native (VxTwitter / FxTwitter / syndication) |
 | Instagram | Gönderi, Reels | Native |
 | Reddit | Gönderi, video | Native (saf Rust video birleştirme) |
-| Bluesky | Gönderi | Native / proxy |
-| TikTok | Video | Native / proxy |
-| Spotify | Parça, albüm, çalma listesi, sanatçı, kısa link | Native / proxy |
+| Bluesky | Gönderi | Native |
+| TikTok | Video, fotoğraf (video dosya olarak eklenir) | Native |
+| Spotify | Parça, albüm, çalma listesi, sanatçı, kısa link | Native |
 | Twitch | Klip (kart içinde video) | Native |
 | Pixiv | Çizim (tüm sayfalar, etiketler) | Native |
 | Tumblr | Gönderi | Native |
@@ -69,8 +69,7 @@ servisi gerekmez.
 | YouTube | Topluluk gönderisi (görsel, video, anket) | Native |
 | Letterboxd | Film, kullanıcı incelemesi, kullanıcı profili, `boxd.it` kısa link | Native |
 
-Native-only platformlarda proxy motoru ve proxy yedeği yoktur. TikTok, Bluesky ve Spotify için panelden
-native veya proxy seçilebilir. X verisi için `vxtwitter` (varsayılan), `fxtwitter`, `syndication` ya da
+X verisi için `vxtwitter` (varsayılan), `fxtwitter`, `syndication` ya da
 `hybrid` kaynağı kullanılabilir.
 
 ## Hızlı başlangıç
@@ -127,7 +126,6 @@ Ayrıntılı kurulum ve güvenlik notları: [docs/CONFIGURATION.md](docs/CONFIGU
 | `/refleks` | Işık rastgele bir anda yeşile döner; ilk basan kazanır, erken basan elenir. Kazananın tepki süresi gösterilir. |
 | `/fal [kişi]` | Kişiye ve güne göre sabit kahve falı: iki fincan şekli, aşk/para/sağlık, şanslı sayı ve renk. Türkiye saatiyle gece yarısı tazelenir. |
 | 🗑️ tepkisi | Kartı, kartı paylaşan kullanıcı veya **Manage Messages** yetkisi olan bir yönetici siler. |
-| Bayrak tepkisi (🇹🇷, 🇬🇧, …) | Proxy mesajını seçilen dile çevirir. Native kartlar kendi çeviri ayarını kullanır. |
 | @bot etiketleme veya bot mesajına yanıt | AI sohbetini tetikler (`OPENROUTER_API_KEY` ve `ai_chat` modülü açıksa). |
 
 `/dönüştür` açıkça çağrıldığında X çevirisi her durumda uygulanır: `auto_translate` kapalı olsa bile

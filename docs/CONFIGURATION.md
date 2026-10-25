@@ -2,7 +2,7 @@
 
 Botgek iki katmanlı yapılandırma kullanır:
 
-- **Ortam değişkenleri (`.env`)**: tokenlar, portlar, gizli değerler ve proxy alan adları.
+- **Ortam değişkenleri (`.env`)**: tokenlar, portlar ve gizli değerler.
 - **`settings.json`**: panelden yönetilen modüller, rol filtreleri, AI personası ve motor ayarları.
 
 Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.env.example` yalnızca
@@ -20,9 +20,6 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `WEB_SECURE_COOKIE` | `false` | HTTPS ters proxy arkasında `true` yapın; oturum çerezine `Secure` ekler. |
 | `OPENROUTER_API_KEY` | boş | AI sohbetini etkinleştirir. Boşsa AI kapalıdır; dolu her değer gerçek anahtar sayılır (yer tutucu metin 401 üretir). |
 | `DELETE_ORIGINAL` | `true` | Başarılı dönüşümden sonra orijinal mesajı siler. **Manage Messages** yetkisi gerekir. |
-| `TIKTOK_DOMAIN` | `tnktok.com` | TikTok proxy alan adı. |
-| `BLUESKY_DOMAIN` | `fxbsky.app` | Bluesky proxy alan adı. |
-| `SPOTIFY_DOMAIN` | `open.fixspotify.com` | Spotify proxy alan adı. |
 | `FXTUMBLR_DOMAIN` | `tpmblr.com` | fxtumblr uyumlu Tumblr render hizmeti. Boş bırakılırsa public OG fallback kullanılır. |
 | `INSTAGRAM_SESSIONID` | boş | Instagram oturum çerezi. Reels videolarının kart içinde oynaması için gerekir; gizlidir, `settings.json`'a ve panele yazılmaz. |
 | `REDDIT_CLIENT_ID` | gömülü public kimlik | Reddit `installed_client` OAuth kimliği. Sır değildir; normalde değiştirmek gerekmez. |
@@ -33,9 +30,8 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `BOTGEK_DATA_VOLUME` | `botgek_botgek-data` | Yalnızca Docker Compose: kullanılacak kalıcı volume adı. |
 | `BOTGEK_VERSION` / `BOTGEK_SHA` | boş | Kaynak imaj derlemesinde sürüm künyesini gömmek için build argümanları. |
 
-> Proxy alan adları yalnızca proxy motoru kullanılabilen platformlar içindir. X/Twitter, Instagram,
-> Reddit, Twitch, Pixiv, Tumblr, Facebook, YouTube Community Post ve Letterboxd **native-only**'dir; bu platformlarda
-> proxy modu ve yedek alan adı yoktur. Panelde dolu bir alan adı `.env` değerini geçersiz kılar.
+> Proxy motoru kaldırıldı: eski `TIKTOK_DOMAIN`, `BLUESKY_DOMAIN` ve `SPOTIFY_DOMAIN` değişkenleri artık
+> okunmaz; `settings.json`'daki eski `modes`, `domains` ve `fallback_to_proxy` alanları yok sayılır.
 
 ### Discord Developer Portal
 
@@ -66,8 +62,6 @@ dosya, flush ve atomik replacement ile yazılır.
   "engine": {
     "respond_to_bots": false,
     "sensitive_mode": "hide_always",
-    "modes": { "tiktok": "proxy", "bluesky": "builtin", "spotify": "builtin" },
-    "domains": { "tiktok": "", "bluesky": "", "spotify": "" },
     "twitter_source": "vxtwitter",
     "max_images": 4,
     "max_video_mb": 8,
@@ -77,7 +71,6 @@ dosya, flush ve atomik replacement ile yazılır.
     "show_quote": true,
     "auto_translate": true,
     "translation_target": "tr",
-    "fallback_to_proxy": true,
     "impersonate_user": true,
     "impersonate_skip_replies": true,
     "emojis": { "verified": "<:verified:…>", "…": "…" }
@@ -116,10 +109,9 @@ yazmak gerekmez.
 
 | Alan | Değerler / sınır | Davranış |
 | --- | --- | --- |
-| `modules.*` | `true` / `false` | Platform, çeviri ve AI sohbeti modülleri. |
+| `modules.*` | `true` / `false` | Platform ve AI sohbeti modülleri. |
 | `role_filters.*.mode` | `disabled`, `blacklist`, `allowlist` | Boş `allowlist` kimseye erişim vermez. Rol sorgusu başarısız olursa etkin filtre reddeder. |
 | `role_filters.*.roles` | En fazla 200 Discord rol kimliği | Geçersiz kimlikler ayıklanır. |
-| `engine.modes` | `proxy` / `builtin` | Yalnızca TikTok, Bluesky ve Spotify için geçerlidir. |
 | `engine.twitter_source` | `vxtwitter`, `fxtwitter`, `syndication`, `hybrid` | X verisinin kaynağı. `hybrid` önce syndication'ı dener. |
 | `engine.max_images` | `1..=10` (varsayılan 4) | Tek kartta eklenecek görsel sayısı. |
 | `engine.max_video_mb` | `1..=50` (varsayılan 8) | Kart için video boyutu sınırı. |

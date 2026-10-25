@@ -101,7 +101,7 @@ test('channel resolution uses parent only for threads and channel blocks win', (
         MODULE_KEYS: [],
         MODULE_DEFAULTS: {},
         AI_DEFAULTS: { model: 'global-model', system_prompt: 'global' },
-        ENGINE_DEFAULTS: { modes: {}, domains: {}, emojis: {} },
+        ENGINE_DEFAULTS: { emojis: {} },
         EMOJI_FIELDS: [],
         clone: value => JSON.parse(JSON.stringify(value))
     });
@@ -129,7 +129,7 @@ test('channel-only guilds normalize and round-trip without dropping offline chan
         MODULE_KEYS: ['twitter'],
         MODULE_DEFAULTS: { twitter: true },
         AI_DEFAULTS: { model: 'global-model', system_prompt: '' },
-        ENGINE_DEFAULTS: { modes: {}, domains: {}, emojis: {}, max_images: 4, max_video_mb: 8, twitter_source: 'syndication', show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, fallback_to_proxy: true, impersonate_user: true, impersonate_skip_replies: true, respond_to_bots: false, sensitive_mode: 'hide_always' },
+        ENGINE_DEFAULTS: { emojis: {}, max_images: 4, max_video_mb: 8, twitter_source: 'syndication', show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, impersonate_user: true, impersonate_skip_replies: true, respond_to_bots: false, sensitive_mode: 'hide_always' },
         EMOJI_FIELDS: [],
         appSettings: {},
         rawOverrides: {}, rawGuildPayload: {}, channelConfigs: {}
@@ -186,7 +186,7 @@ test('first channel module and engine edits commit before scope changes and seri
         BLOCK_KEYS: ['modules', 'role_filters', 'ai', 'engine'],
         MODULE_KEYS: ['twitter'], MODULE_DEFAULTS: { twitter: true },
         AI_DEFAULTS: { model: 'global', system_prompt: '' },
-        ENGINE_DEFAULTS: { modes: {}, domains: {}, emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', fallback_to_proxy: true, impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' },
+        ENGINE_DEFAULTS: { emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' },
         EMOJI_FIELDS: [],
         ENGINE_PLATFORMS: [],
         rawChannelsList: [{ guild_id: 'g', channels: [{ id: 'c', name: 'chat', kind: 'text', parent_id: null, nsfw: false }] }],
@@ -232,7 +232,7 @@ test('empty AI fields inherit from the immediate parent effective AI block', () 
     const context = vm.createContext({
         BLOCK_KEYS: ['modules', 'role_filters', 'ai', 'engine'], MODULE_KEYS: ['twitter'],
         MODULE_DEFAULTS: { twitter: true }, AI_DEFAULTS: { model: 'global', system_prompt: 'global prompt' },
-        ENGINE_DEFAULTS: { modes: {}, domains: {}, emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', fallback_to_proxy: true, impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' },
+        ENGINE_DEFAULTS: { emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' },
         EMOJI_FIELDS: [], clone: value => JSON.parse(JSON.stringify(value))
     });
     vm.runInContext([functionSource('getEngineConfig'), functionSource('ensureConfigShape'), functionSource('resolveSettings'), functionSource('isThreadChannel'), functionSource('resolveChannelSettings')].join('\n'), context);
@@ -247,7 +247,7 @@ test('empty AI fields inherit from the immediate parent effective AI block', () 
 
 test('selected channel reset inherits parent and keeps guild channel context', () => {
     const context = vm.createContext({
-        BLOCK_KEYS: ['modules', 'role_filters', 'ai', 'engine'], MODULE_KEYS: ['twitter'], MODULE_DEFAULTS: { twitter: true }, AI_DEFAULTS: { model: 'global', system_prompt: '' }, EMOJI_FIELDS: [], ENGINE_DEFAULTS: { modes: {}, domains: {}, emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', fallback_to_proxy: true, impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' }, BLOCK_LABELS: { engine: 'Motor' },
+        BLOCK_KEYS: ['modules', 'role_filters', 'ai', 'engine'], MODULE_KEYS: ['twitter'], MODULE_DEFAULTS: { twitter: true }, AI_DEFAULTS: { model: 'global', system_prompt: '' }, EMOJI_FIELDS: [], ENGINE_DEFAULTS: { emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' }, BLOCK_LABELS: { engine: 'Motor' },
         activeServer: 'g', activeChannel: 'thread',
         appSettings: { modules: { twitter: true }, role_filters: {}, ai: { model: 'global', system_prompt: '' }, engine: { value: 'global' }, guilds: { g: { modules: { twitter: true }, role_filters: {}, ai: { model: 'guild', system_prompt: '' }, engine: { value: 'guild' } } } },
         rawOverrides: { g: { engine: true, channels: { parent: { engine: true }, thread: { engine: true } } } },
@@ -287,7 +287,7 @@ test('whole guild reset removes guild pins but keeps selected channel overrides'
    yazdığı ve DOM'dan yeniden okunamayan değişikliği (rol listesi) siliyordu; değişiklik
    kaydetme gövdesine hiç girmiyordu. */
 test('role list edits are pinned and reach the save payload in both scopes', () => {
-    const ENGINE_DEFAULTS = { modes: {}, domains: {}, emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', fallback_to_proxy: true, impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' };
+    const ENGINE_DEFAULTS = { emojis: {}, twitter_source: 'syndication', max_images: 4, max_video_mb: 8, show_metrics: true, show_timestamp: true, show_community_note: true, show_quote: true, auto_translate: true, translation_target: 'tr', impersonate_skip_replies: true, impersonate_user: true, respond_to_bots: false, sensitive_mode: 'hide_always' };
     const context = vm.createContext({
         BLOCK_KEYS: ['modules', 'role_filters', 'ai', 'engine'],
         MODULE_KEYS: ['twitter'], MODULE_DEFAULTS: { twitter: true }, MODULE_LABELS: {}, DIFF_LABELS: {},

@@ -20,7 +20,6 @@ pub struct PlatformModules {
     pub facebook: bool,
     pub youtube: bool,
     pub letterboxd: bool,
-    pub translation: bool,
     pub ai_chat: bool,
 }
 
@@ -39,7 +38,6 @@ impl Default for PlatformModules {
             facebook: true,
             youtube: true,
             letterboxd: true,
-            translation: true,
             ai_chat: true,
         }
     }
@@ -88,41 +86,8 @@ impl RoleFilterSettings {
     }
 }
 // =====================================================================================
-// LINK DÖNÜŞTÜRME MOTORU (PROXY vs BUILT-IN)
+// LINK DÖNÜŞTÜRME MOTORU (NATIVE)
 // =====================================================================================
-
-/// Bağlantının nasıl dönüştürüleceği.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ConversionMode {
-    /// Harici bir önizleme servisine (fixupx.com, tnktok.com ...) yönlendirir.
-    #[default]
-    Proxy,
-    /// Bot bağlantıyı kendisi çözümler ve Discord embed'ini native olarak kendisi üretir.
-    Builtin,
-}
-
-/// Proxy motorunun **hiç kullanılmadığı** platformlar.
-///
-/// Twitter/X, Instagram ve Reddit için native embed motoru çalışır durumdadır (sesli video
-/// dâhil eksiksiz kart üretir); bu yüzden bu platformlarda **proxy modu** ve **proxy yedeği**
-/// tamamen kaldırılmıştır: motor modu daima native'dir, yedek alan adı yoktur.
-pub const NATIVE_ONLY_PLATFORMS: [&str; 9] = [
-    "twitter",
-    "instagram",
-    "reddit",
-    "twitch",
-    "pixiv",
-    "tumblr",
-    "facebook",
-    "youtube",
-    "letterboxd",
-];
-
-/// Verilen platform yalnızca native motorla mı çalışır (proxy desteklenmez)?
-pub fn is_native_only(platform_key: &str) -> bool {
-    NATIVE_ONLY_PLATFORMS.contains(&platform_key)
-}
 
 /// Twitter/X verisinin hangi kaynaktan çekileceği.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,91 +111,6 @@ impl TwitterSource {
             TwitterSource::Fxtwitter => "fxtwitter",
             TwitterSource::Vxtwitter => "vxtwitter",
             TwitterSource::Hybrid => "hybrid",
-        }
-    }
-}
-
-/// Proxy motorunu kullanabilen platformların motor seçimi.
-///
-/// **Twitter/X, Instagram ve Reddit burada yer almaz:** native kartları eksiksiz çalıştığı
-/// için bu platformlarda proxy modu tamamen kaldırıldı (bkz. [`NATIVE_ONLY_PLATFORMS`]).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct PlatformEngineModes {
-    pub tiktok: ConversionMode,
-    pub bluesky: ConversionMode,
-    pub spotify: ConversionMode,
-}
-
-impl Default for PlatformEngineModes {
-    /// TikTok (bot yalnızca kart üretir) için varsayılan proxy'dir; Bluesky ve Spotify'da
-    /// native embed açıktır (başarısız olursa `EngineSettings::fallback_to_proxy` sayesinde
-    /// eski proxy davranışına düşer).
-    fn default() -> Self {
-        Self {
-            tiktok: ConversionMode::Proxy,
-            bluesky: ConversionMode::Builtin,
-            spotify: ConversionMode::Builtin,
-        }
-    }
-}
-
-impl PlatformEngineModes {
-    /// Platformun motor modu. Native-only platformlarda **daima** `Builtin` döner.
-    pub fn get(&self, platform_key: &str) -> ConversionMode {
-        if is_native_only(platform_key) {
-            return ConversionMode::Builtin;
-        }
-        match platform_key {
-            "tiktok" => self.tiktok,
-            "bluesky" => self.bluesky,
-            "spotify" => self.spotify,
-            _ => ConversionMode::Proxy,
-        }
-    }
-
-    /// Yalnızca testlerin kullandığı programatik ayar; WebUI değerleri JSON ile yazar.
-    /// Native-only platformlarda ve bilinmeyen anahtarlarda sessizce yok sayılır.
-    #[cfg(test)]
-    pub fn set(&mut self, platform_key: &str, mode: ConversionMode) {
-        match platform_key {
-            "tiktok" => self.tiktok = mode,
-            "bluesky" => self.bluesky = mode,
-            "spotify" => self.spotify = mode,
-            _ => {}
-        }
-    }
-}
-
-/// Proxy modunda kullanılacak alan adları. Boş bırakılan alan `.env` / varsayılan
-/// değeri kullanır (WebUI'dan .env dosyasına dokunmadan alan adı değiştirilebilir).
-///
-/// Yalnızca **proxy motoru kullanılabilen** platformlar yer alır; Twitter/X, Instagram ve
-/// Reddit native-only olduğu için yedek alan adı ayarları kaldırıldı.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct ProxyDomains {
-    pub tiktok: String,
-    pub bluesky: String,
-    pub spotify: String,
-}
-
-impl ProxyDomains {
-    pub fn get(&self, platform_key: &str) -> &str {
-        match platform_key {
-            "tiktok" => &self.tiktok,
-            "bluesky" => &self.bluesky,
-            "spotify" => &self.spotify,
-            _ => "",
-        }
-    }
-
-    pub fn set(&mut self, platform_key: &str, value: String) {
-        match platform_key {
-            "tiktok" => self.tiktok = value,
-            "bluesky" => self.bluesky = value,
-            "spotify" => self.spotify = value,
-            _ => {}
         }
     }
 }
@@ -501,10 +381,6 @@ pub struct EngineSettings {
     /// kanalda da gizli kalır (bkz. `render::VisibilityDecision`).
     #[serde(default)]
     pub sensitive_mode: SensitiveMode,
-    /// Platform → motor modu (proxy / builtin).
-    pub modes: PlatformEngineModes,
-    /// Proxy modunda kullanılacak alan adları (boş = .env).
-    pub domains: ProxyDomains,
     /// Twitter/X için veri kaynağı.
     pub twitter_source: TwitterSource,
     /// Tek mesajda ek olarak yüklenecek maksimum görsel sayısı.
@@ -527,8 +403,6 @@ pub struct EngineSettings {
     /// İngilizce gönderileri de çevirir. WebUI'a yazılmaz; çalışma zamanında türetilir.
     #[serde(skip)]
     pub translate_english: bool,
-    /// Native embed üretilemezse otomatik olarak proxy linkine düş.
-    pub fallback_to_proxy: bool,
     /// Mesajı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönder ("taklit").
     /// Bu sayede mesajda `<@kullanıcı>` etiketi ve `[:](...)` gibi link hileleri gerekmez.
     pub impersonate_user: bool,
@@ -544,8 +418,6 @@ impl Default for EngineSettings {
         Self {
             respond_to_bots: false,
             sensitive_mode: SensitiveMode::HideAlways,
-            modes: PlatformEngineModes::default(),
-            domains: ProxyDomains::default(),
             twitter_source: TwitterSource::default(),
             max_images: 4,
             max_video_mb: 8,
@@ -556,7 +428,6 @@ impl Default for EngineSettings {
             auto_translate: true,
             translation_target: "tr".to_string(),
             translate_english: false,
-            fallback_to_proxy: true,
             impersonate_user: true,
             impersonate_skip_replies: true,
             emojis: EmojiSettings::default(),
@@ -573,43 +444,8 @@ pub enum SensitiveMode {
 }
 
 impl EngineSettings {
-    /// Platform anahtarı (`tiktok`, `bluesky` ...) için etkin mod. Native-only platformlarda
-    /// (Twitter/X, Instagram, Reddit) **daima** [`ConversionMode::Builtin`] döner.
-    pub fn mode_for(&self, platform_key: &str) -> ConversionMode {
-        self.modes.get(platform_key)
-    }
-
-    /// Native embed üretilemezse proxy linkine düşülsün mü? Native-only platformlarda asla.
-    pub fn allows_proxy_fallback(&self, platform_key: &str) -> bool {
-        !is_native_only(platform_key) && self.fallback_to_proxy
-    }
-
-    /// Platform için geçerli proxy alan adı: WebUI ayarı doluysa o, değilse `.env` değeri.
-    /// Native-only platformlarda proxy kullanılmadığı için boş döner.
-    pub fn domain_for(&self, platform_key: &str, config: &crate::config::Config) -> String {
-        if is_native_only(platform_key) {
-            return String::new();
-        }
-        let from_settings = self.domains.get(platform_key);
-        if !from_settings.is_empty() {
-            return from_settings.to_string();
-        }
-        match platform_key {
-            "tiktok" => config.tiktok_domain.clone(),
-            "bluesky" => config.bluesky_domain.clone(),
-            "spotify" => config.spotify_domain.clone(),
-            _ => String::new(),
-        }
-    }
-
-    /// WebUI girdilerini güvenli sınırlara çeker ve alan adlarını temizler.
-    /// Geçersiz alan adı boşaltılır (bu da `.env` değerinin kullanılması demektir).
+    /// WebUI girdilerini güvenli sınırlara çeker.
     pub fn sanitize(&mut self) {
-        for key in ["tiktok", "bluesky", "spotify"] {
-            let cleaned = crate::config::clean_domain(self.domains.get(key)).unwrap_or_default();
-            self.domains.set(key, cleaned);
-        }
-
         if !MAX_IMAGES_RANGE.contains(&self.max_images) {
             self.max_images = self.max_images.clamp(1, 10);
         }
@@ -680,8 +516,6 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub letterboxd: RoleFilterSettings,
     #[serde(default)]
-    pub translation: RoleFilterSettings,
-    #[serde(default)]
     pub ai_chat: RoleFilterSettings,
 }
 
@@ -712,7 +546,6 @@ impl ModuleRoleFilters {
             &mut self.facebook,
             &mut self.youtube,
             &mut self.letterboxd,
-            &mut self.translation,
             &mut self.ai_chat,
         ] {
             filter.sanitize();
@@ -738,7 +571,6 @@ impl GuildSettings {
             "facebook" => &self.role_filters.facebook,
             "youtube" => &self.role_filters.youtube,
             "letterboxd" => &self.role_filters.letterboxd,
-            "translation" => &self.role_filters.translation,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
         }
@@ -928,7 +760,7 @@ pub struct AppSettings {
     pub role_filter: Option<RoleFilterSettings>,
     #[serde(default)]
     pub ai: AiSettings,
-    /// Link dönüştürme motoru (proxy / built-in embed) ayarları
+    /// Link dönüştürme motoru (native kart) ayarları
     #[serde(default)]
     pub engine: EngineSettings,
     /// Sunucuya özel **sparse** ayarlar (Guild ID -> yalnızca bilerek değiştirilen bölümler).
@@ -1108,7 +940,6 @@ impl AppSettings {
         self.role_filters.facebook = legacy.clone();
         self.role_filters.youtube = legacy.clone();
         self.role_filters.letterboxd = legacy.clone();
-        self.role_filters.translation = legacy.clone();
         self.role_filters.ai_chat = legacy;
     }
 }
@@ -1564,7 +1395,6 @@ mod tests {
             &settings.role_filters.instagram,
             &settings.role_filters.reddit,
             &settings.role_filters.bluesky,
-            &settings.role_filters.translation,
             &settings.role_filters.ai_chat,
         ] {
             assert_eq!(filter.mode, FilterMode::Allowlist);
@@ -1620,49 +1450,21 @@ mod tests {
     }
 
     #[test]
-    fn test_conversion_mode_serde_and_defaults() {
-        assert_eq!(
-            serde_json::to_string(&ConversionMode::Builtin).unwrap(),
-            "\"builtin\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ConversionMode::Proxy).unwrap(),
-            "\"proxy\""
-        );
-
-        // Varsayılan: twitter/instagram/reddit/bluesky/spotify builtin, tiktok proxy
-        let cfg = AppSettings::default();
-        assert_eq!(cfg.engine.mode_for("twitter"), ConversionMode::Builtin);
-        assert_eq!(cfg.engine.mode_for("reddit"), ConversionMode::Builtin);
-        assert_eq!(cfg.engine.mode_for("bluesky"), ConversionMode::Builtin);
-        assert_eq!(cfg.engine.mode_for("tiktok"), ConversionMode::Proxy);
-        assert_eq!(cfg.engine.mode_for("instagram"), ConversionMode::Builtin);
-        assert_eq!(cfg.engine.mode_for("bilinmeyen"), ConversionMode::Proxy);
-    }
-
-    #[test]
     fn engine_settings_round_trip_through_json() {
         let mut settings = AppSettings::default();
-        settings.engine.modes.set("tiktok", ConversionMode::Builtin);
         settings.engine.twitter_source = TwitterSource::Fxtwitter;
         settings.engine.max_video_mb = 12;
-        settings
-            .engine
-            .domains
-            .set("spotify", "fixspotify.com".to_string());
 
         let json = serde_json::to_string(&settings).unwrap();
         let decoded: AppSettings = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(decoded.engine.modes.tiktok, ConversionMode::Builtin);
         assert_eq!(decoded.engine.twitter_source, TwitterSource::Fxtwitter);
         assert_eq!(decoded.engine.twitter_source.key(), "fxtwitter");
         assert_eq!(decoded.engine.max_video_mb, 12);
-        assert_eq!(decoded.engine.domains.spotify, "fixspotify.com");
     }
 
     /// **Geriye dönük uyumluluk (migration gerekmez):** eski `settings.json` düzeni — kaldırılan
-    /// `twitter/instagram/reddit` motor modu ve yedek alan adları ile `emojis.reddit` alanı
+    /// proxy motor modları, yedek alan adları ve `fallback_to_proxy` ile `emojis.reddit` alanı
     /// yokken — **hatasız** yüklenir: bilinmeyen anahtarlar yok sayılır, eksik yeni alan
     /// varsayılanını alır (serde `default` + `deny_unknown_fields` kullanılmıyor).
     #[test]
@@ -1741,98 +1543,40 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(json).expect("eski settings.json düzeni hatasız yüklenmeli");
 
-        // Kaldırılan anahtarlar yok sayılır: native-only platformlar daima native.
-        assert_eq!(settings.engine.mode_for("twitter"), ConversionMode::Builtin);
-        assert_eq!(
-            settings.engine.mode_for("instagram"),
-            ConversionMode::Builtin
-        );
-        assert_eq!(settings.engine.mode_for("reddit"), ConversionMode::Builtin);
-        assert!(!settings.engine.allows_proxy_fallback("reddit"));
-        // Proxy kullanılabilen platformlar okunmaya devam eder.
-        assert_eq!(settings.engine.modes.tiktok, ConversionMode::Proxy);
-        assert!(settings.engine.allows_proxy_fallback("tiktok"));
-        assert!(settings.engine.domains.tiktok.is_empty());
+        // Kaldırılan proxy anahtarları yok sayılır; diğer değerler okunur.
+        assert_eq!(settings.engine.twitter_source, TwitterSource::Syndication);
+        assert!(settings.engine.impersonate_user);
         // Eski dosyada bulunmayan yeni alan varsayılanını alır ve çalışır.
         assert_eq!(settings.engine.emojis.reddit, DEFAULT_REDDIT_EMOJI);
         assert_eq!(settings.engine.emojis.reddit(), Some(DEFAULT_REDDIT_EMOJI));
         // Sunucuya özel eski kayıt da (eksik alanlarıyla) yüklenir.
         let guild = settings.get_guild_settings(Some(serenity::all::GuildId::new(4242)));
-        assert_eq!(guild.engine.mode_for("reddit"), ConversionMode::Builtin);
-        assert!(!guild.engine.allows_proxy_fallback("reddit"));
-        assert!(guild.engine.allows_proxy_fallback("bluesky"));
+        assert!(guild.modules.twitter);
     }
 
     #[test]
     fn engine_settings_missing_fields_fall_back_to_defaults() {
-        // Native-only platformların (twitter/instagram/reddit) kayıtlı değerleri yok sayılır.
+        // Kaldırılan proxy modları ve bilinmeyen anahtarlar yok sayılır.
         let json = r#"{ "engine": { "modes": { "twitter": "proxy", "bluesky": "proxy" }, "attach_videos": false } }"#;
         let settings: AppSettings = serde_json::from_str(json).unwrap();
 
-        assert_eq!(settings.engine.modes.bluesky, ConversionMode::Proxy);
-        assert_eq!(
-            settings.engine.mode_for("twitter"),
-            ConversionMode::Builtin,
-            "Twitter/X native-only: proxy modu yok sayılır"
-        );
-        assert!(!settings.engine.allows_proxy_fallback("twitter"));
-        assert!(settings.engine.allows_proxy_fallback("bluesky"));
         // Eksik alanlar varsayılan kalmalı
         assert_eq!(settings.engine.twitter_source, TwitterSource::Syndication);
         assert_eq!(settings.engine.max_images, 4);
         assert!(settings.engine.auto_translate);
-        assert!(settings.engine.fallback_to_proxy);
     }
 
     #[test]
-    fn engine_domain_prefers_webui_override_then_env() {
-        let config = crate::config::Config {
-            discord_token: "dummy".to_string(),
-            tiktok_domain: "tnktok.com".to_string(),
-            bluesky_domain: "fxbsky.app".to_string(),
-            spotify_domain: "open.fixspotify.com".to_string(),
-            delete_original: true,
-            openrouter_api_key: None,
-            reddit_client_id: "test-id".to_string(),
-            instagram_sessionid: None,
-            web_port: 3000,
-        };
-
-        let mut engine = EngineSettings::default();
-        assert_eq!(engine.domain_for("tiktok", &config), "tnktok.com");
-
-        engine.domains.set("tiktok", "tnktok.example".to_string());
-        assert_eq!(engine.domain_for("tiktok", &config), "tnktok.example");
-        assert_eq!(engine.domain_for("bluesky", &config), "fxbsky.app");
-        assert_eq!(engine.domain_for("spotify", &config), "open.fixspotify.com");
-
-        // Native-only platformlarda proxy motoru (ve yedek alan adı) yoktur.
-        assert!(engine.domain_for("twitter", &config).is_empty());
-        assert!(engine.domain_for("instagram", &config).is_empty());
-        assert!(engine.domain_for("reddit", &config).is_empty());
-    }
-
-    #[test]
-    fn engine_sanitize_clamps_values_and_cleans_domains() {
+    fn engine_sanitize_clamps_values() {
         let mut engine = EngineSettings {
             max_images: 0,
             max_video_mb: 200,
             ..Default::default()
         };
-        engine
-            .domains
-            .set("tiktok", "https://Tnktok.com/".to_string());
-        engine.domains.set("bluesky", "kötü domain!!".to_string());
-
         engine.sanitize();
 
         assert!(MAX_IMAGES_RANGE.contains(&engine.max_images));
         assert!(MAX_VIDEO_MB_RANGE.contains(&engine.max_video_mb));
-        assert_eq!(engine.domains.tiktok, "tnktok.com");
-        assert!(
-            engine.domains.bluesky.is_empty(),
-            "geçersiz alan adı temizlenmeli"
-        );
     }
 
     #[test]
@@ -1843,14 +1587,6 @@ mod tests {
             "role_filters": { "twitter": { "mode": "disabled", "roles": ["123"] } },
             "ai": { "model": "test/model", "system_prompt": "kişilik" },
             "engine": {
-                "modes": {
-                    "tiktok": "builtin",
-                    "bluesky": "builtin"
-                },
-                "domains": {
-                    "tiktok": "  Tnktok.com/  ",
-                    "bluesky": ""
-                },
                 "twitter_source": "hybrid",
                 "max_images": 7,
                 "max_video_mb": 99,
@@ -1858,20 +1594,13 @@ mod tests {
                 "show_timestamp": false,
                 "show_community_note": true,
                 "show_quote": false,
-                "auto_translate": false,
-                "fallback_to_proxy": false
+                "auto_translate": false
             }
         }"#;
 
         let mut settings: AppSettings = serde_json::from_str(json).unwrap();
         settings.engine.sanitize();
 
-        assert_eq!(settings.engine.modes.tiktok, ConversionMode::Builtin);
-        assert_eq!(
-            settings.engine.mode_for("instagram"),
-            ConversionMode::Builtin,
-            "Instagram native-only: proxy modu yok"
-        );
         assert_eq!(settings.engine.twitter_source, TwitterSource::Hybrid);
         assert!(!settings.engine.show_timestamp);
         assert!(!settings.engine.show_quote);
@@ -1882,7 +1611,6 @@ mod tests {
             settings.engine.max_video_mb,
             MAX_VIDEO_MB_RANGE.end().to_owned()
         );
-        assert_eq!(settings.engine.domains.tiktok, "tnktok.com");
         // Yeni alanlar JSON'da yoksa varsayılanları alır
         assert!(settings.engine.impersonate_user);
         assert!(
@@ -2032,14 +1760,13 @@ mod tests {
         let guild_id = serenity::all::GuildId::new(4242);
 
         // Genel varsayılan: sunucu kaydı yok → miras.
-        settings.engine.modes.set("bluesky", ConversionMode::Proxy);
+        settings.engine.max_images = 9;
         assert_eq!(
             settings
                 .get_guild_settings(Some(guild_id))
                 .engine
-                .modes
-                .bluesky,
-            ConversionMode::Proxy
+                .max_images,
+            9
         );
 
         // Sunucuya özel override: yalnızca `engine` bölümü sabitlenir.
@@ -2047,10 +1774,7 @@ mod tests {
             guild_id.to_string(),
             GuildOverride {
                 engine: Some(EngineSettings {
-                    modes: PlatformEngineModes {
-                        bluesky: ConversionMode::Builtin,
-                        ..PlatformEngineModes::default()
-                    },
+                    max_images: 2,
                     ..EngineSettings::default()
                 }),
                 ..GuildOverride::default()
@@ -2061,18 +1785,16 @@ mod tests {
             settings
                 .get_guild_settings(Some(guild_id))
                 .engine
-                .modes
-                .bluesky,
-            ConversionMode::Builtin
+                .max_images,
+            2
         );
         // Bilinmeyen sunucu geneli miras alır.
         assert_eq!(
             settings
                 .get_guild_settings(Some(serenity::all::GuildId::new(7)))
                 .engine
-                .modes
-                .bluesky,
-            ConversionMode::Proxy
+                .max_images,
+            9
         );
     }
 

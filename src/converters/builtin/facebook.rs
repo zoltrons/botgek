@@ -369,7 +369,6 @@ Avengers: Doomsday arrives in theaters everywhere December 18. Get tickets now: 
             is_spoiler: false,
             user_comment: None,
             original_url: REEL.into(),
-            fixed_url: REEL.into(),
         };
         let post = fetch(&reqwest::Client::new(), &parsed)
             .await

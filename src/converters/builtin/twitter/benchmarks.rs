@@ -37,7 +37,6 @@ async fn live_fetch_scenarios() {
             let parsed = ParsedPost {
                 platform: Platform::Twitter,
                 original_url: url.to_string(),
-                fixed_url: url.to_string(),
                 is_spoiler: false,
                 user_comment: None,
             };

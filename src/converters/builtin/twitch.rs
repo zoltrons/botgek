@@ -119,7 +119,7 @@ struct AccessToken {
 
 /// Twitch klibini çeker ve karta dönüştürür.
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let Some(slug) = clip_slug(&parsed.fixed_url) else {
+    let Some(slug) = clip_slug(&parsed.original_url) else {
         return preview::fetch(parsed, Platform::Twitch).await;
     };
     match fetch_clip(client, &slug).await {

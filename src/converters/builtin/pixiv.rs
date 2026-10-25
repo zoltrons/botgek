@@ -400,8 +400,7 @@ mod tests {
             platform: Platform::Pixiv,
             is_spoiler: false,
             user_comment: None,
-            original_url: url.clone(),
-            fixed_url: url,
+            original_url: url,
         };
         let post = fetch(&client, &parsed).await.expect("eser okunmalı");
         println!("{post:#?}");

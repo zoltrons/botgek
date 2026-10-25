@@ -72,6 +72,16 @@ pub async fn public_get(
     timeout: Duration,
     user_agent: &str,
 ) -> Result<(Url, reqwest::Response), String> {
+    public_get_with(raw, timeout, user_agent, &[]).await
+}
+
+/// [`public_get`] ile aynı, her hop'ta ek başlıklar (ör. TikTok çerezi ve Referer) gönderir.
+pub async fn public_get_with(
+    raw: &str,
+    timeout: Duration,
+    user_agent: &str,
+    headers: &[(&str, String)],
+) -> Result<(Url, reqwest::Response), String> {
     let mut url = Url::parse(raw).map_err(|_| "invalid preview URL")?;
     for _ in 0..=3 {
         validate_url(&url)?;
@@ -98,12 +108,11 @@ pub async fn public_get(
             .timeout(timeout)
             .build()
             .map_err(|_| "preview client failed")?;
-        let response = client
-            .get(url.clone())
-            .header("user-agent", user_agent)
-            .send()
-            .await
-            .map_err(|_| "preview request failed")?;
+        let mut request = client.get(url.clone()).header("user-agent", user_agent);
+        for (name, value) in headers {
+            request = request.header(*name, value);
+        }
+        let response = request.send().await.map_err(|_| "preview request failed")?;
         if response.status().is_redirection() {
             let target = response
                 .headers()

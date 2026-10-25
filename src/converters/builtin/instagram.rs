@@ -839,7 +839,6 @@ mod tests {
             is_spoiler: false,
             user_comment: None,
             original_url: format!("https://www.instagram.com/{kind}/{code}"),
-            fixed_url: format!("https://ddinstagram.com/{kind}/{code}"),
         }
     }
 

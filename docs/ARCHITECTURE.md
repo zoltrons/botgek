@@ -14,7 +14,6 @@ modelini ve tasarım kararlarının nedenlerini açıklar.
 | `src/converters/parser.rs` | Desteklenen URL'lerin ayrıştırılması, kanonikleştirme, spoiler ve kullanıcı yorumu. |
 | `src/converters/mod.rs` | Dönüşüm kuyruğu, eşzamanlılık sınırları ve etkileşim akışı. |
 | `src/converters/builtin/` | Platform dönüştürücüleri, medya, çeviri, önizleme, Render ve güvenli HTTP. |
-| `src/converters/translation.rs` | Proxy mesajlarında bayrak tepkisiyle çeviri. |
 | `src/settings.rs` | Ayar şeması, kapsam çözümleme, doğrulama, atomik yazma ve göç. |
 | `src/store.rs` | Kart–paylaşan kullanıcı kaydı (SQLite, WAL). |
 | `src/web/` | Axum API'si, oturum kimlik doğrulaması ve gömülü panel varlıkları. |
@@ -110,13 +109,13 @@ değişmez.
 
 ## Platform motorları
 
-- **Native** motor, botun kendi çözümlemesini ve Components V2 kartını kullanır.
-- **Proxy** motoru, bağlantıyı platformun proxy alan adına yönlendirir. Yalnızca TikTok, Bluesky ve
-  Spotify için seçilebilir; bu platformlarda `fallback_to_proxy` ile native başarısızlığında proxy'ye
-  düşülebilir.
-- X, Instagram, Reddit, Twitch, Pixiv, Tumblr, Facebook, YouTube Community Post ve Letterboxd
-  **native-only**'dir;
-  proxy modu ve proxy yedeği bu platformlarda yoktur.
+- Tek motor vardır: bot her gönderiyi kendisi çözer ve Components V2 kartını kendisi üretir. Proxy motoru,
+  yedek alan adları ve proxy yedeği kaldırılmıştır; kart üretilemezse özgün mesaj olduğu gibi kalır.
+- TikTok gönderileri sayfanın gömdüğü `__UNIVERSAL_DATA_FOR_REHYDRATION__` verisinden okunur (yazar,
+  doğrulama, açıklama, sayılar, tarih, fotoğraflar ve h264 MP4 seçenekleri). Video adresi yalnızca o
+  sayfayı veren isteğin `tt_chain_token` çereziyle ve TikTok Referer'ıyla verildiği için video dosya
+  sınırına sığan en iyi h264 seçenekten indirilip mesaja eklenir; indirilemezse kapak gösterilir. Sayfa
+  okunamazsa oEmbed'e düşülür.
 - Tumblr önce fxtumblr uyumlu renderer'ı (`FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`) dener; böylece
   NPF/reblog zinciri ve çoklu medya tek güvenli render görselinde korunur. Renderer erişilemezse public
   OG fallback kullanılır.
@@ -242,8 +241,7 @@ Kurulum, istemci kaydı ve çağrı örnekleri: [MCP.md](MCP.md).
   karakterle, yanıt 8.000 karakter ve 1 MiB ile sınırlıdır.
 - X otomatik çevirisinin hedef dili panelden `tr`, `en`, `de` veya BCP-47 uyumlu başka bir kod olarak
   seçilebilir.
-- Proxy mesajlarında bayrak tepkisi anlık çeviri yapar; native kartlar kendi çeviri ayarını kullanır.
-- Kart dönüşümü, AI sohbeti ve çeviri tepkileri aynı rol filtresi politikasını kullanır.
+- Kart dönüşümü ve AI sohbeti aynı rol filtresi politikasını kullanır.
 
 ## Hata semantiği
 

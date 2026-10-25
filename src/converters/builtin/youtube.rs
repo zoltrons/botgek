@@ -478,8 +478,7 @@ mod tests {
             platform: Platform::YouTube,
             is_spoiler: false,
             user_comment: None,
-            original_url: url.clone(),
-            fixed_url: url,
+            original_url: url,
         };
         let post = fetch(&reqwest::Client::new(), &parsed)
             .await

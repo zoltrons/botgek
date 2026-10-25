@@ -1,21 +1,17 @@
 pub mod builtin;
 pub mod parser;
-pub mod translation;
 
 use serenity::all::{
-    ChannelId, Context, CreateMessage, GuildId, Member, Message, MessageId, MessageReference,
-    ReactionType, User,
+    ChannelId, Context, GuildId, Member, Message, MessageId, MessageReference, User,
 };
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{self, Sender, error::TrySendError};
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use crate::config::Config;
-use crate::settings::{ConversionMode, EngineSettings, GuildSettings};
-use crate::utils::mentions::build_selective_allowed_mentions;
-use crate::utils::{DISCORD_CONTENT_LIMIT, truncate_chars};
+use crate::settings::GuildSettings;
 
 /// Tek tüketicili dönüşüm kuyruğu, Discord olayları başına sınırsız görev birikmesini önler.
 /// Kuyruk dolduğunda yeni bağlantı sessizce bekletilmez; özgün mesaj korunarak açıkça reddedilir.
@@ -80,15 +76,6 @@ fn conversion_sender() -> &'static Sender<ConversionJob> {
         });
         sender
     })
-}
-
-/// Ayarlardaki alan adı override'larını (WebUI) `.env` değerleriyle birleştirir.
-pub(crate) fn resolve_domains(engine: &EngineSettings, config: &Config) -> parser::PlatformDomains {
-    parser::PlatformDomains {
-        tiktok: engine.domain_for("tiktok", config),
-        bluesky: engine.domain_for("bluesky", config),
-        spotify: engine.domain_for("spotify", config),
-    }
 }
 
 fn module_enabled(settings: &GuildSettings, platform: parser::Platform) -> (bool, &'static str) {
@@ -240,8 +227,7 @@ pub async fn convert_now(
     settings: &GuildSettings,
     delivery: Option<&builtin::InteractionDelivery>,
 ) -> Result<parser::Platform, ConvertError> {
-    let domains = resolve_domains(&settings.engine, config);
-    let Some(parsed) = parser::parse_message_with_domains(content, &domains) else {
+    let Some(parsed) = parser::parse_message(content) else {
         return Err(ConvertError::Unsupported);
     };
 
@@ -326,8 +312,7 @@ async fn prepare_job(
     config: &Config,
     settings: &GuildSettings,
 ) -> Option<ConversionJob> {
-    let domains = resolve_domains(&settings.engine, config);
-    let parsed = match parser::parse_message_with_domains(&msg.content, &domains) {
+    let parsed = match parser::parse_message(&msg.content) {
         Some(p) => p,
         None => return None, // Desteklenen bir bağlantı bulunamadı
     };
@@ -364,8 +349,9 @@ async fn prepare_job(
     })
 }
 
-/// Dönüşümü uçtan uca yürütür. Kart/proxy mesajı gerçekten gönderildiyse `true` döner;
-/// kaynak çözümlenemediğinde veya Discord gönderimi reddettiğinde `false`.
+/// Dönüşümü uçtan uca yürütür. Kart gerçekten gönderildiyse `true` döner; kaynak
+/// çözümlenemediğinde, kapasite dolduğunda veya Discord gönderimi reddettiğinde `false`.
+/// Bütün platformlar native karttır: başarısız dönüşümde özgün mesaj olduğu gibi kalır.
 async fn process_message(
     ctx: &Context,
     msg: &Message,
@@ -375,115 +361,17 @@ async fn process_message(
     parsed: &parser::ParsedPost,
     delivery: Option<&builtin::InteractionDelivery>,
 ) -> bool {
-    // 3. Motor Seçimi: native embed veya (yalnızca proxy destekleyen platformlarda) proxy
-    //    yönlendirmesi. Twitter/X, Instagram ve Reddit **native-only**'dir: `mode_for` bu
-    //    platformlarda daima `Builtin` döner ve proxy yedeği hiç kullanılmaz.
-    let platform_key = builtin::platform_key(parsed.platform);
-    if settings.engine.mode_for(platform_key) == ConversionMode::Builtin {
-        match builtin::handle(ctx, msg, client, parsed, config, &settings.engine, delivery).await {
-            builtin::HandleResult::Sent => return true,
-            // Kapasite dolu veya sonuç belirsiz: proxy'ye düşmek mükerrer/yanlış kart üretebilir.
-            builtin::HandleResult::Busy | builtin::HandleResult::Ambiguous => return false,
-            builtin::HandleResult::Failed => {}
-        }
-
-        if !settings.engine.allows_proxy_fallback(platform_key) {
+    match builtin::handle(ctx, msg, client, parsed, config, &settings.engine, delivery).await {
+        builtin::HandleResult::Sent => true,
+        builtin::HandleResult::Busy | builtin::HandleResult::Ambiguous => false,
+        builtin::HandleResult::Failed => {
             warn!(
-                "Native embed üretilemedi ve bu platformda proxy yedeği yok, dönüştürme atlandı: {}",
+                "Native kart üretilemedi, dönüştürme atlandı: {}",
                 parsed.original_url
             );
-            return false;
+            false
         }
-
-        warn!(
-            "Native embed üretilemedi, proxy motoruna düşülüyor ({}): {}",
-            platform_key, parsed.original_url
-        );
     }
-
-    // 4. Embed Formatı (Spoiler varsa gizle)
-    let embed_part = if parsed.is_spoiler {
-        format!("||[:]({})||", parsed.fixed_url)
-    } else {
-        format!("[:]({})", parsed.fixed_url)
-    };
-
-    // 5. Mesajın link kısmı (her koşulda korunur)
-    let base_content = format!(
-        "<@{}>{} [**{}**](<{}>)",
-        msg.author.id,
-        embed_part,
-        parsed.platform.display_name(),
-        parsed.original_url
-    );
-
-    // 6. Alıntı Formatı (Varsa) - her satır ayrı ayrı blok alıntı olarak işaretlenir.
-    // Boş satırlar **boş alıntı satırı** (`>`) üretmez: Discord bunu mesajda fazladan bir `>`
-    // işareti/ayrı boş şerit olarak çiziyor (aynı kural `v2::community_note_content` ve
-    // `quote_component` için de geçerlidir).
-    let quoted_comment = parsed.user_comment.as_ref().map(|comment| {
-        let quoted: Vec<String> = comment
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(|line| format!("> {line}"))
-            .collect();
-        format!("\n{}", quoted.join("\n"))
-    });
-
-    let mut content = match &quoted_comment {
-        Some(comment) => format!("{base_content}{comment}"),
-        None => base_content.clone(),
-    };
-
-    // Discord 2000 karakteri aşan içeriği reddeder: önce alıntıyı düşür, sonra kırp
-    if content.chars().count() > DISCORD_CONTENT_LIMIT {
-        content = base_content;
-    }
-    let content = truncate_chars(&content, DISCORD_CONTENT_LIMIT);
-
-    let allowed_mentions = build_selective_allowed_mentions(msg);
-
-    let mut builder = CreateMessage::new()
-        .content(content)
-        .allowed_mentions(allowed_mentions);
-
-    // Eğer orijinal mesaj bir yanıtsa, bot da aynı mesaja yanıt versin
-    if let Some(ref message_ref) = msg.message_reference {
-        builder = builder.reference_message(message_ref.clone().fail_if_not_exists(false));
-    }
-
-    // 7. Mesajı Gönder. Orijinal mesaj burada silinmez: erken silmek, gönderenin istemcisi
-    // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
-    // bırakır (discord-api-docs #850). Silme, gönderimden **sonra** arka planda yapılır.
-    let sent_msg = match msg.channel_id.send_message(&ctx.http, builder).await {
-        Ok(m) => m,
-        Err(e) => {
-            error!("Mesaj gönderilirken hata oluştu: {:?}", e);
-            return false;
-        }
-    };
-    info!(
-        "Mesaj başarıyla dönüştürüldü ({:?}): {}",
-        parsed.platform, parsed.original_url
-    );
-
-    // 8. Orijinal mesajı **arka planda** sil (kart gönderildikten sonra). Builtin yardımcısı
-    // silmeyi mesaj en az DELETE_MIN_AGE yaşına gelene kadar erteler: gönderenin istemcisi
-    // optimistic mesajını eşleştirir ve mesaj "hayalet" olarak kalmaz.
-    if config.delete_original {
-        builtin::spawn_delete(ctx, msg);
-    }
-
-    // 9. Kompakt 🗑️ reaksiyonu ekle
-    if let Err(e) = sent_msg
-        .react(&ctx.http, ReactionType::Unicode("🗑️".to_string()))
-        .await
-    {
-        error!("Silme reaksiyonu eklenemedi: {:?}", e);
-    }
-
-    true
 }
 
 #[cfg(test)]

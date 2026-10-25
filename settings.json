@@ -12,7 +12,6 @@
     "tumblr": true,
     "facebook": true,
     "youtube": true,
-    "translation": true,
     "ai_chat": true
   },
   "role_filters": {
@@ -60,10 +59,6 @@
       "mode": "disabled",
       "roles": []
     },
-    "translation": {
-      "mode": "disabled",
-      "roles": []
-    },
     "ai_chat": {
       "mode": "disabled",
       "roles": []
@@ -76,16 +71,6 @@
   "engine": {
     "respond_to_bots": false,
     "sensitive_mode": "hide_always",
-    "modes": {
-      "tiktok": "proxy",
-      "bluesky": "builtin",
-      "spotify": "builtin"
-    },
-    "domains": {
-      "tiktok": "",
-      "bluesky": "",
-      "spotify": ""
-    },
     "twitter_source": "vxtwitter",
     "max_images": 4,
     "max_video_mb": 8,
@@ -95,7 +80,6 @@
     "show_quote": true,
     "auto_translate": true,
     "translation_target": "tr",
-    "fallback_to_proxy": true,
     "impersonate_user": true,
     "impersonate_skip_replies": true,
     "emojis": {

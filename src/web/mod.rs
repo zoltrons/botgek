@@ -49,21 +49,11 @@ pub struct WebInfo {
     /// Derlenen hedef üçlü (ör. `aarch64-unknown-linux-gnu`).
     pub target: String,
     pub port: u16,
-    pub env_domains: std::collections::BTreeMap<String, String>,
 }
 
 impl WebInfo {
     pub fn from_config(config: &Config) -> Self {
         use crate::version;
-
-        let mut env_domains = std::collections::BTreeMap::new();
-        for (key, value) in [
-            ("tiktok", &config.tiktok_domain),
-            ("bluesky", &config.bluesky_domain),
-            ("spotify", &config.spotify_domain),
-        ] {
-            env_domains.insert(key.to_string(), value.clone());
-        }
 
         Self {
             version: version::SEMVER.to_string(),
@@ -77,7 +67,6 @@ impl WebInfo {
             build_date: version::BUILD_DATE.to_string(),
             target: version::TARGET.to_string(),
             port: config.web_port,
-            env_domains,
         }
     }
 }
@@ -633,9 +622,6 @@ mod tests {
     fn config() -> Config {
         Config {
             discord_token: "test-token".to_string(),
-            tiktok_domain: "tnktok.com".to_string(),
-            bluesky_domain: "fxbsky.app".to_string(),
-            spotify_domain: "open.fixspotify.com".to_string(),
             delete_original: true,
             openrouter_api_key: None,
             reddit_client_id: "test-id".to_string(),
@@ -646,7 +632,7 @@ mod tests {
 
     /// Panelin başlık bilgileri gerçek yapılandırmadan üretilir: sabit "PORT: 3000" yok.
     #[test]
-    fn info_payload_carries_version_port_and_env_domains() {
+    fn info_payload_carries_version_and_port() {
         let info = WebInfo::from_config(&config());
 
         assert_eq!(info.port, 8123);
@@ -665,27 +651,6 @@ mod tests {
             info.full_version.starts_with('v'),
             "panel biçimi: {}",
             info.full_version
-        );
-        assert_eq!(
-            info.env_domains.get("tiktok").map(String::as_str),
-            Some("tnktok.com")
-        );
-        assert_eq!(
-            info.env_domains.get("bluesky").map(String::as_str),
-            Some("fxbsky.app")
-        );
-        assert_eq!(
-            info.env_domains.get("spotify").map(String::as_str),
-            Some("open.fixspotify.com")
-        );
-        assert_eq!(
-            info.env_domains.len(),
-            3,
-            "yalnızca proxy motoru kullanılabilen platformların yedek alan adı taşınır"
-        );
-        assert!(
-            !info.env_domains.contains_key("twitter"),
-            "Twitter/X native-only: yedek alan adı yok"
         );
     }
 
@@ -767,23 +732,6 @@ mod tests {
             "emoji setindeki her alanın kutusu olmalı"
         );
 
-        let platforms: BTreeSet<String> = engine["domains"]
-            .as_object()
-            .expect("alan adları nesne olmalı")
-            .keys()
-            .cloned()
-            .collect();
-        assert_eq!(
-            capture(INDEX_HTML, r#"data-domain-key="([a-z_]+)""#),
-            platforms,
-            "her platform için yedek alan adı kutusu olmalı"
-        );
-        assert_eq!(
-            capture(INDEX_HTML, r#"name="engine-mode-([a-z_]+)""#),
-            platforms,
-            "her platform için motor (proxy/native) seçimi olmalı"
-        );
-
         let modules = serde_json::to_value(crate::settings::AppSettings::default().modules)
             .expect("modüller serileştirilmeli");
         let module_keys: BTreeSet<String> = modules
@@ -862,7 +810,6 @@ mod tests {
 
         // (etiket adı, ham açılış etiketi) yığını: ham etiket, sınıf denetimi için tutulur.
         let mut stack: Vec<(String, String)> = Vec::new();
-        let mut fallback_ancestors: Option<Vec<String>> = None;
         // Izgaraların ataları: bir `tile` içine hapsolurlarsa alanlar dar sütunlara sıkışır.
         let mut gridd_ancestors: Vec<(String, Vec<String>)> = Vec::new();
         const GRIDS: [&str; 3] = ["tile-grid", "range-grid", "emoji-grid"];
@@ -880,18 +827,6 @@ mod tests {
                         stack.iter().map(|(_, raw)| raw.clone()).collect(),
                     ));
                 }
-            }
-
-            if raw.contains("data-engine-switch=\"fallback_to_proxy\"") {
-                // Bu anahtarın **en yakın `div` atası** doğrudan medya ızgarası olmalı.
-                fallback_ancestors = Some(
-                    stack
-                        .iter()
-                        .rev()
-                        .filter(|(tag, _)| tag == "div")
-                        .map(|(_, raw)| raw.clone())
-                        .collect(),
-                );
             }
 
             // Boşluk (void) elemanlar ve kendini kapatan etiketler yığına girmez.
@@ -916,13 +851,6 @@ mod tests {
         assert!(
             !html.contains("tile--static"),
             "kaldırılan sarmalayıcı sınıfı geri gelmemeli: dengesizlik kaynağıydı"
-        );
-
-        let ancestors = fallback_ancestors.expect("proxy yedeği anahtarı panelde bulunamadı");
-        let nearest_div = ancestors.first().expect("anahtar bir div içinde olmalı");
-        assert!(
-            nearest_div.contains("tile-grid"),
-            "proxy yedeği anahtarı doğrudan ızgarada olmalı; en yakın div: {nearest_div}"
         );
 
         // Izgaralar başka bir `tile`ın çocuğu olmamalı: ekran görüntüsündeki sıkışma tam
@@ -1147,7 +1075,7 @@ mod tests {
         assert!(js.contains("'app-version'"), "sürüm alanı doldurulmalı");
         assert!(js.contains("'system-status'"), "durum alanı doldurulmalı");
 
-        // 4) /api/info gerçek sürüm/port/.env alan adlarını döner.
+        // 4) /api/info gerçek sürüm ve portu döner.
         let info: serde_json::Value = client
             .get(format!("{base}/api/info"))
             .send()
@@ -1163,7 +1091,6 @@ mod tests {
         assert_eq!(info["git_sha"], crate::version::GIT_SHA);
         assert_eq!(info["build_date"], crate::version::BUILD_DATE);
         assert_eq!(info["target"], crate::version::TARGET);
-        assert_eq!(info["env_domains"]["tiktok"], "tnktok.com");
 
         // 5) /api/settings eski `role_filter` alanını döndürmez (tek gerçek: role_filters).
         let settings: serde_json::Value = client

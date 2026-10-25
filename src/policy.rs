@@ -1,4 +1,4 @@
-//! One role policy for conversions, AI and both translation reaction events.
+//! One role policy for conversions and AI chat.
 use crate::settings::{FilterMode, RoleFilterSettings};
 use serenity::all::{Context, GuildId, RoleId, UserId};
 

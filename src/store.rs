@@ -1,12 +1,11 @@
 //! Kalıcı kayıt deposu (SQLite).
 //!
 //! Bot, dönüştürdüğü her kart için **hangi mesajı hangi kullanıcının paylaştığını** saklar.
-//! Bu kayıt üç yerde kullanılır:
+//! Bu kayıt iki yerde kullanılır:
 //!
 //! - 🗑️ **Reaksiyonla silme izni:** kartı paylaşan kullanıcı (taklit webhook'unda mesajın
 //!   yazarı bot/kullanıcı olmadığı için) bu kayıtla bulunur.
 //! - 🛡️ **AI koruması:** kartlara verilen yanıtlarda AI sohbeti tetiklenmez.
-//! - 🇹🇷 **Çeviri:** bayrak reaksiyonunun kart mı proxy mesajı mı olduğunun ayrımı.
 //!
 //! Kayıtlar **dosyada** tutulur; bot yeniden başladığında, çöktüğünde veya güncellendiğinde
 //! hiçbir kayıt kaybolmaz (eskiden bu bilgi bellekteki bir `HashMap` içindeydi ve yeniden

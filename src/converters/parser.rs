@@ -1,8 +1,6 @@
 use regex::{Captures, Regex};
 use std::sync::LazyLock;
 
-use crate::config::Config;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Twitter,
@@ -46,9 +44,6 @@ pub struct ParsedPost {
     pub user_comment: Option<String>,
     /// Orijinal link (örn: https://x.com/username/status/123)
     pub original_url: String,
-    /// Dönüştürülmüş link (örn: https://tnktok.com/@user/video/123). Proxy motoru
-    /// kullanılmayan (native-only) platformlarda **orijinal linke eşittir**.
-    pub fixed_url: String,
 }
 
 // ==================== TWITTER / X ====================
@@ -350,56 +345,12 @@ fn encode_markdown_unsafe(raw: &str) -> String {
 fn sanitize_urls(post: ParsedPost) -> ParsedPost {
     ParsedPost {
         original_url: encode_markdown_unsafe(&post.original_url),
-        fixed_url: encode_markdown_unsafe(&post.fixed_url),
         ..post
     }
 }
 
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
-/// Dönüştürme sırasında kullanılacak platform alan adları (proxy hedefleri).
-/// `.env` değerleri varsayılandır, WebUI üzerinden sunucu bazında değiştirilebilir.
-/// Proxy motoru kullanılabilen platformların yedek alan adları.
-///
-/// Twitter/X, Instagram ve Reddit **native-only**'dir (proxy motoru ve proxy yedeği
-/// kaldırıldı), bu yüzden burada yer almazlar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlatformDomains {
-    pub tiktok: String,
-    pub bluesky: String,
-    pub spotify: String,
-}
-
-impl Default for PlatformDomains {
-    fn default() -> Self {
-        Self {
-            tiktok: "tnktok.com".to_string(),
-            bluesky: "fxbsky.app".to_string(),
-            spotify: "open.fixspotify.com".to_string(),
-        }
-    }
-}
-
-impl From<&Config> for PlatformDomains {
-    fn from(config: &Config) -> Self {
-        Self {
-            tiktok: config.tiktok_domain.clone(),
-            bluesky: config.bluesky_domain.clone(),
-            spotify: config.spotify_domain.clone(),
-        }
-    }
-}
-
-/// `.env` değerleriyle dönüştürme yapar (yalnızca testlerin kullandığı giriş noktası).
-#[cfg(test)]
-pub fn parse_message(raw_content: &str, config: &Config) -> Option<ParsedPost> {
-    parse_message_with_domains(raw_content, &PlatformDomains::from(config))
-}
-
-/// Ayarlardan çözümlenmiş alan adlarıyla dönüştürme yapar.
-pub fn parse_message_with_domains(
-    raw_content: &str,
-    domains: &PlatformDomains,
-) -> Option<ParsedPost> {
+pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
     // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
     if !raw_content.contains("http://")
         && !raw_content.contains("https://")
@@ -408,33 +359,33 @@ pub fn parse_message_with_domains(
         return None;
     }
 
-    // 1. Twitter / X — native-only: proxy motoru kaldırıldı, dönüştürme daima native.
+    // 1. Twitter / X
     if let Some(post) = parse_twitter(raw_content) {
         return Some(sanitize_urls(post));
     }
 
     // 2. TikTok (okdargy/fxTikTok)
-    if let Some(post) = parse_tiktok(raw_content, &domains.tiktok) {
+    if let Some(post) = parse_tiktok(raw_content) {
         return Some(sanitize_urls(post));
     }
 
-    // 3. Instagram — native-only.
+    // 3. Instagram
     if let Some(post) = parse_instagram(raw_content) {
         return Some(sanitize_urls(post));
     }
 
-    // 4. Reddit — native-only.
+    // 4. Reddit
     if let Some(post) = parse_reddit(raw_content) {
         return Some(sanitize_urls(post));
     }
 
     // 5. Bluesky
-    if let Some(post) = parse_bluesky(raw_content, &domains.bluesky) {
+    if let Some(post) = parse_bluesky(raw_content) {
         return Some(sanitize_urls(post));
     }
 
     // 6. Spotify
-    if let Some(post) = parse_spotify(raw_content, &domains.spotify) {
+    if let Some(post) = parse_spotify(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -503,26 +454,24 @@ fn match_pair(
     platform: Platform,
     spoiler: &Regex,
     plain: &Regex,
-    build: impl Fn(&Captures<'_>) -> Option<(String, String)>,
+    build: impl Fn(&Captures<'_>) -> Option<String>,
 ) -> Option<ParsedPost> {
     for (regex, is_spoiler) in [(spoiler, true), (plain, false)] {
         if let Some(caps) = regex.captures(raw_content) {
-            let (original_url, fixed_url) = build(&caps)?;
+            let original_url = build(&caps)?;
             return Some(ParsedPost {
                 platform,
                 is_spoiler,
                 user_comment: extract_user_comment(raw_content, regex),
                 original_url,
-                fixed_url,
             });
         }
     }
     None
 }
 
-/// Native-only platformlarda (proxy motoru yok) dönüştürülmüş bağlantı orijinalin kendisidir.
-fn native(original_url: String) -> Option<(String, String)> {
-    Some((original_url.clone(), original_url))
+fn native(original_url: String) -> Option<String> {
+    Some(original_url)
 }
 
 /// Genel desenler bağlantının tamamını spoiler'da ilk grupta, düz biçimde eşleşmenin kendisinde taşır.
@@ -530,7 +479,7 @@ fn whole_link<'h>(caps: &Captures<'h>) -> Option<&'h str> {
     caps.get(1).or_else(|| caps.get(0)).map(|m| m.as_str())
 }
 
-/// Twitter/X: **native-only** platform (proxy motoru kaldırıldı).
+/// Twitter/X.
 fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
     match_pair(
         raw_content,
@@ -549,7 +498,7 @@ fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
-fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
+fn parse_tiktok(raw_content: &str) -> Option<ParsedPost> {
     // 1. @user/(video|photo)/id
     match_pair(
         raw_content,
@@ -562,10 +511,7 @@ fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
                 caps.get(2)?.as_str(),
                 caps.get(3)?.as_str(),
             );
-            Some((
-                format!("https://www.tiktok.com/@{user}/{kind}/{id}"),
-                format!("https://{domain}/@{user}/{kind}/{id}"),
-            ))
+            Some(format!("https://www.tiktok.com/@{user}/{kind}/{id}"))
         },
     )
     // 2. /t/id
@@ -577,10 +523,7 @@ fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
             &TIKTOK_T_REGEX,
             |caps| {
                 let id = caps.get(1)?.as_str();
-                Some((
-                    format!("https://www.tiktok.com/t/{id}"),
-                    format!("https://{domain}/t/{id}"),
-                ))
+                Some(format!("https://www.tiktok.com/t/{id}"))
             },
         )
     })
@@ -594,16 +537,13 @@ fn parse_tiktok(raw_content: &str, domain: &str) -> Option<ParsedPost> {
             |caps| {
                 let sub = caps.get(1)?.as_str().to_ascii_lowercase();
                 let id = caps.get(2)?.as_str();
-                Some((
-                    format!("https://{sub}.tiktok.com/{id}"),
-                    format!("https://{sub}.{domain}/{id}"),
-                ))
+                Some(format!("https://{sub}.tiktok.com/{id}"))
             },
         )
     })
 }
 
-/// Instagram: **native-only** platform (proxy motoru kaldırıldı).
+/// Instagram.
 fn parse_instagram(raw_content: &str) -> Option<ParsedPost> {
     match_pair(
         raw_content,
@@ -618,7 +558,7 @@ fn parse_instagram(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
-/// Reddit: **native-only** platform (proxy motoru kaldırıldı).
+/// Reddit.
 fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
     // 1. /r/sub/comments/id veya /(u|user)/username/comments/id
     match_pair(
@@ -671,7 +611,7 @@ fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
     })
 }
 
-fn parse_bluesky(raw_content: &str, domain: &str) -> Option<ParsedPost> {
+fn parse_bluesky(raw_content: &str) -> Option<ParsedPost> {
     match_pair(
         raw_content,
         Platform::Bluesky,
@@ -680,15 +620,12 @@ fn parse_bluesky(raw_content: &str, domain: &str) -> Option<ParsedPost> {
         |caps| {
             let handle = caps.get(1)?.as_str();
             let rkey = caps.get(2)?.as_str();
-            Some((
-                format!("https://bsky.app/profile/{handle}/post/{rkey}"),
-                format!("https://{domain}/profile/{handle}/post/{rkey}"),
-            ))
+            Some(format!("https://bsky.app/profile/{handle}/post/{rkey}"))
         },
     )
 }
 
-fn parse_spotify(raw_content: &str, domain: &str) -> Option<ParsedPost> {
+fn parse_spotify(raw_content: &str) -> Option<ParsedPost> {
     // 1. Track / album / playlist / artist
     match_pair(
         raw_content,
@@ -698,10 +635,7 @@ fn parse_spotify(raw_content: &str, domain: &str) -> Option<ParsedPost> {
         |caps| {
             let kind = caps.get(1)?.as_str();
             let id = caps.get(2)?.as_str();
-            Some((
-                format!("https://open.spotify.com/{kind}/{id}"),
-                format!("https://{domain}/{kind}/{id}"),
-            ))
+            Some(format!("https://open.spotify.com/{kind}/{id}"))
         },
     )
     // 2. spotify.link kısa link
@@ -713,10 +647,7 @@ fn parse_spotify(raw_content: &str, domain: &str) -> Option<ParsedPost> {
             &SPOTIFY_SHORT_REGEX,
             |caps| {
                 let token = caps.get(1)?.as_str();
-                Some((
-                    format!("https://spotify.link/{token}"),
-                    format!("https://{domain}/{token}"),
-                ))
+                Some(format!("https://spotify.link/{token}"))
             },
         )
     })
@@ -826,7 +757,7 @@ fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
-/// Letterboxd: **native-only**. Kullanıcı profili, kullanıcı incelemesi ve film sayfası
+/// Letterboxd: kullanıcı profili, kullanıcı incelemesi ve film sayfası
 /// desteklenir; kısa linkler (`boxd.it`) hedefe native motorda çözülür. Adresler kanonik
 /// biçime indirilir (sorgu, parça ve alt sayfa atılır).
 fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
@@ -930,8 +861,7 @@ fn parse_letterboxd_profile(raw_content: &str) -> Option<ParsedPost> {
             platform: Platform::Letterboxd,
             is_spoiler,
             user_comment: extract_user_comment_span(raw_content, start, end),
-            original_url: url.clone(),
-            fixed_url: url,
+            original_url: url,
         });
     }
     None
@@ -1008,41 +938,20 @@ mod tests {
         let with_comment =
             parse_letterboxd("bak https://letterboxd.com/hollieamanda/ ne güzel").unwrap();
         assert_eq!(with_comment.user_comment.as_deref(), Some("bak  ne güzel"));
-        let parsed = parse_message_with_domains(
-            "https://letterboxd.com/film/heat-1995/",
-            &PlatformDomains::default(),
-        )
-        .unwrap();
+        let parsed = parse_message("https://letterboxd.com/film/heat-1995/").unwrap();
         assert_eq!(parsed.platform, Platform::Letterboxd);
-        assert_eq!(parsed.fixed_url, parsed.original_url);
-    }
-
-    fn dummy_config() -> Config {
-        Config {
-            discord_token: "dummy".to_string(),
-            tiktok_domain: "tnktok.com".to_string(),
-            bluesky_domain: "fxbsky.app".to_string(),
-            spotify_domain: "open.fixspotify.com".to_string(),
-            delete_original: true,
-            openrouter_api_key: None,
-            reddit_client_id: "test-id".to_string(),
-            instagram_sessionid: None,
-            web_port: 3000,
-        }
     }
 
     #[test]
     fn test_twitter_parsing() {
-        let cfg = dummy_config();
         let content = "Harika video https://x.com/elonmusk/status/123456789?s=20 mutlaka izleyin";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Twitter);
         assert_eq!(
             parsed.original_url,
             "https://x.com/elonmusk/status/123456789"
         );
-        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
         assert_eq!(
             parsed.user_comment.as_deref(),
@@ -1052,9 +961,8 @@ mod tests {
 
     #[test]
     fn test_twitter_spoiler() {
-        let cfg = dummy_config();
         let content = "Gizli: ||https://twitter.com/jack/status/20||";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Twitter);
         assert!(parsed.is_spoiler);
@@ -1063,18 +971,13 @@ mod tests {
 
     #[test]
     fn test_tiktok_video() {
-        let cfg = dummy_config();
         let content = "https://www.tiktok.com/@scout2015/video/6718335390845095173";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::TikTok);
         assert_eq!(
             parsed.original_url,
             "https://www.tiktok.com/@scout2015/video/6718335390845095173"
-        );
-        assert_eq!(
-            parsed.fixed_url,
-            "https://tnktok.com/@scout2015/video/6718335390845095173"
         );
         assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment, None);
@@ -1082,52 +985,42 @@ mod tests {
 
     #[test]
     fn test_tiktok_short() {
-        let cfg = dummy_config();
         let content = "Buna bak https://vm.tiktok.com/ZM8abc123/ çok komik";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::TikTok);
         assert_eq!(parsed.original_url, "https://vm.tiktok.com/ZM8abc123");
-        assert_eq!(parsed.fixed_url, "https://vm.tnktok.com/ZM8abc123");
         assert_eq!(parsed.user_comment.as_deref(), Some("Buna bak  çok komik"));
     }
 
     #[test]
     fn test_instagram_reel() {
-        let cfg = dummy_config();
         let content = "https://www.instagram.com/reel/C3abcXYZ123/?igsh=abcdef";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Instagram);
         assert_eq!(
             parsed.original_url,
             "https://www.instagram.com/reel/C3abcXYZ123"
         );
-        assert_eq!(
-            parsed.fixed_url, parsed.original_url,
-            "native-only platform: proxy linki üretilmez"
-        );
     }
 
     #[test]
     fn test_reddit_post() {
-        let cfg = dummy_config();
         let content = "https://reddit.com/r/rust/comments/123456/why_rust_is_great/";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(
             parsed.original_url,
             "https://www.reddit.com/r/rust/comments/123456"
         );
-        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
     }
 
     /// Yorum kimliği atılırsa kart yorumu değil yalnızca gönderiyi gösterirdi.
     #[test]
     fn reddit_comment_links_keep_the_comment_id() {
-        let cfg = dummy_config();
         for (content, spoiler) in [
             (
                 "https://www.reddit.com/r/rust/comments/abc123/baslik/def456/?context=3",
@@ -1138,7 +1031,7 @@ mod tests {
                 true,
             ),
         ] {
-            let parsed = parse_message(content, &cfg).unwrap();
+            let parsed = parse_message(content).unwrap();
             assert_eq!(parsed.is_spoiler, spoiler);
             assert_eq!(
                 parsed.original_url,
@@ -1146,11 +1039,8 @@ mod tests {
             );
         }
         // Başlıkla biten gönderi bağlantısı yorum sanılmaz.
-        let parsed = parse_message(
-            "https://www.reddit.com/r/rust/comments/abc123/baslik/",
-            &cfg,
-        )
-        .unwrap();
+        let parsed =
+            parse_message("https://www.reddit.com/r/rust/comments/abc123/baslik/").unwrap();
         assert_eq!(
             parsed.original_url,
             "https://www.reddit.com/r/rust/comments/abc123"
@@ -1159,121 +1049,96 @@ mod tests {
 
     #[test]
     fn test_reddit_mobile_share() {
-        let cfg = dummy_config();
         let content = "Buna bak https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234 harika";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(
             parsed.original_url,
             "https://www.reddit.com/r/pcmasterrace/s/AbCdEf1234"
         );
-        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
         assert_eq!(parsed.user_comment.as_deref(), Some("Buna bak  harika"));
     }
 
     #[test]
     fn test_reddit_shortlink() {
-        let cfg = dummy_config();
         let content = "https://redd.it/123456";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(parsed.original_url, "https://redd.it/123456");
-        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(!parsed.is_spoiler);
     }
 
     #[test]
     fn test_reddit_user_post() {
-        let cfg = dummy_config();
         let content = "https://www.reddit.com/u/someone/comments/abcdef12/";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(
             parsed.original_url,
             "https://www.reddit.com/user/someone/comments/abcdef12"
         );
-        assert_eq!(parsed.fixed_url, parsed.original_url);
     }
 
     #[test]
     fn test_reddit_spoiler() {
-        let cfg = dummy_config();
         let content = "||https://old.reddit.com/r/news/comments/789xyz/breaking/||";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Reddit);
         assert_eq!(
             parsed.original_url,
             "https://www.reddit.com/r/news/comments/789xyz"
         );
-        assert_eq!(parsed.fixed_url, parsed.original_url);
         assert!(parsed.is_spoiler);
     }
 
     #[test]
     fn crafted_url_cannot_break_out_of_markdown_link() {
-        let cfg = dummy_config();
         // Kapalı parantezle [:](...) bitişini kırıp ikinci bir link hedefi enjekte etme girişimi
         let content = "https://www.reddit.com/r/x)y[sahte]/comments/abc";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
-        for url in [&parsed.original_url, &parsed.fixed_url] {
-            assert!(!url.contains(')'), "Kaçırılmamış parantez: {url}");
-            assert!(!url.contains('('), "Kaçırılmamış parantez: {url}");
-            assert!(!url.contains('['), "Kaçırılmamış köşeli parantez: {url}");
-            assert!(!url.contains(']'), "Kaçırılmamış köşeli parantez: {url}");
-        }
-        assert_eq!(
-            parsed.fixed_url, parsed.original_url,
-            "native-only platform: dönüştürülmüş link orijinal linktir"
-        );
+        let url = &parsed.original_url;
+        assert!(!url.contains(')'), "Kaçırılmamış parantez: {url}");
+        assert!(!url.contains('('), "Kaçırılmamış parantez: {url}");
+        assert!(!url.contains('['), "Kaçırılmamış köşeli parantez: {url}");
+        assert!(!url.contains(']'), "Kaçırılmamış köşeli parantez: {url}");
     }
 
     #[test]
     fn already_encoded_urls_are_left_intact() {
-        let cfg = dummy_config();
         let content = "https://x.com/a%20b/status/123";
-        let parsed = parse_message(content, &cfg).unwrap();
-        assert_eq!(parsed.fixed_url, "https://x.com/a%20b/status/123");
+        let parsed = parse_message(content).unwrap();
+        assert_eq!(parsed.original_url, "https://x.com/a%20b/status/123");
     }
 
     #[test]
     fn test_bluesky_post() {
-        let cfg = dummy_config();
         let content = "||https://bsky.app/profile/alice.bsky.social/post/3k6abc123||";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Bluesky);
         assert_eq!(
             parsed.original_url,
             "https://bsky.app/profile/alice.bsky.social/post/3k6abc123"
         );
-        assert_eq!(
-            parsed.fixed_url,
-            "https://fxbsky.app/profile/alice.bsky.social/post/3k6abc123"
-        );
         assert!(parsed.is_spoiler);
     }
 
     #[test]
     fn test_spotify_track() {
-        let cfg = dummy_config();
         let content =
             "Şu şarkıya bak https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc harika";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Spotify);
         assert_eq!(
             parsed.original_url,
             "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
-        );
-        assert_eq!(
-            parsed.fixed_url,
-            "https://open.fixspotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
         );
         assert!(!parsed.is_spoiler);
         assert_eq!(
@@ -1284,36 +1149,28 @@ mod tests {
 
     #[test]
     fn test_spotify_intl_and_spoiler() {
-        let cfg = dummy_config();
         let content = "||https://open.spotify.com/intl-tr/album/1DFixLWuPkv3KT3TnV35m3||";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Spotify);
         assert_eq!(
             parsed.original_url,
             "https://open.spotify.com/album/1DFixLWuPkv3KT3TnV35m3"
         );
-        assert_eq!(
-            parsed.fixed_url,
-            "https://open.fixspotify.com/album/1DFixLWuPkv3KT3TnV35m3"
-        );
         assert!(parsed.is_spoiler);
     }
 
     #[test]
     fn test_spotify_short_link() {
-        let cfg = dummy_config();
         let content = "https://spotify.link/AbCdEf1234";
-        let parsed = parse_message(content, &cfg).unwrap();
+        let parsed = parse_message(content).unwrap();
 
         assert_eq!(parsed.platform, Platform::Spotify);
         assert_eq!(parsed.original_url, "https://spotify.link/AbCdEf1234");
-        assert_eq!(parsed.fixed_url, "https://open.fixspotify.com/AbCdEf1234");
     }
 
     #[test]
     fn new_platform_urls_have_canonical_forms_and_comments() {
-        let cfg = dummy_config();
         let cases = [
             (
                 "bak https://www.twitch.tv/channel/clip/Ab_C-123 not",
@@ -1352,13 +1209,12 @@ mod tests {
             ),
         ];
         for (input, platform, url) in cases {
-            let parsed = parse_message(input, &cfg).expect("yeni platform linki bulunmalı");
+            let parsed = parse_message(input).expect("yeni platform linki bulunmalı");
             assert_eq!(parsed.platform, platform);
             assert_eq!(parsed.original_url, url);
-            assert_eq!(parsed.fixed_url, url);
         }
         assert!(
-            parse_message("||https://www.pixiv.net/en/artworks/12345||", &cfg)
+            parse_message("||https://www.pixiv.net/en/artworks/12345||")
                 .expect("spoiler")
                 .is_spoiler
         );
@@ -1366,7 +1222,6 @@ mod tests {
 
     #[test]
     fn non_canonical_new_platform_pages_are_ignored() {
-        let cfg = dummy_config();
         for input in [
             "https://www.twitch.tv/channel",
             "https://www.pixiv.net/users/123",
@@ -1374,13 +1229,12 @@ mod tests {
             "https://www.facebook.com/example",
             "https://www.youtube.com/channel/abc",
         ] {
-            assert!(parse_message(input, &cfg).is_none(), "{input}");
+            assert!(parse_message(input).is_none(), "{input}");
         }
     }
 
     #[test]
     fn mobile_web_and_uppercase_host_forms_are_canonicalized() {
-        let cfg = dummy_config();
         let cases = [
             (
                 "https://mobile.twitter.com/jack/status/20",
@@ -1429,31 +1283,27 @@ mod tests {
             ),
         ];
         for (input, platform, url) in cases {
-            let parsed = parse_message(input, &cfg).unwrap_or_else(|| panic!("{input}"));
+            let parsed = parse_message(input).unwrap_or_else(|| panic!("{input}"));
             assert_eq!(parsed.platform, platform, "{input}");
             assert_eq!(parsed.original_url, url, "{input}");
-            assert_eq!(parsed.fixed_url, url, "{input}");
         }
 
-        let tiktok = parse_message("https://VM.TikTok.com/ZM8abc123/", &cfg).unwrap();
+        let tiktok = parse_message("https://VM.TikTok.com/ZM8abc123/").unwrap();
         assert_eq!(tiktok.original_url, "https://vm.tiktok.com/ZM8abc123");
-        assert_eq!(tiktok.fixed_url, "https://vm.tnktok.com/ZM8abc123");
     }
 
     #[test]
     fn instagram_profile_pages_are_still_ignored() {
-        let cfg = dummy_config();
         for input in [
             "https://www.instagram.com/kullanici/",
             "https://www.instagram.com/kullanici/reels/",
         ] {
-            assert!(parse_message(input, &cfg).is_none(), "{input}");
+            assert!(parse_message(input).is_none(), "{input}");
         }
     }
 
     #[test]
     fn embed_suppressed_links_leave_no_angle_bracket_residue() {
-        let cfg = dummy_config();
         for (input, comment) in [
             ("<https://x.com/jack/status/20>", None),
             (
@@ -1465,7 +1315,7 @@ mod tests {
             ("not <https://www.pixiv.net/artworks/12345>", Some("not")),
             ("a < b https://x.com/jack/status/20", Some("a < b")),
         ] {
-            let parsed = parse_message(input, &cfg).unwrap_or_else(|| panic!("{input}"));
+            let parsed = parse_message(input).unwrap_or_else(|| panic!("{input}"));
             assert_eq!(parsed.user_comment.as_deref(), comment, "{input}");
         }
     }

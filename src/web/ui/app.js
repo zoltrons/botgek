@@ -4,7 +4,7 @@
    Sunucu sözleşmesi (Rust tarafı, src/web/mod.rs):
      GET  /api/info           → { version, full_version, display_version, is_release,
                                   is_dirty, git_sha, git_tag, commits_since_tag,
-                                  build_date, target, port, env_domains }
+                                  build_date, target, port }
      GET  /api/settings       → AppSettings (snake_case)
      POST /api/settings       → AppSettings gövdesi
      GET  /api/discord/roles  → [{ guild_id, guild_name, roles[] }]
@@ -35,12 +35,12 @@ async function apiFetch(path, options = {}) {
 }
 
 /* ── sabitler: Rust varsayılanlarıyla birebir aynı ───────────────────────── */
-const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'pixiv', 'tumblr', 'facebook', 'youtube', 'letterboxd', 'translation', 'ai_chat'];
-const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, pixiv: true, tumblr: true, facebook: true, youtube: true, letterboxd: true, translation: true, ai_chat: true };
+const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'pixiv', 'tumblr', 'facebook', 'youtube', 'letterboxd', 'ai_chat'];
+const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, pixiv: true, tumblr: true, facebook: true, youtube: true, letterboxd: true, ai_chat: true };
 const MODULE_LABELS = {
     twitter: 'Twitter / X', tiktok: 'TikTok', instagram: 'Instagram', reddit: 'Reddit',
     bluesky: 'Bluesky', spotify: 'Spotify', twitch: 'Twitch', pixiv: 'Pixiv', tumblr: 'Tumblr',
-    facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', translation: 'Bayrak çevirisi', ai_chat: 'AI sohbet'
+    facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', ai_chat: 'AI sohbet'
 };
 const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
 
@@ -49,26 +49,23 @@ const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
 const BLOCK_KEYS = ['modules', 'role_filters', 'ai', 'engine'];
 const BLOCK_LABELS = { modules: 'Modüller', role_filters: 'Rol filtresi', ai: 'AI persona', engine: 'Dönüştürme motoru' };
 
-/* `nativeOnly: true` platformlar proxy motorunu **hiç** kullanmaz: motor modu ve yedek alan
-   adı alanı yoktur (Rust tarafında da proxy modu + proxy yedeği kaldırılmıştır). */
+/* Bütün platformlar native karttır: motor modu, yedek alan adı ve proxy yedeği yoktur. */
 const ENGINE_PLATFORMS = [
-    { key: 'twitter', label: 'Twitter / X', nativeOnly: true },
+    { key: 'twitter', label: 'Twitter / X' },
     { key: 'tiktok', label: 'TikTok' },
-    { key: 'instagram', label: 'Instagram', nativeOnly: true },
-    { key: 'reddit', label: 'Reddit', nativeOnly: true },
+    { key: 'instagram', label: 'Instagram' },
+    { key: 'reddit', label: 'Reddit' },
     { key: 'bluesky', label: 'Bluesky' },
     { key: 'spotify', label: 'Spotify' },
-    { key: 'twitch', label: 'Twitch', nativeOnly: true },
-    { key: 'pixiv', label: 'Pixiv', nativeOnly: true },
-    { key: 'tumblr', label: 'Tumblr', nativeOnly: true },
-    { key: 'facebook', label: 'Facebook', nativeOnly: true },
-    { key: 'youtube', label: 'YouTube Posts', nativeOnly: true },
-    { key: 'letterboxd', label: 'Letterboxd', nativeOnly: true }
+    { key: 'twitch', label: 'Twitch' },
+    { key: 'pixiv', label: 'Pixiv' },
+    { key: 'tumblr', label: 'Tumblr' },
+    { key: 'facebook', label: 'Facebook' },
+    { key: 'youtube', label: 'YouTube Posts' },
+    { key: 'letterboxd', label: 'Letterboxd' }
 ];
 
 const ENGINE_DEFAULTS = {
-    modes: { tiktok: 'proxy', bluesky: 'builtin', spotify: 'builtin' },
-    domains: { tiktok: '', bluesky: '', spotify: '' },
     twitter_source: 'syndication',
     max_images: 4,
     max_video_mb: 8,
@@ -78,7 +75,6 @@ const ENGINE_DEFAULTS = {
     show_quote: true,
     auto_translate: true,
     translation_target: 'tr',
-    fallback_to_proxy: true,
     impersonate_skip_replies: true,
     impersonate_user: true,
     respond_to_bots: false,
@@ -123,7 +119,6 @@ const DIFF_LABELS = {
     'engine.show_community_note': 'Topluluk notu',
     'engine.show_quote': 'Alıntılanan gönderi',
     'engine.auto_translate': 'Otomatik çeviri',
-    'engine.fallback_to_proxy': 'Proxy yedeği',
     'engine.impersonate_user': 'Taklit',
     'engine.impersonate_skip_replies': 'Yanıtlarda yanıtı koru',
     'engine.respond_to_bots': 'Bot mesajlarına yanıt',
@@ -135,7 +130,7 @@ let BOTGEK_INFO = {
     version: '', full_version: '', display_version: '',
     is_release: false, is_dirty: false, git_sha: '', git_tag: null,
     commits_since_tag: null, build_date: '', target: '',
-    port: null, env_domains: {}
+    port: null
 };
 let appSettings = {
     modules: Object.assign({}, MODULE_DEFAULTS),
@@ -229,8 +224,10 @@ function ensureConfigShape(cfg) {
 function getEngineConfig(cfg) {
     cfg.engine = cfg.engine || {};
     const engine = cfg.engine;
-    if (!engine.modes) engine.modes = Object.assign({}, ENGINE_DEFAULTS.modes);
-    if (!engine.domains) engine.domains = Object.assign({}, ENGINE_DEFAULTS.domains);
+    // Kaldırılan proxy alanları eski kayıtlarda kalmış olabilir; sunucuya geri gönderilmez.
+    delete engine.modes;
+    delete engine.domains;
+    delete engine.fallback_to_proxy;
     if (!engine.emojis) engine.emojis = Object.assign({}, ENGINE_DEFAULTS.emojis);
     EMOJI_FIELDS.forEach(field => {
         if (engine.emojis[field.key] === undefined || engine.emojis[field.key] === null) {
@@ -238,7 +235,7 @@ function getEngineConfig(cfg) {
         }
     });
     ['twitter_source', 'max_images', 'max_video_mb', 'show_metrics',
-      'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate', 'fallback_to_proxy',
+      'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate',
       'impersonate_user', 'impersonate_skip_replies', 'respond_to_bots', 'sensitive_mode'].forEach(field => {
          if (engine[field] === undefined || engine[field] === null) engine[field] = ENGINE_DEFAULTS[field];
      });
@@ -628,8 +625,6 @@ function labelFor(path) {
         const field = EMOJI_FIELDS.filter(f => f.key === last)[0];
         if (field) return 'Emoji: ' + field.label;
     }
-    if (parts[0] === 'engine' && parts[1] === 'modes') return 'Motor seçimi: ' + (MODULE_LABELS[last] || last);
-    if (parts[0] === 'engine' && parts[1] === 'domains') return 'Alan adı: ' + (MODULE_LABELS[last] || last);
     return path;
 }
 
@@ -729,12 +724,6 @@ function writeAiDom(ai) {
 }
 
 function readEngineDom(engine) {
-    ENGINE_PLATFORMS.forEach(p => {
-        const mode = qs('input[name="engine-mode-' + p.key + '"]:checked');
-        if (mode) engine.modes[p.key] = mode.value;
-        const domain = document.querySelector('[data-domain-key="' + p.key + '"]');
-        if (domain) engine.domains[p.key] = domain.value.trim();
-    });
     qsa('[data-engine-switch]').forEach(el => { engine[el.dataset.engineSwitch] = !!el.checked; });
     qsa('[data-engine-range]').forEach(el => {
         const key = el.dataset.engineRange;
@@ -750,13 +739,7 @@ function readEngineDom(engine) {
 }
 
 function writeEngineDom(engine) {
-    ENGINE_PLATFORMS.forEach(p => {
-        const mode = engine.modes[p.key] || 'proxy';
-        qsa('input[name="engine-mode-' + p.key + '"]').forEach(radio => { radio.checked = radio.value === mode; });
-        const domain = document.querySelector('[data-domain-key="' + p.key + '"]');
-        if (domain) domain.value = engine.domains[p.key] || '';
-        updateEngineNote(p.key);
-    });
+    ENGINE_PLATFORMS.forEach(p => updateEngineNote(p.key));
     qsa('[data-engine-switch]').forEach(el => {
         const value = engine[el.dataset.engineSwitch];
         if (typeof value === 'boolean') el.checked = value;
@@ -854,34 +837,18 @@ function updateNavCounts() {
     if ($('ai-state')) $('ai-state').textContent = state;
 }
 
-/* Motor satırı: mod etiketi + alan adı kutusunun geçerliliği. Native-only platformlarda
-   mod/yedek alan adı kutusu yoktur; satır sabit "native embed" gösterir. */
+/* Motor satırı: her platform sabit native karttır. */
 function updateEngineNote(key) {
-    const platform = ENGINE_PLATFORMS.find(p => p.key === key);
     const note = $('engine-note-' + key);
-    if (platform && platform.nativeOnly) {
-        if (note) {
-            note.textContent = 'native embed (sabit)';
-            note.dataset.on = 'true';
-        }
-        return;
-    }
-    const radio = qs('input[name="engine-mode-' + key + '"]:checked');
-    const domain = document.querySelector('[data-domain-key="' + key + '"]');
-    const builtin = !!radio && radio.value === 'builtin';
     if (note) {
-        note.textContent = builtin ? 'native embed' : 'proxy';
-        note.dataset.on = builtin ? 'true' : 'false';
-    }
-    if (domain) {
-        domain.disabled = builtin;
-        domain.title = builtin ? 'Native embed seçili: alan adı yalnızca proxy modunda geçerlidir' : '';
+        note.textContent = 'native embed';
+        note.dataset.on = 'true';
     }
 }
 
 function updateEngineSummary() {
     const engine = getEngineConfig(getActiveConfig());
-    const nativeCount = ENGINE_PLATFORMS.filter(p => p.nativeOnly || engine.modes[p.key] === 'builtin').length;
+    const nativeCount = ENGINE_PLATFORMS.length;
     const images = $('engine-max-images');
     const video = $('engine-max-video');
     if (images && $('engine-max-images-value')) $('engine-max-images-value').textContent = images.value + ' adet';
@@ -895,22 +862,9 @@ function updateEngineSummary() {
     if ($('nav-count-engine')) $('nav-count-engine').textContent = nativeCount + '/' + ENGINE_PLATFORMS.length;
 }
 
-/* Modül satırındaki adres: proxy modunda etkin alan adı, native modda "native embed".
-   Native-only platformlar (Twitter/Instagram/Reddit) **daima** native'dir; motor modu
-   kaydı olmadığı için bu satırlar proxy gibi etiketlenmemelidir. */
+/* Modül satırındaki adres: bütün platformlar native karttır. */
 function updatePlatformHosts() {
-    const engine = getEngineConfig(getActiveConfig());
-    const env = BOTGEK_INFO.env_domains || {};
-    qsa('[data-host-key]').forEach(el => {
-        const key = el.dataset.hostKey;
-        const platform = ENGINE_PLATFORMS.filter(p => p.key === key)[0];
-        if ((platform && platform.nativeOnly) || engine.modes[key] === 'builtin') {
-            el.textContent = 'native embed · bot çözer';
-            return;
-        }
-        const host = env[key] || '';
-        el.textContent = host ? 'proxy · ' + host : 'proxy · alan adı .env';
-    });
+    qsa('[data-host-key]').forEach(el => { el.textContent = 'native embed · bot çözer'; });
 }
 
 /* Motor bölümündeki alan bağımlılıkları. "Yanıtlarda yanıtı koru" yalnızca "Kullanıcıyı
@@ -924,15 +878,6 @@ function updateEngineDependencies() {
         const tile = el.closest('.tile');
         if (tile) tile.classList.toggle('is-disabled', el.disabled);
         el.title = el.disabled ? '"Kullanıcıyı taklit et" kapalı: bu ayar etkisizdir' : '';
-    });
-}
-
-/* Alan adı kutularının ipucu, gerçekten geçerli olan .env değerini yazar. */
-function updateDomainPlaceholders() {
-    const env = BOTGEK_INFO.env_domains || {};
-    qsa('[data-domain-key]').forEach(el => {
-        const host = env[el.dataset.domainKey] || '';
-        el.placeholder = host ? 'boş = ' + host + ' (.env)' : 'proxy alan adı (boş = .env)';
     });
 }
 
@@ -1486,7 +1431,6 @@ async function fetchInfo() {
 
     updateVersionBadge();
     if ($('brand-port') && BOTGEK_INFO.port) $('brand-port').textContent = 'webui · port ' + BOTGEK_INFO.port;
-    updateDomainPlaceholders();
     updatePlatformHosts();
 }
 
@@ -1869,19 +1813,6 @@ function bind() {
     qsa('[data-model-preset]').forEach(button => button.addEventListener('click', () => setModelPreset(button.dataset.modelPreset)));
 
     // Motor
-    ENGINE_PLATFORMS.forEach(platform => {
-        qsa('input[name="engine-mode-' + platform.key + '"]').forEach(radio => radio.addEventListener('change', () => {
-            onConfigModified('engine');
-            updateEngineNote(platform.key);
-            updateEngineSummary();
-            updatePlatformHosts();
-        }));
-        const domain = document.querySelector('[data-domain-key="' + platform.key + '"]');
-        if (domain) domain.addEventListener('input', () => {
-            onConfigModified('engine');
-            updatePlatformHosts();
-        });
-    });
     qsa('[data-engine-switch]').forEach(el => el.addEventListener('change', () => {
         onConfigModified('engine');
         updateEngineSummary();

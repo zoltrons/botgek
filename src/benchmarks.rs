@@ -6,7 +6,7 @@ use crate::{
             render::{RenderOptions, ResolvedMedia},
             v2::{V2Card, build_payload},
         },
-        parser::{Platform, PlatformDomains, parse_message_with_domains},
+        parser::{Platform, parse_message},
     },
     settings::{EmojiSettings, EngineSettings},
 };
@@ -35,17 +35,13 @@ fn offline_card_baseline() {
         impersonation: None,
         allowed_mentions: None,
     };
-    let domains = PlatformDomains::default();
     for _ in 0..100 {
         black_box(build_payload(&card));
     }
     let mut timings = Vec::with_capacity(10_000);
     for _ in 0..10_000 {
         let started = Instant::now();
-        black_box(parse_message_with_domains(
-            "https://x.com/example/status/1",
-            &domains,
-        ));
+        black_box(parse_message("https://x.com/example/status/1"));
         black_box(build_payload(&card));
         timings.push(started.elapsed().as_nanos());
     }

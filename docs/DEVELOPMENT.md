@@ -91,8 +91,7 @@ src/
 ├── commands/          # slash ve mesaj komutları
 ├── converters/
 │   ├── parser.rs      # URL ayrıştırma ve kanonikleştirme
-│   ├── builtin/       # platform dönüştürücüleri ve kart üretimi
-│   └── translation.rs # proxy mesajı çevirisi
+│   └── builtin/       # platform dönüştürücüleri ve kart üretimi
 ├── settings.rs        # şema, kapsam çözümleme, göç
 ├── store.rs           # SQLite
 ├── web/               # API + panel (gömülü HTML/CSS/JS)

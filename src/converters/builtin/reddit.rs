@@ -1758,7 +1758,6 @@ mod tests {
             is_spoiler: false,
             user_comment: None,
             original_url: format!("https://www.reddit.com/comments/{id}"),
-            fixed_url: format!("https://vxreddit.com/comments/{id}"),
         };
         let post = fetch(&client, &parsed, DEFAULT_CLIENT_ID)
             .await

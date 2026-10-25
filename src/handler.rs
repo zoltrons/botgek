@@ -1,7 +1,7 @@
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EditMessage,
-    EventHandler, GuildId, Interaction, Message, MessageId, MessageReference, MessageType,
-    Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
+    Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EventHandler,
+    GuildId, Interaction, Message, MessageId, MessageReference, MessageType, Permissions, Reaction,
+    ReactionType, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,7 +88,6 @@ async fn consume_ai_budget(guild_id: Option<GuildId>) -> bool {
 
 use crate::config::Config;
 use crate::converters;
-use crate::converters::translation;
 use crate::settings::{AppSettings, GuildSettings};
 use crate::utils::{DISCORD_CONTENT_LIMIT, truncate_chars};
 
@@ -114,11 +113,7 @@ impl EventHandler for Handler {
         info!("Botgek başarıyla bağlandı!");
         info!("Giriş yapılan hesap: {}", ready.user.tag());
         info!("WebUI: http://localhost:{}", self.config.web_port);
-        // Yedek (proxy) alan adları **yalnızca** proxy motoru kullanılabilen platformlar için
-        // yazılır: Twitter/X, Instagram ve Reddit native-only'dir (proxy modu ve yedeği yok).
-        info!("TikTok Alan Adı: {}", self.config.tiktok_domain);
-        info!("Bluesky Alan Adı: {}", self.config.bluesky_domain);
-        info!("Native-only Platformlar: Twitter/X, Instagram, Reddit (proxy yok)");
+        info!("Dönüştürme: tüm platformlar native kart (proxy yok)");
         info!(
             "Instagram Oturum Çerezi: {}",
             if self.config.instagram_sessionid.is_some() {
@@ -232,9 +227,7 @@ impl EventHandler for Handler {
         }
     }
 
-    /// Reaksiyon ekleme dinleyicisi:
-    /// - 🗑️: Mesaj silme (orijinal yazar veya yönetici/moderatör)
-    /// - Bayrak emojileri (🇹🇷, 🇬🇧, vb.): FxEmbed / FixupX / FxBluesky üzerinden anlık çeviri (/tr, /en)
+    /// Reaksiyon ekleme dinleyicisi: 🗑️ ile kartı silme (orijinal yazar veya yönetici/moderatör).
     async fn reaction_add(&self, ctx: Context, reaction: Reaction) {
         crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Reaction);
         let current_user_id = ctx.cache.current_user().id;
@@ -245,7 +238,7 @@ impl EventHandler for Handler {
             _ => return,
         };
 
-        // 1. Silme İşlemi (🗑️)
+        // Silme İşlemi (🗑️)
         if reaction.emoji == ReactionType::Unicode("🗑️".to_string()) {
             // Kartı paylaşan kullanıcı kalıcı kayıttan okunur (taklit webhook mesajlarında
             // mesajın yazarı bot/kullanıcı olmadığı için); proxy mesajlarında ise mesaj
@@ -320,148 +313,6 @@ impl EventHandler for Handler {
             } else {
                 warn!("Yetkisiz silme reaksiyonu! Tıklayan: {}", user_id);
                 let _ = reaction.delete(&ctx.http).await;
-            }
-            return;
-        }
-
-        // 2. Bayrak Emojisi ile Çeviri (🇹🇷, 🇬🇧, 🇩🇪 vb.)
-        // Bayrak olmayan reaksiyonlar ayar/rol/kanal sorgusuna hiç girmez (her reaksiyon
-        // olayında REST çağrısı yapılmasın).
-        let Some(lang_code) = translation::emoji_to_lang_code(&reaction.emoji) else {
-            return;
-        };
-        let parent_id = discord_thread_parent(&ctx, reaction.guild_id, reaction.channel_id).await;
-        let guild_settings = self.settings.read().await.get_message_settings(
-            reaction.guild_id,
-            reaction.channel_id,
-            parent_id,
-        );
-        if !guild_settings.modules.translation {
-            return;
-        }
-
-        // Modüle özel rol kontrolü (translation)
-        let role_filter = guild_settings.get_role_filter("translation");
-        // Gateway, sunucu reaksiyonlarında üyeyi de taşır: rol bilgisi REST'e gitmeden okunur.
-        let known_roles = reaction.member.as_ref().map(|m| m.roles.as_slice());
-        if !crate::policy::allows(&ctx, reaction.guild_id, user_id, known_roles, role_filter).await
-        {
-            return;
-        }
-
-        {
-            // Native embed mesajları çeviri durumunu kendi kartında taşır ve proxy linki
-            // içermez; bayrak reaksiyonu yalnızca proxy mesajlarını günceller.
-            if crate::converters::builtin::is_native_message(reaction.message_id).await {
-                return;
-            }
-
-            let mut target_msg = match reaction.message(&ctx.http).await {
-                Ok(m) => m,
-                Err(e) => {
-                    error!("Çeviri reaksiyon mesajı alınamadı: {:?}", e);
-                    return;
-                }
-            };
-
-            if target_msg.author.id != current_user_id {
-                return;
-            }
-
-            if let Some(new_content) =
-                translation::update_link_translation(&target_msg.content, Some(lang_code))
-            {
-                let edit = EditMessage::new().content(new_content);
-                match target_msg.edit(&ctx.http, edit).await {
-                    Err(e) => {
-                        error!("Mesaj çevirisi güncellenemedi: {:?}", e);
-                    }
-                    _ => {
-                        info!(
-                            "Mesaj çevirisi başarıyla güncellendi: {} (Dil: {})",
-                            target_msg.id, lang_code
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Reaksiyon kaldırma dinleyicisi:
-    /// Bayrak emojisi kaldırıldığında, mesajda başka bayrak yoksa orijinal linke döner;
-    /// başka bayrak varsa o dilin çevirisine geçer.
-    async fn reaction_remove(&self, ctx: Context, reaction: Reaction) {
-        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Reaction);
-        let current_user_id = ctx.cache.current_user().id;
-
-        // Botun kendi işlemlerini yok say
-        if reaction.user_id == Some(current_user_id) {
-            return;
-        }
-
-        // Yalnızca bayrak emojisi kaldırıldığında kontrol et
-        if translation::emoji_to_lang_code(&reaction.emoji).is_none() {
-            return;
-        }
-
-        let parent_id = discord_thread_parent(&ctx, reaction.guild_id, reaction.channel_id).await;
-        let settings = self.settings.read().await.get_message_settings(
-            reaction.guild_id,
-            reaction.channel_id,
-            parent_id,
-        );
-        let Some(user_id) = reaction.user_id else {
-            return;
-        };
-        if !settings.modules.translation
-            || !crate::policy::allows(
-                &ctx,
-                reaction.guild_id,
-                user_id,
-                None,
-                settings.get_role_filter("translation"),
-            )
-            .await
-        {
-            return;
-        }
-        if crate::converters::builtin::is_native_message(reaction.message_id).await {
-            return;
-        }
-
-        let mut target_msg = match reaction.message(&ctx.http).await {
-            Ok(m) => m,
-            Err(e) => {
-                error!("Reaksiyon kaldırma mesajı alınamadı: {:?}", e);
-                return;
-            }
-        };
-
-        if target_msg.author.id != current_user_id {
-            return;
-        }
-
-        // Mesajda hala kalan başka bir bayrak emojisi var mı kontrol et
-        let remaining_lang = target_msg
-            .reactions
-            .iter()
-            .filter(|r| r.count > 0)
-            .find_map(|r| translation::emoji_to_lang_code(&r.reaction_type));
-
-        if let Some(new_content) =
-            translation::update_link_translation(&target_msg.content, remaining_lang)
-        {
-            let edit = EditMessage::new().content(new_content);
-            match target_msg.edit(&ctx.http, edit).await {
-                Err(e) => {
-                    error!("Mesaj çevirisi geri alınamadı: {:?}", e);
-                }
-                _ => {
-                    info!(
-                        "Mesaj çevirisi güncellendi (kaldırma sonrası): {} (Aktif dil: {:?})",
-                        target_msg.id, remaining_lang
-                    );
-                }
             }
         }
     }

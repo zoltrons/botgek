@@ -2138,7 +2138,6 @@ mod tests {
             is_spoiler: false,
             user_comment: None,
             original_url: url.to_string(),
-            fixed_url: url.to_string(),
         };
         let film = fetch(
             &client,
