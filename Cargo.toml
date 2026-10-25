@@ -44,9 +44,12 @@ reqwest = { version = "0.13", default-features = false, features = [
 # Reddit videolarında video + ses rendition'larını tek MP4'te birleştirir (çok-izli oturum).
 # `default-source` kapalı: HTTP kaynağı kendi reqwest istemcimizle sağlanır; yeniden kodlama yoktur.
 hls-transmux = { version = "0.10", default-features = false }
-# Spotify önizlemesi: kapak (JPEG) + 30 sn MP3 → sesli tek MP4. Saf Rust; ses yeniden kodlanmaz,
-# görüntü tek kayıpsız I-kare (I_PCM) olarak kodlanır.
+# Spotify önizlemesi: kapak (JPEG) + 30 sn MP3 → sesli tek MP4. Saf Rust; görüntü tek kayıpsız
+# I-kare (I_PCM), ses AAC-LC (iOS MP4 içindeki MP3'ü çalmaz). MP3 çözme symphonia, AAC kodlama
+# rusty_aac (bağımlılıksız; ölçülen adaylar arasında en düşük CPU/bellek).
 less-avc = "0.1.5"
+symphonia = { version = "0.6", default-features = false, features = ["mp3"] }
+rusty_aac = "2.0.1"
 shiguredo_mp4 = "2026.5.0"
 zune-jpeg = "0.5.15"
 zune-core = "0.5"

@@ -2,18 +2,22 @@
 //!
 //! Discord Components V2 kartında ses dosyası (`File` bileşeni) kartın içinde oynatıcı olarak
 //! görünmez; video ise Media Gallery'de kartın içinde oynar. Projede **ffmpeg yok**; bu yüzden
-//! video saf Rust ile üretilir ve **ses yeniden kodlanmaz**:
+//! video saf Rust ile üretilir:
 //! - Kapak JPEG'i `zune-jpeg` ile çözülür, BT.601 YUV 4:2:0'a çevrilir.
 //! - Görüntü `less-avc` ile **tek kayıpsız I-kare** (I_PCM, Baseline) olarak kodlanır; karenin
 //!   süresi sesin tamamı kadardır (640×640 kapakta ~600 KB).
-//! - MP3 kareleri olduğu gibi `mp4a` izine yazılır (OTI `0x6B`/`0x69`); konteyner
-//!   `shiguredo_mp4` ile, `moov` başta (faststart) olacak şekilde üretilir.
+//! - Ses **AAC-LC**'ye çevrilir: MP3 `symphonia` ile çözülür, `rusty_aac` ile kodlanır. MP4
+//!   içinde MP3 (`mp4a`, OTI `0x6B`) masaüstünde oynar ama **iOS Discord'da sessiz** kalır.
+//!   Saf Rust AAC kodlayıcılar arasında en az CPU/bellek kullanan `rusty_aac` seçildi
+//!   (30 sn stereo: ~1,2 sn CPU, ~13 MB ek bellek; bağımlılığı yok).
+//! - Konteyner `shiguredo_mp4` ile, `moov` başta (faststart) olacak şekilde üretilir.
 //!
 //! Üretim **yalnızca kart gönderilirken** (`render::resolve_media`) ve video bütçesi içinde
 //! yapılır; başarısız olursa kart videosuz (yalnızca kapak küçük görseliyle) gönderilir.
 
 use std::io::Cursor;
 use std::num::NonZeroU32;
+use std::sync::{Arc, LazyLock};
 
 use less_avc::LessEncoder;
 use less_avc::ycbcr_image::{DataPlane, Planes, YCbCrImage};
@@ -21,11 +25,18 @@ use shiguredo_mp4::boxes::{
     AudioSampleEntryFields, Avc1Box, AvccBox, EsdsBox, Mp4aBox, SampleEntry,
     VisualSampleEntryFields,
 };
-use shiguredo_mp4::descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor};
+use shiguredo_mp4::descriptors::{
+    DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor,
+};
 use shiguredo_mp4::mux::{
     Mp4FileMuxer, Mp4FileMuxerOptions, Sample, estimate_maximum_moov_box_size,
 };
 use shiguredo_mp4::{FixedPointNumber, TrackKind, Uint};
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
 use tracing::debug;
 use zune_core::colorspace::ColorSpace;
 use zune_core::options::DecoderOptions;
@@ -42,6 +53,13 @@ const MAX_COVER_BYTES: u64 = 2 * 1024 * 1024;
 /// 640×640'tır. Daha büyük görseller kodlanmaz.
 const MAX_PIXELS: usize = 1024 * 1024;
 const OUTPUT_FILENAME: &str = "spotify-preview.mp4";
+/// AAC hedef bit hızı. Kaynak 96 kbps MP3'tür; yeniden kodlamada pay bırakılır (~470 KB / 30 sn).
+const AAC_BITRATE: u32 = 128_000;
+/// Önizlemenin üst süresi; daha uzun ses (beklenmeyen kaynak) kodlanmaz.
+const MAX_AUDIO_SECONDS: usize = 60;
+/// `rusty_aac` kareleri tüm çekirdeklere dağıtır: aynı anda en fazla iki üretim.
+static ENCODE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 
 /// Spotify önizleme CDN'i mi? (`https://p.scdn.co/mp3-preview/...`)
 pub fn is_preview_url(url: &str) -> bool {
@@ -60,6 +78,7 @@ pub async fn build(preview_url: &str, cover_url: &str, max_bytes: u64) -> Option
     let (audio, cover) = (audio?, cover?);
 
     // JPEG çözme + kodlama + mux CPU işidir: async çalışanları bloklamasın.
+    let _slot = ENCODE_SLOTS.clone().acquire_owned().await.ok()?;
     let bytes = match tokio::task::spawn_blocking(move || encode(&cover, &audio)).await {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(error)) => {
@@ -103,8 +122,9 @@ async fn download(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
 fn encode(cover: &[u8], mp3: &[u8]) -> Result<Vec<u8>, String> {
     let image = jpeg_to_yuv420(cover)?;
     let video = encode_still(&image)?;
-    let audio = parse_mp3(mp3)?;
-    mux(&image, video, &audio, mp3)
+    let (pcm, sample_rate, channels) = decode_mp3(mp3)?;
+    let audio = encode_aac(&pcm, sample_rate, channels)?;
+    mux(&image, video, &audio)
 }
 
 /// 16'nın katına kırpılmış BT.601 (limited range) YUV 4:2:0 görüntü.
@@ -225,126 +245,103 @@ fn encode_still(image: &Yuv420) -> Result<StillFrame, String> {
     })
 }
 
-/// MP3 dosyasının kare dizini.
-#[derive(Debug, PartialEq, Eq)]
-struct Mp3 {
-    /// (başlangıç, uzunluk) — dosya içindeki kare aralıkları.
-    frames: Vec<(usize, usize)>,
+/// MP3'ü interleaved f32 PCM'e çözer: (örnekler, örnekleme hızı, kanal sayısı).
+fn decode_mp3(mp3: &[u8]) -> Result<(Vec<f32>, u32, u16), String> {
+    let source = MediaSourceStream::new(Box::new(Cursor::new(mp3.to_vec())), Default::default());
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            Hint::new().with_extension("mp3"),
+            source,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| format!("MP3 açılamadı: {e}"))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or("MP3 ses izi yok")?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or("MP3 ses parametreleri yok")?
+        .clone();
+    let sample_rate = params.sample_rate.ok_or("örnekleme hızı yok")?;
+    let channels = params
+        .channels
+        .as_ref()
+        .map(|channels| channels.count())
+        .filter(|count| (1..=2).contains(count))
+        .ok_or("desteklenmeyen kanal sayısı")?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())
+        .map_err(|e| format!("MP3 çözücü yok: {e}"))?;
+
+    let max_samples = sample_rate as usize * channels * MAX_AUDIO_SECONDS;
+    let mut pcm: Vec<f32> = Vec::with_capacity(sample_rate as usize * channels * 31);
+    let mut frame: Vec<f32> = Vec::new();
+    while let Some(packet) = format
+        .next_packet()
+        .map_err(|e| format!("MP3 okunamadı: {e}"))?
+    {
+        if packet.track_id != track_id {
+            continue;
+        }
+        // Bozuk tek kare tüm önizlemeyi düşürmesin (symphonia örneğiyle aynı tutum).
+        let Ok(audio) = decoder.decode(&packet) else {
+            continue;
+        };
+        frame.resize(audio.samples_interleaved(), 0.0);
+        audio.copy_to_slice_interleaved(&mut frame);
+        pcm.extend_from_slice(&frame);
+        if pcm.len() > max_samples {
+            return Err("önizleme beklenenden uzun".into());
+        }
+    }
+    if pcm.is_empty() {
+        return Err("MP3 karesi çözülemedi".into());
+    }
+    Ok((pcm, sample_rate, channels as u16))
+}
+
+/// AAC-LC ses izi: ham erişim birimleri (ADTS'siz) + `esds` için AudioSpecificConfig.
+struct AacTrack {
+    packets: Vec<Vec<u8>>,
     sample_rate: u32,
     channels: u16,
-    samples_per_frame: u32,
-    /// MPEG-1 → `0x6B`, MPEG-2/2.5 (LSF) → `0x69`.
-    object_type: u8,
-    avg_bitrate: u32,
+    audio_specific_config: Vec<u8>,
+    /// Kodlayıcı önceliği (priming) hariç gerçek ses süresi (örnek/kanal).
+    pcm_frames: u64,
 }
 
-impl Mp3 {
-    fn total_samples(&self) -> u64 {
-        self.frames.len() as u64 * self.samples_per_frame as u64
+/// Interleaved PCM'i AAC-LC'ye kodlar.
+fn encode_aac(pcm: &[f32], sample_rate: u32, channels: u16) -> Result<AacTrack, String> {
+    let mut encoder = rusty_aac::AacEncoder::new(rusty_aac::AacEncoderConfig {
+        bitrate_bps: AAC_BITRATE,
+        ..Default::default()
+    });
+    encoder
+        .push_pcm(pcm, channels, sample_rate)
+        .map_err(|e| format!("AAC kodlanamadı: {e}"))?;
+    encoder.finish();
+    let mut packets = Vec::new();
+    while let Ok(packet) = encoder.next_packet() {
+        packets.push(packet.data);
     }
-}
-
-/// MP3'ü karelerine ayırır: baştaki ID3v2 etiketi atlanır, ilk senkrondan sonra geçerli
-/// kare zinciri bozulduğunda (ID3v1/çöp) durulur.
-fn parse_mp3(data: &[u8]) -> Result<Mp3, String> {
-    let mut pos = 0;
-    if data.len() >= 10 && &data[..3] == b"ID3" {
-        let size = data[6..10]
-            .iter()
-            .fold(0usize, |acc, b| (acc << 7) | (*b as usize & 0x7f));
-        let footer = if data[5] & 0x10 != 0 { 10 } else { 0 };
-        pos = 10 + size + footer;
+    if packets.is_empty() {
+        return Err("AAC çıktısı boş".into());
     }
-
-    let mut frames = Vec::new();
-    let mut format: Option<FrameHeader> = None;
-    let mut total_kbps: u64 = 0;
-    while pos + 4 <= data.len() {
-        let word = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
-        let Some(header) = FrameHeader::parse(word) else {
-            if frames.is_empty() {
-                pos += 1;
-                continue;
-            }
-            break;
-        };
-        if pos + header.len > data.len() {
-            break;
-        }
-        // Akış ortasında biçim değişirse (bozuk veri) kesilir: tek örnek girdisi tek biçimdir.
-        if format.is_some_and(|first| !first.same_format(&header)) {
-            break;
-        }
-        format.get_or_insert(header);
-        total_kbps += header.kbps as u64;
-        frames.push((pos, header.len));
-        pos += header.len;
-    }
-    let format = format.ok_or("MP3 karesi bulunamadı")?;
-    Ok(Mp3 {
-        avg_bitrate: (total_kbps * 1000 / frames.len() as u64) as u32,
-        frames,
-        sample_rate: format.sample_rate,
-        channels: format.channels,
-        samples_per_frame: format.samples_per_frame,
-        object_type: format.object_type,
+    Ok(AacTrack {
+        packets,
+        sample_rate,
+        channels,
+        audio_specific_config: rusty_aac::audio_specific_config_bytes(sample_rate, channels),
+        pcm_frames: (pcm.len() / channels as usize) as u64,
     })
 }
 
-/// MPEG audio Layer III kare başlığı.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FrameHeader {
-    len: usize,
-    sample_rate: u32,
-    channels: u16,
-    samples_per_frame: u32,
-    object_type: u8,
-    kbps: u32,
-}
-
-impl FrameHeader {
-    fn parse(word: u32) -> Option<Self> {
-        // 11 bit senkron + Layer III (`01`).
-        if word >> 21 != 0x7ff || (word >> 17) & 3 != 1 {
-            return None;
-        }
-        let version = (word >> 19) & 3; // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5, 1 = ayrılmış
-        let bitrate_idx = ((word >> 12) & 0xf) as usize;
-        let rate_idx = ((word >> 10) & 3) as usize;
-        if version == 1 || bitrate_idx == 0 || bitrate_idx == 15 || rate_idx == 3 {
-            return None;
-        }
-        const V1: [u32; 15] = [
-            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
-        ];
-        const V2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
-        let (kbps, sample_rate, samples_per_frame, object_type) = match version {
-            3 => (V1[bitrate_idx], [44100, 48000, 32000][rate_idx], 1152, 0x6B),
-            2 => (V2[bitrate_idx], [22050, 24000, 16000][rate_idx], 576, 0x69),
-            _ => (V2[bitrate_idx], [11025, 12000, 8000][rate_idx], 576, 0x69),
-        };
-        let padding = ((word >> 9) & 1) as usize;
-        let channels = if (word >> 6) & 3 == 3 { 1 } else { 2 };
-        let len = (samples_per_frame / 8 * kbps * 1000 / sample_rate) as usize + padding;
-        Some(Self {
-            len,
-            sample_rate,
-            channels,
-            samples_per_frame,
-            object_type,
-            kbps,
-        })
-    }
-
-    fn same_format(&self, other: &Self) -> bool {
-        self.sample_rate == other.sample_rate
-            && self.channels == other.channels
-            && self.object_type == other.object_type
-    }
-}
-
-/// Tek video örneği (süresi = ses süresi) + MP3 örnekleri → faststart MP4.
-fn mux(image: &Yuv420, video: StillFrame, audio: &Mp3, mp3: &[u8]) -> Result<Vec<u8>, String> {
+/// Tek video örneği (süresi = ses süresi) + AAC örnekleri → faststart MP4.
+fn mux(image: &Yuv420, video: StillFrame, audio: &AacTrack) -> Result<Vec<u8>, String> {
     let mux_error = |e: shiguredo_mp4::mux::MuxError| format!("MP4 yazılamadı: {e}");
 
     let video_entry = SampleEntry::Avc1(Avc1Box {
@@ -387,13 +384,16 @@ fn mux(image: &Yuv420, video: StillFrame, audio: &Mp3, mp3: &[u8]) -> Result<Vec
                 url_string: None,
                 ocr_es_id: None,
                 dec_config_descr: DecoderConfigDescriptor {
-                    object_type_indication: audio.object_type,
+                    object_type_indication:
+                        DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3,
                     stream_type: DecoderConfigDescriptor::STREAM_TYPE_AUDIO,
                     up_stream: DecoderConfigDescriptor::UP_STREAM_FALSE,
                     buffer_size_db: Uint::new(0),
-                    max_bitrate: audio.avg_bitrate,
-                    avg_bitrate: audio.avg_bitrate,
-                    dec_specific_info: None,
+                    max_bitrate: AAC_BITRATE,
+                    avg_bitrate: AAC_BITRATE,
+                    dec_specific_info: Some(DecoderSpecificInfo {
+                        payload: audio.audio_specific_config.clone(),
+                    }),
                 },
                 sl_config_descr: SlConfigDescriptor,
             },
@@ -401,9 +401,9 @@ fn mux(image: &Yuv420, video: StillFrame, audio: &Mp3, mp3: &[u8]) -> Result<Vec
         unknown_boxes: vec![],
     });
 
-    let total_ms = (audio.total_samples() * 1000 / audio.sample_rate as u64) as u32;
+    let total_ms = (audio.pcm_frames * 1000 / audio.sample_rate as u64) as u32;
     let options = Mp4FileMuxerOptions {
-        reserved_moov_box_size: estimate_maximum_moov_box_size(&[1, audio.frames.len()]),
+        reserved_moov_box_size: estimate_maximum_moov_box_size(&[1, audio.packets.len()]),
         ..Default::default()
     };
     let mut muxer = Mp4FileMuxer::with_options(options).map_err(mux_error)?;
@@ -427,20 +427,20 @@ fn mux(image: &Yuv420, video: StillFrame, audio: &Mp3, mp3: &[u8]) -> Result<Vec
     out.extend_from_slice(&video.frame);
 
     let timescale = NonZeroU32::new(audio.sample_rate).ok_or("örnekleme hızı sıfır")?;
-    for (index, &(start, len)) in audio.frames.iter().enumerate() {
+    for (index, packet) in audio.packets.iter().enumerate() {
         muxer
             .append_sample(&Sample {
                 track_kind: TrackKind::Audio,
                 sample_entry: (index == 0).then(|| audio_entry.clone()),
                 keyframe: true,
                 timescale,
-                duration: audio.samples_per_frame,
+                duration: 1024,
                 composition_time_offset: None,
                 data_offset: out.len() as u64,
-                data_size: len,
+                data_size: packet.len(),
             })
             .map_err(mux_error)?;
-        out.extend_from_slice(&mp3[start..start + len]);
+        out.extend_from_slice(packet);
     }
 
     let finalized = muxer.finalize().map_err(mux_error)?;
@@ -459,18 +459,8 @@ fn mux(image: &Yuv420, video: StillFrame, audio: &Mp3, mp3: &[u8]) -> Result<Vec
 mod tests {
     use super::*;
 
-    /// MPEG-1 Layer III, 128 kbps, 44.1 kHz, joint stereo, padding yok → 417 bayt.
-    const HEADER_128K: u32 = 0xFFFB_9064;
-
-    fn mp3_frames(count: usize) -> Vec<u8> {
-        let mut data = Vec::new();
-        for _ in 0..count {
-            let mut frame = vec![0u8; 417];
-            frame[..4].copy_from_slice(&HEADER_128K.to_be_bytes());
-            data.extend_from_slice(&frame);
-        }
-        data
-    }
+    /// 0,5 sn, 440 Hz, 44.1 kHz stereo, 64 kbps MP3 (ffmpeg/LAME ile üretildi).
+    const SINE_MP3: &[u8] = include_bytes!("../../../tests/fixtures/sine-440hz-0.5s.mp3");
 
     fn solid_image(width: usize, height: usize) -> Yuv420 {
         let rgb: Vec<u8> = [30u8, 215, 96].repeat(width * height);
@@ -486,29 +476,36 @@ mod tests {
     }
 
     #[test]
-    fn mpeg1_layer3_header_is_parsed() {
-        let header = FrameHeader::parse(HEADER_128K).expect("geçerli başlık");
-        assert_eq!(header.len, 417);
-        assert_eq!(header.sample_rate, 44100);
-        assert_eq!(header.channels, 2);
-        assert_eq!(header.samples_per_frame, 1152);
-        assert_eq!(header.object_type, 0x6B);
-        // Layer II ve geçersiz bitrate reddedilir.
-        assert!(FrameHeader::parse(0xFFFD_9064).is_none());
-        assert!(FrameHeader::parse(0xFFFB_F064).is_none());
+    fn mp3_is_decoded_to_interleaved_pcm() {
+        let (pcm, rate, channels) = decode_mp3(SINE_MP3).expect("çözülmeli");
+        assert_eq!((rate, channels), (44100, 2));
+        let frames = pcm.len() / 2;
+        // LAME gecikme/dolgu kareleriyle 0,5 sn'ye yakın.
+        assert!((22_050..=24_500).contains(&frames), "{frames}");
+        let peak = pcm.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        // ffmpeg `volumedetect` aynı dosyada tepe seviyeyi -21,4 dBFS (≈0,085) ölçer.
+        assert!((0.075..0.095).contains(&peak), "tepe seviye: {peak}");
+        assert!(decode_mp3(b"not an mp3").is_err());
     }
 
     #[test]
-    fn id3_tag_and_trailing_garbage_are_skipped() {
-        let mut data = b"ID3\x04\x00\x00\x00\x00\x00\x05hello".to_vec();
-        data.extend(mp3_frames(3));
-        data.extend_from_slice(b"TAGtrailing");
-
-        let mp3 = parse_mp3(&data).expect("kareler bulunmalı");
-        assert_eq!(mp3.frames, vec![(15, 417), (432, 417), (849, 417)]);
-        assert_eq!(mp3.avg_bitrate, 128_000);
-        assert_eq!(mp3.total_samples(), 3 * 1152);
-        assert!(parse_mp3(b"not an mp3").is_err());
+    fn pcm_is_encoded_to_aac_lc_access_units() {
+        let pcm: Vec<f32> = (0..44_100)
+            .flat_map(|i| {
+                let s = (i as f32 * 440.0 * std::f32::consts::TAU / 44_100.0).sin() * 0.5;
+                [s, s]
+            })
+            .collect();
+        let aac = encode_aac(&pcm, 44_100, 2).expect("kodlanmalı");
+        assert_eq!(aac.pcm_frames, 44_100);
+        // 1 sn / 1024 örnek ≈ 43 kare (+ öncelik/kuyruk).
+        assert!(
+            (43..=46).contains(&aac.packets.len()),
+            "{}",
+            aac.packets.len()
+        );
+        // AudioSpecificConfig: AOT 2 (LC), 44.1 kHz (indeks 4), 2 kanal.
+        assert_eq!(aac.audio_specific_config, vec![0x12, 0x10]);
     }
 
     #[test]
@@ -529,20 +526,27 @@ mod tests {
     }
 
     #[test]
-    fn muxed_file_is_faststart_mp4_with_both_tracks() {
+    fn muxed_file_is_faststart_mp4_with_avc_and_aac() {
         let image = solid_image(64, 64);
         let still = encode_still(&image).expect("kodlanmalı");
-        let mp3 = mp3_frames(10);
-        let audio = parse_mp3(&mp3).expect("kareler bulunmalı");
+        let (pcm, rate, channels) = decode_mp3(SINE_MP3).expect("çözülmeli");
+        let audio = encode_aac(&pcm, rate, channels).expect("kodlanmalı");
 
-        let out = mux(&image, still, &audio, &mp3).expect("MP4 yazılmalı");
+        let out = mux(&image, still, &audio).expect("MP4 yazılmalı");
         assert_eq!(&out[4..8], b"ftyp");
         let moov = out.windows(4).position(|w| w == b"moov").expect("moov");
         let mdat = out.windows(4).position(|w| w == b"mdat").expect("mdat");
         assert!(moov < mdat, "moov başta olmalı (faststart)");
         assert!(out.windows(4).any(|w| w == b"avc1"));
         assert!(out.windows(4).any(|w| w == b"mp4a"));
-        // Ses kareleri yeniden kodlanmadan aynen yazılır.
-        assert!(out.windows(mp3.len()).any(|w| w == mp3.as_slice()));
+        // esds: DecoderConfigDescriptor (etiket 4) OTI 0x40 = MPEG-4 Audio (AAC), MP3 değil.
+        let esds = out.windows(4).position(|w| w == b"esds").expect("esds");
+        let decoder_config = out[esds..]
+            .iter()
+            .position(|&b| b == 0x04)
+            .map(|offset| esds + offset)
+            .expect("DecoderConfigDescriptor");
+        assert!(out[decoder_config..decoder_config + 8].contains(&0x40));
+        assert!(!out[esds..esds + 64].contains(&0x6B));
     }
 }
