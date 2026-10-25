@@ -573,7 +573,7 @@ impl HttpFetcher {
         };
         match source {
             Source::Vx => {
-                from_vxtwitter(
+                let snapshot = from_vxtwitter(
                     &self.client,
                     url,
                     id,
@@ -581,7 +581,14 @@ impl HttpFetcher {
                     &self.translation_target,
                     self.translate_english,
                 )
-                .await
+                .await?;
+                match language {
+                    Some(language) if self.misses_translation(&snapshot.post) => {
+                        self.fx_translation_fallback(url, id, language, snapshot)
+                            .await
+                    }
+                    _ => Ok(snapshot),
+                }
             }
             Source::Fx => from_fxtwitter(
                 &self.client,
@@ -598,6 +605,48 @@ impl HttpFetcher {
                 .await
                 .map(unknown),
         }
+    }
+
+    /// Çevrilmesi gereken gönderinin dil ekli yanıtı çeviri taşımıyor mu?
+    fn misses_translation(&self, post: &BuiltinPost) -> bool {
+        post.translation.is_none()
+            && needs_translation(
+                post.language.as_deref(),
+                &self.translation_target,
+                self.translate_english,
+            )
+    }
+
+    /// vx'in dil ekli yanıtı çevirisiz geldiğinde aynı X çevirisini FxTwitter'dan ister.
+    ///
+    /// X, Grok çevirisini ilk istekte henüz üretmemiş olabilir: vx o anda `translation: null`
+    /// döner (bkz. king40085151/2114278300113916196). Bu yanıt başarı sayılıp önbelleğe
+    /// alınırsa gönderi 10 dakika boyunca çevirisiz kalır. FxTwitter da çeviremezse hata
+    /// döner; hata önbelleğe yazılmadığından sonraki paylaşım çeviriyi yeniden dener.
+    async fn fx_translation_fallback(
+        &self,
+        url: &str,
+        id: &str,
+        language: &str,
+        mut snapshot: pipeline::Snapshot,
+    ) -> Result<pipeline::Snapshot, String> {
+        let fx = from_fxtwitter(
+            &self.client,
+            url,
+            id,
+            Some(language),
+            &self.translation_target,
+            self.video_budget,
+            self.translate_english,
+        )
+        .await
+        .map_err(|err| format!("vxtwitter çevirisiz döndü, FxTwitter da başarısız: {err}"))?;
+        if fx.translation.is_none() {
+            return Err(format!("X çevirisi henüz yok: {id}"));
+        }
+        snapshot.post.text = fx.text;
+        snapshot.post.translation = fx.translation;
+        Ok(snapshot)
     }
 }
 
@@ -1240,14 +1289,15 @@ fn syndication_to_post(
         .and_then(|n| n.text.clone())
         .or_else(|| tweet.text.clone())
         .unwrap_or_default();
-    // X metni `&amp;`/`&lt;`/`&gt;` kaçışlı verir, `display_text_range` ise kaçışsız metnin kod noktalarını sayar (`&` tek karakterdir).
-    // Bu yüzden kesmeden önce çözülür; aksi halde her kaçış aralığı kaydırır ve metnin sonu kırpılır.
-    let raw_text = super::unescape_html(&raw_text);
+    // `display_text_range` X'in verdiği **kaçışlı** metnin UTF-16 birimlerini sayar (`&gt;` dört,
+    // 🥰 iki birim): önce kesilir, sonra kaçışlar çözülür. Kaçışsız metinde kod noktası saymak
+    // her emoji/kaçış için aralığı kaydırır ve sona kısa linkin başı (` h`, ` https:`) taşar.
     let raw_text = if tweet.note_tweet.is_some() {
         raw_text
     } else {
         cut_to_display_range(&raw_text, tweet.display_text_range.as_deref())
     };
+    let raw_text = super::unescape_html(&raw_text);
     post.text =
         strip_trailing_media_links(&expand_url_entities(&raw_text, tweet.entities.as_ref()));
     post.language = tweet.lang.clone().filter(|lang| !lang.trim().is_empty());
@@ -1279,16 +1329,21 @@ fn syndication_to_post(
 }
 
 /// Gönderi metnini `display_text_range` sınırına kadar keser (metnin sonundaki medya
-/// kısa linki bu aralığın dışında kalır).
+/// kısa linki bu aralığın dışında kalır). Sınırlar UTF-16 birimidir; bir vekil çiftin
+/// ortasına düşen sınır karakteri bölmez, karakter dahil edilir.
 fn cut_to_display_range(text: &str, range: Option<&[usize]>) -> String {
-    match range {
-        Some(range) if range.len() >= 2 => text
-            .chars()
-            .skip(range[0])
-            .take(range[1].saturating_sub(range[0]))
-            .collect(),
-        _ => text.to_string(),
-    }
+    let Some(&[start, end, ..]) = range else {
+        return text.to_string();
+    };
+    let mut offset = 0;
+    text.chars()
+        .filter(|ch| {
+            let units = ch.len_utf16();
+            let keep = offset + units > start && offset < end;
+            offset += units;
+            keep
+        })
+        .collect()
 }
 
 /// `entities.urls` içindeki `t.co` kısa linklerini gerçek adresleriyle değiştirir.
@@ -2681,16 +2736,28 @@ mod tests {
     }
 
     #[test]
-    fn syndication_text_is_unescaped_before_the_display_range_cut() {
-        // `display_text_range` kaçışsız metni sayar: "a & <b>" 7 karakterdir.
+    fn syndication_text_is_unescaped_after_the_display_range_cut() {
+        // `display_text_range` kaçışlı metni sayar: "a &amp; &lt;b&gt;" 17 birimdir.
         let tweet: SyndicationTweet = serde_json::from_value(serde_json::json!({
             "text": "a &amp; &lt;b&gt; https://t.co/medya",
-            "display_text_range": [0, 7],
+            "display_text_range": [0, 17],
             "user": { "name": "Ad", "screen_name": "ad" }
         }))
         .unwrap();
         let post = syndication_to_post(&tweet, "https://x.com/ad/status/1", u64::MAX).unwrap();
         assert_eq!(post.text, "a & <b>");
+
+        // Gerçek yanıt (king40085151/2114278300113916196): 🥰 iki UTF-16 birimidir; kod noktası
+        // saymak metnin sonuna kısa linkin başını (" h") taşıyordu.
+        let emoji: SyndicationTweet = serde_json::from_value(serde_json::json!({
+            "text": "我会永远爱你😍，我们🥰 https://t.co/B0hVcFEVom",
+            "display_text_range": [0, 13],
+            "user": { "screen_name": "ad" }
+        }))
+        .unwrap();
+        let post = syndication_to_post(&emoji, "https://x.com/ad/status/3", u64::MAX).unwrap();
+        assert_eq!(post.text, "我会永远爱你😍，我们🥰");
+        assert_eq!(cut_to_display_range("a😍b", Some(&[1, 2])), "😍");
 
         let doubly: SyndicationTweet = serde_json::from_value(serde_json::json!({
             "text": "&amp;lt;",
