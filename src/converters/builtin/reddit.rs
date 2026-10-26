@@ -145,18 +145,20 @@ async fn cached_token() -> Option<String> {
         .map(|entry| entry.token.clone())
 }
 
-/// Token isteğinde kullanılacak gövdeyi ve `Basic` kimlik bilgisini seçer.
+/// Token isteğinde kullanılacak akış adını (log için), gövdeyi ve `Basic` kimlik bilgisini seçer.
 ///
 /// `client_secret` varsa Reddit'in **resmî** uygulama akışı (`client_credentials`) kullanılır:
 /// kayıtlı (script/web) uygulamanın kimliği Basic kullanıcı adı, sırrı paroladır. Sır yoksa
 /// redlib'in kullandığı kimliksiz `installed_client` akışına düşülür; orada parola boştur.
-fn token_grant(client_id: &str, client_secret: Option<&str>) -> (String, String) {
+fn token_grant(client_id: &str, client_secret: Option<&str>) -> (&'static str, String, String) {
     match client_secret {
         Some(secret) => (
+            "client_credentials",
             "grant_type=client_credentials".to_string(),
             base64_ascii(&format!("{client_id}:{secret}")),
         ),
         None => (
+            "installed_client",
             format!(
                 "grant_type=https%3A%2F%2Foauth.reddit.com%2Fgrants%2Finstalled_client&device_id={OAUTH_DEVICE_ID}"
             ),
@@ -171,12 +173,7 @@ async fn request_token(
     client_id: &str,
     client_secret: Option<&str>,
 ) -> Option<String> {
-    let grant = if client_secret.is_some() {
-        "client_credentials"
-    } else {
-        "installed_client"
-    };
-    let (body, credentials) = token_grant(client_id, client_secret);
+    let (grant, body, credentials) = token_grant(client_id, client_secret);
 
     let response = client
         .post(OAUTH_TOKEN_URL)
@@ -1809,11 +1806,11 @@ mod tests {
 
     #[test]
     fn token_grant_prefers_the_official_app_flow_when_a_secret_is_set() {
-        let (body, basic) = token_grant("ornek-id", Some("s3cret"));
+        let (_, body, basic) = token_grant("ornek-id", Some("s3cret"));
         assert_eq!(body, "grant_type=client_credentials");
         assert_eq!(basic, base64_ascii("ornek-id:s3cret"));
 
-        let (body, basic) = token_grant(DEFAULT_CLIENT_ID, None);
+        let (_, body, basic) = token_grant(DEFAULT_CLIENT_ID, None);
         assert!(body.contains("grants%2Finstalled_client"), "{body}");
         assert!(body.contains(OAUTH_DEVICE_ID), "{body}");
         assert_eq!(basic, base64_ascii(&format!("{DEFAULT_CLIENT_ID}:")));
