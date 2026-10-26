@@ -42,8 +42,9 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
             )
         })?;
 
-    let did = resolve_did(client, &handle).await?;
-    let uri = format!("at://{did}/app.bsky.feed.post/{rkey}");
+    // AppView at-URI'deki handle'ı kendisi çözer: ayrı bir `getProfile` (handle → DID) isteği
+    // gönderiyi bir tur gidiş-dönüş geciktirirdi. DID verilmişse aynı biçim onunla da çalışır.
+    let uri = format!("at://{handle}/app.bsky.feed.post/{rkey}");
     let url = format!(
         "{API_BASE}/app.bsky.feed.getPostThread?depth={THREAD_DEPTH}&parentHeight={THREAD_PARENT_HEIGHT}&uri={}",
         encode_component(&uri)
@@ -58,24 +59,6 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     })?;
 
     Ok(thread_view_to_post(&response.thread, &handle))
-}
-
-/// `handle` → `did` çözümlemesi (zaten DID verilmişse doğrudan döner).
-async fn resolve_did(client: &reqwest::Client, handle: &str) -> Result<String, String> {
-    if handle.starts_with("did:") {
-        return Ok(handle.to_string());
-    }
-
-    let url = format!(
-        "{API_BASE}/app.bsky.actor.getProfile?actor={}",
-        encode_component(handle)
-    );
-    let value = super::get_json(client, &url).await?;
-    value
-        .get("did")
-        .and_then(|did| did.as_str())
-        .map(|did| did.to_string())
-        .ok_or_else(|| format!("Bluesky DID çözümlenemedi: {handle}"))
 }
 
 // =====================================================================================

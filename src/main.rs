@@ -92,8 +92,16 @@ const KEEPALIVE_TARGETS: [(&str, &str); 5] = [
     ),
 ];
 
-/// Bağlantı havuzunu sıcak tutmak için yoklama aralığı. İstemcinin `pool_idle_timeout`
-/// değerinden (90 sn) **küçük** olmalı; aksi hâlde bağlantı iki yoklama arasında atıl kalır.
+/// Boştaki bağlantının havuzda tutulduğu süre.
+///
+/// Isıtılan uçlar ([`KEEPALIVE_TARGETS`]) dışındaki platformlar (Instagram, Reddit, TikTok,
+/// Bluesky...) yalnızca kullanıldıklarında bağlanır; 90 sn'lik varsayılanla birkaç dakika arayla
+/// gelen dönüşümler her seferinde DNS + TCP + TLS öderdi. HTTP/2 PING'leri boştaki bağlantıyı
+/// canlı tutar ve kopanı tespit eder; sunucunun kendi kapattığı bağlantı yeniden kurulur.
+const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Bağlantı havuzunu sıcak tutmak için yoklama aralığı. [`POOL_IDLE_TIMEOUT`] değerinden
+/// **küçük** olmalı; aksi hâlde bağlantı iki yoklama arasında atıl kalır.
 const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Tek bir uca **arka planda** ısıtma isteği yapar (yanıt içeriği önemsiz: amaç DNS +
@@ -215,7 +223,7 @@ async fn main() {
         .tls_backend_rustls()
         .timeout(std::time::Duration::from_secs(30))
         .connect_timeout(std::time::Duration::from_secs(8))
-        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
         .pool_max_idle_per_host(8)
         // Discord bağlantısını boşta da canlı tut: ilk karttan sonra oluşan TLS/HTTP2
         // yeniden el sıkışması, gönderim fazının kuyruğa takılmasına neden olmasın.
@@ -323,7 +331,7 @@ mod tests {
     /// bağlantı her yoklama arasında kapanır ve kazanç kaybolur.
     #[test]
     fn keepalive_interval_is_shorter_than_the_idle_pool_timeout() {
-        assert!(KEEPALIVE_INTERVAL < std::time::Duration::from_secs(90));
+        assert!(KEEPALIVE_INTERVAL < POOL_IDLE_TIMEOUT);
         assert!(
             KEEPALIVE_TARGETS
                 .iter()

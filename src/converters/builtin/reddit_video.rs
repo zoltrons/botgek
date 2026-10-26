@@ -43,6 +43,8 @@ use super::{REQUEST_TIMEOUT, USER_AGENT};
 /// tamamı olabilir — bu yüzden kart medya sınırından (`MAX_BODY_BYTES` = 2 MB) geniş tutulur.
 const MAX_PART_BYTES: usize = 16 * 1024 * 1024;
 const MERGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Birleştirmeler arasında v.redd.it bağlantısının havuzda tutulduğu süre.
+const MERGE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 static MERGE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 
@@ -441,19 +443,61 @@ impl ContinuousWait for Waiter {
 /// Reddit videosunu **sesli** tek MP4'e birleştirir.
 ///
 /// `hls-transmux`'ın future'ları `Send` **değildir**; bu yüzden birleştirme, kendi current-thread
-/// Tokio runtime'ına sahip ayrı bir iş parçacığında yürütülür ve sonuç kanalla geri taşınır —
-/// böylece çağıran taraf (serenity olay döngüsü) `Send` kalır.
+/// Tokio runtime'ına sahip kalıcı iş parçacığında ([`MERGE_WORKER`]) yürütülür ve sonuç kanalla
+/// geri taşınır — böylece çağıran taraf (serenity olay döngüsü) `Send` kalır.
 ///
 /// Master playlist çözülür; en yüksek → orta → en düşük kalite sırasıyla denenir ve Discord ek
 /// limitine (`max_bytes`) sığan ilk sonuç döner. Herhangi bir hata `None` döner: çağıran taraf
 /// sessiz kart videosuna (Reddit'in video-only mp4'ü) düşer, akış bozulmaz.
 pub async fn merge(client: &reqwest::Client, video_url: &str, max_bytes: u64) -> Option<MediaFile> {
     let video_id = video_id_from_url(video_url)?;
-    // Çağıranın istemcisi kullanılmaz: bağlantı havuzu bu iş parçacığının ömrü kısa runtime'ına bağlanırdı, ayrıca burada yalnızca v.redd.it'e izin veren yönlendirme kuralı gerekir.
+    // Çağıranın istemcisi kullanılmaz: birleştirme kendi runtime'ında yürür (bağlantı havuzu
+    // runtime'a bağlıdır), ayrıca burada yalnızca v.redd.it'e izin veren yönlendirme kuralı gerekir.
     let _ = client;
-    // Reject overload rather than creating an unbounded queue of native threads.
+    // Reject overload rather than creating an unbounded queue of merge jobs.
     let permit = MERGE_SLOTS.clone().try_acquire_owned().ok()?;
-    let client = reqwest::Client::builder()
+
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+    let _cancel_on_drop = cancel;
+    MERGE_WORKER
+        .as_ref()?
+        .send(MergeJob {
+            video_id,
+            max_bytes,
+            permit,
+            cancelled,
+            reply,
+        })
+        .ok()?;
+
+    receiver.await.ok().flatten()
+}
+
+/// Kalıcı birleştirme iş parçacığına gönderilen iş.
+struct MergeJob {
+    video_id: String,
+    max_bytes: u64,
+    /// İş bitene kadar [`MERGE_SLOTS`] yuvasını tutar.
+    permit: tokio::sync::OwnedSemaphorePermit,
+    /// Çağıran vazgeçerse (kart bütçesi doldu) kapanır ve iş iptal edilir.
+    cancelled: tokio::sync::oneshot::Receiver<()>,
+    reply: tokio::sync::oneshot::Sender<Option<MediaFile>>,
+}
+
+/// Birleştirmeleri yürüten **tek, kalıcı** iş parçacığı.
+///
+/// `hls-transmux`'ın future'ları `Send` olmadığından birleştirmeler kendi current-thread
+/// runtime'ında `spawn_local` ile yürür. Runtime ve istemci kalıcı olduğu için v.redd.it
+/// bağlantısı birleştirmeler arasında havuzda kalır: her videoda iş parçacığı + runtime +
+/// istemci kurup soğuk TLS el sıkışması ödenmez. İş parçacığı kurulamazsa `None` döner ve
+/// [`merge`] sessiz videoya düşer.
+static MERGE_WORKER: LazyLock<Option<tokio::sync::mpsc::UnboundedSender<MergeJob>>> =
+    LazyLock::new(spawn_merge_worker);
+
+/// v.redd.it'ten başka hosta yönlendirmeyi izlemeyen birleştirme istemcisi.
+fn merge_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
         .tls_backend_rustls()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -469,32 +513,54 @@ pub async fn merge(client: &reqwest::Client, video_url: &str, max_bytes: u64) ->
         // Yanıt vermeyen bir CDN düğümü 5 sn'lik birleştirme bütçesinin tamamını bağlantı kurmaya harcamasın.
         .connect_timeout(MERGE_CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
+        .pool_idle_timeout(MERGE_POOL_IDLE_TIMEOUT)
+        .tcp_nodelay(true)
         .build()
-        .ok()?;
+        .ok()
+}
 
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
-    let _cancel_on_drop = cancel;
+fn spawn_merge_worker() -> Option<tokio::sync::mpsc::UnboundedSender<MergeJob>> {
+    let (sender, mut jobs) = tokio::sync::mpsc::unbounded_channel::<MergeJob>();
     std::thread::Builder::new()
         .name("reddit-merge".into())
         .spawn(move || {
-            let _permit = permit;
-            let merged = tokio::runtime::Builder::new_current_thread()
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .ok()
-                .and_then(|runtime| {
-                    runtime.block_on(cancellable_merge(
-                        cancelled,
-                        super::render::VIDEO_MERGE_BUDGET,
-                        merge_inner(&client, &video_id, max_bytes),
-                    ))
-                });
-            let _ = sender.send(merged);
+            else {
+                warn!("Reddit birleştirme runtime'ı kurulamadı; videolar sessiz gönderilecek");
+                return;
+            };
+            let Some(client) = runtime.block_on(async { merge_client() }) else {
+                warn!("Reddit birleştirme istemcisi kurulamadı; videolar sessiz gönderilecek");
+                return;
+            };
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&runtime, async move {
+                while let Some(job) = jobs.recv().await {
+                    let client = client.clone();
+                    tokio::task::spawn_local(async move {
+                        let MergeJob {
+                            video_id,
+                            max_bytes,
+                            permit,
+                            cancelled,
+                            reply,
+                        } = job;
+                        let _permit = permit;
+                        let merged = cancellable_merge(
+                            cancelled,
+                            super::render::VIDEO_MERGE_BUDGET,
+                            merge_inner(&client, &video_id, max_bytes),
+                        )
+                        .await;
+                        let _ = reply.send(merged);
+                    });
+                }
+            });
         })
         .ok()?;
-
-    receiver.await.ok().flatten()
+    Some(sender)
 }
 
 async fn cancellable_merge(

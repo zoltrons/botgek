@@ -1,8 +1,10 @@
 //! Fetch untrusted preview URLs without trusting DNS or redirect targets.
 use reqwest::{Url, redirect::Policy};
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::Duration,
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
 };
 
 fn public_v4(ip: Ipv4Addr) -> bool {
@@ -72,6 +74,63 @@ pub(super) async fn resolve_public(host: &str, port: u16) -> Result<Vec<SocketAd
     Ok(addresses)
 }
 
+/// Sabitlenmiş istemcinin yeniden kullanılabileceği süre (bağlantı havuzunun boşta kalma
+/// süresiyle aynı).
+const PINNED_CLIENT_TTL: Duration = Duration::from_secs(90);
+/// Aynı anda tutulan en fazla sabitlenmiş istemci.
+const PINNED_CLIENT_LIMIT: usize = 32;
+
+type PinnedKey = (String, Vec<SocketAddr>);
+
+/// Doğrulanmış adreslere sabitlenmiş istemciler.
+///
+/// Anahtar, host ve **o istekte** doğrulanmış adres kümesidir: DNS her istekte yeniden çözülüp
+/// doğrulanır, sonuç değişirse yeni istemci kurulur. Böylece istemci yalnızca az önce herkese
+/// açık olduğu doğrulanan adreslere bağlanabilir (rebinding koruması aynen kalır). Kazanç:
+/// aynı CDN'e giden yönlendirme adımları ve ardışık indirmeler TLS bağlantısını yeniden kullanır
+/// ve istemci her istekte yeniden kurulmaz (kök sertifikalar dahil ~10-20 ms).
+static PINNED_CLIENTS: LazyLock<Mutex<HashMap<PinnedKey, (Instant, reqwest::Client)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn pinned_key(host: &str, addresses: &[SocketAddr]) -> PinnedKey {
+    let mut addresses = addresses.to_vec();
+    addresses.sort_unstable();
+    addresses.dedup();
+    (host.to_ascii_lowercase(), addresses)
+}
+
+fn pinned_client(host: &str, addresses: &[SocketAddr]) -> Result<reqwest::Client, String> {
+    let key = pinned_key(host, addresses);
+    {
+        let mut clients = PINNED_CLIENTS.lock().unwrap_or_else(|err| err.into_inner());
+        clients.retain(|_, (created, _)| created.elapsed() < PINNED_CLIENT_TTL);
+        if let Some((_, client)) = clients.get(&key) {
+            return Ok(client.clone());
+        }
+    }
+    // İstemci kilit dışında kurulur: kurulum diğer isteklerin önbellek okumasını bekletmesin.
+    let client = reqwest::Client::builder()
+        .tls_backend_rustls()
+        .no_proxy()
+        .redirect(Policy::none())
+        .resolve_to_addrs(host, addresses)
+        .pool_idle_timeout(PINNED_CLIENT_TTL)
+        .tcp_nodelay(true)
+        .build()
+        .map_err(|_| "preview client failed")?;
+    let mut clients = PINNED_CLIENTS.lock().unwrap_or_else(|err| err.into_inner());
+    if clients.len() >= PINNED_CLIENT_LIMIT
+        && let Some(oldest) = clients
+            .iter()
+            .min_by_key(|(_, (created, _))| *created)
+            .map(|(key, _)| key.clone())
+    {
+        clients.remove(&oldest);
+    }
+    clients.insert(key, (Instant::now(), client.clone()));
+    Ok(client)
+}
+
 pub async fn preview(raw: &str) -> Result<(String, String), String> {
     let (url, mut response) = public_get(raw, Duration::from_secs(2), super::USER_AGENT).await?;
     let mut bytes = Vec::new();
@@ -111,15 +170,11 @@ pub async fn public_get_with(
         let port = url.port_or_known_default().ok_or("preview port missing")?;
         let addresses = resolve_public(host, port).await?;
         // Pin exactly the addresses checked above: a second DNS lookup would allow rebinding.
-        let client = reqwest::Client::builder()
-            .tls_backend_rustls()
-            .no_proxy()
-            .redirect(Policy::none())
-            .resolve_to_addrs(host, &addresses)
+        let client = pinned_client(host, &addresses)?;
+        let mut request = client
+            .get(url.clone())
             .timeout(timeout)
-            .build()
-            .map_err(|_| "preview client failed")?;
-        let mut request = client.get(url.clone()).header("user-agent", user_agent);
+            .header("user-agent", user_agent);
         for (name, value) in headers {
             request = request.header(*name, value);
         }
@@ -175,6 +230,27 @@ mod tests {
             assert!(validate_url(&Url::parse(url).unwrap()).is_err());
         }
     }
+    #[test]
+    fn pinned_clients_are_reused_only_for_the_same_verified_addresses() {
+        let host = "pinned-reuse.example";
+        let first: SocketAddr = "1.1.1.1:443".parse().unwrap();
+        let second: SocketAddr = "8.8.8.8:443".parse().unwrap();
+        let cached = |addresses: &[SocketAddr]| {
+            PINNED_CLIENTS
+                .lock()
+                .unwrap()
+                .contains_key(&pinned_key(host, addresses))
+        };
+
+        pinned_client(host, &[second, first]).unwrap();
+        // Sıra fark etmez: aynı küme aynı istemciyi kullanır.
+        assert!(cached(&[first, second]));
+        // Farklı (yeniden çözülmüş) bir küme eski istemciyi asla kullanmaz.
+        assert!(!cached(&[first]));
+        pinned_client(host, &[first]).unwrap();
+        assert!(cached(&[first]));
+    }
+
     #[tokio::test]
     async fn loopback_is_rejected_before_connecting() {
         assert!(

@@ -1360,7 +1360,13 @@ pub async fn handle(
     // optimistic (nonce'lu) mesajını sunucu kopyasıyla eşleştirmeden "hayalet mesaj"
     // bıraktığı için artık kullanılmaz (bkz. [`delete_user_message`]).
     let fetch_started = std::time::Instant::now();
-    let post = match fetch(client, parsed, engine, config).await {
+    // Kanalın NSFW durumu (soğuk önbellekte 1-2 REST çağrısı) veri çekimiyle paralel çözülür;
+    // eskiden veri geldikten sonra sırayla bekleniyordu.
+    let (post, channel_nsfw) = tokio::join!(
+        fetch(client, parsed, engine, config),
+        resolve_channel_nsfw(ctx, msg)
+    );
+    let post = match post {
         Ok(post) => post,
         Err(err) => {
             crate::telemetry::record_phase(crate::telemetry::Phase::Fetch, fetch_started.elapsed());
@@ -1378,7 +1384,6 @@ pub async fn handle(
     // Source/channel visibility is resolved per send. Never modify the cached Arc: the same
     // source post may be rendered in both NSFW and non-NSFW channels.
     let render_started = std::time::Instant::now();
-    let channel_nsfw = resolve_channel_nsfw(ctx, msg).await;
     let post = render::apply_visibility(
         &post,
         parsed.is_spoiler,

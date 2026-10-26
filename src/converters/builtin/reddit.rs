@@ -51,7 +51,10 @@ static COMMENT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 const MAX_COMMENT_CONTEXT_CHARS: usize = 1_200;
 
 /// Harici bağlantı önizlemesi için toplam süre: kart **asla** bağlantı için bekletilmez.
-const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(2_500);
+///
+/// Önizleme gönderi verisinden sonra çekilir (hedef adres o yanıttan gelir); X'in link kartıyla
+/// aynı sınır uygulanır. Süre dolarsa satır alan adıyla gösterilir, bağlantı kaybolmaz.
+const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(500);
 /// Harici bağlantı satırındaki başlık sınırı (Discord'un yerleşik önizlemesi gibi tek satır).
 const LINK_PREVIEW_TITLE_LIMIT: usize = 180;
 /// Alan adı etiketi sınırı.
