@@ -23,7 +23,7 @@ use serenity::all::{
     Command, CommandData, CommandDataOptionValue, CommandInteraction, CommandOptionType,
     CommandType, ComponentInteraction, Context, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse, Http,
-    InstallationContext, Interaction, InteractionContext, MessageId, User,
+    InstallationContext, Interaction, InteractionContext, MessageId,
 };
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -164,7 +164,7 @@ pub async fn handle(
     }
 
     // 1. Hedef içerik: sohbet komutunda `link`, mesaj komutunda hedef mesajın metni.
-    let Some(source) = source(&command.data, &command.user) else {
+    let Some(source) = source(&command.data) else {
         let content = match command.data.kind {
             CommandType::ChatInput => USAGE,
             _ => ConvertError::Unsupported.message(),
@@ -203,12 +203,11 @@ pub async fn handle(
         token: command.token.clone(),
     });
 
-    // Mesaj komutunda kart, bağlantıyı paylaşan kişiyi gösterir; rol filtresi ise komutu
-    // kullanan kişiye uygulanır.
+    // Kart her iki akışta da komutu kullanan kişiyi gönderen gösterir; silme yetkisi de ona
+    // kaydedilir (mesaj komutunda hedef mesajın yazarına değil).
     let result = converters::convert_now(
         ctx,
         &source.content,
-        &source.author,
         &command.user,
         command.member.as_deref(),
         command.guild_id,
@@ -252,21 +251,19 @@ fn is_convert_command(command: &CommandInteraction) -> bool {
     }
 }
 
-/// Komuttan dönüştürülecek metni ve kartta gösterilecek yazarı çıkarır.
+/// Komuttan dönüştürülecek metni ve yanıtlanacak mesajı çıkarır.
 struct Source {
     content: String,
-    author: User,
     /// Mesaj komutunda hedef mesaj; sohbet komutunda `None`.
     reply_to: Option<MessageId>,
 }
 
-fn source(data: &CommandData, invoker: &User) -> Option<Source> {
+fn source(data: &CommandData) -> Option<Source> {
     match data.kind {
         CommandType::ChatInput => {
             let link = string_option(data, LINK_OPTION)?;
             (!link.trim().is_empty()).then(|| Source {
                 content: link.to_string(),
-                author: invoker.clone(),
                 reply_to: None,
             })
         }
@@ -278,7 +275,6 @@ fn source(data: &CommandData, invoker: &User) -> Option<Source> {
                 .get(&MessageId::new(target_id.get()))?;
             Some(Source {
                 content: target.content.clone(),
-                author: target.author.clone(),
                 reply_to: Some(MessageId::new(target_id.get())),
             })
         }
@@ -389,7 +385,7 @@ mod tests {
         }))
         .expect("komut verisi çözümlenmeli");
 
-        let source = source(&data, &User::default()).expect("link seçeneği bulunmalı");
+        let source = source(&data).expect("link seçeneği bulunmalı");
         assert_eq!(source.content, "https://x.com/u/status/1");
     }
 
@@ -403,7 +399,7 @@ mod tests {
         }))
         .expect("komut verisi çözümlenmeli");
 
-        assert!(source(&data, &User::default()).is_none());
+        assert!(source(&data).is_none());
     }
 
     #[test]
@@ -414,7 +410,6 @@ mod tests {
         target.id = MessageId::new(42);
         target.channel_id = ChannelId::new(7);
         target.content = "bak https://x.com/u/status/1".to_string();
-        target.author.id = serenity::all::UserId::new(99);
 
         let data: CommandData = serde_json::from_value(serde_json::json!({
             "id": "1",
@@ -425,9 +420,8 @@ mod tests {
         }))
         .expect("mesaj komutu verisi çözümlenmeli");
 
-        let source = source(&data, &User::default()).expect("hedef mesaj bulunmalı");
+        let source = source(&data).expect("hedef mesaj bulunmalı");
         assert_eq!(source.content, "bak https://x.com/u/status/1");
-        assert_eq!(source.author.id.get(), 99);
         assert_eq!(source.reply_to, Some(MessageId::new(42)));
     }
 

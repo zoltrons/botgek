@@ -208,14 +208,13 @@ fn interaction_settings(settings: &GuildSettings) -> GuildSettings {
 ///   bulunmaz, bu yüzden `delete_original` ve `impersonate_user` bu iş için kapatılır.
 /// - Sonuç çağırana döner; slash komutu yanıtı bu sonuca göre güncellenir.
 ///
-/// `author`, kartın "Gönderen" etiketinde görünecek kullanıcıdır (slash komutunda komutu
-/// kullanan, mesaj komutunda hedef mesajın yazarı). `actor` ise rol filtresinden geçen
-/// **komutu kullanan** kullanıcıdır; ikisi mesaj komutunda bilinçli olarak ayrıdır.
+/// `actor` **komutu kullanan** kullanıcıdır: rol filtresinden o geçer, kartın "Gönderen"
+/// etiketinde o görünür ve kartı silme yetkisi ona kaydedilir (mesaj komutunda da hedef
+/// mesajın yazarı değil).
 #[allow(clippy::too_many_arguments)]
 pub async fn convert_now(
     ctx: &Context,
     content: &str,
-    author: &User,
     actor: &User,
     actor_member: Option<&Member>,
     guild_id: Option<GuildId>,
@@ -256,7 +255,7 @@ pub async fn convert_now(
     msg.id = generated_message_id();
     msg.channel_id = channel_id;
     msg.guild_id = guild_id;
-    msg.author = author.clone();
+    msg.author = actor.clone();
     msg.content = content.to_string();
     if let Some(target_id) = reply_to {
         let mut reference = MessageReference::new(Default::default(), channel_id)
