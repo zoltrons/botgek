@@ -11,16 +11,14 @@
 //! önbelleklenir ve süresi dolmadan yenilenir. Kimlik doğrulama başarısız olursa (engellenmemiş
 //! IP'lerde çalışan) kimliksiz `www.reddit.com` yolu denenir; o da olmazsa proxy yedeğine düşülür.
 //!
-//! Reddit kimliksiz OAuth istemcilerinde `/comments/` yolunu ayrıca engellediği için giden istekte
-//! bu ayırıcı `%2F` olarak kodlanır (redlib `0a3e9cde`); mantıksal yol ve sorgu değişmez, bkz.
-//! [`comments_transport_path`].
+//! Reddit kimliksiz OAuth istemcilerinde `/comments/` yolunu ayrıca engellediği için OAuth
+//! isteğinde bu ayırıcı `%2F` olarak kodlanır (redlib `0a3e9cde`), bkz. [`oauth_comments_url`].
 //!
 //! Video: Reddit'in verdiği mp4 (`fallback_url`, genelde `CMAF_*.mp4`) **video-only**'dir —
 //! Reddit sesi ayrı akışta tutar. Proje **ffmpeg kullanmaz**; bu yüzden video kartta sessiz
 //! oynar, sesli izlemek için gönderi bağlantısı (`[Link]`) Reddit'e gider. `secure_media`
 //! alanı da (bazı gönderilerde medya yalnızca orada) desteklenir.
 
-use std::borrow::Cow;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -271,7 +269,7 @@ pub async fn fetch(
 
     // 1) OAuth: Reddit'in kimliksiz istekleri engellediği (403) durumlarda da çalışır.
     if let Some(token) = oauth_token(client, client_id, client_secret).await {
-        let url = comments_url(OAUTH_API_BASE, &id, "", &query);
+        let url = oauth_comments_url(&id, &query);
         match get_json_with_bearer(client, &url, &token).await {
             Ok(listings) => match listings_to_post(listings, comment_id) {
                 Ok(mut post) => {
@@ -285,68 +283,20 @@ pub async fn fetch(
     }
 
     // 2) Kimliksiz yol: engellenmemiş IP'lerde (ör. ev bağlantısı) çalışır.
-    let url = comments_url("https://www.reddit.com", &id, ".json", &query);
+    let url = format!("https://www.reddit.com/comments/{id}.json?{query}");
     let listings = get_reddit_json(client, &url).await?;
     let mut post = listings_to_post(listings, comment_id)?;
     fill_link_preview(&mut post).await;
     Ok(post)
 }
 
-/// Gönderi listesi adresini kurar: yol, Reddit'in `/comments/` engelini aşan giden biçime
-/// ([`comments_transport_path`]) çevrilir; sorgu dizesi ve `.json` soneki korunur.
-fn comments_url(base: &str, id: &str, suffix: &str, query: &str) -> String {
-    let logical = format!("/comments/{id}{suffix}?{query}");
-    let path = comments_transport_path(&logical);
-    format!("{base}{path}")
-}
-
-/// `/comments/` ayırıcısını yalnızca **giden** istekte `%2F` olarak kodlar.
+/// OAuth gönderi listesi adresi; `/comments/` ayırıcısı `%2F` olarak kodlanır.
 ///
-/// Reddit, kimliksiz OAuth istemcilerinde gerçek `/comments/` yolunu 403 (JSON değil HTML engel
-/// sayfası) ile engelliyor; aynı yol, ayırıcı `%2F` olarak kodlandığında aynı JSON'u döndürüyor
-/// (redlib `0a3e9cde`). Mantıksal yol değişmez: önbellek, günlük ve tanılama gerçek adresi görür.
-/// Sorgu dizesi, `.json` soneki ve gönderi yolu olmayan her adres olduğu gibi bırakılır. Reddit
-/// bu boşluğu kapatırsa istek yine başarısız olur; yalnızca biçimi doğrulanan gönderi yolları
-/// kodlanır (`/comments/{id}`, `/r/{sub}/comments/{id}` ve yorum kimliği biçimleri).
-fn comments_transport_path(path: &str) -> Cow<'_, str> {
-    let base = path.split('?').next().unwrap_or(path);
-    let (separator, tail) = if let Some(tail) = base.strip_prefix("/comments/") {
-        ("/comments".len(), tail)
-    } else if let Some(scoped) = base.strip_prefix("/r/") {
-        let Some((subreddit, rest)) = scoped.split_once('/') else {
-            return Cow::Borrowed(path);
-        };
-        let Some(tail) = rest.strip_prefix("comments/") else {
-            return Cow::Borrowed(path);
-        };
-        if subreddit.is_empty() {
-            return Cow::Borrowed(path);
-        }
-        ("/r/".len() + subreddit.len(), tail)
-    } else {
-        return Cow::Borrowed(path);
-    };
-
-    let tail = tail
-        .strip_suffix(".json")
-        .unwrap_or(tail)
-        .trim_end_matches('/');
-    let mut segments = tail.split('/');
-    let Some(post_id) = segments.next() else {
-        return Cow::Borrowed(path);
-    };
-    let _slug = segments.next();
-    let comment_id = segments.next();
-
-    if post_id.is_empty() || comment_id.is_some_and(str::is_empty) || segments.next().is_some() {
-        return Cow::Borrowed(path);
-    }
-
-    Cow::Owned(format!(
-        "{}%2F{}",
-        &path[..separator],
-        &path[separator + 1..]
-    ))
+/// Reddit, kimliksiz OAuth istemcilerinde gerçek `/comments/` yolunu 403 (HTML engel sayfası) ile
+/// engelliyor; ayırıcı `%2F` olarak kodlandığında aynı JSON dönüyor (redlib `0a3e9cde`). Reddit bu
+/// boşluğu kapatırsa istek yine başarısız olur ve kimliksiz yola düşülür.
+fn oauth_comments_url(id: &str, query: &str) -> String {
+    format!("{OAUTH_API_BASE}/comments%2F{id}?{query}")
 }
 
 /// Yorum listesi sorgusu; `raw_json=1` her zaman bulunur çünkü metin alanları bir daha HTML çözülmez.
@@ -1850,78 +1800,11 @@ mod tests {
     }
 
     #[test]
-    fn comments_transport_path_encodes_only_the_route_separator() {
-        for (path, expected) in [
-            (
-                "/comments/1xfsgvu?raw_json=1&depth=2&limit=20",
-                "/comments%2F1xfsgvu?raw_json=1&depth=2&limit=20",
-            ),
-            (
-                "/comments/1xfsgvu.json?raw_json=1",
-                "/comments%2F1xfsgvu.json?raw_json=1",
-            ),
-            (
-                "/comments/1xfsgvu/_/abc123.json?context=3",
-                "/comments%2F1xfsgvu/_/abc123.json?context=3",
-            ),
-            (
-                "/r/rust/comments/abc123/title/",
-                "/r/rust%2Fcomments/abc123/title/",
-            ),
-        ] {
-            assert_eq!(comments_transport_path(path), expected);
-            assert_eq!(
-                comments_transport_path(expected),
-                expected,
-                "kodlama idempotent olmalı"
-            );
-        }
-    }
-
-    #[test]
-    fn comments_transport_path_leaves_other_routes_alone() {
-        for path in [
-            "/r/altkultur/about",
-            "/r/popular/hot",
-            "/r/rust/comments.json",
-            "/r/rust/commentsXYZ/abc.json",
-            "/r/rust/wiki/comments/abc.json",
-            "/r//comments/abc.json",
-            "/comments/.json",
-            "/comments.json",
-            "/user/ornek/comments/abc.json",
-            "/search.json?q=/r/rust/comments/abc",
-        ] {
-            assert!(
-                matches!(comments_transport_path(path), Cow::Borrowed(_)),
-                "{path}"
-            );
-        }
-    }
-
-    #[test]
-    fn comments_url_keeps_the_encoded_separator_on_the_wire() {
-        let oauth = comments_url(OAUTH_API_BASE, "1xfsgvu", "", "raw_json=1&depth=2&limit=20");
-        assert_eq!(
-            oauth,
-            "https://oauth.reddit.com/comments%2F1xfsgvu?raw_json=1&depth=2&limit=20"
-        );
-        let anonymous = comments_url(
-            "https://www.reddit.com",
-            "1xfsgvu",
-            ".json",
-            "raw_json=1&depth=2&limit=20",
-        );
-        assert_eq!(
-            anonymous,
-            "https://www.reddit.com/comments%2F1xfsgvu.json?raw_json=1&depth=2&limit=20"
-        );
-        // `reqwest` adresi olduğu gibi gönderir: `%2F` yol çözümlemesinde `/`'a dönmez.
-        for url in [oauth, anonymous] {
-            let parsed = Url::parse(&url).expect("adres geçerli");
-            assert_eq!(parsed.as_str(), url);
-            assert!(parsed.path().contains("%2F"), "{}", parsed.path());
-        }
+    fn oauth_comments_url_keeps_the_encoded_separator_on_the_wire() {
+        let url = oauth_comments_url("1xfsgvu", "raw_json=1");
+        // `reqwest`'in kullandığı `Url` `%2F`'yi `/`'a çözmez.
+        assert_eq!(Url::parse(&url).expect("adres geçerli").as_str(), url);
+        assert!(url.ends_with("/comments%2F1xfsgvu?raw_json=1"), "{url}");
     }
 
     #[test]
