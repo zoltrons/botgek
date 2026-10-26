@@ -108,17 +108,16 @@ Gerçek Raspberry Pi üzerinde aynı sürüm ve derleyiciyle şu senaryoları ay
 RSS/CPU, upstream istek sayısı, timeout sonrası aktif iş ve p95 değerlerini değişiklik öncesi/sonrası
 karşılaştırın. Donanım üzerinde ölçülmeden hızlanma veya bellek tasarrufu yüzdesi iddia edilmez.
 
-X akışının karar, hata, iptal ve gecikme karşılaştırmalarını tekrarlamak için:
+X kaynak birleştirmesinin (Fx önceliği, syndication yedeği, çeviri bütçesi) kararlarını ve canlı
+gecikmesini tekrarlamak için:
 
 ```sh
 cargo test --locked converters::builtin::twitter
-cargo test --locked scripted_latency_comparison -- --ignored --nocapture
 cargo test --locked twitter::benchmarks -- --ignored --nocapture
-cargo test --locked live_fetch_three_level_quote -- --ignored --nocapture
+cargo test --locked live_fetch_main_and_alternative_sources -- --ignored --nocapture
 ```
 
-`scripted_latency_comparison`, eski `facfe5a` akışıyla yeni planı aynı gecikmeli uç simülasyonlarında,
-cache'siz ve üçer örnekle karşılaştırır; çıktı eşitliğini de doğrular. Canlı testler salt okunurdur,
+Birleştirme testleri ağa çıkmaz, sahte gecikmeli yanıtlarla çalışır. Canlı testler salt okunurdur,
 Discord'a mesaj göndermez; upstream cache/konum/ağ etkileri nedeniyle süreleri kontrollü
 karşılaştırmadan ayrı tutulmalıdır.
 

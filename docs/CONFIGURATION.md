@@ -112,7 +112,7 @@ yazmak gerekmez.
 | `modules.*` | `true` / `false` | Platform ve AI sohbeti modülleri. |
 | `role_filters.*.mode` | `disabled`, `blacklist`, `allowlist` | Boş `allowlist` kimseye erişim vermez. Rol sorgusu başarısız olursa etkin filtre reddeder. |
 | `role_filters.*.roles` | En fazla 200 Discord rol kimliği | Geçersiz kimlikler ayıklanır. |
-| `engine.twitter_source` | `vxtwitter`, `fxtwitter`, `syndication`, `hybrid` | X verisinin kaynağı. `hybrid` önce syndication'ı dener. |
+| `engine.twitter_source` | `vxtwitter`, `fxtwitter`, `syndication`, `hybrid` | **Etkisiz** (eski ayar dosyaları bozulmasın diye okunur). X verisi her zaman FxTwitter'dan gelir; vxTwitter yalnızca `/dönüştür kaynak:` ile seçilir. |
 | `engine.max_images` | `1..=10` (varsayılan 4) | Tek kartta eklenecek görsel sayısı. |
 | `engine.max_video_mb` | `1..=50` (varsayılan 8) | Kart için video boyutu sınırı. |
 | `engine.sensitive_mode` | `hide_always`, `allow_in_nsfw` | Kaynak spoiler'ı ve elle işaretlenen içerik her durumda gizli kalır. |

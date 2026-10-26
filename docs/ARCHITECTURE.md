@@ -77,35 +77,29 @@ işteki panik yalnızca o kartı düşürür. Reddit birleştirmeye çağıran t
 
 - Gönderi önbelleği **600 saniye / 512 girdi** ile sınırlıdır. Anahtara kaynak, çeviri, alıntı ve video
   bütçesi dâhildir.
-- X kaynak sonuçları ayrıca **600 saniye / 512 girdi** ile önbelleklenir; aynı gönderi başka bir
-  gönderide alıntılandığında tekrar kullanılabilir.
+- Eksik X sonucu (çeviri gerekiyordu ama gelmedi ya da yedek syndication verisi kullanıldı) önbelleğe
+  yazılmaz: sonraki paylaşım ana kaynağı yeniden dener.
 - Aynı anahtara gelen eşzamanlı istekler tek çekimde birleştirilir.
 - Başarısız kaynak denemeleri kısa ömürlü (30 sn) bir hata önbelleğinde tutulur.
 - NSFW/spoiler kararı kaynak önbelleğine yazılmaz.
 - Metrikler önbellek ömrü boyunca eski olabilir.
 
-## X veri planı
+## X veri kaynağı
 
-VxTwitter/otomatik çeviri yolu gelen veriye göre yeniden planlanır; kart gönderimi veya webhook taklidi
-değişmez.
+X verisi **her zaman FxTwitter'dan** çekilir; kart gönderimi veya webhook taklidi bu katmandan bağımsızdır.
 
-- Soğuk okumada orijinal Vx verisi, syndication metadatası ve çeviri açıksa dil ekli Vx yanıtı paralel
-  istenir. FxTwitter kökün eksik kalan alanlarını tamamlar: görüntülenme ve **tam metin**. VxTwitter uzun
-  (note) gönderilerde metni ilk bağlantıda, syndication 280 karakterde keser; gönderinin tamamını yalnızca
-  FxTwitter döndürür. İstek metrikler açıkken her zaman, gizliyken yalnızca kaynak metni kestiğini
-  bildirdiğinde yapılır; gelen uzun metin eldeki metnin devamıysa kart onu kullanır (çeviri varsa ezilmez).
-- Dil ekli yanıt spekülatiftir: İngilizce/Türkçe metinde beklenmez; yabancı dilde ikinci bir seri ağ turu
-  oluşmaz. Gereksizleşen okumalar iptal edilir.
-- `qrtURL: null` ile eksik `qrtURL` birbirinden ayrılır. Bilinen üçüncü gönderi doğrudan çekilir; sırf
-  keşif için orta gönderi yeniden istenmez.
-- Yanıtlar gönderi kimliğiyle birleştirilir; boş/geç gelen yanıt mevcut çeviriyi, medyayı, topluluk
-  notunu veya tamamlanmış alıntıyı silmez. Zaman aşımında mevcut orijinal korunur.
-- Kaynak, çeviri ve alıntı işleri iki kademeli bütçeyi paylaşır: veri geldikten sonra zenginleştirme
-  650 ms, hiç veri gelmezse ilk yanıt için 3 sn. Ayrı ayrı zaman aşımı süreleri birikmez.
-- X bağlantı önizlemesi bu bütçenin içinde, kaynak istekleriyle paralel çalışır; ayrıca 500 ms sınırı
-  vardır.
-- Soğuk önbellekte en fazla dört kök GET oluşabilir. Bu bir hız garantisi değil, kritik yoldaki seri
-  beklemeleri kaldırma tercihidir.
+- FxTwitter tek yanıtta tam metni (uzun "note" gönderileri dahil), medyayı, ilk seviye alıntıyı,
+  görüntülenme dahil tüm metrikleri ve topluluk notunu verir. Alıntının alıntısı (3. seviye) çekilmez.
+- Otomatik çeviri açıksa dil ekli uç (`/tr`) düz yanıtla **paralel** istenir: gönderinin dili yanıt
+  gelmeden bilinmez, dil ekli yanıt ise düz yanıtın tamamını içerir. İngilizce/Türkçe gönderide beklenmez
+  ve bırakılır; yabancı dilde (kök ya da alıntı) isteklerin başından itibaren **1,2 sn** beklenir, dolarsa
+  kart orijinal metinle gider. Yalnızca X'in Grok çevirisi kullanılır.
+- X'in kendi syndication ucu da baştan paralel istenir. FxTwitter **800 ms** içinde yanıt vermez ya da
+  hata verirse kart syndication verisiyle (görüntülenmesiz, çevirisiz, uzun metin kesik) gider.
+- Hiçbir kaynak ilk veriyi vermezse 3 sn sonra vazgeçilir ve orijinal mesaj korunur.
+- vxTwitter yalnızca `/dönüştür kaynak:vxTwitter (yedek)` ile elle seçilir (FxTwitter'ın medyayı, ör.
+  GIF'i bozduğu gönderiler için); aynı birleştirme kuralları uygulanır.
+- X bağlantı önizlemesi veriden sonra çalışır ve 500 ms ile sınırlıdır.
 
 ## Platform motorları
 

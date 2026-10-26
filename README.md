@@ -56,7 +56,7 @@ servisi gerekmez.
 
 | Platform | Bağlantı türü | Motor |
 | --- | --- | --- |
-| X (Twitter) | Gönderi, alıntı, medya | Native (VxTwitter / FxTwitter / syndication) |
+| X (Twitter) | Gönderi, alıntı, medya | Native (FxTwitter; yedek: syndication, elle: vxTwitter) |
 | Instagram | Gönderi, Reels | Native |
 | Reddit | Gönderi, video | Native (saf Rust video birleştirme) |
 | Bluesky | Gönderi | Native |
@@ -69,8 +69,9 @@ servisi gerekmez.
 | YouTube | Topluluk gönderisi (görsel, video, anket) | Native |
 | Letterboxd | Film, kullanıcı incelemesi, kullanıcı profili, `boxd.it` kısa link | Native |
 
-X verisi için `vxtwitter` (varsayılan), `fxtwitter`, `syndication` ya da
-`hybrid` kaynağı kullanılabilir.
+X verisi her zaman FxTwitter'dan gelir; FxTwitter yanıt vermezse X'in kendi syndication ucu kullanılır.
+FxTwitter bir gönderinin medyasını (ör. GIF) bozarsa `/dönüştür link:<bağlantı> kaynak:vxTwitter (yedek)`
+ile vxTwitter'dan çekilebilir.
 
 ## Hızlı başlangıç
 
@@ -116,7 +117,7 @@ Ayrıntılı kurulum ve güvenlik notları: [docs/CONFIGURATION.md](docs/CONFIGU
 
 | Yol | Ne yapar |
 | --- | --- |
-| `/dönüştür link:<bağlantı>` | Bağlantıyı her yerde, DM'ler dâhil dönüştürür. Açıkça çağrıldığında platform modülü kapalı olsa bile çalışır; X çevirisi varsayılan olarak açıktır. |
+| `/dönüştür link:<bağlantı> [kaynak:…]` | Bağlantıyı her yerde, DM'ler dâhil dönüştürür. Açıkça çağrıldığında platform modülü kapalı olsa bile çalışır; X çevirisi varsayılan olarak açıktır. `kaynak:vxTwitter (yedek)` X verisini vxTwitter'dan çeker. |
 | Mesaja sağ tık → **Apps → Dönüştür** | O mesajdaki bağlantıyı dönüştürür. |
 | `/uyum kişi:<@biri> [ikinci:<@biri>]` | İki kişinin uyum kartı: ship adı, avatarlar, skor ve alt başlıklar. Skor sabittir; karttaki seçiciyle herkes kendi uyumunu dener. Kullanıcıya sağ tık → **Apps → Uyumumuz** da aynı işi yapar. |
 | `/düello rakip:<@biri>` | Gizli seçimli Taş · Kağıt · Makas; ilk iki turu alan kazanır, rövanş butonu vardır. Bota meydan okunabilir. |

@@ -11,7 +11,6 @@ async fn live_fetch_scenarios() {
         .build()
         .unwrap();
     let engine = EngineSettings {
-        twitter_source: TwitterSource::Vxtwitter,
         auto_translate: true,
         show_quote: true,
         ..EngineSettings::default()
@@ -44,17 +43,18 @@ async fn live_fetch_scenarios() {
             match tokio::time::timeout(Duration::from_secs(8), fetch(&client, &parsed, &engine))
                 .await
             {
-                Ok(Ok(post)) => {
+                Ok(Ok(fetched)) => {
+                    let post = &fetched.post;
                     let quote = post.quote.as_deref();
-                    let nested = quote.and_then(|quote| quote.quote.as_deref());
                     println!(
-                        "round={round} scenario={scenario} ms={} media={} quote={} nested={} translated={} quote_translated={}",
+                        "round={round} scenario={scenario} ms={} media={} quote={} views={} translated={} quote_translated={} cacheable={}",
                         started.elapsed().as_millis(),
                         post.media.len(),
                         quote.is_some(),
-                        nested.is_some(),
+                        post.stats.views.is_some(),
                         post.translation.is_some(),
                         quote.is_some_and(|quote| quote.translation.is_some()),
+                        fetched.cacheable,
                     );
                 }
                 Ok(Err(reason)) => println!("round={round} scenario={scenario} failed={reason}"),

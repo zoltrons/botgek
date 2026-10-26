@@ -88,7 +88,11 @@ impl RoleFilterSettings {
 // LINK DÖNÜŞTÜRME MOTORU (NATIVE)
 // =====================================================================================
 
-/// Twitter/X verisinin hangi kaynaktan çekileceği.
+/// Eski "X veri kaynağı" ayarı.
+///
+/// **Artık etkisizdir:** X verisi her zaman FxTwitter'dan çekilir (yedek: X syndication);
+/// vxTwitter yalnızca `/dönüştür kaynak:vx` ile elle seçilir ([`EngineSettings::x_alternative_source`]).
+/// Değer, eski ayar dosyaları ve panel kayıtları bozulmasın diye okunup yazılmaya devam eder.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TwitterSource {
@@ -101,17 +105,6 @@ pub enum TwitterSource {
     Vxtwitter,
     /// Önce X syndication denenir, yanıt gelmezse fxtwitter'a düşülür.
     Hybrid,
-}
-
-impl TwitterSource {
-    pub fn key(&self) -> &'static str {
-        match self {
-            TwitterSource::Syndication => "syndication",
-            TwitterSource::Fxtwitter => "fxtwitter",
-            TwitterSource::Vxtwitter => "vxtwitter",
-            TwitterSource::Hybrid => "hybrid",
-        }
-    }
 }
 
 /// Tek mesajda ek olarak yüklenecek maksimum görsel sayısı sınırı.
@@ -380,7 +373,7 @@ pub struct EngineSettings {
     /// kanalda da gizli kalır (bkz. `render::VisibilityDecision`).
     #[serde(default)]
     pub sensitive_mode: SensitiveMode,
-    /// Twitter/X için veri kaynağı.
+    /// Eski X veri kaynağı ayarı; etkisizdir (bkz. [`TwitterSource`]).
     pub twitter_source: TwitterSource,
     /// Tek mesajda ek olarak yüklenecek maksimum görsel sayısı.
     pub max_images: u8,
@@ -402,6 +395,10 @@ pub struct EngineSettings {
     /// İngilizce gönderileri de çevirir. WebUI'a yazılmaz; çalışma zamanında türetilir.
     #[serde(skip)]
     pub translate_english: bool,
+    /// Yalnızca `/dönüştür kaynak:vx` ile `true`: X verisi FxTwitter yerine vxTwitter'dan
+    /// çekilir (FxTwitter'ın medyayı, ör. GIF'i bozduğu durumlar için). Ayarlara yazılmaz.
+    #[serde(skip)]
+    pub x_alternative_source: bool,
     /// Mesajı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönder ("taklit").
     /// Bu sayede mesajda `<@kullanıcı>` etiketi ve `[:](...)` gibi link hileleri gerekmez.
     pub impersonate_user: bool,
@@ -427,6 +424,7 @@ impl Default for EngineSettings {
             auto_translate: true,
             translation_target: "tr".to_string(),
             translate_english: false,
+            x_alternative_source: false,
             impersonate_user: true,
             impersonate_skip_replies: true,
             emojis: EmojiSettings::default(),
@@ -1455,7 +1453,6 @@ mod tests {
         let decoded: AppSettings = serde_json::from_str(&json).unwrap();
 
         assert_eq!(decoded.engine.twitter_source, TwitterSource::Fxtwitter);
-        assert_eq!(decoded.engine.twitter_source.key(), "fxtwitter");
         assert_eq!(decoded.engine.max_video_mb, 12);
     }
 

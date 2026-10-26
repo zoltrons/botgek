@@ -72,14 +72,12 @@ aktarmayın.
 
 ```sh
 cargo test --release --locked offline_card_baseline -- --ignored --nocapture
-cargo test --locked scripted_latency_comparison -- --ignored --nocapture
 cargo test --locked twitter::benchmarks -- --ignored --nocapture
-cargo test --locked live_fetch_three_level_quote -- --ignored --nocapture
+cargo test --locked live_fetch_main_and_alternative_sources -- --ignored --nocapture
 ```
 
-`scripted_latency_comparison` eski `facfe5a` akışıyla yeni X planını aynı gecikmeli uç
-simülasyonlarında, cache'siz ve üçer örnekle karşılaştırır; çıktı eşitliğini de doğrular. Ayrıntılar:
-[OPERATIONS.md](OPERATIONS.md#performans-ölçümü).
+`twitter::benchmarks` gerçek gönderilerde X veri süresini, görüntülenme/çeviri varlığını ve sonucun
+önbelleğe uygunluğunu yazdırır. Ayrıntılar: [OPERATIONS.md](OPERATIONS.md#performans-ölçümü).
 
 ## Proje yapısı
 

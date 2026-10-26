@@ -730,8 +730,6 @@ function readEngineDom(engine) {
         engine[key] = clampInt(el.value, ENGINE_DEFAULTS[key], el.min, el.max);
     });
     qsa('[data-emoji-key]').forEach(el => { engine.emojis[el.dataset.emojiKey] = el.value.trim(); });
-    const source = $('engine-twitter-source');
-    if (source) engine.twitter_source = source.value;
     const translationTarget = $('engine-translation-target');
     if (translationTarget) engine.translation_target = translationTarget.value.trim().toLowerCase() || ENGINE_DEFAULTS.translation_target;
     const sensitive = $('engine-sensitive-mode');
@@ -753,8 +751,6 @@ function writeEngineDom(engine) {
         el.value = engine.emojis[key] || '';
         el.placeholder = ENGINE_DEFAULTS.emojis[key] || '';
     });
-    const source = $('engine-twitter-source');
-    if (source) source.value = engine.twitter_source || 'syndication';
     const translationTarget = $('engine-translation-target');
     if (translationTarget) translationTarget.value = engine.translation_target || ENGINE_DEFAULTS.translation_target;
     const sensitive = $('engine-sensitive-mode');
@@ -1823,10 +1819,6 @@ function bind() {
         updateEngineSummary();
     }));
     qsa('[data-emoji-key]').forEach(el => el.addEventListener('input', () => onConfigModified('engine')));
-    if ($('engine-twitter-source')) $('engine-twitter-source').addEventListener('change', () => {
-        onConfigModified('engine');
-        updateEngineSummary();
-    });
     if ($('engine-sensitive-mode')) $('engine-sensitive-mode').addEventListener('change', () => onConfigModified('engine'));
     if ($('engine-translation-target')) $('engine-translation-target').addEventListener('input', () => onConfigModified('engine'));
     if ($('channel-select')) $('channel-select').addEventListener('change', onChannelChange);

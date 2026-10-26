@@ -41,11 +41,16 @@ pub const CONVERT_COMMAND: &str = "dönüştür";
 pub const CONVERT_MESSAGE_COMMAND: &str = "Dönüştür";
 /// Bağlantıyı taşıyan sohbet komutu seçeneği.
 pub const LINK_OPTION: &str = "link";
+/// X verisinin kaynağını seçen sohbet komutu seçeneği (varsayılan FxTwitter).
+pub const SOURCE_OPTION: &str = "kaynak";
+/// [`SOURCE_OPTION`] değeri: yedek X kaynağı (vxTwitter).
+const SOURCE_VX: &str = "vx";
 
 /// Komut yokken gösterilen kısa kullanım metni.
 pub const USAGE: &str = "Bir bağlantı ver: `/dönüştür link:https://x.com/kullanici/status/123`\n\
 Bir mesajı dönüştürmek için: sağ tık → **Apps → Dönüştür**. \
-(Discord, slash komutlarına yanıtlanan mesajı eklemez; bu yüzden mesaj komutu kullanılır.)";
+(Discord, slash komutlarına yanıtlanan mesajı eklemez; bu yüzden mesaj komutu kullanılır.)\n\
+X kartında medya (ör. GIF) bozuksa: `/dönüştür link:... kaynak:vxTwitter (yedek)`.";
 
 static COMMANDS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
@@ -110,6 +115,16 @@ fn definitions() -> Vec<CreateCommand> {
                 )
                 .required(false)
                 .max_length(2048),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    SOURCE_OPTION,
+                    "X gönderisinin veri kaynağı (FxTwitter medyayı bozarsa vxTwitter)",
+                )
+                .required(false)
+                .add_string_choice("FxTwitter (varsayılan)", "fx")
+                .add_string_choice("vxTwitter (yedek)", SOURCE_VX),
             ),
         // Mesaj komutu da DM/grup DM'de sağ tık → Apps menüsünde görünmeli: user install
         // açıkken hedef mesaj `resolved.messages` ile gelir. Yalnızca GUILD yazmak
@@ -198,11 +213,12 @@ pub async fn handle(
     // 3. Kanal/thread kapsamlı ayarlar (otomatik mesaj akışıyla aynı çözümleme).
     let parent_id =
         crate::handler::discord_thread_parent(ctx, command.guild_id, command.channel_id).await;
-    let settings = app_settings.read().await.get_message_settings(
+    let mut settings = app_settings.read().await.get_message_settings(
         command.guild_id,
         command.channel_id,
         parent_id,
     );
+    settings.engine.x_alternative_source = source.alternative_x_source;
 
     // DM/grup DM'de bot kanal üyesi değildir: kart normal kanal mesajı olarak gönderilemez,
     // etkileşim yanıtı düzenlenerek teslim edilir.
@@ -264,6 +280,8 @@ struct Source {
     content: String,
     /// Mesaj komutunda hedef mesaj; sohbet komutunda `None`.
     reply_to: Option<MessageId>,
+    /// `kaynak:vxTwitter` seçildi: X verisi yedek kaynaktan çekilir.
+    alternative_x_source: bool,
 }
 
 fn source(data: &CommandData) -> Option<Source> {
@@ -273,6 +291,7 @@ fn source(data: &CommandData) -> Option<Source> {
             (!link.trim().is_empty()).then(|| Source {
                 content: link.to_string(),
                 reply_to: None,
+                alternative_x_source: string_option(data, SOURCE_OPTION) == Some(SOURCE_VX),
             })
         }
         CommandType::Message => {
@@ -284,6 +303,7 @@ fn source(data: &CommandData) -> Option<Source> {
             Some(Source {
                 content: target.content.clone(),
                 reply_to: Some(MessageId::new(target_id.get())),
+                alternative_x_source: false,
             })
         }
         _ => None,
@@ -390,6 +410,27 @@ mod tests {
 
         let source = source(&data).expect("link seçeneği bulunmalı");
         assert_eq!(source.content, "https://x.com/u/status/1");
+        assert!(!source.alternative_x_source, "varsayılan kaynak FxTwitter");
+    }
+
+    #[test]
+    fn vx_source_option_selects_the_alternative_x_source() {
+        let data: CommandData = serde_json::from_value(serde_json::json!({
+            "id": "1",
+            "name": CONVERT_COMMAND,
+            "type": 1,
+            "options": [
+                { "name": LINK_OPTION, "type": 3, "value": "https://x.com/u/status/1" },
+                { "name": SOURCE_OPTION, "type": 3, "value": SOURCE_VX }
+            ]
+        }))
+        .expect("komut verisi çözümlenmeli");
+
+        assert!(source(&data).expect("link bulunmalı").alternative_x_source);
+
+        let chat = serde_json::to_value(&definitions()[0]).expect("komut JSON'a çevrilmeli");
+        assert_eq!(chat["options"][1]["name"], SOURCE_OPTION);
+        assert_eq!(chat["options"][1]["choices"][1]["value"], SOURCE_VX);
     }
 
     #[test]

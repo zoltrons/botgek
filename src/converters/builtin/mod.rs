@@ -52,16 +52,9 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 /// (veri çekimi + medya + gönderim) itibaren. Tek bir isteğin ağ gecikmesi bu bütçenin
 /// dışında kalabilir; amaç, veri çekimini kaynağın en yavaş yanıtına **bağlı bırakmamaktır**.
 pub const LATENCY_TARGET: Duration = Duration::from_millis(1_000);
-/// Kart verisi hazır olduktan sonra **isteğe bağlı** zenginleştirme (çeviri, üçüncü seviye
-/// alıntı, görüntülenme/topluluk notu, harici link kartı) için tanınan süre.
-///
-/// Bu süre dolar ve kart hâlâ gönderilmediyse bekleyen zenginleştirme bırakılır: yavaş
-/// vxTwitter yanıtı yüzünden kart saniyelerce gecikmez (X syndication'ın verdiği metin,
-/// yazar, medya ve alıntı zaten kartı çizmeye yeter).
-pub const FETCH_ENRICH_BUDGET: Duration = Duration::from_millis(650);
 /// Hiçbir kaynak ilk veriyi vermezse, kart büsbütün düşmesin diye beklenecek üst sınır.
 ///
-/// Bu sınıra ancak **tüm** kaynaklar yavaş/hatalıysa gelinir (syndication genelde hızlıdır).
+/// Bu sınıra ancak **tüm** kaynaklar yavaş/hatalıysa gelinir (X'te yedek syndication da gecikmiş).
 /// Tek istek zaten [`REQUEST_TIMEOUT`] ile sınırlıdır; bu bütçe, seri kalan zincirlerin
 /// 6 saniyeye kadar uzamasını engeller. Süre dolarsa orijinal mesaj korunur.
 pub const FETCH_FIRST_DATA_BUDGET: Duration = Duration::from_millis(3_000);
@@ -211,12 +204,15 @@ pub(super) async fn read_limited_text(
 // =====================================================================================
 
 fn post_cache_key(parsed: &ParsedPost, engine: &EngineSettings) -> String {
-    // The content-aware Twitter path may finish from Syndication when neither notes
-    // nor metrics are requested. Do not reuse that result for a richer settings scope.
+    // Elle seçilen yedek X kaynağı (vx) ana kaynaktan farklı veri döndürür: ayrı tutulur.
     format!(
         "post:{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         parsed.original_url,
-        engine.twitter_source.key(),
+        if engine.x_alternative_source {
+            "vx"
+        } else {
+            "fx"
+        },
         engine.auto_translate,
         engine.translate_english,
         engine.translation_target,
@@ -250,8 +246,13 @@ pub async fn fetch(
         return Err(reason);
     }
 
+    // X, eksik sonucu (çeviri gelmedi / yedek veri) önbelleğe yazdırmaz.
+    let mut cacheable = true;
     let post = match parsed.platform {
-        Platform::Twitter => twitter::fetch(client, parsed, engine).await,
+        Platform::Twitter => twitter::fetch(client, parsed, engine).await.map(|fetched| {
+            cacheable = fetched.cacheable;
+            fetched.post
+        }),
         Platform::Bluesky => bluesky::fetch(client, parsed).await,
         Platform::Reddit => reddit::fetch(client, parsed, &config.reddit_client_id).await,
         Platform::TikTok => tiktok::fetch(client, parsed).await,
@@ -275,7 +276,9 @@ pub async fn fetch(
     };
 
     let post = std::sync::Arc::new(post);
-    cache::put(key, post.clone()).await;
+    if cacheable {
+        cache::put(key, post.clone()).await;
+    }
     Ok(post)
 }
 
@@ -1707,36 +1710,33 @@ fn is_discord_rejection(error: &str) -> bool {
 mod message_tests {
     use super::*;
 
-    /// Bütçe paylaşımı 1 saniyelik hedefi **kendi içinde** tutmalı: isteğe bağlı
-    /// zenginleştirme + Discord POST payı hedefi aşamaz, webhook beklemesi de kalan
-    /// bütçeden fazlasını isteyemez.
+    /// Webhook beklemesi 1 saniyelik hedefi **kendi içinde** tutmalı: veri fazı hedefin
+    /// içinde bittiyse webhook beklemesi + Discord POST payı kalan bütçeyi aşamaz.
     #[test]
     fn latency_budgets_fit_inside_the_one_second_target() {
-        assert!(
-            FETCH_ENRICH_BUDGET + SEND_RESERVE <= LATENCY_TARGET,
-            "zenginleştirme {} ms + gönderim {} ms > hedef {} ms",
-            FETCH_ENRICH_BUDGET.as_millis(),
-            SEND_RESERVE.as_millis(),
-            LATENCY_TARGET.as_millis()
-        );
-        assert!(FETCH_ENRICH_BUDGET < FETCH_FIRST_DATA_BUDGET);
-
-        // Veri fazı bütçeyi tam yese bile webhook beklemesi hedefi aşmaz.
-        let full = FETCH_ENRICH_BUDGET + webhook_wait(FETCH_ENRICH_BUDGET);
-        assert!(
-            full + SEND_RESERVE <= LATENCY_TARGET,
-            "zenginleştirme + webhook + gönderim hedefi aşıyor: {} ms",
-            full.as_millis() + SEND_RESERVE.as_millis()
-        );
+        assert!(SEND_RESERVE < LATENCY_TARGET);
+        for ms in [0, 300, 650, 750, 1_000, 2_000] {
+            let data = Duration::from_millis(ms);
+            assert!(webhook_wait(data) <= WEBHOOK_WARMUP_WAIT);
+            if data + SEND_RESERVE <= LATENCY_TARGET {
+                let full = data + webhook_wait(data) + SEND_RESERVE;
+                assert!(
+                    full <= LATENCY_TARGET,
+                    "veri {ms} ms + webhook + gönderim hedefi aşıyor: {} ms",
+                    full.as_millis()
+                );
+            }
+        }
     }
 
     /// Webhook beklemesi kalan bütçeye göre kısalır; geç kalan veri fazı hiç beklemez.
     #[test]
     fn webhook_wait_shrinks_with_the_remaining_budget() {
+        let data = Duration::from_millis(650);
         assert_eq!(webhook_wait(Duration::ZERO), WEBHOOK_WARMUP_WAIT);
-        assert!(webhook_wait(FETCH_ENRICH_BUDGET) <= WEBHOOK_WARMUP_WAIT);
+        assert!(webhook_wait(data) <= WEBHOOK_WARMUP_WAIT);
         assert!(
-            webhook_wait(FETCH_ENRICH_BUDGET) < webhook_wait(FETCH_ENRICH_BUDGET / 2),
+            webhook_wait(data) < webhook_wait(data / 2),
             "veri fazı uzadıkça bekleme kısalmalı"
         );
         assert_eq!(webhook_wait(LATENCY_TARGET), Duration::ZERO);
@@ -1765,6 +1765,16 @@ mod message_tests {
         minimal.show_community_note = false;
         minimal.show_metrics = true;
         assert_ne!(minimal_key, post_cache_key(&parsed, &minimal));
+
+        // Elle seçilen yedek kaynak (vx) ana kaynağın önbelleğini paylaşmaz.
+        let alternative = EngineSettings {
+            x_alternative_source: true,
+            ..EngineSettings::default()
+        };
+        assert_ne!(
+            post_cache_key(&parsed, &full),
+            post_cache_key(&parsed, &alternative)
+        );
     }
 
     #[test]

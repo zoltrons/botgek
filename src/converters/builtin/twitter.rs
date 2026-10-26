@@ -1,11 +1,16 @@
 //! Twitter / X gönderi verisi.
 //!
-//! Üç kaynak desteklenir:
-//! - **Syndication** (`cdn.syndication.twimg.com/tweet-result`): X'in kendi uç noktası,
-//!   üçüncü taraf yok, API anahtarı yok. Metin/görsel/video/alıntı/metrik verir.
-//! - **FxTwitter** (`api.fxtwitter.com`): görüntülenme, repost, topluluk notu gibi ek alanlar.
-//! - **VxTwitter** (`api.vxtwitter.com`): topluluk notu, alıntı ilişkisi ve X çevirisi.
+//! - **FxTwitter** (`api.fxtwitter.com`): **ana kaynak**. Tek yanıtta tam metin (uzun "note"
+//!   gönderileri dahil), medya, ilk seviye alıntı, görüntülenme dahil tüm metrikler ve topluluk
+//!   notu gelir; dil ekli uç (`/tr`) kök gönderiyi ve alıntıyı X'in Grok çevirisiyle verir.
+//! - **Syndication** (`cdn.syndication.twimg.com/tweet-result`): X'in kendi ucu. FxTwitter hata
+//!   verir ya da gecikirse yedektir (görüntülenme ve çeviri yok, uzun metin kesik).
+//! - **VxTwitter** (`api.vxtwitter.com`): yalnızca `/dönüştür kaynak:vx` ile elle seçilir;
+//!   FxTwitter'ın medyayı (ör. GIF) bozduğu gönderiler içindir.
+//!
+//! Alıntı zinciri yalnızca ilk seviyede gösterilir (alıntının alıntısı çekilmez).
 
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -21,11 +26,7 @@ use super::{
     strip_trailing_media_links,
 };
 use crate::converters::parser::{ParsedPost, Platform};
-use crate::settings::{EngineSettings, TwitterSource};
-
-mod pipeline;
-mod plan;
-mod source_cache;
+use crate::settings::EngineSettings;
 
 #[cfg(test)]
 mod benchmarks;
@@ -39,14 +40,14 @@ static TWEET_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli tweet regex")
 });
 
-/// Hızlı yol (FxTwitter) bu süre içinde yanıt vermezse X syndication ucu **paralel**
-/// başlatılır (hedge): yavaş veya askıda kalan uç kartın gelmesini geciktirmez.
-const HEDGE_DELAY: Duration = Duration::from_millis(500);
-/// Hedge sonrası X ucu kazandıysa, çeviri/metrikleri tamamlamak için FxTwitter'a tanınan
-/// ek süre (gelmezse X verisiyle devam edilir).
-const HEDGE_MERGE_GRACE: Duration = Duration::from_millis(300);
-/// İç içe alıntı, ana gönderiyi bekletmemesi gereken en iyi çaba tamamlamasıdır.
-const NESTED_QUOTE_TIMEOUT: Duration = Duration::from_millis(700);
+/// Ana kaynağa (FxTwitter) tanınan süre. X syndication ucu baştan paralel istenir: ana kaynak bu
+/// sürede yanıt vermezse kart hazır syndication verisiyle (görüntülenmesiz, çevirisiz) gider,
+/// yavaş ya da askıda kalan uç kartı geciktirmez (ölçülen FxTwitter: sıcak ~0,3 sn, önbelleğinde
+/// olmayan gönderide ~0,9 sn'ye kadar).
+const PRIMARY_PATIENCE: Duration = Duration::from_millis(800);
+/// Çeviri gereken gönderide dil ekli yanıta, isteklerin başından itibaren tanınan süre. Dolarsa
+/// kart orijinal metinle gider (ölçülen FxTwitter `/tr`: ~0,5-0,8 sn).
+const TRANSLATION_BUDGET: Duration = Duration::from_millis(1_200);
 /// Harici link önizlemesi (X'in "link kartı") için tanınan süre: hedef sayfa bu süre
 /// içinde yanıt vermezse kart önizlemesiz gönderilir (kart asla bekletilmez).
 const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(500);
@@ -66,60 +67,309 @@ static OWN_HOSTS: [&str; 5] = [
     "twimg.com",
 ];
 
-/// Gönderi verisini seçilen kaynaktan çeker.
+/// Çekilen X gönderisi.
+pub struct Fetched {
+    pub post: BuiltinPost,
+    /// `false`: sonuç eksik (çeviri gerekiyordu ama gelmedi ya da yedek syndication verisi
+    /// kullanıldı). Önbelleğe yazılmamalı: sonraki paylaşım ana kaynağı yeniden dener.
+    pub cacheable: bool,
+}
+
+/// X verisinin kaynağı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// Ana kaynak: her zaman kullanılır.
+    Fx,
+    /// Yalnızca `/dönüştür kaynak:vx` ile ([`EngineSettings::x_alternative_source`]).
+    Vx,
+}
+
+/// Gönderi verisini çeker: ana kaynak FxTwitter (elle seçilirse vxTwitter), yedek X syndication.
 ///
-/// VxTwitter/otomatik çeviri yolunda dil ve alıntı bilgisi gelir gelmez içerik planı
-/// çıkarılır. Yalnızca görünür ve eksik veriler istenir; bağımsız istekler paraleldir.
-/// Açıkça seçilmiş FxTwitter ve çevirisiz syndication yolları korunur.
+/// Düz yanıt ve (otomatik çeviri açıksa) dil ekli yanıt **paralel** istenir: gönderinin dili yanıt
+/// gelmeden bilinmez, dil ekli yanıt ise düz yanıtın tamamını da içerir. Çeviri gerekmiyorsa kart
+/// düz yanıtla hemen gider ve dil ekli istek bırakılır; gerekiyorsa [`TRANSLATION_BUDGET`] kadar
+/// beklenir (bkz. [`acquire`]).
 pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
     engine: &EngineSettings,
-) -> Result<BuiltinPost, String> {
+) -> Result<Fetched, String> {
     let id = extract_tweet_id(&parsed.original_url)
         .ok_or_else(|| format!("Twitter kimliği çözümlenemedi: {}", parsed.original_url))?;
+    let url = parsed.original_url.as_str();
 
     // `max_video_bytes` platforma bağlı değildir; anahtar sözleşmeyi açık tutar.
     let video_budget =
         super::render::RenderOptions::from_engine(engine, "twitter").max_video_bytes();
-    debug!(
-        "X verisi çekiliyor (kaynak: {}, id: {id})",
-        engine.twitter_source.key()
+    let source = if engine.x_alternative_source {
+        Source::Vx
+    } else {
+        Source::Fx
+    };
+    debug!("X verisi çekiliyor (kaynak: {source:?}, id: {id})");
+
+    let started = Instant::now();
+    let translated = engine.auto_translate.then(|| {
+        request(
+            client,
+            source,
+            url,
+            &id,
+            Some(engine.translation_target.as_str()),
+            engine,
+            video_budget,
+        )
+    });
+    let acquired = acquire(
+        engine,
+        request(client, source, url, &id, None, engine, video_budget),
+        translated,
+        from_syndication(client, url, &id, video_budget),
+        PRIMARY_PATIENCE,
+        TRANSLATION_BUDGET,
     );
+    let mut fetched = tokio::time::timeout(super::FETCH_FIRST_DATA_BUDGET, acquired)
+        .await
+        .map_err(|_| format!("X verisi zamanında gelmedi: {id}"))??;
+    let data_elapsed = started.elapsed();
 
-    let source_started = Instant::now();
-    let mut post =
-        fetch_post_internal(client, &parsed.original_url, &id, engine, video_budget).await?;
-    let source_elapsed = source_started.elapsed();
-
-    // Medyasız zincirlerde X alıntının alıntısını da (3 seviye) gösterir.
-    // Ancak ne Syndication ne de FxTwitter API'si tek yanıtta iç içe alıntıyı dönmez:
-    // ilk seviye alıntı da medyasızsa, alıntılanan gönderinin kendisi çekilerek içteki
-    // alıntı (ve medyası) tamamlanır.
-    let nested_started = Instant::now();
-    if !uses_planner(engine) && engine.show_quote && should_populate_nested_quote(&post) {
-        populate_nested_quote(client, &mut post, engine, video_budget).await;
-    }
-    let nested_elapsed = nested_started.elapsed();
-
-    // Gönderi yalnızca link içeriyorsa X'in kendi arayüzünde gösterdiği link kartı
-    // (hedef sayfanın önizlemesi) da karta eklenir. Planlayıcı yolunda bu istek veri
-    // fazının **içinde**, diğer isteklerle paralel yürür; burada ikinci kez istenmez.
-    let preview_started = Instant::now();
-    if !uses_planner(engine) {
-        attach_link_preview(&mut post).await;
-    }
-    let preview_elapsed = preview_started.elapsed();
+    // Gönderi yalnızca link içeriyorsa X'in kendi arayüzünde gösterdiği link kartı (hedef
+    // sayfanın önizlemesi) da karta eklenir.
+    attach_link_preview(&mut fetched.post).await;
 
     debug!(
-        "X veri fazları ({id}): kaynak {} ms, iç içe alıntı {} ms, link önizleme {} ms, toplam {} ms",
-        source_elapsed.as_millis(),
-        nested_elapsed.as_millis(),
-        preview_elapsed.as_millis(),
-        (source_elapsed + nested_elapsed + preview_elapsed).as_millis(),
+        "X veri fazları ({id}): veri {} ms, link önizleme {} ms, önbelleğe uygun: {}",
+        data_elapsed.as_millis(),
+        (started.elapsed() - data_elapsed).as_millis(),
+        fetched.cacheable,
     );
+    Ok(fetched)
+}
 
-    Ok(post)
+/// Kaynağa tek istek; `language` verilirse dil ekli (çevirili) uç kullanılır.
+async fn request(
+    client: &reqwest::Client,
+    source: Source,
+    url: &str,
+    id: &str,
+    language: Option<&str>,
+    engine: &EngineSettings,
+    video_budget: u64,
+) -> Result<BuiltinPost, String> {
+    match source {
+        Source::Fx => {
+            from_fxtwitter(
+                client,
+                url,
+                id,
+                language,
+                &engine.translation_target,
+                video_budget,
+                engine.translate_english,
+            )
+            .await
+        }
+        Source::Vx => {
+            from_vxtwitter(
+                client,
+                url,
+                id,
+                language,
+                &engine.translation_target,
+                engine.translate_english,
+            )
+            .await
+        }
+    }
+}
+
+/// Kaynak yanıtlarını birleştirir. Ağdan bağımsızdır: testler sahte future'larla çalıştırır.
+///
+/// - İlk veri [`first_data`] ile alınır (`primary` ile `fallback` paralel; `primary` tercih edilir).
+/// - `translated` düz yanıttan önce gelirse doğrudan kullanılır (düz yanıtın üst kümesidir).
+/// - Düz yanıtta çevrilecek metin yoksa `translated` beklenmez ve bırakılır; varsa başlangıçtan
+///   itibaren `budget` dolana kadar beklenir, dolarsa orijinal metinle devam edilir.
+async fn acquire<P, T, F>(
+    engine: &EngineSettings,
+    primary: P,
+    translated: Option<T>,
+    fallback: F,
+    patience: Duration,
+    budget: Duration,
+) -> Result<Fetched, String>
+where
+    P: Future<Output = Result<BuiltinPost, String>>,
+    T: Future<Output = Result<BuiltinPost, String>>,
+    F: Future<Output = Result<BuiltinPost, String>>,
+{
+    let deadline = tokio::time::Instant::now() + budget;
+    let first = first_data(primary, fallback, patience);
+    tokio::pin!(first);
+    let Some(translated) = translated else {
+        let (post, from_fallback) = first.await?;
+        return Ok(Fetched {
+            post,
+            cacheable: !from_fallback,
+        });
+    };
+    tokio::pin!(translated);
+
+    let (post, from_fallback) = tokio::select! {
+        biased;
+        result = &mut first => match result {
+            Ok(first) => first,
+            // Düz yanıt da yedek de başarısız: dil ekli yanıt hâlâ gönderinin tamamını getirebilir.
+            Err(err) => {
+                return translated
+                    .await
+                    .map(|post| Fetched {
+                        cacheable: !translation_missing(&post, engine),
+                        post,
+                    })
+                    .map_err(|tr_err| format!("{err} | {tr_err}"));
+            }
+        },
+        result = &mut translated => match result {
+            Ok(post) => {
+                return Ok(Fetched {
+                    cacheable: !translation_missing(&post, engine),
+                    post,
+                });
+            }
+            Err(err) => {
+                debug!("Dil ekli X isteği başarısız: {err}");
+                let (post, from_fallback) = first.await?;
+                return Ok(Fetched {
+                    cacheable: !from_fallback && !translation_missing(&post, engine),
+                    post,
+                });
+            }
+        },
+    };
+
+    if !translation_missing(&post, engine) {
+        return Ok(Fetched {
+            post,
+            cacheable: !from_fallback,
+        });
+    }
+    match tokio::time::timeout_at(deadline, &mut translated).await {
+        Ok(Ok(translated)) => Ok(Fetched {
+            cacheable: !translation_missing(&translated, engine),
+            post: translated,
+        }),
+        Ok(Err(err)) => {
+            debug!("Dil ekli X isteği başarısız, kart çevirisiz gidiyor: {err}");
+            Ok(Fetched {
+                post,
+                cacheable: false,
+            })
+        }
+        Err(_) => {
+            debug!(
+                "X çevirisi {} ms içinde gelmedi, kart çevirisiz gidiyor: {}",
+                budget.as_millis(),
+                post.url
+            );
+            Ok(Fetched {
+                post,
+                cacheable: false,
+            })
+        }
+    }
+}
+
+/// İlk kullanılabilir veri. `primary` ve `fallback` **baştan paralel** yürür:
+///
+/// - `patience` dolana kadar `primary` beklenir (`fallback` erken gelse bile); gelirse kazanır.
+/// - Süre dolarsa ilk başarılı yanıt kazanır: `fallback` hazırsa kart hiç beklemez.
+/// - `primary` hata verirse doğrudan `fallback`'e düşülür.
+///
+/// İkinci değer: sonuç yedekten mi geldi.
+async fn first_data<P, F>(
+    primary: P,
+    fallback: F,
+    patience: Duration,
+) -> Result<(BuiltinPost, bool), String>
+where
+    P: Future<Output = Result<BuiltinPost, String>>,
+    F: Future<Output = Result<BuiltinPost, String>>,
+{
+    tokio::pin!(primary);
+    tokio::pin!(fallback);
+    let deadline = tokio::time::Instant::now() + patience;
+    let mut early_fallback = None;
+
+    let primary_result = loop {
+        tokio::select! {
+            biased;
+            result = &mut primary => break Some(result),
+            result = &mut fallback, if early_fallback.is_none() => early_fallback = Some(result),
+            _ = tokio::time::sleep_until(deadline) => break None,
+        }
+    };
+    match primary_result {
+        Some(Ok(post)) => return Ok((post, false)),
+        Some(Err(err)) => {
+            warn!("X ana kaynağı başarısız, syndication kullanılıyor: {err}");
+            let fallback_result = match early_fallback {
+                Some(result) => result,
+                None => fallback.await,
+            };
+            return fallback_result
+                .map(|post| (post, true))
+                .map_err(|fb_err| format!("{err} | {fb_err}"));
+        }
+        None => debug!(
+            "X ana kaynağı {} ms içinde yanıt vermedi; syndication verisi kullanılabilir",
+            patience.as_millis()
+        ),
+    }
+
+    // Ana kaynağa tanınan süre doldu: ilk başarılı yanıt kazanır.
+    match early_fallback {
+        Some(Ok(post)) => return Ok((post, true)),
+        Some(Err(fb_err)) => {
+            return primary
+                .await
+                .map(|post| (post, false))
+                .map_err(|err| format!("{err} | {fb_err}"));
+        }
+        None => {}
+    }
+    tokio::select! {
+        biased;
+        result = &mut primary => match result {
+            Ok(post) => Ok((post, false)),
+            Err(err) => fallback
+                .await
+                .map(|post| (post, true))
+                .map_err(|fb_err| format!("{err} | {fb_err}")),
+        },
+        result = &mut fallback => match result {
+            Ok(post) => Ok((post, true)),
+            Err(fb_err) => primary
+                .await
+                .map(|post| (post, false))
+                .map_err(|err| format!("{err} | {fb_err}")),
+        },
+    }
+}
+
+/// Gönderide ya da görünür alıntısında çevrilmesi gereken ama çevrilmemiş metin var mı?
+fn translation_missing(post: &BuiltinPost, engine: &EngineSettings) -> bool {
+    let missing = |post: &BuiltinPost| {
+        post.translation.is_none()
+            && !post.text.trim().is_empty()
+            && needs_translation(
+                post.language.as_deref(),
+                &engine.translation_target,
+                engine.translate_english,
+            )
+    };
+    engine.auto_translate
+        && (missing(post) || (engine.show_quote && post.quote.as_deref().is_some_and(missing)))
 }
 
 /// Gönderi yalnızca bir **harici bağlantı** içeriyorsa X'in "link kartı" önizlemesini ekler.
@@ -285,109 +535,6 @@ fn duration_secs(millis: u64) -> u64 {
     millis.div_ceil(1000)
 }
 
-/// Gönderi verisini seçilen kaynaktan çeker.
-async fn fetch_post_internal(
-    client: &reqwest::Client,
-    original_url: &str,
-    id: &str,
-    engine: &EngineSettings,
-    video_budget: u64,
-) -> Result<BuiltinPost, String> {
-    let source = engine.twitter_source;
-    let translate = engine.auto_translate;
-
-    if translate || source == TwitterSource::Vxtwitter {
-        return pipeline::acquire(
-            HttpFetcher {
-                client: client.clone(),
-                video_budget,
-                translation_target: engine.translation_target.clone(),
-                translate_english: engine.translate_english,
-            },
-            original_url,
-            engine,
-        )
-        .await;
-    }
-
-    // 2) Hızlı yol kaynağı açıkça fxtwitter ise tek FxTwitter isteği (çeviri kapalı).
-    if source == TwitterSource::Fxtwitter {
-        return fetch_fx_fast(client, original_url, id, engine, video_budget).await;
-    }
-
-    // 2) X syndication + FxTwitter aynı anda: biri hata verse de diğeri kullanılır.
-    let (x_result, fx_result) = tokio::join!(
-        from_syndication(client, original_url, id, video_budget),
-        from_fxtwitter(
-            client,
-            original_url,
-            id,
-            None,
-            &engine.translation_target,
-            video_budget,
-            engine.translate_english,
-        ),
-    );
-
-    // Syndication repost/görüntülenme/alıntı vermez: paralel istenen yanıttan tamamlanır.
-    let fx_post = fx_result.as_ref().ok();
-    let fx_stats = fx_post.map(|post| post.stats);
-    let fx_community_note = fx_post.and_then(|post| post.community_note.clone());
-    let mut post = match x_result {
-        Ok(post) => post,
-        Err(err) => {
-            warn!("X syndication başarısız, FxTwitter sonucu kullanılıyor ({id}): {err}");
-            fx_result.map_err(|fx_err| format!("{err} | {fx_err}"))?
-        }
-    };
-    if let Some(stats) = fx_stats {
-        merge_stats(&mut post.stats, &stats);
-    }
-    // Keep the fetched post complete even when rendering is configured to hide notes. This is
-    // important for cached posts: visibility belongs to RenderOptions, not the fetch result.
-    merge_community_note(&mut post.community_note, fx_community_note.as_deref());
-
-    Ok(post)
-}
-
-/// Medyasız alıntı zincirlerinde iç içe alıntıyı (3. seviye) tamamlar.
-///
-/// X'in syndication ve FxTwitter API'leri performans gerekçesiyle alıntı içindeki alıntıyı
-/// (2. derinlik) tek yanıtta dönmez. Gönderi ve ilk seviye alıntı medyasızsa, alıntılanan tweet
-/// ayrı bir istekle çekilerek iç içe alıntı ve medyası (varsa) zincire eklenir.
-async fn populate_nested_quote(
-    client: &reqwest::Client,
-    post: &mut BuiltinPost,
-    engine: &EngineSettings,
-    video_budget: u64,
-) {
-    let quote = match post.quote.as_deref_mut() {
-        Some(q) if q.quote.is_none() => q,
-        _ => return,
-    };
-
-    let quote_id = match extract_tweet_id(&quote.url) {
-        Some(id) => id,
-        None => return,
-    };
-
-    // Alıntılanan gönderiyi çekerek iç içe alıntıyı (3. seviye) ara.
-    // Ana isteği gereksiz bekletmemek için kısa bir zaman aşımı uygulanır.
-    let fetch_fut = fetch_post_internal(client, &quote.url, &quote_id, engine, video_budget);
-
-    match tokio::time::timeout(NESTED_QUOTE_TIMEOUT, fetch_fut).await {
-        Ok(Ok(full_quote)) => {
-            *quote = full_quote;
-        }
-        Ok(Err(err)) => {
-            debug!("İç içe alıntı tamamlanamadı ({quote_id}): {err}");
-        }
-        Err(_) => {
-            debug!("İç içe alıntı isteği zaman aşımına uğradı ({quote_id})");
-        }
-    }
-}
-
 /// Metindeki tweet bağlantısını `https://x.com/<kullanıcı>/status/<id>` olarak bulur.
 ///
 /// Bot kartında gönderinin kendi linki `[Link](...)` satırındadır; alıntı başlığı
@@ -485,308 +632,14 @@ fn extract_tweet_id(url: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-/// İç içe alıntı isteğinin gerekli olup olmadığını belirler.
-///
-/// Ana gönderi medyasızsa ve ilk seviye alıntı da medyasızsa, eksik üçüncü seviyeyi
-/// tamamlamak anlamlıdır. İlk seviye alıntıda medya gömülüyse yeni istek yalnızca
-/// gecikme ekler; mevcut iç içe alıntı da yeniden çekilmez.
-fn should_populate_nested_quote(post: &BuiltinPost) -> bool {
-    post.media.is_empty()
-        && post
-            .quote
-            .as_ref()
-            .is_some_and(|quote| quote.media.is_empty() && quote.quote.is_none())
-}
-
-/// Hızlı yol: **tek** FxTwitter isteği + gecikme sigortası (hedge).
-///
-/// FxTwitter [`HEDGE_DELAY`] içinde yanıt vermezse X syndication ucu paralel başlatılır ve
-/// ilk kullanılabilir veri kartı üretir; X ucu kazanırsa FxTwitter'a çeviri ve metrikleri
-/// tamamlaması için [`HEDGE_MERGE_GRACE`] kadar ek süre tanınır. Topluluk notları açıksa, notu
-/// kaybetmemek için bu süreden sonra da aynı FxTwitter isteği tamamlanana kadar beklenir. Böylece
-/// notlar kapalıyken yavaş ya da askıda kalan uç kartı 12 sn'ye kadar (istek zaman aşımı) geciktiremez.
-///
-/// Hızlı yol **hata verirse** FxTwitter ikinci kez istenmez; yavaş yanıtta olduğu gibi X ucu
-/// kullanılır. (Bu yol yalnızca çevirisiz FxTwitter kaynağında çalışır; çeviri planlayıcıdadır.)
-async fn fetch_fx_fast(
-    client: &reqwest::Client,
-    original_url: &str,
-    id: &str,
-    engine: &EngineSettings,
-    max_video_bytes: u64,
-) -> Result<BuiltinPost, String> {
-    let show_community_note = engine.show_community_note;
-    let fx = from_fxtwitter(
-        client,
-        original_url,
-        id,
-        None,
-        &engine.translation_target,
-        max_video_bytes,
-        engine.translate_english,
-    );
-    tokio::pin!(fx);
-
-    match tokio::time::timeout(HEDGE_DELAY, &mut fx).await {
-        Ok(Ok(post)) => return Ok(post),
-        Ok(Err(err)) => {
-            // Eskiden hızlı bir hata kartı hiç üretmiyordu; oysa aynı FxTwitter yavaş kalsaydı
-            // X ucu devreye girecekti. Hata da gecikme gibi X ucuna düşer.
-            warn!("FxTwitter isteği başarısız ({id}): {err}");
-            return from_syndication(client, original_url, id, max_video_bytes)
-                .await
-                .map_err(|sy_err| format!("{err} | {sy_err}"));
-        }
-        // Yanıt gecikti: hedge devreye girer (X ucu da istenir).
-        Err(_elapsed) => debug!(
-            "FxTwitter {} ms içinde yanıt vermedi ({id}): X ucu da paralel istendi",
-            HEDGE_DELAY.as_millis()
-        ),
-    }
-
-    let syndication = from_syndication(client, original_url, id, max_video_bytes);
-    tokio::pin!(syndication);
-
-    // İki uç yarışır; FxTwitter tercih edilir (çeviri, topluluk notu ve görüntülenme onda).
-    let (fx_result, x_result) = tokio::select! {
-        biased;
-        result = &mut fx => (Some(result), None),
-        result = &mut syndication => (None, Some(result)),
-    };
-
-    if let Some(result) = fx_result {
-        return match result {
-            Ok(post) => Ok(post),
-            Err(err) => {
-                debug!("FxTwitter hedge sonrası hata verdi ({id}): {err}");
-                syndication
-                    .await
-                    .map_err(|sy_err| format!("{err} | {sy_err}"))
-            }
-        };
-    }
-
-    // X ucu kazandı ama hata verdiyse FxTwitter'ın kendi zaman aşımı dolana kadar beklenir: hızlı bir syndication hatası, hâlâ yolda olan geçerli yanıtı ek süre bitti diye düşürmemeli.
-    let post = match x_result.expect("select her zaman bir dalı döner") {
-        Ok(post) => post,
-        Err(sy_err) => {
-            debug!("X ucu hedge sonrası hata verdi ({id}): {sy_err}");
-            return fx.await.map_err(|fx_err| format!("{fx_err} | {sy_err}"));
-        }
-    };
-
-    // X ucu kazandı: veri hazır. Normalde yalnızca kısa bir ek süre tanınır; topluluk notları
-    // açıksa aynı FxTwitter isteği tamamlanana kadar beklenir, aksi halde not kaybolur.
-    match tokio::time::timeout(HEDGE_MERGE_GRACE, &mut fx).await {
-        Ok(Ok(fx_post)) => return Ok(fx_post),
-        Ok(Err(err)) => {
-            debug!("FxTwitter hedge sonrası hata verdi ({id}): {err}");
-        }
-        Err(_) if show_community_note => {
-            // A late FxTwitter response is the only source of a community note. When notes are
-            // enabled, wait for that in-flight request before falling back to the fast Syndication
-            // result; otherwise the note would disappear whenever the 300 ms grace was exceeded.
-            if let Ok(fx_post) = fx.await {
-                return Ok(fx_post);
-            }
-        }
-        Err(_) => {}
-    }
-    Ok(post)
-}
-
-fn uses_planner(engine: &EngineSettings) -> bool {
-    engine.auto_translate || engine.twitter_source == TwitterSource::Vxtwitter
-}
-
-#[derive(Clone)]
-struct HttpFetcher {
-    client: reqwest::Client,
-    video_budget: u64,
-    translation_target: String,
-    translate_english: bool,
-}
-
-static SOURCE_RESULTS: LazyLock<source_cache::SourceCache<pipeline::Snapshot>> =
-    LazyLock::new(|| source_cache::SourceCache::new(Duration::from_secs(600), 512));
-
-/// Planlayıcının istediği kaynak; önbellek anahtarının ilk parçası.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Source {
-    Vx,
-    Fx,
-    Syndication,
-}
-
-impl Source {
-    fn name(self) -> &'static str {
-        match self {
-            Source::Vx => "vx",
-            Source::Fx => "fx",
-            Source::Syndication => "syndication",
-        }
-    }
-}
-
-/// İsteği kaynağa, adrese ve (yalnızca vx'te) dil ekine ayırır.
-fn split_request(request: &pipeline::Request) -> (Source, &str, Option<&str>) {
-    match request {
-        pipeline::Request::Vx { url, language } => (Source::Vx, url, language.as_deref()),
-        pipeline::Request::Fx { url } => (Source::Fx, url, None),
-        pipeline::Request::Syndication { url } => (Source::Syndication, url, None),
-    }
-}
-
-impl HttpFetcher {
-    fn key(&self, source: Source, id: &str, language: Option<&str>) -> String {
-        format!(
-            "{}:{id}:{}:{}:{}:{}",
-            source.name(),
-            language.unwrap_or("original"),
-            self.translation_target,
-            self.translate_english,
-            self.video_budget
-        )
-    }
-
-    async fn fetch_source(
-        &self,
-        source: Source,
-        url: &str,
-        id: &str,
-        language: Option<&str>,
-    ) -> Result<pipeline::Snapshot, String> {
-        let unknown = |post| pipeline::Snapshot {
-            post,
-            nested_hint: plan::NestedHint::Unknown,
-        };
-        match source {
-            Source::Vx => {
-                let snapshot = from_vxtwitter(
-                    &self.client,
-                    url,
-                    id,
-                    language,
-                    &self.translation_target,
-                    self.translate_english,
-                )
-                .await?;
-                match language {
-                    Some(language) if self.misses_translation(&snapshot.post) => {
-                        self.fx_translation_fallback(url, id, language, snapshot)
-                            .await
-                    }
-                    _ => Ok(snapshot),
-                }
-            }
-            Source::Fx => from_fxtwitter(
-                &self.client,
-                url,
-                id,
-                None,
-                &self.translation_target,
-                self.video_budget,
-                self.translate_english,
-            )
-            .await
-            .map(unknown),
-            Source::Syndication => from_syndication(&self.client, url, id, self.video_budget)
-                .await
-                .map(unknown),
-        }
-    }
-
-    /// Çevrilmesi gereken gönderinin dil ekli yanıtı çeviri taşımıyor mu?
-    fn misses_translation(&self, post: &BuiltinPost) -> bool {
-        post.translation.is_none()
-            && needs_translation(
-                post.language.as_deref(),
-                &self.translation_target,
-                self.translate_english,
-            )
-    }
-
-    /// vx'in dil ekli yanıtı çevirisiz geldiğinde aynı X çevirisini FxTwitter'dan ister.
-    ///
-    /// X, Grok çevirisini ilk istekte henüz üretmemiş olabilir: vx o anda `translation: null`
-    /// döner (bkz. king40085151/2114278300113916196). Bu yanıt başarı sayılıp önbelleğe
-    /// alınırsa gönderi 10 dakika boyunca çevirisiz kalır. FxTwitter da çeviremezse hata
-    /// döner; hata önbelleğe yazılmadığından sonraki paylaşım çeviriyi yeniden dener.
-    async fn fx_translation_fallback(
-        &self,
-        url: &str,
-        id: &str,
-        language: &str,
-        mut snapshot: pipeline::Snapshot,
-    ) -> Result<pipeline::Snapshot, String> {
-        let fx = from_fxtwitter(
-            &self.client,
-            url,
-            id,
-            Some(language),
-            &self.translation_target,
-            self.video_budget,
-            self.translate_english,
-        )
-        .await
-        .map_err(|err| format!("vxtwitter çevirisiz döndü, FxTwitter da başarısız: {err}"))?;
-        if fx.translation.is_none() {
-            return Err(format!("X çevirisi henüz yok: {id}"));
-        }
-        snapshot.post.text = fx.text;
-        snapshot.post.translation = fx.translation;
-        Ok(snapshot)
-    }
-}
-
-#[serenity::all::async_trait]
-impl pipeline::Fetcher for HttpFetcher {
-    async fn cached(&self, request: &pipeline::Request) -> Option<pipeline::Snapshot> {
-        let (source, url, language) = split_request(request);
-        if source == Source::Syndication {
-            return None;
-        }
-        let id = extract_tweet_id(url)?;
-        SOURCE_RESULTS
-            .get(&self.key(source, &id, language))
-            .await
-            .map(|snapshot| (*snapshot).clone())
-    }
-
-    async fn fetch(&self, request: pipeline::Request) -> Result<pipeline::Snapshot, String> {
-        let (source, url, language) = split_request(&request);
-        let id = extract_tweet_id(url).ok_or_else(|| "X request has no tweet id".to_string())?;
-        // ID-based keys reuse a standalone tweet when it appears as a quote elsewhere.
-        // Target/source/budget remain isolated; spoiler/NSFW decisions happen only later.
-        let key = self.key(source, &id, language);
-        let started = Instant::now();
-        let result = SOURCE_RESULTS
-            .get_or_fetch(key, || self.fetch_source(source, url, &id, language))
-            .await;
-        debug!(
-            "X source={} id={id} language={} elapsed_ms={} ok={}",
-            source.name(),
-            language.unwrap_or("original"),
-            started.elapsed().as_millis(),
-            result.is_ok(),
-        );
-        result.map(|snapshot| (*snapshot).clone())
-    }
-
-    /// Harici link kartını **veri istekleriyle paralel** çözer (bütçe planlayıcıdadır).
-    async fn preview(&self, url: &str) -> Option<LinkPreview> {
-        fetch_link_preview(url).await
-    }
-}
-
 /// Gönderi verisini vxtwitter API'sinden çeker.
 ///
 /// Dil eki (`/tr`) verildiğinde yanıt `translation` alanında X'in kendi Grok çevirisini
 /// taşır; topluluk notu (`communityNote`) her yanıtta mevcuttur (yoksa null).
 ///
 /// **Metin eksik olabilir:** uzun (note) gönderilerde vx metni ilk bağlantıda keser ve geri
-/// kalanını hiç döndürmez (bkz. Wario64/2113285272523968617). Gönderinin tamamını yalnızca
-/// FxTwitter verdiği için kök metni planlayıcıda FxTwitter yanıtıyla tamamlanır.
+/// kalanını hiç döndürmez (bkz. Wario64/2113285272523968617); görüntülenme de vermez. Bu yüzden
+/// yalnızca elle seçilen yedek kaynaktır.
 async fn from_vxtwitter(
     client: &reqwest::Client,
     original_url: &str,
@@ -794,7 +647,7 @@ async fn from_vxtwitter(
     language: Option<&str>,
     translation_target: &str,
     translate_english: bool,
-) -> Result<pipeline::Snapshot, String> {
+) -> Result<BuiltinPost, String> {
     let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
     let handle = TWEET_URL_REGEX
         .captures(original_url)
@@ -805,52 +658,12 @@ async fn from_vxtwitter(
         .unwrap_or_else(|| "Twitter".to_string());
     let url = format!("{VXTWITTER_URL}/{handle}/status/{id}{language_suffix}");
     let tweet: VxTweet = super::get_json_as(client, &url).await?;
-    let nested_hint = vx_nested_hint(&tweet);
 
     if tweet.tweet_id.is_none() {
         return Err(format!("vxtwitter yanıtında gönderi kimliği yok: {id}"));
     }
 
-    Ok(pipeline::Snapshot {
-        post: vx_to_post(&tweet, original_url, translation_target, translate_english)?,
-        nested_hint,
-    })
-}
-
-/// An explicit qrtURL:null is evidence that the inline middle tweet has no quote.
-/// A URL points straight to the third tweet; a missing field is unknown, not absent.
-fn vx_nested_hint(tweet: &VxTweet) -> plan::NestedHint {
-    let tweet = tweet.retweet.as_deref().unwrap_or(tweet);
-    let Some(quote) = tweet.qrt.as_deref() else {
-        return plan::NestedHint::Absent;
-    };
-    match &quote.qrt_url {
-        Some(serde_json::Value::Null) => plan::NestedHint::Absent,
-        Some(serde_json::Value::String(url)) => {
-            let valid = url::Url::parse(url).ok().is_some_and(|parsed| {
-                matches!(parsed.scheme(), "https" | "http")
-                    && matches!(
-                        parsed.host_str(),
-                        Some("x.com" | "twitter.com" | "www.x.com" | "www.twitter.com")
-                    )
-                    && extract_tweet_id(url).is_some()
-            });
-            if valid {
-                plan::NestedHint::Present(url.clone())
-            } else {
-                plan::NestedHint::Unknown
-            }
-        }
-        _ => plan::NestedHint::Unknown,
-    }
-}
-
-/// Alanın hiç gelmemesini (`None`) açık `null` değerinden (`Some(Null)`) ayırır.
-fn present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    serde_json::Value::deserialize(deserializer).map(Some)
+    vx_to_post(&tweet, original_url, translation_target, translate_english)
 }
 
 /// vxtwitter JSON gönderi şeması. Şema içeriğe göre değişkendir (görsel/video/alıntı);
@@ -884,15 +697,11 @@ struct VxTweet {
     translation: Option<VxTranslation>,
     /// Saf retweet: vx gerçek içeriği buraya koyar, dış metni boşatır.
     retweet: Option<Box<VxTweet>>,
-    /// Alıntının kendi alıntısının adresi: yok / `null` / adres ayrımı [`vx_nested_hint`]'te.
-    #[serde(rename = "qrtURL", deserialize_with = "present_value")]
-    qrt_url: Option<serde_json::Value>,
 }
 
 /// vxtwitter gönderisini [`BuiltinPost`]'a çevirir.
 ///
-/// Alıntı yalnızca **ilk seviye** inline gömülür (`qrt`); daha derin zincirler
-/// [`populate_nested_quote`] akışındaki mevcut yolla tamamlanır.
+/// Alıntı yalnızca **ilk seviye** inline gömülür (`qrt`).
 fn vx_to_post(
     tweet: &VxTweet,
     fallback_url: &str,
@@ -932,7 +741,7 @@ fn vx_to_post(
         reposts: tweet.retweets.unwrap_or(0),
         likes: tweet.likes.unwrap_or(0),
         quotes: 0,
-        // vx görüntülenme sayısını bildirmez; FX akışı istenirse merge_stats ile tamamlar.
+        // vx görüntülenme sayısını bildirmez.
         views: None,
     };
     post.sensitive = tweet.possibly_sensitive.unwrap_or(false);
@@ -1052,36 +861,6 @@ fn apply_vx_translation(
             .clone()
             .or_else(|| post.language.clone()),
     });
-}
-
-/// Eksik alanları doldurur; kaynakta 0/`None` olan değerleri taze veriyle değiştirir.
-fn merge_stats(target: &mut Stats, fresh: &Stats) {
-    if target.replies == 0 {
-        target.replies = fresh.replies;
-    }
-    if target.reposts == 0 {
-        target.reposts = fresh.reposts;
-    }
-    if target.likes == 0 {
-        target.likes = fresh.likes;
-    }
-    if target.quotes == 0 {
-        target.quotes = fresh.quotes;
-    }
-    if target.views.is_none() {
-        target.views = fresh.views;
-    }
-}
-
-/// Syndication yanıtında bulunmayan topluluk notunu FxTwitter yanıtından tamamlar.
-/// Hedefte zaten bir not varsa onu korur; boş bir FxTwitter notu da karta eklenmez.
-fn merge_community_note(target: &mut Option<String>, fresh: Option<&str>) {
-    if target.is_none() {
-        *target = fresh
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned);
-    }
 }
 
 /// X'in syndication uç noktası token'ı doğrulamıyor; istemci tarafında üretilen
@@ -2131,106 +1910,6 @@ mod tests {
     }
 
     #[test]
-    fn twitter_hedge_and_nested_quote_budgets_are_separate() {
-        assert_eq!(HEDGE_DELAY, Duration::from_millis(500));
-        assert_eq!(NESTED_QUOTE_TIMEOUT, Duration::from_millis(700));
-    }
-
-    fn hint(json: serde_json::Value) -> plan::NestedHint {
-        vx_nested_hint(&serde_json::from_value(json).expect("örnek vx JSON geçerli olmalı"))
-    }
-
-    #[test]
-    fn vx_quote_topology_distinguishes_absent_unknown_and_direct_third_post() {
-        assert_eq!(
-            hint(serde_json::json!({"qrt": null})),
-            plan::NestedHint::Absent
-        );
-        assert_eq!(
-            hint(serde_json::json!({"qrt": {"qrtURL": null}})),
-            plan::NestedHint::Absent
-        );
-        assert_eq!(
-            hint(serde_json::json!({"qrt": {}})),
-            plan::NestedHint::Unknown
-        );
-        let url = "https://twitter.com/i/status/3";
-        assert_eq!(
-            hint(serde_json::json!({"qrt": {"qrtURL": url}})),
-            plan::NestedHint::Present(url.to_string()),
-        );
-        assert_eq!(
-            hint(serde_json::json!({"qrt": {"qrtURL": "https://untrusted.test/x.com/a/status/3"}})),
-            plan::NestedHint::Unknown,
-        );
-        assert_eq!(
-            hint(serde_json::json!({"retweet": {"qrt": {"qrtURL": url}}})),
-            plan::NestedHint::Present(url.to_string()),
-        );
-    }
-
-    #[test]
-    fn nested_quote_refresh_only_runs_for_media_less_first_level_quotes() {
-        let mut post = BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/kullanici/status/1",
-            Author::new("Kullanıcı", "kullanici"),
-        );
-        assert!(
-            !should_populate_nested_quote(&post),
-            "alıntı yoksa yenileme yok"
-        );
-
-        post.quote = Some(Box::new(BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/alinti/status/2",
-            Author::new("Alıntı", "alinti"),
-        )));
-        assert!(
-            should_populate_nested_quote(&post),
-            "medyasız alıntı tamamlanmalı"
-        );
-
-        post.quote.as_mut().unwrap().media.push(Media {
-            kind: MediaKind::Image,
-            url: "https://pbs.twimg.com/media/quote.jpg".to_string(),
-            poster: None,
-            width: None,
-            height: None,
-            duration: None,
-        });
-        assert!(
-            !should_populate_nested_quote(&post),
-            "gömülü ilk seviye medya yeni isteği gereksiz kılar"
-        );
-
-        post.quote.as_mut().unwrap().media.clear();
-        post.quote.as_mut().unwrap().quote = Some(Box::new(BuiltinPost::new(
-            Platform::Twitter,
-            "https://x.com/inner/status/3",
-            Author::new("İç", "inner"),
-        )));
-        assert!(
-            !should_populate_nested_quote(&post),
-            "mevcut iç içe alıntı yeniden çekilmemeli"
-        );
-
-        post.quote.as_mut().unwrap().quote = None;
-        post.media.push(Media {
-            kind: MediaKind::Image,
-            url: "https://pbs.twimg.com/media/post.jpg".to_string(),
-            poster: None,
-            width: None,
-            height: None,
-            duration: None,
-        });
-        assert!(
-            !should_populate_nested_quote(&post),
-            "ana gönderide medya varsa zincir yenilenmemeli"
-        );
-    }
-
-    #[test]
     fn vx_retweet_unwraps_the_inner_content() {
         let mut json = vx_tweet_json("en");
         json["text"] = serde_json::json!("");
@@ -2334,55 +2013,6 @@ mod tests {
             post.community_note.as_deref(),
             Some("Readers added context")
         );
-    }
-
-    #[test]
-    fn missing_syndication_metrics_are_merged_without_overwriting_existing_ones() {
-        // Syndication yalnızca yanıt + beğeni verir; repost/görüntülenme FxTwitter'dan gelir.
-        let mut stats = Stats {
-            replies: 87,
-            reposts: 0,
-            likes: 15_600,
-            quotes: 0,
-            views: None,
-        };
-        merge_stats(
-            &mut stats,
-            &Stats {
-                replies: 90,
-                reposts: 412,
-                likes: 15_700,
-                quotes: 12,
-                views: Some(1_240_000),
-            },
-        );
-
-        assert_eq!(stats.replies, 87, "mevcut değer korunur");
-        assert_eq!(stats.likes, 15_600, "mevcut beğeni korunur");
-        assert_eq!(stats.reposts, 412, "eksik repost tamamlanır");
-        assert_eq!(stats.quotes, 12, "eksik alıntı tamamlanır");
-        assert_eq!(
-            stats.views,
-            Some(1_240_000),
-            "eksik görüntülenme tamamlanır"
-        );
-    }
-
-    #[test]
-    fn community_note_is_merged_from_fxtwitter_without_replacing_existing_note() {
-        let mut note = None;
-        merge_community_note(&mut note, Some("  Topluluk notu  "));
-        assert_eq!(note.as_deref(), Some("Topluluk notu"));
-
-        merge_community_note(&mut note, Some("başka not"));
-        assert_eq!(note.as_deref(), Some("Topluluk notu"));
-    }
-
-    #[test]
-    fn empty_fxtwitter_community_note_is_not_added() {
-        let mut note = None;
-        merge_community_note(&mut note, Some("  "));
-        assert!(note.is_none());
     }
 
     #[test]
@@ -2700,9 +2330,269 @@ mod tests {
         );
     }
 
+    // =================================================================================
+    // KAYNAK BİRLEŞTİRME (acquire)
+    // =================================================================================
+
+    fn sourced(lang: &str, text: &str) -> BuiltinPost {
+        let mut post = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/kullanici/status/1",
+            Author::new("Kullanıcı", "kullanici"),
+        );
+        post.language = Some(lang.to_string());
+        post.text = text.to_string();
+        post
+    }
+
+    fn translated(lang: &str, text: &str) -> BuiltinPost {
+        let mut post = sourced(lang, text);
+        post.translation = Some(Translation {
+            source: Some(lang.to_string()),
+        });
+        post
+    }
+
+    async fn after(ms: u64, result: Result<BuiltinPost, String>) -> Result<BuiltinPost, String> {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        result
+    }
+
+    const HEDGE: Duration = Duration::from_millis(300);
+    const BUDGET: Duration = Duration::from_millis(400);
+
     #[tokio::test]
-    #[ignore = "requires live X/vxTwitter access; run explicitly"]
-    async fn live_fetch_three_level_quote() {
+    async fn english_post_is_sent_without_waiting_for_the_translation() {
+        let started = Instant::now();
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(10, Ok(sourced("en", "Hello"))),
+            Some(after(2_000, Ok(translated("en", "Merhaba")))),
+            after(10, Err("kullanılmamalı".into())),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert_eq!(fetched.post.text, "Hello");
+        assert!(fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn foreign_post_uses_the_translation_within_the_budget() {
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(10, Ok(sourced("de", "Guten Morgen"))),
+            Some(after(80, Ok(translated("de", "Günaydın")))),
+            after(10, Err("kullanılmamalı".into())),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fetched.post.text, "Günaydın");
+        assert!(fetched.post.translation.is_some());
+        assert!(fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn late_translation_keeps_the_original_and_is_not_cached() {
+        let started = Instant::now();
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(10, Ok(sourced("de", "Guten Morgen"))),
+            Some(after(3_000, Ok(translated("de", "Günaydın")))),
+            after(10, Err("kullanılmamalı".into())),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert!(started.elapsed() < Duration::from_millis(1_000));
+        assert_eq!(fetched.post.text, "Guten Morgen");
+        assert!(!fetched.cacheable, "çevirisiz sonuç önbelleğe yazılmamalı");
+    }
+
+    /// X Grok çevirisini ilk istekte henüz üretmemiş olabilir: dil ekli yanıt çevirisiz gelir.
+    #[tokio::test]
+    async fn translation_not_yet_available_is_not_cached() {
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(10, Ok(sourced("de", "Guten Morgen"))),
+            Some(after(40, Ok(sourced("de", "Guten Morgen")))),
+            after(10, Err("kullanılmamalı".into())),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert!(!fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn translated_response_arriving_first_is_used_directly() {
+        let started = Instant::now();
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(250, Ok(sourced("de", "Guten Morgen"))),
+            Some(after(10, Ok(translated("de", "Günaydın")))),
+            after(10, Err("kullanılmamalı".into())),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert_eq!(fetched.post.text, "Günaydın");
+        assert!(fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn untranslated_quote_also_waits_for_the_translation() {
+        let mut plain = sourced("en", "Bak");
+        plain.quote = Some(Box::new(sourced("ja", "こんにちは")));
+        let mut done = sourced("en", "Bak");
+        done.quote = Some(Box::new(translated("ja", "Merhaba")));
+
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(10, Ok(plain)),
+            Some(after(60, Ok(done))),
+            after(10, Err("kullanılmamalı".into())),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        let quote = fetched.post.quote.expect("alıntı korunmalı");
+        assert_eq!(quote.text, "Merhaba");
+        assert!(fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn primary_failure_falls_back_to_syndication_without_caching() {
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(5, Err("fx 500".into())),
+            None::<std::future::Ready<Result<BuiltinPost, String>>>,
+            after(5, Ok(sourced("en", "syndication"))),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fetched.post.text, "syndication");
+        assert!(!fetched.cacheable, "yedek veri önbelleğe yazılmamalı");
+    }
+
+    #[tokio::test]
+    async fn slow_primary_is_hedged_with_syndication() {
+        let started = Instant::now();
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(3_000, Ok(sourced("en", "fx"))),
+            None::<std::future::Ready<Result<BuiltinPost, String>>>,
+            after(10, Ok(sourced("en", "syndication"))),
+            Duration::from_millis(50),
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(fetched.post.text, "syndication");
+        assert!(!fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn primary_is_preferred_over_a_faster_fallback_within_patience() {
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(60, Ok(sourced("en", "fx"))),
+            None::<std::future::Ready<Result<BuiltinPost, String>>>,
+            after(5, Ok(sourced("en", "syndication"))),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fetched.post.text, "fx");
+        assert!(fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn ready_fallback_is_used_as_soon_as_patience_runs_out() {
+        let started = Instant::now();
+        let fetched = acquire(
+            &EngineSettings::default(),
+            after(3_000, Ok(sourced("en", "fx"))),
+            None::<std::future::Ready<Result<BuiltinPost, String>>>,
+            after(5, Ok(sourced("en", "syndication"))),
+            Duration::from_millis(100),
+            BUDGET,
+        )
+        .await
+        .unwrap();
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "ana kaynağa süre tanınmalı"
+        );
+        assert!(elapsed < Duration::from_millis(400));
+        assert_eq!(fetched.post.text, "syndication");
+        assert!(!fetched.cacheable);
+    }
+
+    #[tokio::test]
+    async fn every_source_failing_reports_all_errors() {
+        let error = acquire(
+            &EngineSettings::default(),
+            after(5, Err("fx 500".into())),
+            Some(after(5, Err("fx/tr 500".into()))),
+            after(5, Err("syndication 404".into())),
+            HEDGE,
+            BUDGET,
+        )
+        .await
+        .err()
+        .expect("hata dönmeli");
+
+        assert!(error.contains("fx 500") && error.contains("syndication 404"));
+    }
+
+    #[test]
+    fn disabled_translation_never_counts_as_missing() {
+        let engine = EngineSettings {
+            auto_translate: false,
+            ..EngineSettings::default()
+        };
+        assert!(!translation_missing(
+            &sourced("de", "Guten Morgen"),
+            &engine
+        ));
+        assert!(translation_missing(
+            &sourced("de", "Guten Morgen"),
+            &EngineSettings::default()
+        ));
+        assert!(!translation_missing(
+            &sourced("tr", "Günaydın"),
+            &EngineSettings::default()
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live FxTwitter/vxTwitter access; run explicitly"]
+    async fn live_fetch_main_and_alternative_sources() {
         let client = reqwest::Client::builder()
             .tls_backend_rustls()
             .timeout(Duration::from_secs(5))
@@ -2714,85 +2604,39 @@ mod tests {
             is_spoiler: false,
             user_comment: None,
         };
-        let mut engine = EngineSettings {
-            twitter_source: TwitterSource::Vxtwitter,
-            show_quote: true,
+
+        let main = fetch(&client, &parsed, &EngineSettings::default())
+            .await
+            .expect("FxTwitter verisi çekilmeli");
+        assert!(
+            main.post.stats.views.is_some(),
+            "görüntülenme FxTwitter'dan gelmeli"
+        );
+        let quote = main.post.quote.as_deref().expect("ilk alıntı bulunmalı");
+        assert_eq!(quote.author.handle, "Mark_Hobin");
+        assert!(quote.quote.is_none(), "alıntının alıntısı çekilmez");
+
+        let engine = EngineSettings {
+            x_alternative_source: true,
             ..EngineSettings::default()
         };
-        let post = fetch(&client, &parsed, &engine)
+        let alternative = fetch(&client, &parsed, &engine)
             .await
-            .expect("tweet çekilmeli");
-
-        assert!(post.quote.is_some(), "ilk alıntı (Mark_Hobin) bulunmalı");
-        let middle = post.quote.as_ref().unwrap();
-        assert_eq!(middle.author.handle, "Mark_Hobin");
-
-        assert!(
-            middle.quote.is_some(),
-            "ikinci alıntı (DiscussingFilm) iç içe alıntı olarak tamamlanmalı"
-        );
-        let inner = middle.quote.as_ref().unwrap();
-        assert_eq!(inner.author.handle, "DiscussingFilm");
-        assert!(
-            !inner.media.is_empty(),
-            "DiscussingFilm görseli içermeli: {:?}",
-            inner.media
-        );
-
-        // Modern V2 kart çıktısında 3 gönderi ve görsel de yer almalı:
-        let render_opts =
-            crate::converters::builtin::render::RenderOptions::from_engine(&engine, "twitter");
-        let plan = crate::converters::builtin::render::plan_media(&post, &render_opts);
-        assert!(!plan.remote_images.is_empty(), "plan görsel içermeli");
-
-        let resolved =
-            crate::converters::builtin::render::resolve_media(&client, &post, &plan, &render_opts)
-                .await;
-        let emojis = crate::settings::EmojiSettings::default();
-        let card = crate::converters::builtin::v2::V2Card {
-            post: &post,
-            options: &render_opts,
-            resolved: &resolved,
-            emojis: &emojis,
-            spoiler: false,
-            sender: None,
-            user_comment: None,
-            impersonation: None,
-            allowed_mentions: None,
-        };
-        let payload = crate::converters::builtin::v2::build_payload(&card);
-        let payload_str = serde_json::to_string(&payload).unwrap();
-        assert!(payload_str.contains("firstshowing"), "ana yazar olmalı");
-        assert!(payload_str.contains("Mark_Hobin"), "ilk alıntı olmalı");
-        assert!(
-            payload_str.contains("DiscussingFilm"),
-            "ikinci alıntı olmalı"
+            .expect("vxTwitter verisi çekilmeli");
+        assert_eq!(
+            alternative
+                .post
+                .quote
+                .as_deref()
+                .map(|quote| quote.author.handle.as_str()),
+            Some("Mark_Hobin")
         );
         assert!(
-            payload_str.contains("DIGGER"),
-            "DiscussingFilm metni olmalı"
-        );
-        assert!(
-            payload_str.contains("media_gallery") || payload_str.contains("HTy-9WNWYAAGzcK"),
-            "galeri görseli olmalı"
-        );
-
-        // Syndication kaynağı da 3 seviyeli zinciri tamamlayabilmeli:
-        engine.twitter_source = TwitterSource::Syndication;
-        let post_syn = fetch(&client, &parsed, &engine)
-            .await
-            .expect("syndication tweet çekilmeli");
-        let middle_syn = post_syn.quote.expect("syndication ilk alıntı bulunmalı");
-        assert_eq!(middle_syn.author.handle, "Mark_Hobin");
-        let inner_syn = middle_syn
-            .quote
-            .expect("syndication iç içe alıntı tamamlanmalı");
-        assert_eq!(inner_syn.author.handle, "DiscussingFilm");
-        assert!(
-            !inner_syn.media.is_empty(),
-            "syndication medya tamamlanmalı"
+            alternative.post.stats.views.is_none(),
+            "vxTwitter görüntülenme vermez"
         );
     }
+
     // =================================================================================
     // LİNK KARTI (harici bağlantı önizlemesi)
     // =================================================================================
