@@ -137,8 +137,15 @@ pub async fn get_channel_messages(
     limit: u8,
 ) -> Result<serde_json::Value, DiscordError> {
     let url = match message {
-        Some(id) => format!("{API_BASE}/channels/{}/messages/{}", channel_id.get(), id.get()),
-        None => format!("{API_BASE}/channels/{}/messages?limit={limit}", channel_id.get()),
+        Some(id) => format!(
+            "{API_BASE}/channels/{}/messages/{}",
+            channel_id.get(),
+            id.get()
+        ),
+        None => format!(
+            "{API_BASE}/channels/{}/messages?limit={limit}",
+            channel_id.get()
+        ),
     };
     let request = client
         .get(url)

@@ -15,8 +15,8 @@
 
 use serenity::all::{
     CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType, Context,
-    CreateCommand, CreateCommandOption, CreateInteractionResponseFollowup,
-    EditInteractionResponse, InstallationContext, InteractionContext, MessageId,
+    CreateCommand, CreateCommandOption, CreateInteractionResponseFollowup, EditInteractionResponse,
+    InstallationContext, InteractionContext, MessageId,
 };
 use tracing::{error, warn};
 
@@ -39,7 +39,9 @@ const NO_VIDEO: &str = "Bu gönderide video ya da GIF yok.";
 pub fn definitions() -> Vec<CreateCommand> {
     vec![
         everywhere(CreateCommand::new(GIF_COMMAND))
-            .description("X gönderisindeki videoyu GIF'e çevirir (link yoksa kanaldaki son gönderi).")
+            .description(
+                "X gönderisindeki videoyu GIF'e çevirir (link yoksa kanaldaki son gönderi).",
+            )
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
@@ -211,7 +213,8 @@ mod tests {
             message_tweet_url(&message).as_deref(),
             Some("https://x.com/u/status/9")
         );
-        let gif_reply = serde_json::json!({"content": "https://gif.fxtwitter.com/tweet_video/a.gif"});
+        let gif_reply =
+            serde_json::json!({"content": "https://gif.fxtwitter.com/tweet_video/a.gif"});
         assert!(message_tweet_url(&gif_reply).is_none());
     }
 
