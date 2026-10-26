@@ -16,6 +16,7 @@ pub mod pixiv;
 mod preview;
 pub mod raw;
 pub mod reddit;
+mod reddit_gql;
 pub mod reddit_video;
 pub mod render;
 mod safe_http;

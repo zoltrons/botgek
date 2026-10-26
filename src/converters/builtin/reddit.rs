@@ -7,10 +7,11 @@
 //! **`installed_client`** OAuth akışı kullanılır: kullanıcı izni/parolası gerekmez, yalnızca
 //! herkese açık istemci kimliği yeterlidir (redlib'in kullandığı yöntem). Token bellekte
 //! önbelleklenir ve süresi dolmadan yenilenir. Kimlik doğrulama başarısız olursa (engellenmemiş
-//! IP'lerde çalışan) kimliksiz `www.reddit.com` yolu denenir; o da olmazsa proxy yedeğine düşülür.
+//! IP'lerde çalışan) kimliksiz `www.reddit.com` yolu denenir; o da başarısız olursa hata döner.
 //!
-//! Reddit kimliksiz OAuth istemcilerinde `/comments/` yolunu ayrıca engellediği için OAuth
-//! isteğinde bu ayırıcı `%2F` olarak kodlanır (redlib `0a3e9cde`), bkz. [`oauth_comments_url`].
+//! Reddit `/comments/` JSON yolunu anonim istemcilere (kodlanmış ayırıcı dahil) kapattığı için
+//! gönderi verisi `oauth.reddit.com/by_id/t3_{id}.json` ile alınır. Yorum bağlantılarının
+//! bağlam metni Android GraphQL `PostComments` işleminden gelir, bkz. [`reddit_gql`].
 //!
 //! Video: Reddit'in verdiği mp4 (`fallback_url`, genelde `CMAF_*.mp4`) **video-only**'dir —
 //! Reddit sesi ayrı akışta tutar. Proje **ffmpeg kullanmaz**; bu yüzden video kartta sessiz
@@ -27,6 +28,7 @@ use tokio::sync::Mutex;
 use tracing::debug;
 
 use super::preview::meta_value;
+use super::reddit_gql;
 use super::{Author, BuiltinPost, LinkPreview, Media, MediaKind, REQUEST_TIMEOUT, Stats};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
@@ -193,8 +195,7 @@ async fn request_token(client: &reqwest::Client, client_id: &str) -> Option<Stri
 }
 
 /// Gönderi verisini Reddit'ten çeker: önce **OAuth** (`oauth.reddit.com`, bearer token),
-/// olmazsa kimliksiz `www.reddit.com` yolu. İkisi de başarısız olursa hata döner ve (ayar
-/// açıksa) proxy yedeğine düşülür.
+/// olmazsa kimliksiz `www.reddit.com` yolu.
 pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
@@ -204,12 +205,17 @@ pub async fn fetch(
     let comment_id = comment_id_from_url(&parsed.original_url);
     let query = comments_query(comment_id);
 
-    // 1) OAuth: Reddit'in kimliksiz istekleri engellediği (403) durumlarda da çalışır.
+    // 1) OAuth: gönderi verisi `/by_id` ile alınır. Reddit `/comments/` JSON yolunu anonim
+    //    istemcilere kapattığı için gönderi meta verisi ayrı uçtan, yorum bağlamı GraphQL'den gelir.
     if let Some(token) = oauth_token(client, client_id).await {
-        let url = oauth_comments_url(&id, &query);
-        match get_json_with_bearer(client, &url, &token).await {
-            Ok(listings) => match listings_to_post(listings, comment_id) {
+        let url = by_id_url(&id);
+        match get_json_with_bearer::<RedditListing>(client, &url, &token).await {
+            Ok(listing) => match listings_to_post(vec![listing], None) {
                 Ok(mut post) => {
+                    if let Some(comment_id) = comment_id {
+                        append_graph_comment_context(client, &mut post, &token, &id, comment_id)
+                            .await;
+                    }
                     fill_link_preview(&mut post).await;
                     return Ok(post);
                 }
@@ -227,13 +233,42 @@ pub async fn fetch(
     Ok(post)
 }
 
-/// OAuth gönderi listesi adresi; `/comments/` ayırıcısı `%2F` olarak kodlanır.
+/// Gönderi meta verisinin adresi: `/by_id` tek bir `t3` listesi döndürür.
 ///
-/// Reddit, kimliksiz OAuth istemcilerinde gerçek `/comments/` yolunu 403 (HTML engel sayfası) ile
-/// engelliyor; ayırıcı `%2F` olarak kodlandığında aynı JSON dönüyor (redlib `0a3e9cde`). Reddit bu
-/// boşluğu kapatırsa istek yine başarısız olur ve kimliksiz yola düşülür.
-fn oauth_comments_url(id: &str, query: &str) -> String {
-    format!("{OAUTH_API_BASE}/comments%2F{id}?{query}")
+/// `/comments/{id}` yolunun aksine bu uç anonim OAuth istemcilerine açık; aynı gönderi alanlarını
+/// (`selftext`, medya, crosspost) taşır.
+fn by_id_url(id: &str) -> String {
+    format!("{OAUTH_API_BASE}/by_id/t3_{id}.json?raw_json=1")
+}
+
+/// `/by_id` yanıtından kurulan karta GraphQL yorum bağlamını ekler.
+///
+/// Yorum bulunamazsa veya GraphQL isteği başarısız olursa kart yine döner: bağlam zorunlu değildir.
+async fn append_graph_comment_context(
+    client: &reqwest::Client,
+    post: &mut BuiltinPost,
+    token: &str,
+    post_id: &str,
+    comment_id: &str,
+) {
+    let comments =
+        reddit_gql::comments(client, token, REDDIT_USER_AGENT, post_id, Some(comment_id)).await;
+    let Some(comment) = comments
+        .into_iter()
+        .find(|comment| comment.id == comment_id)
+    else {
+        debug!("Reddit yorum bağlamı bulunamadı ({post_id}/{comment_id})");
+        return;
+    };
+    append_comment_context(
+        post,
+        &RedditPost {
+            id: Some(comment.id),
+            author: Some(comment.author),
+            body: Some(comment.body),
+            ..Default::default()
+        },
+    );
 }
 
 /// Yorum listesi sorgusu; `raw_json=1` her zaman bulunur çünkü metin alanları bir daha HTML çözülmez.
@@ -1737,11 +1772,11 @@ mod tests {
     }
 
     #[test]
-    fn oauth_comments_url_keeps_the_encoded_separator_on_the_wire() {
-        let url = oauth_comments_url("1xfsgvu", "raw_json=1");
-        // `reqwest`'in kullandığı `Url` `%2F`'yi `/`'a çözmez.
-        assert_eq!(Url::parse(&url).expect("adres geçerli").as_str(), url);
-        assert!(url.ends_with("/comments%2F1xfsgvu?raw_json=1"), "{url}");
+    fn by_id_url_targets_the_post_fullname() {
+        assert_eq!(
+            by_id_url("1xfsgvu"),
+            "https://oauth.reddit.com/by_id/t3_1xfsgvu.json?raw_json=1"
+        );
     }
 
     /// Canlı test: `installed_client` OAuth akışı Reddit API'sinden veri getirmeli.
@@ -1792,6 +1827,26 @@ mod tests {
                 .is_some_and(|title| !title.trim().is_empty()),
             "başlık gelmeli: {:?}",
             post.title
+        );
+
+        // Yorum bağlamı: canlı gönderinin ilk yorumunu bulup kalıcı bağlantısıyla tekrar çek.
+        let comments = reddit_gql::comments(&client, &token, REDDIT_USER_AGENT, &id, None).await;
+        let comment = comments
+            .first()
+            .expect("canlı gönderide en az bir yorum olmalı");
+        let parsed = ParsedPost {
+            platform: Platform::Reddit,
+            is_spoiler: false,
+            user_comment: None,
+            original_url: format!("https://www.reddit.com/comments/{id}/_/{}/", comment.id),
+        };
+        let post = fetch(&client, &parsed, DEFAULT_CLIENT_ID)
+            .await
+            .expect("Reddit yorum bağlantısı çekilmeli");
+        assert!(
+            post.text.contains("**Yorum bağlamı — u/"),
+            "yorum bağlamı karta girmeli: {}",
+            post.text
         );
     }
 }
