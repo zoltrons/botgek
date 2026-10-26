@@ -388,6 +388,69 @@ async fn populate_nested_quote(
     }
 }
 
+/// Metindeki tweet bağlantısını `https://x.com/<kullanıcı>/status/<id>` olarak bulur.
+///
+/// Bot kartında gönderinin kendi linki `[Link](...)` satırındadır; alıntı başlığı
+/// (`[Quote](...)`) ondan önce geldiği için önce o satır aranır, yoksa ilk tweet linki
+/// alınır. fxtwitter/vxtwitter/fixupx gibi alan adları da eşleşir.
+pub fn find_tweet_url(text: &str) -> Option<String> {
+    let canonical = |captures: regex::Captures<'_>| {
+        format!("https://x.com/{}/status/{}", &captures[1], &captures[2])
+    };
+    text.split("[Link](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .find_map(|link| TWEET_URL_REGEX.captures(link))
+        .or_else(|| TWEET_URL_REGEX.captures(text))
+        .map(canonical)
+}
+
+/// `/gif-yap` için tweet'in videolarının (ve GIF'lerinin) FxEmbed GIF bağlantıları.
+///
+/// Her video için **en düşük bit hızlı** mp4 seçilir: servis videoyu kare kare GIF'e
+/// çevirdiğinden 1080p kaynak onlarca MB'lık, Discord'da gömülemeyen dosyalar üretir.
+/// Gönderinin kendi videosu yoksa alıntılanan gönderininkiler kullanılır.
+pub async fn gif_links(client: &reqwest::Client, url: &str) -> Result<Vec<String>, String> {
+    let id = extract_tweet_id(url).ok_or("Geçerli bir X/Twitter gönderi bağlantısı değil.")?;
+    let response: FxResponse =
+        super::get_json_as(client, &format!("{FXTWITTER_URL}/i/status/{id}")).await?;
+    let tweet = response
+        .tweet
+        .ok_or_else(|| format!("fxtwitter yanıtında gönderi yok: {id}"))?;
+
+    let links = fx_gif_links(&tweet);
+    if links.is_empty()
+        && let Some(quote) = tweet.quote.as_deref()
+    {
+        return Ok(fx_gif_links(quote));
+    }
+    Ok(links)
+}
+
+fn fx_gif_links(tweet: &FxTweet) -> Vec<String> {
+    let videos = tweet
+        .media
+        .as_ref()
+        .and_then(|media| media.videos.as_deref())
+        .unwrap_or_default();
+    videos
+        .iter()
+        .filter_map(|video| {
+            let smallest = video
+                .formats
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|format| format.container.as_deref() == Some("mp4"))
+                .min_by_key(|format| format.bitrate.unwrap_or(u64::MAX))
+                .and_then(|format| format.url.as_deref());
+            smallest
+                .or(video.url.as_deref())
+                .and_then(super::media::fx_gif_url)
+        })
+        .collect()
+}
+
 /// Tweet URL'sinden gönderi kimliğini (sayısal ID) çıkarır.
 fn extract_tweet_id(url: &str) -> Option<String> {
     TWEET_URL_REGEX

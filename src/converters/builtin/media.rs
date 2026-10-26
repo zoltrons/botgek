@@ -172,6 +172,20 @@ pub fn gif_convert_url(url: &str) -> Option<String> {
     ))
 }
 
+/// FxEmbed'in GIF dönüştürme servisi (`gif.fxtwitter.com`): `/gif-yap` komutu için.
+///
+/// vxTwitter gifconvert yalnızca `tweet_video` (X GIF'i) kabul eder; FxEmbed'in servisi ise
+/// gerçek videoları (`ext_tw_video`, `amplify_video`) da `image/gif`'e çevirir. Servis
+/// `video.twimg.com` yolunu aynen alır, uzantı `.gif` olarak verilir:
+/// `https://video.twimg.com/ext_tw_video/<id>/pu/vid/480x270/<ad>.mp4?tag=14`
+///   → `https://gif.fxtwitter.com/ext_tw_video/<id>/pu/vid/480x270/<ad>.gif`
+pub fn fx_gif_url(url: &str) -> Option<String> {
+    let clean = url.split(['?', '#']).next()?.trim();
+    let path = clean.strip_prefix("https://video.twimg.com/")?;
+    let stem = path.strip_suffix(".mp4")?;
+    (!stem.is_empty()).then(|| format!("https://gif.fxtwitter.com/{stem}.gif"))
+}
+
 /// Videoyu indirir. **Reddit (v.redd.it)** gönderilerinde önce video ve sesi **sesli tek MP4**'e
 /// birleştirmeyi dener (`reddit_video::merge`; proje ffmpeg kullanmaz, birleştirme saf Rust
 /// transmux ile yapılır). Birleştirme başarısız/doluysa None döner: renderer uzak videoyu
@@ -396,5 +410,20 @@ mod tests {
             gif_convert_url("https://video.twimg.com/amplify_video/123/vid/720/x.mp4").is_none()
         );
         assert!(gif_convert_url("https://cdn.example/video.mp4").is_none());
+    }
+
+    #[test]
+    fn fx_gif_urls_accept_real_videos_and_gifs() {
+        assert_eq!(
+            fx_gif_url("https://video.twimg.com/ext_tw_video/1/pu/vid/480x270/a.mp4?tag=14")
+                .as_deref(),
+            Some("https://gif.fxtwitter.com/ext_tw_video/1/pu/vid/480x270/a.gif")
+        );
+        assert_eq!(
+            fx_gif_url("https://video.twimg.com/tweet_video/HTEtNFcXEAAY4Dv.mp4").as_deref(),
+            Some("https://gif.fxtwitter.com/tweet_video/HTEtNFcXEAAY4Dv.gif")
+        );
+        assert!(fx_gif_url("https://video.twimg.com/ext_tw_video/1/pu/pl/x.m3u8").is_none());
+        assert!(fx_gif_url("https://cdn.example/video.mp4").is_none());
     }
 }

@@ -13,8 +13,10 @@
 //! X çevirisi komutta varsayılan olarak açıktır; hedef dil WebUI ayarından gelir.
 //!
 //! Eğlence komutları (`/uyum`, `/düello`, `/sayı-tahmini`, `/8top`) [`fun`] modülündedir.
+//! X videosunu GIF'e çeviren `/gif-yap` [`gif`] modülündedir.
 
 pub mod fun;
+pub mod gif;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,6 +64,7 @@ pub async fn register(http: impl AsRef<Http>) {
         let commands = definitions()
             .into_iter()
             .chain(fun::definitions())
+            .chain(gif::definitions())
             .collect();
         match Command::set_global_commands(http.as_ref(), commands).await {
             Ok(commands) => {
@@ -139,6 +142,9 @@ pub async fn handle(
     let command = match interaction {
         Interaction::Command(command) if fun::is_fun_command(command) => {
             return fun::handle_command(ctx, command).await;
+        }
+        Interaction::Command(command) if gif::is_gif_command(command) => {
+            return gif::handle(ctx, command, http_client, config).await;
         }
         Interaction::Component(component)
             if component.data.custom_id.starts_with(fun::CUSTOM_ID_PREFIX) =>

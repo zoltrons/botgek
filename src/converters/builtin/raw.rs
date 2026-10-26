@@ -126,6 +126,29 @@ pub async fn get_interaction_original(
     serde_json::from_str(&body).map_err(|_| DiscordError::Ambiguous)
 }
 
+/// Kanal mesajlarını **ham JSON** olarak okur: `message` verilirse o mesaj, yoksa en yeni
+/// `limit` mesaj (dizi). Serenity 0.12 mesaj modeli Components V2 kartlarındaki metni
+/// korumadığı için kartın içindeki bağlantıyı okumak isteyen komutlar bunu kullanır.
+pub async fn get_channel_messages(
+    client: &reqwest::Client,
+    token: &str,
+    channel_id: ChannelId,
+    message: Option<MessageId>,
+    limit: u8,
+) -> Result<serde_json::Value, DiscordError> {
+    let url = match message {
+        Some(id) => format!("{API_BASE}/channels/{}/messages/{}", channel_id.get(), id.get()),
+        None => format!("{API_BASE}/channels/{}/messages?limit={limit}", channel_id.get()),
+    };
+    let request = client
+        .get(url)
+        .header("authorization", format!("Bot {token}"))
+        .header("user-agent", DISCORD_USER_AGENT)
+        .timeout(Duration::from_secs(10));
+    let body = super::transport::send(client, request, format!("channel:{channel_id}")).await?;
+    serde_json::from_str(&body).map_err(|_| DiscordError::Ambiguous)
+}
+
 /// Webhook çalıştırma adresi.
 ///
 /// `wait=true`: Discord oluşan mesajı yanıt olarak döner (mesaj kimliği 🗑️ silme kaydı için
