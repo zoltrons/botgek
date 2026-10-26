@@ -407,8 +407,9 @@ pub fn find_tweet_url(text: &str) -> Option<String> {
 
 /// `/gif-yap` için tweet'in videolarının (ve GIF'lerinin) FxEmbed GIF bağlantıları.
 ///
-/// Her video için **en düşük bit hızlı** mp4 seçilir: servis videoyu kare kare GIF'e
-/// çevirdiğinden 1080p kaynak onlarca MB'lık, Discord'da gömülemeyen dosyalar üretir.
+/// Her video için **480p** mp4 seçilir (yoksa altındaki en yakın varyant): servis videoyu
+/// kare kare GIF'e çevirdiğinden 1080p kaynak onlarca MB'lık, Discord'da gömülemeyen
+/// dosyalar üretir.
 /// Gönderinin kendi videosu yoksa alıntılanan gönderininkiler kullanılır.
 pub async fn gif_links(client: &reqwest::Client, url: &str) -> Result<Vec<String>, String> {
     let id = extract_tweet_id(url).ok_or("Geçerli bir X/Twitter gönderi bağlantısı değil.")?;
@@ -436,19 +437,44 @@ fn fx_gif_links(tweet: &FxTweet) -> Vec<String> {
     videos
         .iter()
         .filter_map(|video| {
-            let smallest = video
+            let chosen = video
                 .formats
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
                 .filter(|format| format.container.as_deref() == Some("mp4"))
-                .min_by_key(|format| format.bitrate.unwrap_or(u64::MAX))
+                .min_by_key(|format| gif_variant_rank(format))
                 .and_then(|format| format.url.as_deref());
-            smallest
+            chosen
                 .or(video.url.as_deref())
                 .and_then(super::media::fx_gif_url)
         })
         .collect()
+}
+
+/// GIF kaynağı olarak hedeflenen kısa kenar (480p).
+const GIF_TARGET_SHORT_SIDE: u64 = 480;
+
+/// Varyant URL'sindeki çözünürlük: `.../vid/640x360/...` veya `.../vid/avc1/480x852/...`.
+static VARIANT_SIZE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/(\d{2,5})x(\d{2,5})/").expect("geçerli çözünürlük regex"));
+
+/// Küçük sıra daha iyi: kısa kenarı 480'i aşmayan en büyük varyant (480p varsa o), yoksa
+/// 480'in üstündeki en küçük. Çözünürlüğü bilinmeyen varyantlarda en düşük bit hızı.
+fn gif_variant_rank(format: &FxFormat) -> (u8, u64) {
+    let from_url = format.url.as_deref().and_then(|url| {
+        let captures = VARIANT_SIZE_REGEX.captures(url)?;
+        Some((captures[1].parse().ok()?, captures[2].parse().ok()?))
+    });
+    let size = match (format.width, format.height) {
+        (Some(width), Some(height)) => Some((u64::from(width), u64::from(height))),
+        _ => from_url,
+    };
+    match size.map(|(width, height)| width.min(height)) {
+        Some(short) if short <= GIF_TARGET_SHORT_SIDE => (0, GIF_TARGET_SHORT_SIDE - short),
+        Some(short) => (1, short),
+        None => (2, format.bitrate.unwrap_or(u64::MAX)),
+    }
 }
 
 /// Tweet URL'sinden gönderi kimliğini (sayısal ID) çıkarır.
@@ -2561,6 +2587,66 @@ mod tests {
         assert_eq!(
             best_mp4(Some(&variants), Some(12_000), 500 * 1024, false).as_deref(),
             Some("https://video.twimg.com/amplify_video/1/vid/640x360/lo.mp4")
+        );
+    }
+
+    #[test]
+    fn gif_command_picks_the_480p_variant() {
+        let format = |url: &str, bitrate: u64| FxFormat {
+            url: Some(url.to_string()),
+            container: Some("mp4".to_string()),
+            bitrate: Some(bitrate),
+            ..FxFormat::default()
+        };
+        let tweet = |formats: Vec<FxFormat>| FxTweet {
+            media: Some(FxMedia {
+                videos: Some(vec![FxMediaItem {
+                    formats: Some(formats),
+                    ..FxMediaItem::default()
+                }]),
+                ..FxMedia::default()
+            }),
+            ..FxTweet::default()
+        };
+
+        // Dikey video: 480x852 tam 480p.
+        let portrait = tweet(vec![
+            format(
+                "https://video.twimg.com/amplify_video/1/vid/avc1/320x568/a.mp4",
+                1,
+            ),
+            format(
+                "https://video.twimg.com/amplify_video/1/vid/avc1/480x852/b.mp4",
+                2,
+            ),
+            format(
+                "https://video.twimg.com/amplify_video/1/vid/avc1/720x1280/c.mp4",
+                3,
+            ),
+        ]);
+        assert_eq!(
+            fx_gif_links(&portrait),
+            ["https://gif.fxtwitter.com/amplify_video/1/vid/avc1/480x852/b.gif"]
+        );
+
+        // Yatay videoda 480p yoksa altındaki en yakın (360p) seçilir.
+        let landscape = tweet(vec![
+            format(
+                "https://video.twimg.com/ext_tw_video/1/pu/vid/480x270/a.mp4?tag=14",
+                1,
+            ),
+            format(
+                "https://video.twimg.com/ext_tw_video/1/pu/vid/640x360/b.mp4?tag=14",
+                2,
+            ),
+            format(
+                "https://video.twimg.com/ext_tw_video/1/pu/vid/1280x720/c.mp4?tag=14",
+                3,
+            ),
+        ]);
+        assert_eq!(
+            fx_gif_links(&landscape),
+            ["https://gif.fxtwitter.com/ext_tw_video/1/pu/vid/640x360/b.gif"]
         );
     }
 
