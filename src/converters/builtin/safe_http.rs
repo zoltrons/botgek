@@ -25,7 +25,9 @@ fn public_v4(ip: Ipv4Addr) -> bool {
         || ip.is_documentation())
 }
 
-fn public_ip(ip: IpAddr) -> bool {
+/// Adres herkese açık (global unicast) mı? Önizleme sınırının tek kaynağıdır: hem buradaki
+/// istek yolu hem de [`super::preview`] medya denetimi bu kuralı kullanır.
+pub(super) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => public_v4(ip),
         IpAddr::V6(ip) => {
@@ -39,15 +41,35 @@ fn public_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Yalnızca kimlik bilgisi taşımayan, standart portlu HTTP(S) adreslerine izin verilir.
+pub(super) fn allowed_endpoint(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && matches!(url.port_or_known_default(), Some(80 | 443))
+}
+
 fn validate_url(url: &Url) -> Result<(), String> {
-    if !matches!(url.scheme(), "http" | "https")
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || !matches!(url.port_or_known_default(), Some(80 | 443))
-    {
+    if !allowed_endpoint(url) {
         return Err("preview URL is not an allowed public HTTP endpoint".into());
     }
     Ok(())
+}
+
+/// `host`'u çözer; sonuç boşsa, 16 adresten fazlaysa ya da herkese açık olmayan bir adres
+/// içeriyorsa reddeder. Dönen adresler bağlantıyı sabitlemek içindir: ikinci bir DNS sorgusu
+/// rebinding'e kapı açardı.
+pub(super) async fn resolve_public(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host.trim_matches(['[', ']']), port))
+        .await
+        .map_err(|_| "preview DNS failed")?
+        .take(17)
+        .collect();
+    if addresses.is_empty() || addresses.len() > 16 || addresses.iter().any(|a| !public_ip(a.ip()))
+    {
+        return Err("preview target is not public".into());
+    }
+    Ok(addresses)
 }
 
 pub async fn preview(raw: &str) -> Result<(String, String), String> {
@@ -87,18 +109,7 @@ pub async fn public_get_with(
         validate_url(&url)?;
         let host = url.host_str().ok_or("preview host missing")?;
         let port = url.port_or_known_default().ok_or("preview port missing")?;
-        let addresses: Vec<SocketAddr> =
-            tokio::net::lookup_host((host.trim_matches(['[', ']']), port))
-                .await
-                .map_err(|_| "preview DNS failed")?
-                .take(17)
-                .collect();
-        if addresses.is_empty()
-            || addresses.len() > 16
-            || addresses.iter().any(|a| !public_ip(a.ip()))
-        {
-            return Err("preview target is not public".into());
-        }
+        let addresses = resolve_public(host, port).await?;
         // Pin exactly the addresses checked above: a second DNS lookup would allow rebinding.
         let client = reqwest::Client::builder()
             .tls_backend_rustls()

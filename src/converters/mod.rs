@@ -297,10 +297,7 @@ pub async fn convert_now(
 /// kullanılmaz. Yine de sıfır olmayan, tarihçe olarak tutarlı bir snowflake üretilir.
 fn generated_message_id() -> serenity::all::MessageId {
     const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let now_ms = crate::utils::unix_millis();
     serenity::all::MessageId::new(now_ms.saturating_sub(DISCORD_EPOCH_MS) << 22)
 }
 

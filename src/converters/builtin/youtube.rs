@@ -28,7 +28,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let page = format!("{YOUTUBE}/post/{id}?hl=en&gl=US");
     let result = super::get_text(client, &page)
         .await
-        .and_then(|html| post_from_html(&id, &html, now()));
+        .and_then(|html| post_from_html(&id, &html, crate::utils::unix_secs() as i64));
     match result {
         Ok(post) => Ok(post),
         Err(reason) => {
@@ -36,12 +36,6 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
             preview::fetch(parsed, Platform::YouTube).await
         }
     }
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// `https://www.youtube.com/post/{id}` (ayrıştırıcının kanonik biçimi) → id.
@@ -249,7 +243,7 @@ fn like_count(post: &Value) -> u64 {
     digits
         .parse()
         .ok()
-        .or_else(|| preview::parse_compact_count(&plain(post.get("voteCount"))))
+        .or_else(|| super::parse_compact_count(&plain(post.get("voteCount"))))
         .unwrap_or(0)
 }
 

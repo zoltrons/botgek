@@ -100,13 +100,8 @@ pub async fn register(http: impl AsRef<Http>) {
 /// Discord komutu `contexts: null` ile saklıyor ve bu da DM'lerde görünmemesine yol açıyor.
 fn definitions() -> Vec<CreateCommand> {
     vec![
-        CreateCommand::new(CONVERT_COMMAND)
+        everywhere(CreateCommand::new(CONVERT_COMMAND))
             .description("Bir sosyal medya bağlantısını dönüştürür (X, Instagram, Reddit, TikTok, Bluesky ve daha fazlası).")
-            .add_integration_type(InstallationContext::Guild)
-            .add_integration_type(InstallationContext::User)
-            .add_context(InteractionContext::Guild)
-            .add_context(InteractionContext::BotDm)
-            .add_context(InteractionContext::PrivateChannel)
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
@@ -116,19 +111,26 @@ fn definitions() -> Vec<CreateCommand> {
                 .required(false)
                 .max_length(2048),
             ),
-        CreateCommand::new(CONVERT_MESSAGE_COMMAND)
+        // Mesaj komutu da DM/grup DM'de sağ tık → Apps menüsünde görünmeli: user install
+        // açıkken hedef mesaj `resolved.messages` ile gelir. Yalnızca GUILD yazmak
+        // komutu DM'lerdeki sağ tık menüsünden kaldırıyordu.
+        everywhere(CreateCommand::new(CONVERT_MESSAGE_COMMAND))
             .kind(CommandType::Message)
-            // Mesaj komutu da DM/grup DM'de sağ tık → Apps menüsünde görünmeli: user install
-            // açıkken hedef mesaj `resolved.messages` ile gelir. Yalnızca GUILD yazmak
-            // komutu DM'lerdeki sağ tık menüsünden kaldırıyordu.
-            .add_integration_type(InstallationContext::Guild)
-            .add_integration_type(InstallationContext::User)
-            .add_context(InteractionContext::Guild)
-            .add_context(InteractionContext::BotDm)
-            .add_context(InteractionContext::PrivateChannel)
             // Discord, USER/MESSAGE komutlarında açıklamayı boş string olarak bekler.
             .description(""),
     ]
+}
+
+/// Komutu her kurulum (sunucu + kullanıcı) ve sohbet bağlamında (sunucu, bot DM'i, grup DM)
+/// görünür yapar. Alanların neden açıkça gönderildiği [`definitions`] belgesindedir; tüm komut
+/// modülleri bu tek tanımı kullanır.
+fn everywhere(command: CreateCommand) -> CreateCommand {
+    command
+        .add_integration_type(InstallationContext::Guild)
+        .add_integration_type(InstallationContext::User)
+        .add_context(InteractionContext::Guild)
+        .add_context(InteractionContext::BotDm)
+        .add_context(InteractionContext::PrivateChannel)
 }
 
 /// Etkileşim olayını yorumlar. Komut dışındaki etkileşimler sessizce yok sayılır.
@@ -288,16 +290,11 @@ fn source(data: &CommandData) -> Option<Source> {
     }
 }
 
-/// Komut seçeneklerinden bir metin değeri okur.
+/// Komut seçeneklerinden bir metin değeri okur (tüm komut modülleri bunu kullanır).
 fn string_option<'a>(data: &'a CommandData, name: &str) -> Option<&'a str> {
-    data.options.iter().find_map(|option| {
-        if option.name != name {
-            return None;
-        }
-        match &option.value {
-            CommandDataOptionValue::String(value) => Some(value.as_str()),
-            _ => None,
-        }
+    data.options.iter().find_map(|option| match &option.value {
+        CommandDataOptionValue::String(value) if option.name == name => Some(value.as_str()),
+        _ => None,
     })
 }
 

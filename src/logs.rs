@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tracing::field::{Field, Visit};
@@ -91,7 +90,7 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
         let metadata = event.metadata();
         let entry = LogEntry {
             seq: SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            at_ms: now_ms(),
+            at_ms: crate::utils::unix_millis(),
             level: level_name(*metadata.level()),
             target: metadata.target().to_string(),
             message: truncate(visitor.message.unwrap_or_default(), MAX_MESSAGE_CHARS),
@@ -162,13 +161,6 @@ pub fn parse_level(raw: &str) -> Option<u8> {
 
 fn rank_of(level: &str) -> u8 {
     parse_level(level).unwrap_or(2)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
 }
 
 /// UTF-8 sınırlarını bozmadan karakter bazlı kırpar.

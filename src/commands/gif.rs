@@ -14,12 +14,12 @@
 //!   Serenity modelinde korunmadığından mesaj REST üzerinden ham JSON olarak okunur.
 
 use serenity::all::{
-    CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType, Context,
-    CreateCommand, CreateCommandOption, CreateInteractionResponseFollowup, EditInteractionResponse,
-    InstallationContext, InteractionContext, MessageId,
+    CommandInteraction, CommandOptionType, CommandType, Context, CreateCommand,
+    CreateCommandOption, CreateInteractionResponseFollowup, EditInteractionResponse, MessageId,
 };
 use tracing::{error, warn};
 
+use super::{everywhere, string_option};
 use crate::config::Config;
 use crate::converters::builtin::{raw, twitter};
 
@@ -56,15 +56,6 @@ pub fn definitions() -> Vec<CreateCommand> {
             .kind(CommandType::Message)
             .description(""),
     ]
-}
-
-fn everywhere(command: CreateCommand) -> CreateCommand {
-    command
-        .add_integration_type(InstallationContext::Guild)
-        .add_integration_type(InstallationContext::User)
-        .add_context(InteractionContext::Guild)
-        .add_context(InteractionContext::BotDm)
-        .add_context(InteractionContext::PrivateChannel)
 }
 
 /// Bu komut etkileşimi GIF komutlarından biri mi?
@@ -131,7 +122,9 @@ async fn find_tweet(
     let data = &command.data;
     match data.kind {
         CommandType::ChatInput => {
-            if let Some(link) = link_option(command).filter(|link| !link.trim().is_empty()) {
+            if let Some(link) =
+                string_option(data, LINK_OPTION).filter(|link| !link.trim().is_empty())
+            {
                 return twitter::find_tweet_url(link);
             }
             let history = raw::get_channel_messages(
@@ -176,15 +169,6 @@ async fn find_tweet(
 /// Ham mesaj JSON'undaki (metin, embed, Components V2 metni) tweet bağlantısı.
 fn message_tweet_url(message: &serde_json::Value) -> Option<String> {
     twitter::find_tweet_url(&message.to_string())
-}
-
-fn link_option(command: &CommandInteraction) -> Option<&str> {
-    command.data.options.iter().find_map(|option| {
-        match (&option.value, option.name == LINK_OPTION) {
-            (CommandDataOptionValue::String(value), true) => Some(value.as_str()),
-            _ => None,
-        }
-    })
 }
 
 #[cfg(test)]

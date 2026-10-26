@@ -7,7 +7,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::sync::LazyLock;
 
-use super::{Author, BuiltinPost, Media, MediaKind, Stats, parse_timestamp};
+use super::{Author, BuiltinPost, Media, MediaKind, Stats, encode_component, parse_timestamp};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const API_BASE: &str = "https://public.api.bsky.app/xrpc";
@@ -76,11 +76,6 @@ async fn resolve_did(client: &reqwest::Client, handle: &str) -> Result<String, S
         .and_then(|did| did.as_str())
         .map(|did| did.to_string())
         .ok_or_else(|| format!("Bluesky DID çözümlenemedi: {handle}"))
-}
-
-/// Sorgu parametrelerinde kullanılmak üzere percent-encoding uygular.
-fn encode_component(value: &str) -> String {
-    super::encode_component(value)
 }
 
 // =====================================================================================

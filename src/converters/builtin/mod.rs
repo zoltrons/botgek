@@ -31,7 +31,7 @@ pub mod v2;
 pub mod youtube;
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serenity::all::{
     Channel, ChannelId, ChannelType, Context, Embed, Message, MessageId, ReactionType, UserId,
@@ -442,17 +442,14 @@ pub fn encode_component(value: &str) -> String {
     out
 }
 
-/// HTML varlıklarını (`&amp;`, `&#39;`, `&quot;` ...) düz metne çevirir.
-///
-/// Tek geçişte soldan sağa çözülür: çözülen bir varlığın çıktısı yeniden taranmaz, böylece `&amp;lt;` kaynakta olduğu gibi `&lt;` kalır (çift çözme yok).
 /// `975K`, `1.5M`, `60,279,326`, `16.7k` gibi kısaltmalı sayaçları tam sayıya çevirir.
 ///
-/// Binlik ayırıcı olarak virgül ve boşluklar (normal/bölünmez) atılır; sonuç yuvarlanır
+/// Binlik ayırıcı olarak virgül ve her tür boşluk (normal/bölünmez) atılır; sonuç yuvarlanır
 /// (`1.15K` kayan noktada 1149.999… olur, kesilseydi 1149 çıkardı).
 pub(super) fn parse_compact_count(raw: &str) -> Option<u64> {
     let cleaned: String = raw
         .chars()
-        .filter(|ch| !matches!(ch, ',' | ' ' | '\u{a0}'))
+        .filter(|ch| *ch != ',' && !ch.is_whitespace())
         .collect();
     let (digits, multiplier) = match cleaned.chars().last()? {
         'K' | 'k' => (&cleaned[..cleaned.len() - 1], 1_000.0),
@@ -464,6 +461,10 @@ pub(super) fn parse_compact_count(raw: &str) -> Option<u64> {
     (value.is_finite() && value >= 0.0).then(|| (value * multiplier).round() as u64)
 }
 
+/// HTML varlıklarını (`&amp;`, `&#39;`, `&quot;` ...) düz metne çevirir.
+///
+/// Tek geçişte soldan sağa çözülür: çözülen bir varlığın çıktısı yeniden taranmaz, böylece
+/// `&amp;lt;` kaynakta olduğu gibi `&lt;` kalır (çift çözme yok).
 pub fn unescape_html(text: &str) -> String {
     // En uzun desteklenen varlık `&#x10FFFF;` / `&#1114111;`; daha uzak `;` aranmaz.
     const MAX_ENTITY_LEN: usize = 10;
@@ -626,10 +627,7 @@ mod tests {
 
     #[test]
     fn delete_wait_only_delays_fresh_messages() {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let now_ms = crate::utils::unix_millis() as i64;
 
         // Yeni gönderilmiş mesaj: hayalet penceresini doldurmak için pozitif, ama
         // DELETE_MIN_AGE'i aşmayan bir bekleme olmalı.
@@ -1253,10 +1251,7 @@ const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 /// içerdiği oluşturulma anından ölçülür; böylece `Timestamp`'in chrono/time arka
 /// ucundan bağımsız ve milisaniye hassasiyetinde kalır.
 fn delete_wait(id: MessageId) -> Option<Duration> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now_ms = crate::utils::unix_millis() as i64;
     let created_ms = (id.get() >> 22) as i64 + DISCORD_EPOCH_MS;
     let age_ms = now_ms - created_ms;
     if age_ms < DELETE_MIN_AGE.as_millis() as i64 {

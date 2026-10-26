@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use super::render::{escape_markdown, format_count};
 use super::{Author, BuiltinPost, CustomCard, MAX_BODY_BYTES, Media, MediaKind};
 use crate::converters::parser::{ParsedPost, Platform};
+use crate::utils::truncate_chars;
 
 const SPOTIFY_OPEN: &str = "https://open.spotify.com";
 const SPOTIFY_EMBED: &str = "https://open.spotify.com/embed";
@@ -513,7 +514,7 @@ fn track_page(
         .skip(start)
         .take(TRACKS_PER_PAGE)
         .map(|(index, track)| {
-            let title = escape_markdown(&shorten(&track.title, MAX_TRACK_TITLE_CHARS));
+            let title = escape_markdown(&truncate_chars(&track.title, MAX_TRACK_TITLE_CHARS));
             let mut line = match &track.url {
                 Some(url) => format!("`{:02}` [{title}]({url})", index + 1),
                 None => format!("`{:02}` {title}", index + 1),
@@ -556,16 +557,6 @@ fn track_page(
 /// `{"type": 2, "style": 2, ...}` — gri (secondary) sayfa butonu.
 fn page_button(label: &str, custom_id: &str, disabled: bool) -> Value {
     json!({ "type": 2, "style": 2, "label": label, "custom_id": custom_id, "disabled": disabled })
-}
-
-/// Metni `max` karakterde `…` ile keser.
-fn shorten(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 /// Sayfa butonu tıklaması: `custom_id`'den hedefi ve sayfayı okur, parça listesini yeniden

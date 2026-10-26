@@ -17,7 +17,6 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serenity::all::{ChannelId, MessageId, UserId};
@@ -547,10 +546,7 @@ fn value_to_json(
 }
 
 fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or_default()
+    i64::try_from(crate::utils::unix_secs()).unwrap_or(i64::MAX)
 }
 
 /// Geçici test dosyası yolu (testler bitince `cleanup` ile silinir).

@@ -2,10 +2,9 @@
 //! The page transport validates/pins DNS at every redirect. Media is not downloaded here;
 //! its syntax and DNS are checked before publication, not a promise of future playability.
 
-use std::net::IpAddr;
-
 use url::{Host, Url};
 
+use super::safe_http::{allowed_endpoint, public_ip, resolve_public};
 use super::{Author, BuiltinPost, LinkPreview, Media, MediaKind, opengraph};
 use crate::converters::parser::{ParsedPost, Platform};
 
@@ -45,44 +44,12 @@ pub(super) async fn fetch(parsed: &ParsedPost, platform: Platform) -> Result<Bui
     .map_err(|_| "public preview timed out".to_string())?
 }
 
-fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_multicast()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || a == 0
-                || a >= 240
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 192 && b == 88 && c == 99)
-                || (a == 198 && (b == 18 || b == 19)))
-        }
-        IpAddr::V6(ip) => {
-            let s = ip.segments();
-            s[0] & 0xe000 == 0x2000
-                && s[0] != 0x2002
-                && !(s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8))
-                && !(s[0] == 0x3fff && s[1] < 0x1000)
-        }
-    }
-}
-
 fn public_url(raw: &str) -> Option<Url> {
     if raw.len() > 8192 || raw.chars().any(|ch| ch.is_control() || ch == '\\') {
         return None;
     }
     let url = Url::parse(raw).ok()?;
-    if !matches!(url.scheme(), "http" | "https")
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || !matches!(url.port_or_known_default(), Some(80 | 443))
-    {
+    if !allowed_endpoint(&url) {
         return None;
     }
     let public = match url.host()? {
@@ -112,17 +79,15 @@ async fn resolves_public(raw: &str) -> bool {
     let Some(url) = public_url(raw) else {
         return false;
     };
-    let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
     let lookup = tokio::time::timeout(
         std::time::Duration::from_millis(300),
-        tokio::net::lookup_host((host, url.port_or_known_default().unwrap_or(443))),
+        resolve_public(
+            url.host_str().unwrap_or_default(),
+            url.port_or_known_default().unwrap_or(443),
+        ),
     )
     .await;
-    let Ok(Ok(addresses)) = lookup else {
-        return false;
-    };
-    let addresses: Vec<_> = addresses.take(17).collect();
-    !addresses.is_empty() && addresses.len() <= 16 && addresses.iter().all(|a| public_ip(a.ip()))
+    matches!(lookup, Ok(Ok(_)))
 }
 
 fn validate_page(raw: &str, platform: Platform) -> Result<Url, String> {
@@ -232,19 +197,6 @@ pub(super) fn meta_value(value: Option<String>, limit: usize) -> Option<String> 
         .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|text| !text.is_empty())
         .map(|text| crate::utils::truncate_chars(&text, limit))
-}
-
-/// Sayfalarda kısaltılmış İngilizce sayıyı okur: `2.7M` → 2_700_000, `66K`, `1,234`.
-pub(super) fn parse_compact_count(raw: &str) -> Option<u64> {
-    let raw = raw.trim().replace(',', "");
-    let (number, scale) = match raw.chars().last()?.to_ascii_uppercase() {
-        'K' => (&raw[..raw.len() - 1], 1e3),
-        'M' => (&raw[..raw.len() - 1], 1e6),
-        'B' => (&raw[..raw.len() - 1], 1e9),
-        _ => (raw.as_str(), 1.0),
-    };
-    let value: f64 = number.trim().parse().ok()?;
-    (value.is_finite() && value >= 0.0).then(|| (value * scale).round() as u64)
 }
 
 pub(super) fn plain_text(raw: &str) -> String {

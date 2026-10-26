@@ -815,7 +815,6 @@ fn meta_line(card: &V2Card<'_>) -> String {
     format!("-# {}", parts.join(" • "))
 }
 
-/// Hassas gönderilerde metni spoiler içine alır.
 /// Metni kısaltır; `||...||` ile gizlenmiş metinde kapanış işaretini korur.
 ///
 /// Kısaltma `||`'yi kesseydi gizli (hassas/spoiler) metin kartta açıkça görünürdü.
@@ -834,6 +833,7 @@ fn truncate_display(content: &str, max: usize) -> String {
     }
 }
 
+/// Hassas gönderilerde metni spoiler içine alır.
 fn spoiler_wrap(text: &str, spoiler: bool) -> String {
     if spoiler && !text.is_empty() {
         // Metindeki `||` gizlemeyi erken kapatıp devamını açığa çıkarmasın.

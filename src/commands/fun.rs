@@ -30,14 +30,14 @@ use serde_json::{Value, json};
 use serenity::all::{
     ActionRowComponent, CommandDataOptionValue, CommandDataResolved, CommandInteraction,
     CommandOptionType, CommandType, ComponentInteraction, ComponentInteractionDataKind, Context,
-    CreateCommand, CreateCommandOption, InstallationContext, InteractionContext, InteractionId,
-    ModalInteraction, User, UserId,
+    CreateCommand, CreateCommandOption, InteractionId, ModalInteraction, User, UserId,
 };
 use tracing::warn;
 
+use super::{everywhere, string_option};
 use crate::converters::builtin::render::escape_markdown;
 use crate::converters::builtin::v2::COMPONENTS_V2_FLAG;
-use crate::utils::truncate_chars;
+use crate::utils::{truncate_chars, unix_millis, unix_secs};
 
 /// Uyum sohbet komutu.
 pub const COMPAT_COMMAND: &str = "uyum";
@@ -174,15 +174,6 @@ pub fn definitions() -> Vec<CreateCommand> {
     ]
 }
 
-fn everywhere(command: CreateCommand) -> CreateCommand {
-    command
-        .add_integration_type(InstallationContext::Guild)
-        .add_integration_type(InstallationContext::User)
-        .add_context(InteractionContext::Guild)
-        .add_context(InteractionContext::BotDm)
-        .add_context(InteractionContext::PrivateChannel)
-}
-
 /// Bu komut etkileşimi eğlence modülüne mi ait?
 pub fn is_fun_command(command: &CommandInteraction) -> bool {
     match command.data.kind {
@@ -246,7 +237,7 @@ pub async fn handle_command(ctx: &Context, command: &CommandInteraction) {
             start_guessing(command.id.get(), invoker.id, max)
         }
         (_, EIGHT_BALL_COMMAND) => {
-            let question = string_option(command, QUESTION_OPTION).unwrap_or_default();
+            let question = string_option(&command.data, QUESTION_OPTION).unwrap_or_default();
             eight_ball_response(invoker.id, question)
         }
         (_, BOMB_COMMAND) => {
@@ -261,7 +252,7 @@ pub async fn handle_command(ctx: &Context, command: &CommandInteraction) {
         }
         (_, FORTUNE_COMMAND) => {
             let target = user_option(command, PERSON_OPTION).unwrap_or(invoker.id);
-            fortune_response(target, invoker.id, fortune_day(unix_now()))
+            fortune_response(target, invoker.id, fortune_day(unix_secs()))
         }
         _ => return,
     };
@@ -643,7 +634,7 @@ impl Duel {
             wins: [0, 0],
             rounds: Vec::new(),
             result: None,
-            expires_at: unix_now() + GAME_TTL.as_secs(),
+            expires_at: unix_secs() + GAME_TTL.as_secs(),
         };
         duel.bot_pick();
         duel
@@ -941,7 +932,7 @@ impl Guessing {
             attempts: 0,
             winner: None,
             gave_up: false,
-            expires_at: unix_now() + GAME_TTL.as_secs(),
+            expires_at: unix_secs() + GAME_TTL.as_secs(),
         }
     }
 
@@ -1269,7 +1260,7 @@ impl Bomb {
             turn: first,
             cuts: Vec::new(),
             result: None,
-            expires_at: unix_now() + GAME_TTL.as_secs(),
+            expires_at: unix_secs() + GAME_TTL.as_secs(),
         };
         game.bot_turn();
         game
@@ -1571,7 +1562,7 @@ impl Reflex {
             phase: ReflexPhase::Waiting,
             false_starts: Vec::new(),
             winner: None,
-            expires_at: unix_now() + GAME_TTL.as_secs(),
+            expires_at: unix_secs() + GAME_TTL.as_secs(),
         }
     }
 
@@ -1888,7 +1879,7 @@ impl<T: Expiring> GameStore<T> {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, T>> {
         // Zehirli kilit (panik eden bir tıklama) oyunların tamamını kilitlemesin.
         let mut games = self.games.lock().unwrap_or_else(|err| err.into_inner());
-        let now = unix_now();
+        let now = unix_secs();
         games.retain(|_, game| game.expires_at() > now);
         games
     }
@@ -1933,17 +1924,6 @@ fn integer_option(command: &CommandInteraction, name: &str) -> Option<i64> {
         .iter()
         .find_map(|option| match &option.value {
             CommandDataOptionValue::Integer(value) if option.name == name => Some(*value),
-            _ => None,
-        })
-}
-
-fn string_option<'a>(command: &'a CommandInteraction, name: &str) -> Option<&'a str> {
-    command
-        .data
-        .options
-        .iter()
-        .find_map(|option| match &option.value {
-            CommandDataOptionValue::String(value) if option.name == name => Some(value.as_str()),
             _ => None,
         })
 }
@@ -2013,20 +1993,6 @@ fn button(style: u8, label: &str, emoji: &str, custom_id: &str) -> Value {
         "emoji": { "name": emoji },
         "custom_id": custom_id,
     })
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default()
-}
-
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or_default()
 }
 
 fn random_u64() -> u64 {

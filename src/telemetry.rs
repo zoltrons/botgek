@@ -14,7 +14,7 @@ use std::sync::{
     LazyLock, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -789,7 +789,7 @@ static LAST_GATEWAY_EVENT_MS: AtomicU64 = AtomicU64::new(0);
 
 pub fn gateway_event(kind: GatewayEvent) {
     GATEWAY_EVENTS[kind as usize].fetch_add(1, RELAXED);
-    LAST_GATEWAY_EVENT_MS.store(now_ms(), RELAXED);
+    LAST_GATEWAY_EVENT_MS.store(crate::utils::unix_millis(), RELAXED);
 }
 
 // =====================================================================================
@@ -807,13 +807,6 @@ fn uptime_seconds() -> u64 {
     STARTED
         .get()
         .map(|started| started.elapsed().as_secs())
-        .unwrap_or(0)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
 
@@ -944,7 +937,7 @@ pub fn gateway_snapshot() -> Value {
         "last_event_age_seconds": if last_event_ms == 0 {
             Value::Null
         } else {
-            json!(now_ms().saturating_sub(last_event_ms) / 1_000)
+            json!(crate::utils::unix_millis().saturating_sub(last_event_ms) / 1_000)
         }
     })
 }

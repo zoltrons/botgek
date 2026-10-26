@@ -1,5 +1,7 @@
 pub mod mentions;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 /// Discord rejects any message whose content exceeds this many characters.
 pub const DISCORD_CONTENT_LIMIT: usize = 2000;
 
@@ -22,6 +24,22 @@ pub fn secret_matches(secret: &str, candidate: &str) -> bool {
     let same_length = (secret.len() as u64).ct_eq(&(candidate.len() as u64));
     let same_bytes = padded(secret).ct_eq(&padded(candidate));
     bool::from(same_length & same_bytes)
+}
+
+/// Şu anki Unix zamanı (milisaniye). Sistem saati 1970'ten gerideyse 0 döner.
+pub fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+/// Şu anki Unix zamanı (saniye). Sistem saati 1970'ten gerideyse 0 döner.
+pub fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
 }
 
 /// Standart (dolgulu) base64 kodlayıcı; ek bağımlılık gerektirmez.
@@ -49,9 +67,8 @@ pub fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Truncates to `max` characters (not bytes) on a `char` boundary and marks the
-/// cut with an ellipsis.
-/// Metni `max` **karaktere** kısaltır; kısaltıldıysa sonuna `…` ekler.
+/// Metni `max` **karaktere** (bayta değil, `char` sınırında) kısaltır; kısaltıldıysa sonuna
+/// `…` ekler.
 ///
 /// Hızlı yol: bayt uzunluğu sınırı aşmıyorsa hiç tarama yapılmaz (karakter sayısı bayt
 /// sayısından büyük olamaz) — kart bileşenleri her gönderimde bu fonksiyondan geçtiği için

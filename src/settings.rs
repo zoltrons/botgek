@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -992,10 +991,7 @@ fn resolve_settings_path_from(configured: Option<&Path>, database: Option<&Path>
 /// `Err` döner; çağıran göçü yine de sürdürür ama durumu **log'lar** — göç veri kaybı
 /// riski taşıdığı için yedek, geri alma yöntemidir (bkz. README).
 fn backup_settings_file(path: &Path) -> Result<PathBuf, std::io::Error> {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default();
+    let stamp = crate::utils::unix_secs();
     let backup = PathBuf::from(format!("{}.bak-{stamp}", path.display()));
     fs::copy(path, &backup)?;
     Ok(backup)
@@ -1325,8 +1321,8 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "botgek-settings-{}-{}.json",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));

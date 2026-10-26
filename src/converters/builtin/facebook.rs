@@ -103,7 +103,7 @@ fn split_title(title: &str) -> (Stats, &str) {
         let (Some(number), Some(unit)) = (words.next(), words.next()) else {
             continue;
         };
-        let Some(value) = preview::parse_compact_count(number) else {
+        let Some(value) = super::parse_compact_count(number) else {
             continue;
         };
         let slot = match unit.trim_end_matches('s') {
