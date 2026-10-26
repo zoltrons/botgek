@@ -795,6 +795,17 @@ async fn resolve_channel_nsfw(ctx: &Context, msg: &Message) -> Option<bool> {
 /// Kanal → webhook önbelleği. `None`: kanalda webhook kullanılamıyor (yetki yok veya DM);
 /// her mesajda yeniden denenmez.
 type WebhookCache = HashMap<ChannelId, (std::time::Instant, Option<NamedWebhook>)>;
+
+/// Çözülmüş webhook'un önbellekte kalma süresi.
+///
+/// Webhook token'ı süresiz geçerlidir; webhook silinirse gönderim 401/404 alır ve
+/// [`send_via_webhook`] önbelleği zorla yenileyip bir kez daha dener. Kısa bir süre doğruluk
+/// kazandırmaz: dönüşümler seyrek olduğu için neredeyse her kart ~300 ms'lik bir webhook
+/// listeleme çağrısı öder, veri hızlı geldiğinde de warmup beklenmeden kart bot adına gider.
+const WEBHOOK_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Webhook kullanılamayan kanal (yetki yok/DM) kaydının süresi: izin verilince kısa sürede
+/// yeniden denenir.
+const WEBHOOK_NEGATIVE_TTL: Duration = Duration::from_secs(60);
 static CHANNEL_WEBHOOKS: LazyLock<Mutex<WebhookCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -984,8 +995,12 @@ async fn channel_webhook(
     {
         let mut cache = CHANNEL_WEBHOOKS.lock().await;
         cache.retain(|_, (created, hook)| {
-            let keep =
-                created.elapsed() < Duration::from_secs(if hook.is_some() { 600 } else { 60 });
+            let ttl = if hook.is_some() {
+                WEBHOOK_TTL
+            } else {
+                WEBHOOK_NEGATIVE_TTL
+            };
+            let keep = created.elapsed() < ttl;
             if !keep {
                 crate::telemetry::cache_expired(crate::telemetry::CacheKind::Webhook);
             }
@@ -1624,8 +1639,9 @@ async fn send_components_v2(
 }
 /// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
 ///
-/// Reaksiyon ve silme **arka planda** yapılır: kart kullanıcıya çoktan görünmüştür, bu iki
-/// REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest kalır). Silme,
+/// Reaksiyon ve silme **arka planda ve birbirine paralel** yapılır: kart kullanıcıya çoktan
+/// görünmüştür, bu iki REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest
+/// kalır); orijinal mesaj da reaksiyonu beklemeden kaybolur. Silme,
 /// kart gönderildikten **sonra** ve [`DELETE_MIN_AGE`] kadar gecikmeyle yapılır (hayalet
 /// mesaj önlemi).
 async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
@@ -1635,33 +1651,40 @@ async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: Messa
     let msg = msg.clone();
     let delete_original = config.delete_original;
     tokio::spawn(async move {
-        let reaction_started = std::time::Instant::now();
-        let reaction = msg
-            .channel_id
-            .create_reaction(
-                &ctx.http,
-                message_id,
-                ReactionType::Unicode("🗑️".to_string()),
-            )
-            .await;
-        crate::telemetry::record_phase(
-            crate::telemetry::Phase::Reaction,
-            reaction_started.elapsed(),
-        );
-        if let Err(e) = reaction {
-            error!("Silme reaksiyonu eklenemedi: {:?}", e);
-        }
-
-        // Kart gönderildi; şimdi orijinal mesajı sil (en az DELETE_MIN_AGE yaşına gelene
-        // kadar bekleyerek: gönderenin istemcisi optimistic mesajını eşleştirebilsin).
-        if delete_original {
-            let delete_started = std::time::Instant::now();
-            delete_user_message(&ctx, &msg).await;
+        let reaction = async {
+            let reaction_started = std::time::Instant::now();
+            let reaction = msg
+                .channel_id
+                .create_reaction(
+                    &ctx.http,
+                    message_id,
+                    ReactionType::Unicode("🗑️".to_string()),
+                )
+                .await;
             crate::telemetry::record_phase(
-                crate::telemetry::Phase::Delete,
-                delete_started.elapsed(),
+                crate::telemetry::Phase::Reaction,
+                reaction_started.elapsed(),
             );
-        }
+            if let Err(e) = reaction {
+                error!("Silme reaksiyonu eklenemedi: {:?}", e);
+            }
+        };
+
+        // Kart gönderildi; orijinal mesaj reaksiyonu beklemeden silinir (ikisi ayrı mesaj ve
+        // ayrı rate-limit kovası). Silme yine en az DELETE_MIN_AGE yaşına gelene kadar bekler:
+        // gönderenin istemcisi optimistic mesajını eşleştirebilsin.
+        let delete = async {
+            if delete_original {
+                let delete_started = std::time::Instant::now();
+                delete_user_message(&ctx, &msg).await;
+                crate::telemetry::record_phase(
+                    crate::telemetry::Phase::Delete,
+                    delete_started.elapsed(),
+                );
+            }
+        };
+
+        tokio::join!(reaction, delete);
     });
 }
 
