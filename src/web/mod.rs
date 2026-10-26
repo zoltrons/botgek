@@ -625,6 +625,7 @@ mod tests {
             delete_original: true,
             openrouter_api_key: None,
             reddit_client_id: "test-id".to_string(),
+            reddit_client_secret: None,
             instagram_sessionid: None,
             web_port: 8123,
         }

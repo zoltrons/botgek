@@ -254,7 +254,15 @@ pub async fn fetch(
             fetched.post
         }),
         Platform::Bluesky => bluesky::fetch(client, parsed).await,
-        Platform::Reddit => reddit::fetch(client, parsed, &config.reddit_client_id).await,
+        Platform::Reddit => {
+            reddit::fetch(
+                client,
+                parsed,
+                &config.reddit_client_id,
+                config.reddit_client_secret.as_deref(),
+            )
+            .await
+        }
         Platform::TikTok => tiktok::fetch(client, parsed).await,
         Platform::Instagram => {
             instagram::fetch(client, parsed, config.instagram_sessionid.as_deref()).await

@@ -966,9 +966,12 @@ CMAF_720.m3u8"#;
 
     /// Canlı liste üzerinden video gönderisi bulup kimliğini döner (yoksa `None`).
     async fn live_video_id(client: &reqwest::Client) -> Option<String> {
-        let token =
-            super::super::reddit::oauth_token(client, super::super::reddit::DEFAULT_CLIENT_ID)
-                .await?;
+        let token = super::super::reddit::oauth_token(
+            client,
+            super::super::reddit::DEFAULT_CLIENT_ID,
+            None,
+        )
+        .await?;
         let listing: serde_json::Value = super::super::reddit::get_json_with_bearer(
             client,
             "https://oauth.reddit.com/r/nextfuckinglevel/hot?limit=25&raw_json=1",

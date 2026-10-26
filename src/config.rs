@@ -14,6 +14,13 @@ pub struct Config {
     /// public istemci kimliğidir (redlib ile aynı); kendi Reddit uygulamanızın kimliğini
     /// `.env`'de bu değere yazarak değiştirebilirsiniz. Sır değildir (public kimlik).
     pub reddit_client_id: String,
+    /// Reddit OAuth istemci sırrı (`REDDIT_CLIENT_SECRET`), yalnızca `.env`'den okunur.
+    ///
+    /// Doluysa Reddit'in **resmî uygulama** akışı (`client_credentials`, script/web app)
+    /// kullanılır: kayıtlı istemci kimliği + sır ile token alınır. Boşsa redlib'in kullandığı
+    /// kimliksiz `installed_client` akışına düşülür. Gizli bir değerdir: `settings.json`'a ve
+    /// WebUI'a yazılmaz.
+    pub reddit_client_secret: Option<String>,
     /// Instagram oturum çerezi (`sessionid`), yalnızca `.env`'den okunur.
     ///
     /// Instagram, reel/video mp4'ünü (ve çoklu carousel görsellerini) girişsiz istemcilere
@@ -34,6 +41,10 @@ impl std::fmt::Debug for Config {
                 &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .field("reddit_client_id", &self.reddit_client_id)
+            .field(
+                "reddit_client_secret",
+                &self.reddit_client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .field(
                 "instagram_sessionid",
                 &self.instagram_sessionid.as_ref().map(|_| "[REDACTED]"),
@@ -77,12 +88,17 @@ impl Config {
             .filter(|k| !k.trim().is_empty());
 
         // Reddit, kimliksiz `.json` isteklerini engellediği için `installed_client` OAuth
-        // akışıyla okunur; istemci kimliği public'tir ve `.env`'den değiştirilebilir.
+        // akışıyla okunur; istemci kimliği public'tir ve `.env`'den değiştirilebilir. Sır
+        // verilirse Reddit'in resmî uygulama akışı (`client_credentials`) kullanılır.
         let reddit_client_id = env::var("REDDIT_CLIENT_ID")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_REDDIT_CLIENT_ID.to_string());
+        let reddit_client_secret = env::var("REDDIT_CLIENT_SECRET")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         // Instagram oturum çerezi: yalnızca ortamdan okunur (sır; dosyaya/WebUI'a yazılmaz).
         let instagram_sessionid = env::var("INSTAGRAM_SESSIONID")
@@ -103,6 +119,7 @@ impl Config {
             delete_original,
             openrouter_api_key,
             reddit_client_id,
+            reddit_client_secret,
             instagram_sessionid,
             web_port,
         })

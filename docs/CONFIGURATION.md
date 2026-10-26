@@ -22,7 +22,8 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `DELETE_ORIGINAL` | `true` | Başarılı dönüşümden sonra orijinal mesajı siler. **Manage Messages** yetkisi gerekir. |
 | `FXTUMBLR_DOMAIN` | `tpmblr.com` | fxtumblr uyumlu Tumblr render hizmeti. Boş bırakılırsa public OG fallback kullanılır. |
 | `INSTAGRAM_SESSIONID` | boş | Instagram oturum çerezi. Reels videolarının kart içinde oynaması için gerekir; gizlidir, `settings.json`'a ve panele yazılmaz. |
-| `REDDIT_CLIENT_ID` | gömülü public kimlik | Reddit `installed_client` OAuth kimliği. Sır değildir; normalde değiştirmek gerekmez. |
+| `REDDIT_CLIENT_ID` | gömülü public kimlik | Reddit OAuth istemci kimliği. Kendi uygulamanızla kullanmak için `REDDIT_CLIENT_SECRET` ile birlikte verin. Sır değildir. |
+| `REDDIT_CLIENT_SECRET` | boş | Reddit uygulama sırrı. Doluysa resmî uygulama akışı (`client_credentials`) kullanılır; boşsa gömülü kimlikle `installed_client`. Gizlidir, `settings.json`'a ve panele yazılmaz. |
 | `BOTGEK_DB_PATH` | `botgek.db` | Kart kayıtları için SQLite dosyası. Docker'da `/app/data/botgek.db`. |
 | `BOTGEK_SETTINGS_PATH` | türetilir | Ayar dosyası. Boşsa `BOTGEK_DB_PATH` bir dizin içeriyorsa o dizindeki `settings.json`, aksi hâlde çalışma dizinindeki `settings.json` kullanılır. |
 | `BOTGEK_SETTINGS_SEED` | boş | Yalnızca hedef ayar dosyası yoksa bir kez okunan ilk içe aktarma kaynağı. |

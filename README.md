@@ -195,6 +195,7 @@ Tüm ayarlar ortam değişkenleri ve `settings.json` üzerinden yapılır. En s�
 | `FXTUMBLR_DOMAIN` | Hayır | Tumblr render hizmeti (varsayılan `tpmblr.com`). |
 | `INSTAGRAM_SESSIONID` | Hayır | Reels videolarının kart içinde oynaması için Instagram oturum çerezi. |
 | `REDDIT_CLIENT_ID` | Hayır | Reddit OAuth istemci kimliği (sır değildir). |
+| `REDDIT_CLIENT_SECRET` | Hayır | Reddit uygulama sırrı; verilirse resmî `client_credentials` akışı kullanılır. Gizlidir. |
 
 Değişkenlerin tamamı, `settings.json` şeması, kapsam çözümleme ve kalıcılık:
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).

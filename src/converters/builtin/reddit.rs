@@ -5,7 +5,9 @@
 //!
 //! Reddit, kimliksiz `.json` isteklerini `403` (JS meydan okuması) ile engellediği için
 //! **`installed_client`** OAuth akışı kullanılır: kullanıcı izni/parolası gerekmez, yalnızca
-//! herkese açık istemci kimliği yeterlidir (redlib'in kullandığı yöntem). Token bellekte
+//! herkese açık istemci kimliği yeterlidir (redlib'in kullandığı yöntem). `.env`'de
+//! `REDDIT_CLIENT_SECRET` verilirse Reddit'in **resmî uygulama** akışı (`client_credentials`)
+//! kullanılır: kayıtlı (script/web) uygulamanın kimliği ve sırrıyla token alınır. Token bellekte
 //! önbelleklenir ve süresi dolmadan yenilenir. Kimlik doğrulama başarısız olursa (engellenmemiş
 //! IP'lerde çalışan) kimliksiz `www.reddit.com` yolu denenir; o da olmazsa proxy yedeğine düşülür.
 //!
@@ -26,7 +28,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::preview::meta_value;
 use super::{Author, BuiltinPost, LinkPreview, Media, MediaKind, REQUEST_TIMEOUT, Stats};
@@ -103,10 +105,16 @@ fn base64_ascii(input: &str) -> String {
     crate::utils::base64_encode(input.as_bytes())
 }
 
-/// `installed_client` akışıyla bearer token döner (önbellekten tazeyse ağ isteği yapılmaz).
+/// Bearer token döner (önbellekten tazeyse ağ isteği yapılmaz).
 ///
-/// Herhangi bir hata `None` döner; çağıran taraf kimliksiz yola düşer, akış bozulmaz.
-pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
+/// `client_secret` verilmişse resmî uygulama akışı (`client_credentials`), yoksa kimliksiz
+/// `installed_client` akışı kullanılır. Herhangi bir hata `None` döner; çağıran taraf kimliksiz
+/// yola düşer, akış bozulmaz.
+pub(super) async fn oauth_token(
+    client: &reqwest::Client,
+    client_id: &str,
+    client_secret: Option<&str>,
+) -> Option<String> {
     // Taze token varken yenileme kilidi hiç beklenmez.
     if let Some(token) = cached_token().await {
         return Some(token);
@@ -123,7 +131,7 @@ pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Op
     {
         return None;
     }
-    let token = request_token(client, client_id).await;
+    let token = request_token(client, client_id, client_secret).await;
     *TOKEN_RETRY_AFTER.lock().await = token
         .is_none()
         .then(|| Instant::now() + TOKEN_FAILURE_BACKOFF);
@@ -139,13 +147,38 @@ async fn cached_token() -> Option<String> {
         .map(|entry| entry.token.clone())
 }
 
+/// Token isteğinde kullanılacak gövdeyi ve `Basic` kimlik bilgisini seçer.
+///
+/// `client_secret` varsa Reddit'in **resmî** uygulama akışı (`client_credentials`) kullanılır:
+/// kayıtlı (script/web) uygulamanın kimliği Basic kullanıcı adı, sırrı paroladır. Sır yoksa
+/// redlib'in kullandığı kimliksiz `installed_client` akışına düşülür; orada parola boştur.
+fn token_grant(client_id: &str, client_secret: Option<&str>) -> (String, String) {
+    match client_secret {
+        Some(secret) => (
+            "grant_type=client_credentials".to_string(),
+            base64_ascii(&format!("{client_id}:{secret}")),
+        ),
+        None => (
+            format!(
+                "grant_type=https%3A%2F%2Foauth.reddit.com%2Fgrants%2Finstalled_client&device_id={OAUTH_DEVICE_ID}"
+            ),
+            base64_ascii(&format!("{client_id}:")),
+        ),
+    }
+}
+
 /// Token ucundan yeni token alır ve önbelleğe yazar; herhangi bir hata `None` döner.
-async fn request_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
-    // Reddit `installed_client` akışında istemci kimliği Basic kullanıcı adı, parola boştur.
-    let credentials = base64_ascii(&format!("{client_id}:"));
-    let body = format!(
-        "grant_type=https%3A%2F%2Foauth.reddit.com%2Fgrants%2Finstalled_client&device_id={OAUTH_DEVICE_ID}"
-    );
+async fn request_token(
+    client: &reqwest::Client,
+    client_id: &str,
+    client_secret: Option<&str>,
+) -> Option<String> {
+    let grant = if client_secret.is_some() {
+        "client_credentials"
+    } else {
+        "installed_client"
+    };
+    let (body, credentials) = token_grant(client_id, client_secret);
 
     let response = client
         .post(OAUTH_TOKEN_URL)
@@ -161,20 +194,49 @@ async fn request_token(client: &reqwest::Client, client_id: &str) -> Option<Stri
     let response = match response {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            debug!(
-                "Reddit OAuth token isteği reddedildi: {}",
-                response.status()
-            );
+            let status = response.status();
+            if client_secret.is_some()
+                && matches!(
+                    status,
+                    reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                )
+            {
+                warn!(
+                    "Reddit uygulama kimlik bilgileri reddedildi ({status}); REDDIT_CLIENT_ID ve REDDIT_CLIENT_SECRET değerlerini kontrol edin"
+                );
+            } else {
+                debug!("Reddit OAuth token isteği reddedildi ({grant}): {status}");
+            }
             return None;
         }
         Err(err) => {
-            debug!("Reddit OAuth token isteği başarısız: {err}");
+            debug!("Reddit OAuth token isteği başarısız ({grant}): {err}");
             return None;
         }
     };
 
     let json: serde_json::Value = read_json_response(response, OAUTH_TOKEN_URL).await.ok()?;
-    let token = json.get("access_token")?.as_str()?.to_string();
+    // Reddit hataları HTTP 200 + JSON gövdesiyle de döner (ör. public istemci kimliğiyle
+    // `client_credentials` denenmesi → `unauthorized_client`). Nedeni loglayıp token'sız devam et.
+    let Some(token) = json.get("access_token").and_then(serde_json::Value::as_str) else {
+        let error = json
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("access_token yok");
+        let description = json
+            .get("error_description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if client_secret.is_some() {
+            warn!(
+                "Reddit uygulama akışı token vermedi ({grant}): {error} {description}; uygulama 'script' türünde mi, kimlik/sır doğru mu?"
+            );
+        } else {
+            debug!("Reddit OAuth token yanıtı kullanılamadı ({grant}): {error} {description}");
+        }
+        return None;
+    };
+    let token = token.to_string();
     let expires_in = json
         .get("expires_in")
         .and_then(serde_json::Value::as_u64)
@@ -187,7 +249,7 @@ async fn request_token(client: &reqwest::Client, client_id: &str) -> Option<Stri
         expires_at: Instant::now() + lifetime,
     });
     debug!(
-        "Reddit OAuth token alındı ({} sn geçerli)",
+        "Reddit OAuth token alındı ({grant}, {} sn geçerli)",
         lifetime.as_secs()
     );
 
@@ -195,19 +257,20 @@ async fn request_token(client: &reqwest::Client, client_id: &str) -> Option<Stri
 }
 
 /// Gönderi verisini Reddit'ten çeker: önce **OAuth** (`oauth.reddit.com`, bearer token),
-/// olmazsa kimliksiz `www.reddit.com` yolu. İkisi de başarısız olursa hata döner ve (ayar
-/// açıksa) proxy yedeğine düşülür.
+/// olmazsa kimliksiz `www.reddit.com` yolu. `client_secret` verilmişse OAuth, Reddit'in resmî
+/// uygulama akışıyla (`client_credentials`) yapılır.
 pub async fn fetch(
     client: &reqwest::Client,
     parsed: &ParsedPost,
     client_id: &str,
+    client_secret: Option<&str>,
 ) -> Result<BuiltinPost, String> {
     let id = extract_post_id(client, &parsed.original_url).await?;
     let comment_id = comment_id_from_url(&parsed.original_url);
     let query = comments_query(comment_id);
 
     // 1) OAuth: Reddit'in kimliksiz istekleri engellediği (403) durumlarda da çalışır.
-    if let Some(token) = oauth_token(client, client_id).await {
+    if let Some(token) = oauth_token(client, client_id, client_secret).await {
         let url = comments_url(OAUTH_API_BASE, &id, "", &query);
         match get_json_with_bearer(client, &url, &token).await {
             Ok(listings) => match listings_to_post(listings, comment_id) {
@@ -1861,21 +1924,46 @@ mod tests {
         }
     }
 
-    /// Canlı test: `installed_client` OAuth akışı Reddit API'sinden veri getirmeli.
+    #[test]
+    fn token_grant_prefers_the_official_app_flow_when_a_secret_is_set() {
+        let (body, basic) = token_grant("ornek-id", Some("s3cret"));
+        assert_eq!(body, "grant_type=client_credentials");
+        assert_eq!(basic, base64_ascii("ornek-id:s3cret"));
+
+        let (body, basic) = token_grant(DEFAULT_CLIENT_ID, None);
+        assert!(body.contains("grants%2Finstalled_client"), "{body}");
+        assert!(body.contains(OAUTH_DEVICE_ID), "{body}");
+        assert_eq!(basic, base64_ascii(&format!("{DEFAULT_CLIENT_ID}:")));
+    }
+
+    /// Canlı test: Reddit OAuth akışı (uygulama sırrı varsa resmî, yoksa `installed_client`)
+    /// gönderi verisini getirmeli.
     ///
     /// Reddit kimliksiz `.json` isteklerini `403` ile engellediği (JS meydan okuması) için
     /// bu akış native motorun çalışması adına zorunludur.
     #[tokio::test]
     #[ignore = "requires live Reddit access; run explicitly"]
     async fn live_oauth_fetch_returns_post() {
+        // Bot başlarken `.env`'i yükler; test de aynı değerlerle çalışsın.
+        let _ = dotenvy::dotenv();
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .build()
             .unwrap();
 
-        let token = oauth_token(&client, DEFAULT_CLIENT_ID)
+        // Uygulama kimlik bilgileri ortamda varsa resmî akış denenir; yoksa gömülü kimlikle
+        // `installed_client`. Böylece test, `.env`'deki değerlerle olduğu gibi çalıştırılabilir.
+        let client_id = std::env::var("REDDIT_CLIENT_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string());
+        let client_secret = std::env::var("REDDIT_CLIENT_SECRET")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+
+        let token = oauth_token(&client, &client_id, client_secret.as_deref())
             .await
-            .expect("installed_client token alınmalı");
+            .expect("Reddit token alınmalı");
         assert!(!token.is_empty());
 
         // Gönderi kimliği canlı listeden alınır: test silinmiş gönderilere bağlı kalmaz.
@@ -1899,7 +1987,7 @@ mod tests {
             user_comment: None,
             original_url: format!("https://www.reddit.com/comments/{id}"),
         };
-        let post = fetch(&client, &parsed, DEFAULT_CLIENT_ID)
+        let post = fetch(&client, &parsed, &client_id, client_secret.as_deref())
             .await
             .expect("Reddit gönderisi çekilmeli");
 
