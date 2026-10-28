@@ -22,10 +22,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serenity::all::{
-    Command, CommandData, CommandDataOptionValue, CommandInteraction, CommandOptionType,
-    CommandType, ComponentInteraction, Context, CreateCommand, CreateCommandOption,
-    CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse, Http,
-    InstallationContext, Interaction, InteractionContext, MessageId,
+    AuthorizingIntegrationOwner, Command, CommandData, CommandDataOptionValue, CommandInteraction,
+    CommandOptionType, CommandType, ComponentInteraction, Context, CreateCommand,
+    CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
+    EditInteractionResponse, Http, InstallationContext, Interaction, InteractionContext, MessageId,
 };
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -197,9 +197,10 @@ pub async fn handle(
     };
 
     // 2. Üç saniyelik etkileşim penceresini kaçırmamak için dönüşümden **önce** ertelenir.
-    //    DM/grup DM'de kart etkileşim yanıtının kendisi olacağı için yanıt herkese görünür
-    //    (non-ephemeral) ertelenir; sunucu kanalında kart ayrı mesaj olarak gider.
-    let private = command.guild_id.is_none();
+    //    Bot kanalda yoksa (DM/grup DM veya botun üye olmadığı sunucuda user install) kart
+    //    etkileşim yanıtının kendisi olacağı için yanıt herkese görünür (non-ephemeral)
+    //    ertelenir; botun üye olduğu sunucu kanalında kart ayrı mesaj olarak gider.
+    let private = !bot_is_in_channel(command);
     let deferred = if private {
         command.defer(&ctx.http).await
     } else {
@@ -220,8 +221,8 @@ pub async fn handle(
     );
     settings.engine.x_alternative_source = source.alternative_x_source;
 
-    // DM/grup DM'de bot kanal üyesi değildir: kart normal kanal mesajı olarak gönderilemez,
-    // etkileşim yanıtı düzenlenerek teslim edilir.
+    // Bot kanal üyesi değilse (DM/grup DM, botsuz sunucuda user install) kart normal kanal
+    // mesajı olarak gönderilemez, etkileşim yanıtı düzenlenerek teslim edilir.
     let delivery = private.then(|| converters::builtin::InteractionDelivery {
         application_id: command.application_id.get(),
         token: command.token.clone(),
@@ -264,6 +265,20 @@ pub async fn handle(
     {
         error!(interaction = %command.id, "Etkileşim yanıtı güncellenemedi: {err:?}");
     }
+}
+
+/// Bot, komutun çalıştığı kanala normal mesaj gönderebilir mi?
+///
+/// Yalnızca sunucuya kurulu uygulama (`GUILD_INSTALL`) için sunucu kanalında üyedir. Uygulama
+/// kullanıcı hesabına kurulduysa komut herhangi bir sunucuda çalışabilir ama `guild_id` dolu
+/// olsa da bot orada yoktur; DM/grup DM'de de kanal üyeliği yoktur.
+fn bot_is_in_channel(command: &CommandInteraction) -> bool {
+    command.guild_id.is_some()
+        && command
+            .authorizing_integration_owners
+            .0
+            .iter()
+            .any(|owner| matches!(owner, AuthorizingIntegrationOwner::GuildInstall(Some(_))))
 }
 
 /// Bu etkileşim bizim dönüştürme komutlarımızdan biri mi?
