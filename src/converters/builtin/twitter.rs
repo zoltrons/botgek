@@ -99,9 +99,9 @@ pub async fn fetch(
         .ok_or_else(|| format!("Twitter kimliği çözümlenemedi: {}", parsed.original_url))?;
     let url = parsed.original_url.as_str();
 
-    // `max_video_bytes` platforma bağlı değildir; anahtar sözleşmeyi açık tutar.
-    let video_budget =
-        super::render::RenderOptions::from_engine(engine, "twitter").max_video_bytes();
+    // X videosu indirilip yüklenmez, CDN'den uzaktan oynar: Discord yükleme limiti ve
+    // `max_video_mb` geçerli değil, her zaman en yüksek bit hızlı (1080p) varyant seçilir.
+    let video_budget = u64::MAX;
     let source = if engine.x_alternative_source {
         Source::Vx
     } else {
