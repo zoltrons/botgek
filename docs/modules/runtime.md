@@ -40,6 +40,7 @@ Alanlar ve ortam değişkenleri için [CONFIGURATION.md](../CONFIGURATION.md). �
 
 - `INSTAGRAM_SESSIONID` yalnızca `.env`'den okunur, `settings.json`'a ve panele yazılmaz. `Debug` çıktısı
   gizli değerleri göstermez.
+- `DEV_GUILD_ID` komutları tek sunucuya kaydeder (`commands::register`). Geçersiz değer uyarıyla yok sayılır.
 - `REDDIT_CLIENT_ID` sır değildir. Varsayılan `DEFAULT_REDDIT_CLIENT_ID`.
 - Mantıksal değişkenler `yes/no`, `on/off`, `1/0`, `true/false` biçimlerini kabul eder. Tanınmayan değer
   uyarıyla varsayılana düşer.

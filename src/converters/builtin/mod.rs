@@ -912,6 +912,27 @@ pub async fn remember_author(message_id: MessageId, channel_id: ChannelId, autho
         .await;
 }
 
+/// Kartı, üretildiği kaynak mesajla birlikte kaydeder: kaynak düzenlenir ya da silinirse kart
+/// buradan bulunur (bkz. `converters::tracking`).
+pub async fn remember_card_for_source(
+    message_id: MessageId,
+    channel_id: ChannelId,
+    author: UserId,
+    source_id: MessageId,
+    source_url: String,
+) {
+    crate::store::blocking(move || {
+        crate::store::remember_card_for_source(
+            message_id,
+            channel_id,
+            author,
+            source_id,
+            &source_url,
+        )
+    })
+    .await;
+}
+
 /// Kart kaydını siler (kart Discord'dan silindiğinde).
 pub async fn forget_author(message_id: MessageId) {
     crate::store::blocking(move || crate::store::forget_card(message_id)).await;
@@ -1473,7 +1494,7 @@ pub async fn handle(
                 // eklenemez, ama kart sonraki mesajlarda tanınabilsin diye kaydedilir.
                 remember_author(message_id, msg.channel_id, msg.author.id).await;
             } else {
-                finish(ctx, msg, config, message_id).await;
+                finish(ctx, msg, config, message_id, &parsed.original_url).await;
             }
             HandleResult::Sent
         }
@@ -1653,8 +1674,26 @@ async fn send_components_v2(
 /// kalır); orijinal mesaj da reaksiyonu beklemeden kaybolur. Silme,
 /// kart gönderildikten **sonra** ve [`DELETE_MIN_AGE`] kadar gecikmeyle yapılır (hayalet
 /// mesaj önlemi).
-async fn finish(ctx: &Context, msg: &Message, config: &Config, message_id: MessageId) {
-    remember_author(message_id, msg.channel_id, msg.author.id).await;
+async fn finish(
+    ctx: &Context,
+    msg: &Message,
+    config: &Config,
+    message_id: MessageId,
+    source_url: &str,
+) {
+    if config.delete_original {
+        // Kaynak bilerek silinecek: eşleme tutulsaydı silme olayı kartı da götürürdü.
+        remember_author(message_id, msg.channel_id, msg.author.id).await;
+    } else {
+        remember_card_for_source(
+            message_id,
+            msg.channel_id,
+            msg.author.id,
+            msg.id,
+            source_url.to_string(),
+        )
+        .await;
+    }
 
     let ctx = ctx.clone();
     let msg = msg.clone();

@@ -627,6 +627,7 @@ mod tests {
             reddit_client_id: "test-id".to_string(),
             instagram_sessionid: None,
             web_port: 8123,
+            dev_guild_id: None,
         }
     }
 

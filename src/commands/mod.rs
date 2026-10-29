@@ -17,6 +17,7 @@
 
 pub mod fun;
 pub mod gif;
+pub mod hooks;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +26,8 @@ use serenity::all::{
     AuthorizingIntegrationOwner, Command, CommandData, CommandDataOptionValue, CommandInteraction,
     CommandOptionType, CommandType, ComponentInteraction, Context, CreateCommand,
     CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
-    EditInteractionResponse, Http, InstallationContext, Interaction, InteractionContext, MessageId,
+    EditInteractionResponse, GuildId, Http, InstallationContext, Interaction, InteractionContext,
+    MessageId,
 };
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -58,7 +60,7 @@ static COMMANDS_REGISTERED: AtomicBool = AtomicBool::new(false);
 ///
 /// Süreç başına bir kez çalışır: her gateway yeniden bağlanmasında Discord'a aynı komutları
 /// yeniden yazmamak için `AtomicBool` ile korunur. Kayıt başarısız olursa bayrak geri alınır.
-pub async fn register(http: impl AsRef<Http>) {
+pub async fn register(http: impl AsRef<Http>, dev_guild: Option<GuildId>) {
     if COMMANDS_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -71,15 +73,27 @@ pub async fn register(http: impl AsRef<Http>) {
             .chain(fun::definitions())
             .chain(gif::definitions())
             .collect();
-        match Command::set_global_commands(http.as_ref(), commands).await {
+        let registered = match dev_guild {
+            Some(guild) => guild.set_commands(http.as_ref(), commands).await,
+            None => Command::set_global_commands(http.as_ref(), commands).await,
+        };
+        match registered {
             Ok(commands) => {
-                info!(
-                    count = commands.len(),
-                    "Global komutlar kaydedildi (/{} ve mesaj komutu {}); Discord istemcilerine \
-                     yayılması birkaç dakika sürebilir",
-                    CONVERT_COMMAND,
-                    CONVERT_MESSAGE_COMMAND
-                );
+                match dev_guild {
+                    Some(guild) => info!(
+                        count = commands.len(),
+                        guild = %guild,
+                        "Geliştirme sunucusuna komutlar kaydedildi (DEV_GUILD_ID); anında görünür, \
+                         global kayda dokunulmadı"
+                    ),
+                    None => info!(
+                        count = commands.len(),
+                        "Global komutlar kaydedildi (/{} ve mesaj komutu {}); Discord istemcilerine \
+                         yayılması birkaç dakika sürebilir",
+                        CONVERT_COMMAND,
+                        CONVERT_MESSAGE_COMMAND
+                    ),
+                }
                 return;
             }
             Err(err) => {
@@ -148,8 +162,43 @@ fn everywhere(command: CreateCommand) -> CreateCommand {
         .add_context(InteractionContext::PrivateChannel)
 }
 
-/// Etkileşim olayını yorumlar. Komut dışındaki etkileşimler sessizce yok sayılır.
+/// Etkileşim olayını yürütür: kancaları çalıştırır, işleyiciyi ayrı görevde koşturur ve panik
+/// olursa kullanıcıya sabit bir hata mesajı gönderir (bkz. [`hooks`]). Komut dışındaki
+/// etkileşimler sessizce yok sayılır.
 pub async fn handle(
+    ctx: Context,
+    interaction: Interaction,
+    http_client: reqwest::Client,
+    config: Config,
+    app_settings: Arc<RwLock<AppSettings>>,
+) {
+    let Some(label) = hooks::label(&interaction) else {
+        return;
+    };
+    hooks::pre_command(&label);
+    let started = std::time::Instant::now();
+
+    let task = {
+        let ctx = ctx.clone();
+        let interaction = interaction.clone();
+        tokio::spawn(async move {
+            dispatch(&ctx, &interaction, &http_client, &config, &app_settings).await;
+        })
+    };
+    let outcome = match task.await {
+        Ok(()) => hooks::Outcome::Completed,
+        Err(err) if err.is_panic() => {
+            hooks::Outcome::Panicked(hooks::panic_reason(err.into_panic()))
+        }
+        Err(_) => hooks::Outcome::Cancelled,
+    };
+    hooks::post_command(&label, &outcome, started.elapsed());
+    if matches!(outcome, hooks::Outcome::Panicked(_)) {
+        hooks::notify_failure(&ctx, &interaction).await;
+    }
+}
+
+async fn dispatch(
     ctx: &Context,
     interaction: &Interaction,
     http_client: &reqwest::Client,
