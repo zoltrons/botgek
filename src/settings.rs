@@ -355,7 +355,7 @@ fn valid_emoji(value: &str) -> bool {
             .any(|c| "[\\]()`<>|*_~".contains(c) || c.is_control())
 }
 
-/// Discord'un (boost'suz sunucularda) yüklenen dosya limiti 10 MB'tır; üzerine çıkılırsa
+/// Discord'un (boost'suz sunucularda) yüklenen dosya limiti 25 MB'tır; üzerine çıkılırsa
 /// video indirilmez, link olarak paylaşılır.
 pub const MAX_VIDEO_MB_RANGE: std::ops::RangeInclusive<u8> = 1..=50;
 

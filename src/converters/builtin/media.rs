@@ -7,8 +7,8 @@ use serenity::all::CreateAttachment;
 
 use super::{MEDIA_TIMEOUT, USER_AGENT};
 
-/// Discord'un boost'suz sunuculardaki dosya limiti (10 MB).
-pub const DISCORD_FILE_LIMIT: u64 = 10 * 1024 * 1024;
+/// Discord'un boost'suz sunuculardaki dosya limiti (25 MB).
+pub const DISCORD_FILE_LIMIT: u64 = 25 * 1024 * 1024;
 
 /// İndirilmiş medya dosyası.
 #[derive(Debug, Clone, PartialEq, Eq)]
