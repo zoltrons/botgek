@@ -172,7 +172,7 @@ impl ConvertError {
             Self::Unsupported => {
                 "Desteklenen bir bağlantı bulunamadı. Örnek: `/dönüştür link:https://x.com/kullanici/status/123`"
             }
-            Self::RoleDenied => "Rol filtresi bu dönüştürmeye izin vermiyor.",
+            Self::RoleDenied => "Sunucunun rol filtresi bu dönüştürmeye izin vermiyor.",
             Self::Busy => "Dönüşüm kapasitesi şu an dolu; birkaç saniye sonra tekrar dene.",
             Self::Failed => {
                 "Bağlantı dönüştürülemedi (gönderi silinmiş veya kaynağa erişilemiyor olabilir)."

@@ -1163,7 +1163,7 @@ const EIGHT_BALL: [(&str, u32); 16] = [
     ("Yıldızlar \"evet\" diyor. 🌟", 0x57F287),
     ("Büyük ihtimalle. 👍", 0x57F287),
     ("Görünüşe göre iyi. 😌", 0x57F287),
-    ("İşaretler evet'i gösteriyor. 🧭", 0x57F287),
+    ("İşaretler evet diyor. 🧭", 0x57F287),
     ("Belirsiz, tekrar sor. 🌫️", 0xFEE75C),
     ("Şimdi söylemesem daha iyi. 🤐", 0xFEE75C),
     ("Bir çay demle, sonra konuşalım. 🫖", 0xFEE75C),

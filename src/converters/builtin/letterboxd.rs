@@ -1143,7 +1143,7 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     let mut components = Vec::new();
     if let Some(review) = review {
         components.push(text(format!(
-            "-# {} [{}]({}) adlı kullanıcının incelemesi · Letterboxd bu sayfayı botlara kapattığı için film gösteriliyor",
+            "-# {} [{}]({}) adlı kullanıcının incelemesi · Letterboxd bu sayfayı botlara kapattığı için yalnızca film kartı gösteriliyor",
             EMOJI_REVIEW.tag(),
             escape_markdown(&review.user),
             review.url
@@ -1242,7 +1242,7 @@ fn review_card(review: &Review) -> CustomCard {
         format!("### {verdict}\n{film}")
     };
     header.push_str(&format!(
-        "\n-# [{}]({}) incelemesi",
+        "\n-# İnceleyen: [{}]({})",
         escape_markdown(&review.author),
         review.profile_url
     ));
@@ -2010,7 +2010,7 @@ mod tests {
         let text = contents(&card);
         assert!(text.contains("### ★★★★½ ♥"), "{text}");
         assert!(
-            text.contains("[hollie amanda](https://letterboxd.com/hollieamanda/) incelemesi"),
+            text.contains("İnceleyen: [hollie amanda](https://letterboxd.com/hollieamanda/)"),
             "{text}"
         );
         assert!(

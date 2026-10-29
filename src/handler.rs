@@ -541,7 +541,7 @@ fn ai_error_notice(error: &crate::ai::AiError) -> &'static str {
         | AiError::Credits(_)
         | AiError::BadRequest(_)
         | AiError::InvalidModel(_) => {
-            "AI servisi yapılandırmasında bir sorun var, bot sahibi bilgilendirildi."
+            "AI servisinin yapılandırmasında bir sorun var; bot sahibinin bakması gerekiyor."
         }
         AiError::Blocked(_) => {
             "Bu mesaja yanıt veremiyorum; model sağlayıcısının içerik filtresine takıldı."
@@ -550,14 +550,14 @@ fn ai_error_notice(error: &crate::ai::AiError) -> &'static str {
             "Model uzun uzun düşündü ama bir cevaba varamadı 🤔 Soruyu biraz daha kısa sorar mısın?"
         }
         AiError::NoProvider(_) => {
-            "Gizlilik ayarlarımı (veri saklamayan sağlayıcı) karşılayan bir model şu an bulunamadı. Biraz sonra tekrar dene."
+            "Gizlilik kuralıma (veri saklamayan sağlayıcı) uyan bir model şu an bulunamadı. Biraz sonra tekrar dene."
         }
         AiError::Network(_)
         | AiError::Timeout
         | AiError::Unavailable(_)
         | AiError::Empty
         | AiError::Malformed(_) => {
-            "AI servisi şu an geçici olarak yanıt veremedi. Lütfen biraz sonra tekrar dene."
+            "AI servisi şu an geçici olarak yanıt veremedi. Biraz sonra tekrar dene."
         }
     }
 }

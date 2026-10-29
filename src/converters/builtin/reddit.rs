@@ -417,7 +417,7 @@ fn append_comment_context(post: &mut BuiltinPost, comment: &RedditPost) {
         post.text.push_str("\n\n");
     }
     post.text
-        .push_str(&format!("**Yorum bağlamı — {author}:**\n{body}"));
+        .push_str(&format!("**Yorum bağlamı ({author}):**\n{body}"));
 }
 
 /// Her dolu satırı `> ` ile alıntılar; boş satırlar atılır çünkü Discord çıplak `>` satırını ayrı, boş bir şerit gibi çizer.
@@ -1643,7 +1643,7 @@ mod tests {
             Some("comment1"),
         )
         .expect("gönderi dönüşmeli");
-        assert!(post.text.contains("Yorum bağlamı — u/yorumcu:"));
+        assert!(post.text.contains("Yorum bağlamı (u/yorumcu):"));
         assert!(post.text.chars().count() < MAX_COMMENT_CONTEXT_CHARS + 100);
 
         let deleted = listings_to_post(
@@ -1844,7 +1844,7 @@ mod tests {
             .await
             .expect("Reddit yorum bağlantısı çekilmeli");
         assert!(
-            post.text.contains("**Yorum bağlamı — u/"),
+            post.text.contains("**Yorum bağlamı (u/"),
             "yorum bağlamı karta girmeli: {}",
             post.text
         );
