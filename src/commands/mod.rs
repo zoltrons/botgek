@@ -5,7 +5,8 @@
 //! içinde iletir). Bu yüzden "bir mesaja yanıt verip `/dönüştür` yazma" akışı Discord API'sinde
 //! doğrudan desteklenmez; onun yerine aynı dönüşümü iki yerden sunuyoruz:
 //!
-//! - `/dönüştür link:<bağlantı>`: bağlantıyı doğrudan komut argümanı olarak alır.
+//! - `/dönüştür <bağlantı>`: bağlantıyı doğrudan komut argümanı olarak alır (`link` seçeneği
+//!   zorunludur, bu yüzden `link:` yazmadan yapıştırmak yeter).
 //! - **Mesaja sağ tık → Apps → Dönüştür**: hedef mesajın metnindeki bağlantıyı dönüştürür.
 //!
 //! Her iki akış da aynı dönüşüm motorunu ve rol filtrelerini kullanır; WebUI'daki platform
@@ -49,10 +50,10 @@ pub const SOURCE_OPTION: &str = "kaynak";
 const SOURCE_VX: &str = "vx";
 
 /// Komut yokken gösterilen kısa kullanım metni.
-pub const USAGE: &str = "Bir bağlantı ver: `/dönüştür link:https://x.com/kullanici/status/123`\n\
+pub const USAGE: &str = "Bir bağlantı ver: `/dönüştür https://x.com/kullanici/status/123`\n\
 Bir mesajı dönüştürmek için: sağ tık → **Apps → Dönüştür**. \
 (Discord, slash komutlarına yanıtlanan mesajı eklemez; bu yüzden mesaj komutu kullanılır.)\n\
-X kartında medya (ör. GIF) bozuksa: `/dönüştür link:... kaynak:vxTwitter (yedek)`.";
+X kartında medya (ör. GIF) bozuksa: `/dönüştür https://... kaynak:vxTwitter (yedek)`.";
 
 static COMMANDS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
@@ -125,9 +126,12 @@ fn definitions() -> Vec<CreateCommand> {
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     LINK_OPTION,
-                    "Dönüştürülecek bağlantı (boş bırakılırsa kullanım gösterilir)",
+                    "Dönüştürülecek bağlantı",
                 )
-                .required(false)
+                // Zorunlu seçenek, Discord istemcisinde `/dönüştür` yazınca otomatik seçilir:
+                // `link:` yazmadan doğrudan bağlantı yapıştırılabilir. İsteğe bağlı olsaydı
+                // kullanıcı önce seçeneği elle seçmek zorunda kalırdı.
+                .required(true)
                 .max_length(2048),
             )
             .add_option(
@@ -547,6 +551,14 @@ mod tests {
         );
         assert_eq!(chat["options"][0]["name"], LINK_OPTION);
         assert_eq!(chat["options"][0]["type"], 3);
+        assert_eq!(
+            chat["options"][0]["required"], true,
+            "link zorunlu olmalı: `/dönüştür <bağlantı>` link: yazmadan çalışsın"
+        );
+        assert_ne!(
+            chat["options"][1]["required"], true,
+            "kaynak isteğe bağlı kalmalı"
+        );
 
         let message = serde_json::to_value(&definitions[1]).expect("komut JSON'a çevrilmeli");
         assert_eq!(message["name"], CONVERT_MESSAGE_COMMAND);
@@ -578,6 +590,5 @@ mod tests {
     fn usage_mentions_both_entry_points() {
         assert!(USAGE.contains("/dönüştür"));
         assert!(USAGE.contains("Apps"));
-        assert!(USAGE.contains("link:"));
     }
 }

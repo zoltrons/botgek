@@ -37,7 +37,7 @@ Bileşen/modal etiketleri `custom_id`nin ilk parçasıdır (oyun durumu loga sı
 
 ### `/dönüştür` ve mesaj komutu
 
-- Discord slash etkileşiminde yanıtlanan mesajı iletmez. Bu yüzden iki giriş vardır: `link:` argümanı ve
+- Discord slash etkileşiminde yanıtlanan mesajı iletmez. Bu yüzden iki giriş vardır: `link` argümanı (zorunlu seçenek; Discord istemcisi onu otomatik seçtiği için `/dönüştür https://...` şeklinde `link:` yazmadan çalışır) ve
   mesaja sağ tık komutu (hedef mesaj `resolved.messages` içindedir).
 - Dönüşüm `converters::convert_now` ile **beklenerek** yapılır. Platform modülü kapalı olsa bile çalışır.
   Rol filtresi, kanal ve thread motor ayarları uygulanır.
