@@ -32,7 +32,7 @@ Parçalar:
   `rest_rate_limit_wait` kayıtları ve belirli durum kodları (400, 401, 403, 404, 408, 429, 500, 502, 503, 504)
   için ayrı sayaç.
 - **Kuyruk:** `CONVERSION_QUEUE_ENQUEUED`, `COMPLETED`, `SATURATED`, `DEPTH`.
-- **Diğer:** `DISCORD_READY`, `CACHE_HITS`, `OVERLOADS`, gateway olay sayacı (`GatewayEvent`: Ready, Message, Reaction, Interaction, ShardStage, Other).
+- **Diğer:** `DISCORD_READY`, `CACHE_HITS`, `OVERLOADS`, gateway olay sayacı (`GatewayEvent`: Ready, Message, Reaction, Interaction, ShardStage, MessageUpdate, MessageDelete, Other), `COMMAND_PANICS` (komut işleyicisinde yakalanan panikler).
 - **Histogram:** 12 kovalı `Histogram`, son 64 örnek için tam yüzdelik hesabı yapar.
 
 ## Değişmezler

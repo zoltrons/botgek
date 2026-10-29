@@ -14,7 +14,8 @@ Her kart için hangi mesajın hangi kullanıcı tarafından paylaşıldığını
 Tek tablo vardır:
 
 ```sql
-cards (message_id INTEGER PRIMARY KEY, channel_id INTEGER, author_id INTEGER, created_at INTEGER)
+cards (message_id INTEGER PRIMARY KEY, channel_id INTEGER, author_id INTEGER, created_at INTEGER,
+       source_id INTEGER, source_url TEXT)   -- kaynak sütunları eski dosyalara açılışta eklenir
 ```
 
 - Dosya yolu `BOTGEK_DB_PATH`, yoksa `botgek.db`. Docker'da `/app/data/botgek.db`.

@@ -22,6 +22,10 @@ pub struct Config {
     /// `settings.json`'a ve WebUI'a yazılmaz.
     pub instagram_sessionid: Option<String>,
     pub web_port: u16,
+    /// Geliştirme sunucusu (`DEV_GUILD_ID`). Tanımlıysa slash komutları global yerine yalnızca bu
+    /// sunucuya kaydedilir; yayılma beklenmeden anında görünür. Kullanıcı kurulumu (user install)
+    /// ve DM bağlamları sunucu komutlarında yoktur, bu yüzden yalnızca geliştirme botunda kullanılır.
+    pub dev_guild_id: Option<serenity::all::GuildId>,
 }
 
 impl std::fmt::Debug for Config {
@@ -39,6 +43,7 @@ impl std::fmt::Debug for Config {
                 &self.instagram_sessionid.as_ref().map(|_| "[REDACTED]"),
             )
             .field("web_port", &self.web_port)
+            .field("dev_guild_id", &self.dev_guild_id)
             .finish()
     }
 }
@@ -98,6 +103,17 @@ impl Config {
             Err(_) => 3000,
         };
 
+        let dev_guild_id = match env::var("DEV_GUILD_ID") {
+            Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+                Ok(id) if id != 0 => Some(serenity::all::GuildId::new(id)),
+                _ => {
+                    tracing::warn!("DEV_GUILD_ID={raw:?} geçersiz; komutlar global kaydedilecek");
+                    None
+                }
+            },
+            _ => None,
+        };
+
         Ok(Self {
             discord_token,
             delete_original,
@@ -105,6 +121,7 @@ impl Config {
             reddit_client_id,
             instagram_sessionid,
             web_port,
+            dev_guild_id,
         })
     }
 }

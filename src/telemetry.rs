@@ -44,6 +44,8 @@ const BUCKET_COUNT: usize = BUCKETS_US.len();
 pub static DISCORD_READY: AtomicBool = AtomicBool::new(false);
 pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static OVERLOADS: AtomicU64 = AtomicU64::new(0);
+/// Komut/bileşen işleyicilerinde yakalanan panik sayısı (bkz. `commands::hooks`).
+pub static COMMAND_PANICS: AtomicU64 = AtomicU64::new(0);
 pub static CONVERSION_QUEUE_ENQUEUED: AtomicU64 = AtomicU64::new(0);
 pub static CONVERSION_QUEUE_COMPLETED: AtomicU64 = AtomicU64::new(0);
 pub static CONVERSION_QUEUE_SATURATED: AtomicU64 = AtomicU64::new(0);
@@ -758,16 +760,20 @@ pub enum GatewayEvent {
     Reaction = 2,
     Interaction = 3,
     ShardStage = 4,
-    Other = 5,
+    MessageUpdate = 5,
+    MessageDelete = 6,
+    Other = 7,
 }
 
 impl GatewayEvent {
-    pub const ALL: [GatewayEvent; 6] = [
+    pub const ALL: [GatewayEvent; 8] = [
         GatewayEvent::Ready,
         GatewayEvent::Message,
         GatewayEvent::Reaction,
         GatewayEvent::Interaction,
         GatewayEvent::ShardStage,
+        GatewayEvent::MessageUpdate,
+        GatewayEvent::MessageDelete,
         GatewayEvent::Other,
     ];
 
@@ -778,12 +784,14 @@ impl GatewayEvent {
             GatewayEvent::Reaction => "reaction",
             GatewayEvent::Interaction => "interaction",
             GatewayEvent::ShardStage => "shard_stage",
+            GatewayEvent::MessageUpdate => "message_update",
+            GatewayEvent::MessageDelete => "message_delete",
             GatewayEvent::Other => "other",
         }
     }
 }
 
-static GATEWAY_EVENTS: LazyLock<[AtomicU64; 6]> =
+static GATEWAY_EVENTS: LazyLock<[AtomicU64; 8]> =
     LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
 static LAST_GATEWAY_EVENT_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -1066,6 +1074,7 @@ pub fn snapshot() -> Value {
     json!({
         "cache_hits": CACHE_HITS.load(RELAXED),
         "overloads": OVERLOADS.load(RELAXED),
+        "command_panics": COMMAND_PANICS.load(RELAXED),
         "conversion_queue": {
             "capacity": crate::converters::CONVERSION_QUEUE_CAPACITY,
             "enqueued": CONVERSION_QUEUE_ENQUEUED.load(RELAXED),

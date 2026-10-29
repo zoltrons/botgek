@@ -1,7 +1,7 @@
 use serenity::all::{
     Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EventHandler,
-    GuildId, Interaction, Message, MessageId, MessageReference, MessageType, Permissions, Reaction,
-    ReactionType, Ready, UserId, async_trait,
+    GuildId, Interaction, Message, MessageId, MessageReference, MessageType, MessageUpdateEvent,
+    Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -136,7 +136,8 @@ impl EventHandler for Handler {
         // Global slash + mesaj komutları: DM'ler dâhil her yerde görünür. Kayıt ağ isteği
         // olduğu için gateway olay döngüsü bekletilmez.
         let http = ctx.http.clone();
-        tokio::spawn(async move { crate::commands::register(http).await });
+        let dev_guild = self.config.dev_guild_id;
+        tokio::spawn(async move { crate::commands::register(http, dev_guild).await });
     }
 
     /// Slash ve sağ tık (mesaj) komutları.
@@ -144,13 +145,14 @@ impl EventHandler for Handler {
         crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Interaction);
         // Dönüşüm veri çekme + kart gönderimi nedeniyle uzun sürebilir; etkileşim hemen
         // ertelenir (komut tarafında), bu yüzden olay işleyicisi ayrı görevde çalıştırılır.
-        let ctx = ctx.clone();
-        let client = self.http_client.clone();
-        let config = self.config.clone();
-        let settings = self.settings.clone();
-        tokio::spawn(async move {
-            crate::commands::handle(&ctx, &interaction, &client, &config, &settings).await;
-        });
+        // `commands::handle` işleyiciyi kendi görevinde koşturur ve paniği yakalar.
+        tokio::spawn(crate::commands::handle(
+            ctx,
+            interaction,
+            self.http_client.clone(),
+            self.config.clone(),
+            self.settings.clone(),
+        ));
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
@@ -225,6 +227,48 @@ impl EventHandler for Handler {
             self.reply_with_ai(&ctx, &msg, current_user_id, &current_settings)
                 .await;
         }
+    }
+
+    /// Kaynak mesaj silinirse ondan üretilen kart da silinir.
+    async fn message_delete(
+        &self,
+        ctx: Context,
+        _channel_id: ChannelId,
+        deleted_message_id: MessageId,
+        _guild_id: Option<GuildId>,
+    ) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::MessageDelete);
+        converters::tracking::source_deleted(&ctx, deleted_message_id).await;
+    }
+
+    async fn message_delete_bulk(
+        &self,
+        ctx: Context,
+        _channel_id: ChannelId,
+        multiple_deleted_messages_ids: Vec<MessageId>,
+        _guild_id: Option<GuildId>,
+    ) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::MessageDelete);
+        converters::tracking::sources_deleted(&ctx, &multiple_deleted_messages_ids).await;
+    }
+
+    /// Kaynak mesaj düzenlenirse kart bağlantıya göre güncellenir (bkz. `converters::tracking`).
+    async fn message_update(
+        &self,
+        ctx: Context,
+        _old_if_available: Option<Message>,
+        _new: Option<Message>,
+        event: MessageUpdateEvent,
+    ) {
+        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::MessageUpdate);
+        converters::tracking::source_edited(
+            &ctx,
+            &event,
+            &self.http_client,
+            &self.config,
+            &self.settings,
+        )
+        .await;
     }
 
     /// Reaksiyon ekleme dinleyicisi: 🗑️ ile kartı silme (orijinal yazar veya yönetici/moderatör).

@@ -10,6 +10,7 @@ eğlence oyunları.
 | Dosya | İçerik |
 | --- | --- |
 | `src/commands/mod.rs` | Komut tanımları, kayıt, `/dönüştür` ve **Apps → Dönüştür**, Spotify sayfalama bileşeni. |
+| `src/commands/hooks.rs` | Ortak kancalar: `pre_command`/`post_command` günlükleri, panik yakalama, kullanıcıya sabit hata metni. |
 | `src/commands/gif.rs` | `/gif-yap` ve **Apps → GIF yap**. |
 | `src/commands/fun.rs` | `/uyum`, **Apps → Uyumumuz**, `/düello`, `/sayı-tahmini`, `/8top`, `/bomba`, `/refleks`, `/fal`. |
 
@@ -22,9 +23,17 @@ etkileşim yanıtı ya da düzenlemesi. Dönüştürme kartı için `converters:
 
 ### Kayıt
 
-`register(http)` `ready` olayında arka planda çağrılır ve tanımları global olarak yazar. Komutlar her yerde, DM'ler
+`register(http, dev_guild)` `ready` olayında arka planda çağrılır ve tanımları global olarak yazar. `DEV_GUILD_ID` tanımlıysa yalnızca o sunucuya yazar (anında görünür, global kayda dokunmaz). Komutlar her yerde, DM'ler
 dahil, kullanılabilsin diye `everywhere` yardımcısı hem sunucu hem kullanıcı kurulumu bağlamlarını açar.
 Slash adları Türkçe karakter içerir (`dönüştür`, `sayı-tahmini`).
+
+### Kancalar ve panik koruması
+
+`handle` her komut, bileşen ve modal etkileşimini `hooks` ile sarar: önce `pre_command`, işleyici ayrı
+`tokio::spawn` görevinde koşar, sonra `post_command` süre ve sonucu loglar. Görev panik ederse
+`JoinError` okunur, `telemetry::COMMAND_PANICS` artar ve kullanıcıya gizli sabit bir uyarı gider
+(yanıtlanmamışsa ilk yanıt, yanıtlanmışsa takip mesajı). Panik ayrıntısı yalnızca loga yazılır.
+Bileşen/modal etiketleri `custom_id`nin ilk parçasıdır (oyun durumu loga sızmaz).
 
 ### `/dönüştür` ve mesaj komutu
 

@@ -59,9 +59,20 @@ metinlere çevrilir.
 mesaj yönetme izni olan üye. Thread izinleri üst kanaldan gelir; `can_manage_messages` thread'leri
 `guild.threads` içinde de arar.
 
+### `message_update` ve `message_delete`
+
+Kart, kaynağını `store` kaydındaki `source_id` ile tanır. Mantık `converters/tracking.rs` içindedir:
+
+- Kaynak silinirse (`message_delete`, `message_delete_bulk`) kart da silinir.
+- Kaynak düzenlenirse yalnızca gerçek düzenlemeler (`edited_timestamp` dolu) ve son 1 saatteki mesajlar
+  işlenir. Bağlantı değişmediyse hiçbir şey olmaz. Değiştiyse eski kart silinir, yeni bağlantı varsa
+  mesaj REST'ten alınıp normal kuyruktan dönüştürülür. AI sohbeti tetiklenmez.
+- `DELETE_ORIGINAL=true` iken eşleme yazılmaz, çünkü orijinal bilerek silinir. Bu modda düzenleme/silme
+  takibi yoktur.
+
 ### `interaction_create`
 
-Slash, mesaj komutu, bileşen ve modal etkileşimleri `commands` modülüne yönlendirilir. Bkz.
+Slash, mesaj komutu, bileşen ve modal etkileşimleri `commands::handle`a verilir; o işleyiciyi ayrı görevde koşturur, panikleri yakalar. Bkz.
 [commands.md](commands.md).
 
 ## Değişmezler

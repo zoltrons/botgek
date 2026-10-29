@@ -203,6 +203,15 @@ pub fn healthy() -> bool {
     })
 }
 
+/// Bir kaynak mesajdan üretilmiş kart (bkz. [`Db::card_for_source`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCard {
+    pub card_id: MessageId,
+    pub channel_id: ChannelId,
+    /// Kartın üretildiği bağlantı; eski kayıtlarda boştur.
+    pub source_url: String,
+}
+
 /// SQLite veritabanı sarmalayıcısı. Sorgular tek satır (birincil anahtar) üzerinde
 /// çalıştığı için çağrılar mikrosaniye düzeyindedir; bu yüzden API senkron tutulur.
 pub struct Db {
@@ -253,7 +262,29 @@ impl Db {
                  created_at INTEGER NOT NULL
              );",
         )?;
+        Self::migrate_source_columns(&connection)?;
         Ok(connection)
+    }
+
+    /// Eski şemaya kaynak mesaj sütunlarını ekler (kart → kaynak mesaj eşlemesi).
+    ///
+    /// `source_id` kullanıcının linki attığı mesajdır; düzenleme/silme olayları bu sütunla karta
+    /// ulaşır. `source_url` kartın üretildiği bağlantıdır, düzenlemede bağlantının değişip
+    /// değişmediğini anlamak için tutulur. Sütunlar yoksa eklenir; eski kayıtlar `NULL` kalır.
+    fn migrate_source_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
+        let has_column = connection
+            .prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'source_id'")?
+            .exists([])?;
+        if !has_column {
+            connection.execute_batch(
+                "ALTER TABLE cards ADD COLUMN source_id INTEGER;
+                 ALTER TABLE cards ADD COLUMN source_url TEXT;",
+            )?;
+        }
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS cards_source_id ON cards(source_id)
+                 WHERE source_id IS NOT NULL;",
+        )
     }
 
     /// Kayıt dosyasının yolu (`:memory:` ise bellek içi).
@@ -263,20 +294,40 @@ impl Db {
 
     /// Kart kaydını yazar (aynı mesaj kimliği yeniden yazılırsa güncellenir).
     pub fn remember(&self, message_id: MessageId, channel_id: ChannelId, author_id: UserId) {
+        self.remember_with_source(message_id, channel_id, author_id, None);
+    }
+
+    /// Kart kaydını, varsa kaynak mesajıyla birlikte yazar. Kaynak verilmezse var olan kaynak
+    /// bilgisi korunur.
+    pub fn remember_with_source(
+        &self,
+        message_id: MessageId,
+        channel_id: ChannelId,
+        author_id: UserId,
+        source: Option<(MessageId, &str)>,
+    ) {
         let created_at = now_unix();
+        let (source_id, source_url) = match source {
+            Some((id, url)) => (Some(id.get() as i64), Some(url)),
+            None => (None, None),
+        };
         let result = self.with_connection(crate::telemetry::DbOp::Remember, |connection| {
             connection
                 .execute(
-                    "INSERT INTO cards (message_id, channel_id, author_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO cards (message_id, channel_id, author_id, created_at, source_id, source_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(message_id) DO UPDATE SET
                      channel_id = excluded.channel_id,
-                     author_id  = excluded.author_id",
+                     author_id  = excluded.author_id,
+                     source_id  = COALESCE(excluded.source_id, source_id),
+                     source_url = COALESCE(excluded.source_url, source_url)",
                     params![
                         message_id.get() as i64,
                         channel_id.get() as i64,
                         author_id.get() as i64,
-                        created_at
+                        created_at,
+                        source_id,
+                        source_url
                     ],
                 )
                 .map(|_| ())
@@ -284,6 +335,37 @@ impl Db {
 
         if let Err(err) = result {
             warn!("Kart kaydı yazılamadı ({}): {}", message_id, err);
+        }
+    }
+
+    /// Kaynak mesajdan üretilmiş kartı bulur (kaynak düzenlendiğinde/silindiğinde kullanılır).
+    pub fn card_for_source(&self, source_id: MessageId) -> Option<SourceCard> {
+        let result = self.with_connection(crate::telemetry::DbOp::Contains, |connection| {
+            connection
+                .query_row(
+                    "SELECT message_id, channel_id, source_url FROM cards WHERE source_id = ?1",
+                    params![source_id.get() as i64],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+        });
+        match result {
+            Ok(Some((card, channel, url))) => Some(SourceCard {
+                card_id: MessageId::new(u64::try_from(card).ok()?),
+                channel_id: ChannelId::new(u64::try_from(channel).ok()?),
+                source_url: url.unwrap_or_default(),
+            }),
+            Ok(None) => None,
+            Err(err) => {
+                warn!("Kaynak mesajın kartı okunamadı ({}): {}", source_id, err);
+                None
+            }
         }
     }
 
@@ -460,6 +542,35 @@ pub fn remember_card(message_id: MessageId, channel_id: ChannelId, author_id: Us
     }
 }
 
+/// Kartı, üretildiği kaynak mesajla birlikte kaydeder (düzenleme/silme takibi için).
+pub fn remember_card_for_source(
+    message_id: MessageId,
+    channel_id: ChannelId,
+    author_id: UserId,
+    source_id: MessageId,
+    source_url: &str,
+) {
+    let Some(db) = database() else {
+        return;
+    };
+    db.remember_with_source(
+        message_id,
+        channel_id,
+        author_id,
+        Some((source_id, source_url)),
+    );
+
+    if WRITES.fetch_add(1, Ordering::Relaxed) + 1 >= PRUNE_EVERY {
+        WRITES.store(0, Ordering::Relaxed);
+        prune_db(db);
+    }
+}
+
+/// Bu kaynak mesajdan üretilmiş kart (yoksa `None`).
+pub fn card_for_source(source_id: MessageId) -> Option<SourceCard> {
+    database().and_then(|db| db.card_for_source(source_id))
+}
+
 /// Kaydı siler (mesaj Discord'dan silindiğinde).
 pub fn forget_card(message_id: MessageId) {
     if let Some(db) = database() {
@@ -615,6 +726,59 @@ mod tests {
         assert_eq!(reopened.author(MessageId::new(2_000)), None);
         assert!(!reopened.contains(MessageId::new(2_000)));
 
+        cleanup(&path);
+    }
+
+    #[test]
+    fn card_is_found_by_its_source_message() {
+        let db = open_test(":memory:");
+        db.remember_with_source(
+            MessageId::new(20),
+            ChannelId::new(1),
+            UserId::new(2),
+            Some((MessageId::new(10), "https://x.com/u/status/1")),
+        );
+        // Kaynaksız yeniden yazım var olan eşlemeyi silmemeli.
+        db.remember(MessageId::new(20), ChannelId::new(1), UserId::new(2));
+
+        let card = db
+            .card_for_source(MessageId::new(10))
+            .expect("kart bulunmalı");
+        assert_eq!(card.card_id, MessageId::new(20));
+        assert_eq!(card.source_url, "https://x.com/u/status/1");
+        assert_eq!(db.card_for_source(MessageId::new(11)), None);
+
+        db.forget(MessageId::new(20));
+        assert_eq!(db.card_for_source(MessageId::new(10)), None);
+    }
+
+    #[test]
+    fn old_schema_gains_source_columns() {
+        let path = test_db_path("migrate_source");
+        cleanup(&path);
+        {
+            let connection = Connection::open(&path).expect("eski veritabanı");
+            connection
+                .execute_batch(
+                    "CREATE TABLE cards (
+                         message_id INTEGER PRIMARY KEY,
+                         channel_id INTEGER NOT NULL,
+                         author_id  INTEGER NOT NULL,
+                         created_at INTEGER NOT NULL
+                     );
+                     INSERT INTO cards VALUES (5, 1, 2, 0);",
+                )
+                .expect("eski şema");
+        }
+        let db = open_test(&path.display().to_string());
+        assert!(db.contains(MessageId::new(5)), "eski kayıt korunmalı");
+        db.remember_with_source(
+            MessageId::new(6),
+            ChannelId::new(1),
+            UserId::new(2),
+            Some((MessageId::new(7), "u")),
+        );
+        assert!(db.card_for_source(MessageId::new(7)).is_some());
         cleanup(&path);
     }
 

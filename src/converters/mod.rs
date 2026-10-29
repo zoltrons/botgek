@@ -1,5 +1,6 @@
 pub mod builtin;
 pub mod parser;
+pub mod tracking;
 
 use serenity::all::{
     ChannelId, Context, GuildId, Member, Message, MessageId, MessageReference, User,
