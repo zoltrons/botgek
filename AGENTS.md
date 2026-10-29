@@ -2,6 +2,19 @@
 
 This file holds the repo configuration consumed by the engineering skills.
 
+## Start here (navigation, minimal tokens)
+
+The source is ~43k lines; do not explore it blind. In this order:
+
+1. [docs/agents/MAP.md](docs/agents/MAP.md): find your task in the "Görev ─► ilk bakılacak yer" table. It names the
+   starting file, the module doc, a grep anchor, and the narrowest verify command.
+2. Read only the relevant section of that module doc (`Değişmezler`, `Değiştirirken`).
+3. `scripts/outline.sh <file>` gives a file's item outline with line numbers. Then `Read` with `offset`/`limit`.
+   Never read a file over ~1000 lines whole. Other modes: `--tree`, `--find NAME`, `--refs NAME`, `--check`.
+4. Working method, search recipes, verify matrix, pitfalls: [docs/agents/WORKFLOW.md](docs/agents/WORKFLOW.md).
+
+If you add, move, or delete a source file or module doc, update MAP.md and run `scripts/outline.sh --check`.
+
 ## Agent skills
 
 ### Issue tracker
