@@ -106,8 +106,7 @@ Bir platform eklerken tipik dokunuş noktaları:
 1. `src/converters/parser.rs`: URL kalıpları, `Platform` varyantı, kanonikleştirme ve spoiler desteği.
 2. `src/converters/builtin/`: platform modülü; `fetch` ve gerekirse `render` yolu.
 3. `src/converters/builtin/mod.rs`: `fetch` dağıtımı ve platform anahtarı.
-4. `src/settings.rs`: modül anahtarı, rol filtresi, motor modu; platform native-only ise
-   `NATIVE_ONLY_PLATFORMS`.
+4. `src/settings.rs`: modül anahtarı ve rol filtresi.
 5. `src/web/ui/` ve `settings.json`: panel anahtarları ve varsayılanlar.
 6. Testler: parser birim testleri, mümkünse loopback fixture'ı ve panel sözleşmesi.
 

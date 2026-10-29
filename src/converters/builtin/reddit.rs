@@ -13,10 +13,10 @@
 //! gönderi verisi `oauth.reddit.com/by_id/t3_{id}.json` ile alınır. Yorum bağlantılarının
 //! bağlam metni Android GraphQL `PostComments` işleminden gelir, bkz. [`reddit_gql`].
 //!
-//! Video: Reddit'in verdiği mp4 (`fallback_url`, genelde `CMAF_*.mp4`) **video-only**'dir —
-//! Reddit sesi ayrı akışta tutar. Proje **ffmpeg kullanmaz**; bu yüzden video kartta sessiz
-//! oynar, sesli izlemek için gönderi bağlantısı (`[Link]`) Reddit'e gider. `secure_media`
-//! alanı da (bazı gönderilerde medya yalnızca orada) desteklenir.
+//! Video: Reddit'in verdiği mp4 (`fallback_url`, genelde `CMAF_*.mp4`) **video-only**'dir,
+//! Reddit sesi ayrı akışta tutar. Ses ve görüntü gönderimde [`super::reddit_video`] ile tek
+//! MP4'te birleştirilir; birleştirme başarısız olursa kart sessiz uzak videoyla gider.
+//! `secure_media` alanı da (bazı gönderilerde medya yalnızca orada) desteklenir.
 
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};

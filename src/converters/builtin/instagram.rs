@@ -8,10 +8,11 @@
 //! - **Gönderi sayfası** (`/{tür}/{kod}/`): `og:title` (görünen ad), `og:url` (kullanıcı adı),
 //!   `og:description` (beğeni/yorum/tarih) ve `og:image`.
 //!
-//! İki kaynak da hata verirse (ör. giriş duvarı) akış hata döner ve ayar açıksa proxy motoruna
-//! düşülür. Instagram, video/reel akışını (mp4) sayfa kaynağına koymadığı için video
-//! gönderilerinde kart, videonun **kapak karesini** gösterir; video Discord içinde
-//! oynatılamadığından gönderi bağlantısına `Reel`/`Video` etiketi eşlik eder.
+//! Üçüncü uç yalnızca `INSTAGRAM_SESSIONID` tanımlıysa kullanılır: uygulama API'sinden
+//! (`/api/v1/media/{pk}/info/`) video mp4 ve carousel görselleri gelir. Üç kaynak da
+//! yararsızsa (ör. giriş duvarı) akış hata döner. Oturum yoksa Instagram video/reel akışını
+//! (mp4) sayfa kaynağına koymadığı için kart videonun **kapak karesini** gösterir ve gönderi
+//! bağlantısına `Reel`/`Video` etiketi eşlik eder.
 
 use std::sync::LazyLock;
 
