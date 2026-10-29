@@ -35,14 +35,8 @@ Discord'da paylaşılan sosyal medya bağlantılarını Components V2 kartların
 
 ## Kurulum
 
-Hazır imaj GitHub Container Registry'de yayınlanır (yalnızca `linux/arm64`):
-
-```sh
-docker pull ghcr.io/zoltrons/botgek:latest
-```
-
-`docker-compose.yml` içindeki `image:` satırının yorumunu kaldırıp `ghcr.io/zoltrons/botgek:latest` yazın,
-sonra:
+Hazır imaj GitHub Container Registry'de yayınlanır (`ghcr.io/zoltrons/botgek:latest`, yalnızca
+`linux/arm64`). `docker-compose.yml` bu imajı kullanır:
 
 ```sh
 git clone https://github.com/zoltrons/botgek.git
@@ -52,7 +46,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Kaynaktan derlemek için `image:` satırını yorumda bırakıp `docker compose up -d --build` çalıştırın.
+Kaynaktan derlemek için `docker compose up -d --build` çalıştırın.
 Docker olmadan `cargo run --locked` yeterlidir (Rust 1.88 veya üstü gerekir).
 
 Panel `http://127.0.0.1:3000` adresinde açılır. Token üretmek için `openssl rand -hex 32` kullanabilirsiniz.

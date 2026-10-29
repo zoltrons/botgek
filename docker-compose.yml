@@ -9,8 +9,9 @@ services:
         #   BOTGEK_VERSION=$(git describe --tags --abbrev=0) BOTGEK_SHA=$(git rev-parse --short HEAD) docker compose build
         BOTGEK_VERSION: ${BOTGEK_VERSION:-}
         BOTGEK_SHA: ${BOTGEK_SHA:-}
-    # Veya GHCR üzerinden yayınlanan imajı kullanmak isterseniz:
-    # image: ghcr.io/<kullanici_adiniz>/botgek:latest
+    # Varsayılan olarak GHCR'deki hazır imaj (linux/arm64) çekilir. Kaynaktan derlemek için
+    # `docker compose up -d --build` çalıştırın; derlenen imaj aynı etiketle yerel olarak kullanılır.
+    image: ghcr.io/zoltrons/botgek:latest
     container_name: botgek
     restart: unless-stopped
     # Güvenlik: Container'ı root olmayan host standart kullanıcısı (1000:1000) ile çalıştırır:
