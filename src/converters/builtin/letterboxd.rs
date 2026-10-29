@@ -215,6 +215,11 @@ static PROFILE_H1_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static PROFILE_LABEL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<span class="label">(.*?)</span>"#).expect("geçerli profil etiketi regex")
 });
+/// İnceleme sayfasında "Review by" başlığının bulunduğu blok: yalnızca inceleme sahibinin rozetini
+/// içerir (sayfadaki diğer kullanıcıların rozetleri bu bloğun dışındadır).
+static REVIEW_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<div class="person-summary.*?</h1>"#).expect("geçerli inceleme başlığı regex")
+});
 static PROFILE_BADGE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<span class="badge[^"]*">(.*?)</span>"#).expect("geçerli rozet regex")
 });
@@ -628,6 +633,8 @@ struct Review {
     author: String,
     profile_url: String,
     avatar: Option<String>,
+    /// Yazarın rozeti (`Patron`, `Pro`, `HQ`); rozetsizse `None`.
+    badge: Option<String>,
     /// Kullanıcının puanı (0,5–5); puansız kayıtta `None`.
     rating: Option<f64>,
     body: Option<String>,
@@ -697,6 +704,11 @@ fn parse_review(html: &str, target: &Target) -> Option<Review> {
             .captures_iter(html)
             .find(|caps| &caps[1] == user.as_str())
             .map(|caps| caps[2].to_string()),
+        badge: REVIEW_HEADER_REGEX
+            .find(html)
+            .and_then(|header| first_capture(&PROFILE_BADGE_REGEX, header.as_str()))
+            .map(|badge| badge.trim().to_string())
+            .filter(|badge| !badge.is_empty()),
         rating: review
             .get("reviewRating")
             .and_then(|rating| rating.get("ratingValue"))
@@ -1236,16 +1248,26 @@ fn review_card(review: &Review) -> CustomCard {
     if let Some(year) = &review.film_year {
         film.push_str(&format!(" ({year})"));
     }
-    let mut header = if verdict.is_empty() {
-        format!("### {film}")
-    } else {
-        format!("### {verdict}\n{film}")
-    };
-    header.push_str(&format!(
-        "\n-# İnceleyen: [{}]({})",
+    // Letterboxd'daki sıra ve boyut: küçük "İnceleyen" satırı, ayraç, büyük film adı (`##`),
+    // ondan küçük yıldızlar (`###`), en küçük izleme günü (`-#`).
+    let mut byline = format!(
+        "-# İnceleyen: [{}]({})",
         escape_markdown(&review.author),
         review.profile_url
-    ));
+    );
+    if let Some(badge) = &review.badge {
+        // Profil kartındaki gibi: Patron rozetine taç eşlik eder, diğerleri yalnızca yazı.
+        let crown = if badge.eq_ignore_ascii_case("patron") {
+            format!("{} ", EMOJI_PATRON.tag())
+        } else {
+            String::new()
+        };
+        byline.push_str(&format!(" · {crown}{}", escape_markdown(badge)));
+    }
+    let mut header = format!("## {film}");
+    if !verdict.is_empty() {
+        header.push_str(&format!("\n### {verdict}"));
+    }
 
     let mut meta: Vec<String> = Vec::new();
     match (review.watched, review.published) {
@@ -1260,13 +1282,6 @@ fn review_card(review: &Review) -> CustomCard {
     if review.rewatch {
         meta.push(format!("{} Yeniden izleme", EMOJI_REWATCH.tag()));
     }
-    if let Some(likes) = review.likes {
-        meta.push(format!(
-            "{} {} beğeni",
-            EMOJI_LIKES.tag(),
-            format_count(likes)
-        ));
-    }
     if let Some(director) = &review.director {
         meta.push(format!("Yönetmen: {}", escape_markdown(director)));
     }
@@ -1276,12 +1291,16 @@ fn review_card(review: &Review) -> CustomCard {
         section_children.push(text(format!("-# {}", meta.join(" · "))));
     }
 
-    let mut components = vec![section(
-        section_children,
-        review.poster.as_deref(),
-        &review.url,
-        &format!("{} posteri", review.film_title),
-    )];
+    let mut components = vec![
+        text(byline),
+        json!({ "type": TYPE_SEPARATOR, "spacing": 1 }),
+        section(
+            section_children,
+            review.poster.as_deref(),
+            &review.url,
+            &format!("{} posteri", review.film_title),
+        ),
+    ];
     match review
         .body
         .as_deref()
@@ -1296,6 +1315,14 @@ fn review_card(review: &Review) -> CustomCard {
             }));
         }
         _ => {}
+    }
+    // Letterboxd'da beğeni sayısı inceleme metninin altında durur.
+    if let Some(likes) = review.likes {
+        components.push(text(format!(
+            "-# {} {} beğeni",
+            EMOJI_LIKES.tag(),
+            format_count(likes)
+        )));
     }
     components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
     components.push(json!({
@@ -1498,6 +1525,7 @@ mod tests {
         {"datePublished":"2019-08-10","@type":"Review","author":[{"@type":"Person","name":"hollie amanda","sameAs":"https://letterboxd.com/hollieamanda/"}],"reviewBody":"call me by your name’s peach walked\r\n\r\nso parasite’s peach could run","itemReviewed":{"image":"https://a.ltrbxd.com/resized/film-poster/4/2/6/4/0/6/426406-parasite-0-230-0-345-crop.jpg?v=8f5653f710","@type":"Movie","director":[{"@type":"Person","name":"Bong Joon Ho"}],"name":"Parasite","sameAs":"https://letterboxd.com/film/parasite-2019/"},"@context":"https://schema.org","reviewRating":{"bestRating":5,"@type":"Rating","ratingValue":4.5,"worstRating":0.5},"url":"https://letterboxd.com/hollieamanda/film/parasite-2019/"}
         /* ]]> */
         </script></head><body>
+        <div class="person-summary -inline"><h1 class="title-4"><small class="context">Review by</small><a href="/hollieamanda/" class="name"> <span>hollie amanda</span> </a><span class="badge -patron ">Patron</span></h1></div>
         <a class="avatar -a24" href="/hollieamanda/" > <img src="https://a.ltrbxd.com/resized/avatar/upload/1/8/3/shard/avtr-0-48-0-48-crop.jpg?v=6791db69be" alt="hollie amanda"/></a>
         <div class="topline"><h2 class="primaryname prettify"><a href="/film/parasite-2019/">Parasite</a></h2><span class="releasedate"><a href="/films/year/2019/">2019</a></span></div>
         <div class="content-reactions-strip -viewing -single"><span class="inline-rating"><svg aria-label="★★★★½"></svg></span>
@@ -2014,9 +2042,11 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("👁 9 Ağu 2019 izledi · ♡ 43.6K beğeni · Yönetmen: Bong Joon Ho"),
+            text.contains("👁 9 Ağu 2019 izledi · Yönetmen: Bong Joon Ho"),
             "{text}"
         );
+        assert!(text.contains("-# ♡ 43.6K beğeni"), "{text}");
+        assert!(text.contains("hollieamanda/) · 👑 Patron"), "{text}");
         assert!(
             text.contains("⚠️ **Spoiler içerir**\n||call me by your name’s peach walked\n\nso parasite’s peach could run||"),
             "{text}"
