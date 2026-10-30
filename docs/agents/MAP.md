@@ -136,6 +136,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/converters/builtin/facebook.rs` | Facebook gönderi/video/reel. |
 | `src/converters/builtin/youtube.rs` | YouTube topluluk gönderisi. |
 | `src/converters/builtin/letterboxd.rs` | Letterboxd film/inceleme/profil kartları. (~2200) |
+| `src/converters/builtin/miniflux.rs` | Miniflux paylaşım kartı + "Devamını oku" butonu. (~330) |
 
 ### Dışı
 

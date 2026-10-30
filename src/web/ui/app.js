@@ -35,12 +35,12 @@ async function apiFetch(path, options = {}) {
 }
 
 /* ── sabitler: Rust varsayılanlarıyla birebir aynı ───────────────────────── */
-const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'pixiv', 'tumblr', 'facebook', 'youtube', 'letterboxd', 'ai_chat'];
-const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, pixiv: true, tumblr: true, facebook: true, youtube: true, letterboxd: true, ai_chat: true };
+const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'pixiv', 'tumblr', 'facebook', 'youtube', 'letterboxd', 'miniflux', 'ai_chat'];
+const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, pixiv: true, tumblr: true, facebook: true, youtube: true, letterboxd: true, miniflux: true, ai_chat: true };
 const MODULE_LABELS = {
     twitter: 'Twitter / X', tiktok: 'TikTok', instagram: 'Instagram', reddit: 'Reddit',
     bluesky: 'Bluesky', spotify: 'Spotify', twitch: 'Twitch', pixiv: 'Pixiv', tumblr: 'Tumblr',
-    facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', ai_chat: 'AI sohbet'
+    facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', miniflux: 'Miniflux', ai_chat: 'AI sohbet'
 };
 const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
 
@@ -62,7 +62,8 @@ const ENGINE_PLATFORMS = [
     { key: 'tumblr', label: 'Tumblr' },
     { key: 'facebook', label: 'Facebook' },
     { key: 'youtube', label: 'YouTube Posts' },
-    { key: 'letterboxd', label: 'Letterboxd' }
+    { key: 'letterboxd', label: 'Letterboxd' },
+    { key: 'miniflux', label: 'Miniflux' }
 ];
 
 const ENGINE_DEFAULTS = {

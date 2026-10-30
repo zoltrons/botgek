@@ -15,6 +15,7 @@ pub enum Platform {
     Facebook,
     YouTube,
     Letterboxd,
+    Miniflux,
 }
 
 impl Platform {
@@ -32,6 +33,7 @@ impl Platform {
             Platform::Facebook => "Facebook",
             Platform::YouTube => "YouTube",
             Platform::Letterboxd => "Letterboxd",
+            Platform::Miniflux => "Miniflux",
         }
     }
 }
@@ -214,6 +216,20 @@ static YOUTUBE_COMMUNITY_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static YOUTUBE_COMMUNITY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)https?://(?:www\.|m\.)?youtube\.com/post/[A-Za-z0-9_-]+[^\s<>()]*")
         .expect("geçerli YouTube community regex")
+});
+
+// ==================== MINIFLUX ====================
+// Herkese açık paylaşım: https://miniflux.{alan}.{uzantı}/share/{40 onaltılık}. Yalnızca `miniflux`
+// alt alan adı (miniflux.site.url); kök alan adı (miniflux.site) tanınmaz.
+static MINIFLUX_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\|\|\s*https://((?i:miniflux)\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]{1,5})?)/share/([0-9a-fA-F]{40})[^\s|]*\s*\|\|",
+    )
+    .expect("geçerli Miniflux spoiler regex")
+});
+static MINIFLUX_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https://((?i:miniflux)\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]{1,5})?)/share/([0-9a-fA-F]{40})[^\s<>()]*")
+        .expect("geçerli Miniflux regex")
 });
 
 // ==================== LETTERBOXD ====================
@@ -405,6 +421,9 @@ pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
         return Some(sanitize_urls(post));
     }
     if let Some(post) = parse_letterboxd(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_miniflux(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -757,6 +776,22 @@ fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
+/// Miniflux paylaşım bağlantısı. Kanonik biçim `https://{sunucu}/share/{kod}` (küçük harf kod).
+/// shortcut: alt dizinde (`/miniflux/share/..`) ve http'de çalışan sunucular tanınmaz.
+fn parse_miniflux(raw_content: &str) -> Option<ParsedPost> {
+    match_pair(
+        raw_content,
+        Platform::Miniflux,
+        &MINIFLUX_SPOILER_REGEX,
+        &MINIFLUX_REGEX,
+        |caps| {
+            let host = caps.get(1)?.as_str().to_ascii_lowercase();
+            let code = caps.get(2)?.as_str().to_ascii_lowercase();
+            native(format!("https://{host}/share/{code}"))
+        },
+    )
+}
+
 /// Letterboxd: kullanıcı profili, kullanıcı incelemesi ve film sayfası
 /// desteklenir; kısa linkler (`boxd.it`) hedefe native motorda çözülür. Adresler kanonik
 /// biçime indirilir (sorgu, parça ve alt sayfa atılır).
@@ -870,6 +905,29 @@ fn parse_letterboxd_profile(raw_content: &str) -> Option<ParsedPost> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn miniflux_share_links_are_canonicalized() {
+        let code = "5bf90f5776eaa9139d02f9a9a5d964d20a472f59";
+        let parsed =
+            parse_message(&format!("oku https://Miniflux.Turta.us/share/{code}?x=1")).unwrap();
+        assert_eq!(parsed.platform, Platform::Miniflux);
+        assert_eq!(
+            parsed.original_url,
+            format!("https://miniflux.turta.us/share/{code}")
+        );
+        assert!(!parsed.is_spoiler);
+        assert_eq!(parsed.user_comment.as_deref(), Some("oku"));
+        assert!(
+            parse_message(&format!("||https://miniflux.example.com/share/{code}||"))
+                .unwrap()
+                .is_spoiler
+        );
+        assert!(parse_miniflux("https://miniflux.example.com/share/abc").is_none());
+        assert!(parse_miniflux(&format!("https://miniflux.site/share/{code}")).is_none());
+        assert!(parse_miniflux(&format!("https://wiki.example.com/share/{code}")).is_none());
+        assert!(parse_miniflux(&format!("http://miniflux.example.com/share/{code}")).is_none());
+    }
 
     #[test]
     fn letterboxd_links_are_canonicalized() {

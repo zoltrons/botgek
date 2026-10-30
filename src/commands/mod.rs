@@ -34,7 +34,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
-use crate::converters::builtin::{raw, spotify};
+use crate::converters::builtin::{miniflux, raw, spotify};
 use crate::converters::{self, ConvertError};
 use crate::settings::AppSettings;
 
@@ -228,9 +228,13 @@ async fn dispatch(
             if component
                 .data
                 .custom_id
-                .starts_with(spotify::PAGE_CUSTOM_ID_PREFIX) =>
+                .starts_with(spotify::PAGE_CUSTOM_ID_PREFIX)
+                || component
+                    .data
+                    .custom_id
+                    .starts_with(miniflux::CUSTOM_ID_PREFIX) =>
         {
-            return spotify_page(ctx, component, http_client).await;
+            return edit_card_component(ctx, component, http_client).await;
         }
         Interaction::Command(command) => command,
         _ => return,
@@ -387,12 +391,16 @@ fn string_option<'a>(data: &'a CommandData, name: &str) -> Option<&'a str> {
 }
 
 /// Yalnızca komutu kullanan kişiye görünen kısa yanıt.
-/// Spotify kartındaki parça listesi sayfa butonu: mesaj yerinde güncellenir.
+/// Spotify parça listesi sayfa butonu ve Miniflux "Devamını oku" butonu: mesaj yerinde güncellenir.
 ///
 /// Önce "güncelleme ertelendi" (type 6) yanıtı verilir (embed yeniden çekilirken üç saniyelik
 /// pencere kaçmasın), mesaj ham JSON olarak okunur, yalnızca liste + sayfa butonları değiştirilir
 /// ve `@original` düzenlenir. Sayfa herkes için değişir; tıklayan kişiye yetki aranmaz.
-async fn spotify_page(ctx: &Context, component: &ComponentInteraction, client: &reqwest::Client) {
+async fn edit_card_component(
+    ctx: &Context,
+    component: &ComponentInteraction,
+    client: &reqwest::Client,
+) {
     let deferred = ctx
         .http
         .create_interaction_response(
@@ -403,7 +411,7 @@ async fn spotify_page(ctx: &Context, component: &ComponentInteraction, client: &
         )
         .await;
     if let Err(err) = deferred {
-        warn!(interaction = %component.id, "Spotify sayfa etkileşimi ertelenemedi: {err:?}");
+        warn!(interaction = %component.id, "kart etkileşimi ertelenemedi: {err:?}");
         return;
     }
 
@@ -416,7 +424,12 @@ async fn spotify_page(ctx: &Context, component: &ComponentInteraction, client: &
             .get("components")
             .cloned()
             .ok_or("mesajda bileşen yok")?;
-        spotify::turn_page(client, &component.data.custom_id, &mut components).await?;
+        let custom_id = &component.data.custom_id;
+        if custom_id.starts_with(miniflux::CUSTOM_ID_PREFIX) {
+            miniflux::toggle(custom_id, &mut components).await?;
+        } else {
+            spotify::turn_page(client, custom_id, &mut components).await?;
+        }
         let payload = serde_json::json!({
             "components": components,
             "allowed_mentions": { "parse": [] },
@@ -428,9 +441,9 @@ async fn spotify_page(ctx: &Context, component: &ComponentInteraction, client: &
     .await;
 
     if let Err(err) = result {
-        warn!(interaction = %component.id, "Spotify sayfası değiştirilemedi: {err}");
+        warn!(interaction = %component.id, "kart bileşeni değiştirilemedi: {err}");
         let body = serde_json::json!({
-            "content": "Sayfa değiştirilemedi, biraz sonra tekrar dene.",
+            "content": "Kart güncellenemedi, biraz sonra tekrar dene.",
             "flags": 64,
         });
         let _ = ctx

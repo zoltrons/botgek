@@ -231,6 +231,13 @@
             <label class="switch"><input type="checkbox" id="mod-letterboxd" data-module-key="letterboxd" role="switch" aria-label="Letterboxd modülü"><span class="switch-track" aria-hidden="true"></span></label>
         </div>
         <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">MF</span>
+            <div class="mod-body"><span class="mod-name">Miniflux</span><span class="mod-host mono">paylaşım bağlantısı</span></div>
+            <span class="mod-state mono" id="status-miniflux">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="miniflux" aria-label="Miniflux rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-miniflux" data-module-key="miniflux" role="switch" aria-label="Miniflux modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
             <span class="mod-key mono" aria-hidden="true">AI</span>
             <div class="mod-body">
                 <span class="mod-name">AI sohbet</span>
@@ -295,6 +302,7 @@
             <button class="studio-item" type="button" role="tab" id="modtab-facebook" aria-selected="false" aria-controls="studio-panel" data-studio-module="facebook" tabindex="-1"><span class="studio-name">Facebook</span><span class="studio-badge mono" id="badge-facebook">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-youtube" aria-selected="false" aria-controls="studio-panel" data-studio-module="youtube" tabindex="-1"><span class="studio-name">YouTube Posts</span><span class="studio-badge mono" id="badge-youtube">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-letterboxd" aria-selected="false" aria-controls="studio-panel" data-studio-module="letterboxd" tabindex="-1"><span class="studio-name">Letterboxd</span><span class="studio-badge mono" id="badge-letterboxd">filtre yok</span></button>
+            <button class="studio-item" type="button" role="tab" id="modtab-miniflux" aria-selected="false" aria-controls="studio-panel" data-studio-module="miniflux" tabindex="-1"><span class="studio-name">Miniflux</span><span class="studio-badge mono" id="badge-miniflux">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-ai_chat" aria-selected="false" aria-controls="studio-panel" data-studio-module="ai_chat" tabindex="-1">
                 <span class="studio-name">AI sohbet</span>
                 <span class="studio-badge mono" id="badge-ai_chat">filtre yok</span>
@@ -410,6 +418,7 @@
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Facebook</span><span class="engine-note mono" id="engine-note-facebook">—</span></div><p class="engine-fixed mono">native embed · gönderi kartı + video</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">YouTube Posts</span><span class="engine-note mono" id="engine-note-youtube">—</span></div><p class="engine-fixed mono">native embed · topluluk gönderisi kartı</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Letterboxd</span><span class="engine-note mono" id="engine-note-letterboxd">—</span></div><p class="engine-fixed mono">native embed · film/inceleme/profil kartı</p></div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">Miniflux</span><span class="engine-note mono" id="engine-note-miniflux">—</span></div><p class="engine-fixed mono">native embed · makale kartı + devamını oku</p></div>
     </div>
 
     <p class="micro">kart içeriği</p>

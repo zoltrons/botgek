@@ -744,7 +744,7 @@ async fn convert_preview(state: &WebState, args: &Value) -> Result<Value, String
     let settings = state.settings.read().await.clone();
     let engine = settings.get_guild_settings(None).engine;
     let parsed = parser::parse_message(&url)
-        .ok_or_else(|| "desteklenen bir bağlantı bulunamadı (X, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv, Tumblr, Facebook, YouTube, Letterboxd)".to_string())?;
+        .ok_or_else(|| "desteklenen bir bağlantı bulunamadı (X, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv, Tumblr, Facebook, YouTube, Letterboxd, Miniflux)".to_string())?;
 
     let started = Instant::now();
     let fetched = tokio::time::timeout(

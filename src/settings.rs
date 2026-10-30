@@ -19,6 +19,7 @@ pub struct PlatformModules {
     pub facebook: bool,
     pub youtube: bool,
     pub letterboxd: bool,
+    pub miniflux: bool,
     pub ai_chat: bool,
 }
 
@@ -37,6 +38,7 @@ impl Default for PlatformModules {
             facebook: true,
             youtube: true,
             letterboxd: true,
+            miniflux: true,
             ai_chat: true,
         }
     }
@@ -513,6 +515,8 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub letterboxd: RoleFilterSettings,
     #[serde(default)]
+    pub miniflux: RoleFilterSettings,
+    #[serde(default)]
     pub ai_chat: RoleFilterSettings,
 }
 
@@ -543,6 +547,7 @@ impl ModuleRoleFilters {
             &mut self.facebook,
             &mut self.youtube,
             &mut self.letterboxd,
+            &mut self.miniflux,
             &mut self.ai_chat,
         ] {
             filter.sanitize();
@@ -568,6 +573,7 @@ impl GuildSettings {
             "facebook" => &self.role_filters.facebook,
             "youtube" => &self.role_filters.youtube,
             "letterboxd" => &self.role_filters.letterboxd,
+            "miniflux" => &self.role_filters.miniflux,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
         }
@@ -937,6 +943,7 @@ impl AppSettings {
         self.role_filters.facebook = legacy.clone();
         self.role_filters.youtube = legacy.clone();
         self.role_filters.letterboxd = legacy.clone();
+        self.role_filters.miniflux = legacy.clone();
         self.role_filters.ai_chat = legacy;
     }
 }
