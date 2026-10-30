@@ -207,7 +207,7 @@ fn body_components(
     if can_expand && custom_id.len() <= CUSTOM_ID_LIMIT {
         buttons.push(json!({ "type": 2, "style": 2, "label": label, "custom_id": custom_id }));
     }
-    buttons.push(json!({ "type": 2, "style": 5, "label": "Makaleyi aç", "url": article.url }));
+    buttons.push(json!({ "type": 2, "style": 5, "label": "Makaleyi aç", "url": format!("https://{host}/share/{code}") }));
 
     (
         text_display(Some(BODY_COMPONENT_ID), body),
