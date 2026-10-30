@@ -23,6 +23,7 @@ Discord'da paylaşılan sosyal medya bağlantılarını Components V2 kartların
 | Facebook | Gönderi, video, reel |
 | YouTube | Topluluk gönderisi |
 | Letterboxd | Film, inceleme, profil |
+| Miniflux | Paylaşım bağlantısı (`miniflux.*` alt alan adı), "Devamını oku" ile genişleyen makale |
 
 ## Özellikler
 
