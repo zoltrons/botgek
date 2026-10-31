@@ -6,7 +6,7 @@
 //! çevrilir" kararını verir; ağ isteği `twitter` modülündedir.
 //!
 //! Varsayılan akışta Türkçe (`tr`) ve İngilizce (`en`) gönderiler olduğu gibi bırakılır;
-//! `/dönüştür` etkileşimi `translate_english` ile İngilizceyi de çevirir.
+//! `translate_english` ayarı açılırsa İngilizce de çevrilir (`/dönüştür` artık açmaz).
 
 /// Dilin belirlenemediği/çeviriye uygun olmadığı kodlar (X'in sözde dilleri dahil).
 const UNKNOWN_LANGUAGE_CODES: [&str; 7] = ["und", "zxx", "mul", "qme", "qam", "qht", "art"];

@@ -186,15 +186,12 @@ impl ConvertError {
 ///
 /// - Kaynak mesaj/taklit yok: `impersonate_user` kapatılır.
 /// - X çevirisi komut için **varsayılan olarak açıktır**: WebUI'daki `auto_translate`
-///   anahtarı kapalı olsa bile `/dönüştür` tweetleri (İngilizce dâhil) hedef dile çevirir.
+///   anahtarı kapalı olsa bile `/dönüştür` Türkçe/İngilizce olmayan tweetleri hedef dile çevirir.
 ///   Hedef dil ayarı korunur (varsayılan `tr`).
 fn interaction_settings(settings: &GuildSettings) -> GuildSettings {
     let mut settings = settings.clone();
     settings.engine.impersonate_user = false;
     settings.engine.auto_translate = true;
-    // Normal mesaj akışı İngilizce gönderileri varsayılan olarak çevirmez (gecikme politikası);
-    // komut açıkça çağrıldığında İngilizce dâhil hedef dilden farklı her gönderi çevrilir.
-    settings.engine.translate_english = true;
     settings
 }
 
@@ -414,8 +411,8 @@ mod tests {
             "etkileşim dönüşümünde taklit kapalı olmalı"
         );
         assert!(
-            resolved.engine.translate_english,
-            "etkileşim dönüşümü İngilizce gönderileri de çevirmeli"
+            !resolved.engine.translate_english,
+            "etkileşim dönüşümü İngilizce gönderileri çevirmemeli"
         );
         assert_eq!(
             resolved.engine.translation_target, "de",
