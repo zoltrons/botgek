@@ -29,8 +29,9 @@ const CUSTOM_ID_LIMIT: usize = 100;
 
 /// Daraltılmış kartta gösterilen özet uzunluğu.
 const PREVIEW_CHARS: usize = 500;
-/// Genişletilmiş metin; başlık ve kullanıcı notuyla birlikte 4000 karakterlik V2 sınırında kalır.
-const FULL_CHARS: usize = 3200;
+/// Bu uzunluğa kadar makale tam gösterilir; daha uzunu özetlenir ve sayfalara bölünür. Sayfa başına
+/// ~2000 karakter ≈ 25-30 satırdır; başlık ve kullanıcı notuyla 4000 karakterlik V2 sınırında kalır.
+const PAGE_CHARS: usize = 2000;
 /// Sayfadaki saat dilimsiz `datetime` değeri Türkiye saatindedir.
 /// shortcut: UTC+3 sabit; Miniflux hesabı başka saat dilimindeyse zaman kayar.
 const PAGE_UTC_OFFSET_SECS: i64 = 3 * 3600;
@@ -211,32 +212,88 @@ fn text_display(id: Option<u64>, content: String) -> Value {
     value
 }
 
-/// Gövde bileşeni ve (varsa) buton satırı. `expanded` tam metni gösterir.
-fn body_components(
-    article: &Article,
-    host: &str,
-    code: &str,
-    expanded: bool,
-) -> (Value, Option<Value>) {
-    let limit = if expanded { FULL_CHARS } else { PREVIEW_CHARS };
-    let body = truncate_chars(&article.text, limit);
-    let can_expand = article.text.chars().count() > PREVIEW_CHARS;
+/// Kartın gösterim durumu.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum View {
+    Collapsed,
+    /// 0 tabanlı sayfa.
+    Page(usize),
+}
 
-    let mut buttons = Vec::new();
-    let (action, label) = if expanded {
-        ("less", "Daralt")
-    } else {
-        ("more", "Devamını oku")
-    };
-    let custom_id = format!("{CUSTOM_ID_PREFIX}{action}:{code}:{host}");
-    if can_expand && custom_id.len() <= CUSTOM_ID_LIMIT {
-        buttons.push(json!({ "type": 2, "style": 2, "label": label, "custom_id": custom_id }));
+/// Metni en fazla `max` karakterlik sayfalara böler; kesim önce paragraf, sonra satır, sonra
+/// boşluk sınırında yapılır.
+fn paginate(text: &str, max: usize) -> Vec<String> {
+    let mut pages = Vec::new();
+    let mut rest = text.trim();
+    while rest.chars().count() > max {
+        let limit = rest.char_indices().nth(max).map_or(rest.len(), |(i, _)| i);
+        let window = &rest[..limit];
+        let half = window.len() / 2;
+        let cut = ["\n\n", "\n", " "]
+            .iter()
+            .find_map(|sep| window.rfind(sep).filter(|at| *at >= half))
+            .unwrap_or(limit);
+        pages.push(rest[..cut].trim().to_string());
+        rest = rest[cut..].trim_start();
     }
-    buttons.push(json!({ "type": 2, "style": 5, "label": "Makaleyi aç", "url": format!("https://{host}/share/{code}") }));
+    pages.push(rest.to_string());
+    pages
+}
 
+fn nav_button(label: &str, action: &str, code: &str, host: &str, disabled: bool) -> Value {
+    json!({
+        "type": 2, "style": 2, "label": label, "disabled": disabled,
+        "custom_id": format!("{CUSTOM_ID_PREFIX}{action}:{code}:{host}"),
+    })
+}
+
+/// Gövde bileşeni ve buton satırı. Kısa makale tam gösterilir ve yalnızca bağlantı butonu alır.
+fn body_components(article: &Article, host: &str, code: &str, view: View) -> (Value, Value) {
+    let pages = paginate(&article.text, PAGE_CHARS);
+    // Çok uzun sunucu adında `custom_id` 100 karakteri aşar; buton konmaz, ilk sayfa gösterilir.
+    let fits = format!("{CUSTOM_ID_PREFIX}p999:{code}:{host}").len() <= CUSTOM_ID_LIMIT;
+    let long = pages.len() > 1 && fits;
+    let mut buttons = Vec::new();
+    let body = match view {
+        _ if !long => pages[0].clone(),
+        View::Collapsed => {
+            buttons.push(nav_button("Devamını oku", "p0", code, host, false));
+            truncate_chars(&article.text, PREVIEW_CHARS)
+        }
+        View::Page(page) => {
+            let page = page.min(pages.len() - 1);
+            let go = |to: usize| format!("p{to}");
+            buttons.push(nav_button(
+                "◀",
+                &go(page.saturating_sub(1)),
+                code,
+                host,
+                page == 0,
+            ));
+            let mut indicator = nav_button(
+                &format!("{}/{}", page + 1, pages.len()),
+                "noop",
+                code,
+                host,
+                true,
+            );
+            indicator["custom_id"] = json!(format!("{CUSTOM_ID_PREFIX}noop"));
+            buttons.push(indicator);
+            buttons.push(nav_button(
+                "▶",
+                &go(page + 1),
+                code,
+                host,
+                page + 1 >= pages.len(),
+            ));
+            buttons.push(nav_button("Daralt", "less", code, host, false));
+            pages[page].clone()
+        }
+    };
+    buttons.push(json!({ "type": 2, "style": 5, "label": "Makaleyi aç", "url": format!("https://{host}/share/{code}") }));
     (
         text_display(Some(BODY_COMPONENT_ID), body),
-        Some(json!({ "type": TYPE_ACTION_ROW, "id": ROW_COMPONENT_ID, "components": buttons })),
+        json!({ "type": TYPE_ACTION_ROW, "id": ROW_COMPONENT_ID, "components": buttons }),
     )
 }
 
@@ -262,9 +319,13 @@ fn build_card(article: &Article, host: &str, code: &str) -> CustomCard {
         None => text_display(None, header),
     };
 
-    let (body, row) = body_components(article, host, code, false);
-    let mut components = vec![head, json!({ "type": TYPE_SEPARATOR, "spacing": 1 }), body];
-    components.extend(row);
+    let (body, row) = body_components(article, host, code, View::Collapsed);
+    let components = vec![
+        head,
+        json!({ "type": TYPE_SEPARATOR, "spacing": 1 }),
+        body,
+        row,
+    ];
     CustomCard {
         components,
         accent_color: None,
@@ -280,8 +341,19 @@ pub async fn toggle(custom_id: &str, components: &mut Value) -> Result<(), Strin
         .ok_or("geçersiz kimlik")?
         .splitn(3, ':');
     let (action, code, host) = (parts.next(), parts.next(), parts.next());
-    let (Some(action @ ("more" | "less")), Some(code), Some(host)) = (action, code, host) else {
+    let (Some(action), Some(code), Some(host)) = (action, code, host) else {
         return Err("geçersiz Miniflux kimliği".into());
+    };
+    let view = match action {
+        "less" => View::Collapsed,
+        "more" => View::Page(0), // eski mesajlardaki buton
+        _ => View::Page(
+            action
+                .strip_prefix('p')
+                .and_then(|n| n.parse().ok())
+                .filter(|n| *n < 1000)
+                .ok_or("geçersiz sayfa")?,
+        ),
     };
     let share_url = format!("https://{host}/share/{code}");
     // Kimlik doğrulaması: sunucu adı ve kod, adres ayrıştırıcısından aynen geri dönmeli.
@@ -289,8 +361,8 @@ pub async fn toggle(custom_id: &str, components: &mut Value) -> Result<(), Strin
         return Err("geçersiz Miniflux adresi".into());
     }
     let article = fetch_article(&share_url).await?;
-    let (body, row) = body_components(&article, host, code, action == "more");
-    if replace_by_id(components, &body, row.as_ref()) {
+    let (body, row) = body_components(&article, host, code, view);
+    if replace_by_id(components, &body, Some(&row)) {
         Ok(())
     } else {
         Err("makale gövdesi mesajda bulunamadı".into())
@@ -366,42 +438,55 @@ mod tests {
     }
 
     #[test]
-    fn card_collapses_long_text_and_toggle_swaps_in_place() {
-        let long = "kelime ".repeat(300);
+    fn long_text_collapses_pages_and_toggle_swaps_in_place() {
+        let long = "kelime ".repeat(700);
         let article = parse_article(&page(&format!("<p>{long}</p>"))).unwrap();
         let host = "miniflux.turta.us";
         let card = build_card(&article, host, CODE);
         let mut tree = json!(card.components);
 
-        let row = &card.components[3];
-        assert_eq!(row["components"][0]["label"], "Devamını oku");
-        let id = row["components"][0]["custom_id"].as_str().unwrap();
-        assert_eq!(id, format!("miniflux:more:{CODE}:{host}"));
+        let button = &card.components[3]["components"][0];
+        assert_eq!(button["label"], "Devamını oku");
+        let id = button["custom_id"].as_str().unwrap();
+        assert_eq!(id, format!("miniflux:p0:{CODE}:{host}"));
         assert!(id.len() <= CUSTOM_ID_LIMIT);
-        assert!(
-            card.components[2]["content"]
-                .as_str()
-                .unwrap()
-                .chars()
-                .count()
-                <= PREVIEW_CHARS
-        );
+        let collapsed = card.components[2]["content"].as_str().unwrap();
+        assert!(collapsed.chars().count() <= PREVIEW_CHARS);
 
-        let (body, row) = body_components(&article, host, CODE, true);
-        assert!(replace_by_id(&mut tree, &body, row.as_ref()));
-        assert_eq!(tree[3]["components"][0]["label"], "Daralt");
-        assert!(tree[2]["content"].as_str().unwrap().chars().count() > PREVIEW_CHARS);
+        let (body, row) = body_components(&article, host, CODE, View::Page(1));
+        assert!(replace_by_id(&mut tree, &body, Some(&row)));
+        let pager = &tree[3]["components"];
+        assert_eq!(pager[1]["label"], "2/3");
+        assert_eq!(pager[0]["disabled"], false);
+        assert_eq!(pager[2]["disabled"], false);
+        assert_eq!(pager[3]["label"], "Daralt");
+        assert!(tree[2]["content"].as_str().unwrap().chars().count() <= PAGE_CHARS);
+        // Son sayfadan ötesi son sayfaya sabitlenir.
+        let (_, last) = body_components(&article, host, CODE, View::Page(99));
+        assert_eq!(last["components"][1]["label"], "3/3");
+        assert_eq!(last["components"][2]["disabled"], true);
     }
 
     #[test]
-    fn short_text_has_no_expand_button_and_spoiler_is_kept() {
-        let article = parse_article(&page("<p>kısa</p>")).unwrap();
-        let (body, row) = body_components(&article, "m.example", CODE, false);
-        assert_eq!(row.unwrap()["components"].as_array().unwrap().len(), 1);
+    fn pages_split_on_paragraph_boundaries() {
+        let text = format!("{}\n\n{}", "a ".repeat(600).trim(), "b ".repeat(600).trim());
+        let pages = paginate(&text, 1500);
+        assert_eq!(pages.len(), 2);
+        assert!(pages[0].starts_with('a') && !pages[0].contains('b'));
+        assert!(pages[1].starts_with('b'));
+    }
+
+    #[test]
+    fn short_text_is_shown_in_full_and_spoiler_is_kept() {
+        let text = "bir ".repeat(450); // 1800 karakter: sayfa sınırının altında
+        let article = parse_article(&page(&format!("<p>{text}</p>"))).unwrap();
+        let (body, row) = body_components(&article, "miniflux.example.com", CODE, View::Collapsed);
+        assert_eq!(body["content"], article.text);
+        assert_eq!(row["components"].as_array().unwrap().len(), 1);
 
         let mut tree = json!([{ "type": 10, "id": BODY_COMPONENT_ID, "content": "||eski||" }]);
         assert!(replace_by_id(&mut tree, &body, None));
-        assert_eq!(tree[0]["content"], "||kısa||");
+        assert_eq!(tree[0]["content"], format!("||{}||", article.text));
     }
 
     #[test]
