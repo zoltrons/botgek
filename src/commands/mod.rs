@@ -34,7 +34,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
-use crate::converters::builtin::{miniflux, raw, spotify};
+use crate::converters::builtin::{miniflux, pager, raw, spotify};
 use crate::converters::{self, ConvertError};
 use crate::settings::AppSettings;
 
@@ -232,9 +232,13 @@ async fn dispatch(
                 || component
                     .data
                     .custom_id
-                    .starts_with(miniflux::CUSTOM_ID_PREFIX) =>
+                    .starts_with(miniflux::CUSTOM_ID_PREFIX)
+                || component
+                    .data
+                    .custom_id
+                    .starts_with(pager::CUSTOM_ID_PREFIX) =>
         {
-            return edit_card_component(ctx, component, http_client).await;
+            return edit_card_component(ctx, component, http_client, config, app_settings).await;
         }
         Interaction::Command(command) => command,
         _ => return,
@@ -400,6 +404,8 @@ async fn edit_card_component(
     ctx: &Context,
     component: &ComponentInteraction,
     client: &reqwest::Client,
+    config: &Config,
+    app_settings: &Arc<RwLock<AppSettings>>,
 ) {
     let deferred = ctx
         .http
@@ -427,6 +433,19 @@ async fn edit_card_component(
         let custom_id = &component.data.custom_id;
         if custom_id.starts_with(miniflux::CUSTOM_ID_PREFIX) {
             miniflux::toggle(custom_id, &mut components).await?;
+        } else if custom_id.starts_with(pager::CUSTOM_ID_PREFIX) {
+            let parent_id = crate::handler::discord_thread_parent(
+                ctx,
+                component.guild_id,
+                component.channel_id,
+            )
+            .await;
+            let settings = app_settings.read().await.get_message_settings(
+                component.guild_id,
+                component.channel_id,
+                parent_id,
+            );
+            pager::turn_page(client, config, &settings.engine, custom_id, &mut components).await?;
         } else {
             spotify::turn_page(client, custom_id, &mut components).await?;
         }
