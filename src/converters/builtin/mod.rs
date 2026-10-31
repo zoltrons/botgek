@@ -13,6 +13,7 @@ pub mod letterboxd;
 pub mod media;
 pub mod miniflux;
 pub mod opengraph;
+pub mod pager;
 pub mod pixiv;
 mod preview;
 pub mod raw;
