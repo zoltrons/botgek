@@ -147,8 +147,9 @@ fn parse_article(html: &str) -> Option<Article> {
     let text = html_to_text(content);
     let one_line = |raw: &str| {
         unescape_html(&TAG_REGEX.replace_all(raw, ""))
-            .trim()
-            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     Some(Article {
         title: one_line(&title[2]),
