@@ -1,7 +1,7 @@
 //! Miniflux herkese açık paylaşım sayfaları (`https://{sunucu}/share/{kod}`).
 //!
 //! Sayfada OpenGraph etiketi yoktur (Discord önizlemesi boş kalır); makale `entry-content`
-//! bölümünden okunur. Uzun makale kısaltılır, "Devamını oku" 2000 karakterlik sayfaları açar; butonlar
+//! bölümünden okunur. Uzun makale kısaltılır, "Devamını oku" 3500 karakterlik sayfaları açar; butonlar
 //! mesajı yerinde günceller (bkz. [`toggle`]).
 
 use std::sync::LazyLock;
@@ -27,9 +27,9 @@ const ROW_COMPONENT_ID: u64 = 7402;
 pub const CUSTOM_ID_PREFIX: &str = "miniflux:";
 const CUSTOM_ID_LIMIT: usize = 100;
 
-/// "Devamını oku" ile açılan sayfa başına karakter. ~2000 karakter ≈ 25-30 satırdır; başlık ve
-/// kullanıcı notuyla 4000 karakterlik V2 sınırında kalır.
-const PAGE_CHARS: usize = 2000;
+/// "Devamını oku" ile açılan sayfa başına karakter. V2 mesajının toplam metin sınırı 4000'dir;
+/// 500 karakter başlık, kaynak satırı ve kullanıcı notuna ayrılır.
+const PAGE_CHARS: usize = 3500;
 /// Bu uzunluğa kadar makale tam gösterilir; fazlası bu kadarına kısaltılır ve "Devamını oku" konur.
 const PREVIEW_CHARS: usize = 1000;
 /// Sayfadaki saat dilimsiz `datetime` değeri Türkiye saatindedir.
@@ -508,7 +508,7 @@ fn nav_button(label: &str, action: &str, code: &str, host: &str, disabled: bool)
 }
 
 /// Gövde bileşeni ve buton satırı. `PREVIEW_CHARS`'a kadar makale tam gösterilir ve yalnızca
-/// bağlantı butonu alır; daha uzunu önce kısaltılır, "Devamını oku" 2000 karakterlik sayfaları açar.
+/// bağlantı butonu alır; daha uzunu önce kısaltılır, "Devamını oku" 3500 karakterlik sayfaları açar.
 fn body_components(article: &Article, host: &str, code: &str, view: View) -> (Value, Value) {
     let pages = paginate(&article.text, PAGE_CHARS);
     // Çok uzun sunucu adında `custom_id` 100 karakteri aşar; buton konmaz, ilk sayfa gösterilir.
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn long_text_collapses_then_pages_in_place() {
-        let long = "kelime ".repeat(700); // 4900 karakter
+        let long = "kelime ".repeat(1300); // 9100 karakter
         let article = parse_article(&page(&format!("<p>{long}</p>"))).unwrap();
         let host = "miniflux.turta.us";
         let card = build_card(&article, host, CODE);
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn expanded_text_within_one_page_has_no_arrows() {
-        let text = "kelime ".repeat(200); // 1400 karakter: 1000'i aşar, 2000'e sığar
+        let text = "kelime ".repeat(200); // 1400 karakter: 1000'i aşar, tek sayfaya sığar
         let article = parse_article(&page(&format!("<p>{text}</p>"))).unwrap();
         let (body, row) = body_components(&article, "miniflux.example.com", CODE, View::Page(0));
         assert_eq!(body["content"], article.text);

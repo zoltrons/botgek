@@ -16,7 +16,7 @@ etiketi olmadığı için Discord önizlemesi boş kalır.
 - `safe_http::preview` ile sayfa çekilir; başlık, kaynak, yazar, ilk görsel ve `entry-content` okunur.
 - Metin 1000 karaktere (`PREVIEW_CHARS`) kadar tam gösterilir, buton yalnızca "Makaleyi aç"tır (Miniflux share linki).
 - Daha uzunsa 1000 karaktere kısaltılır ve "Devamını oku" (`miniflux:p0:{kod}:{sunucu}`) konur. Tıklayınca mesaj
-  yerinde 2000 karakterlik sayfalara (`PAGE_CHARS`; paragraf/satır/boşluk sınırında bölünür) geçer:
+  yerinde 3500 karakterlik sayfalara (`PAGE_CHARS`; paragraf/satır/boşluk sınırında bölünür) geçer:
   `◀ n/N ▶ Daralt` (tek sayfaysa yalnızca `Daralt`). `less` özete döner.
   Gövde ve buton satırı sabit `id`'lerle (7401, 7402) bulunur; spoiler sarmalı korunur.
 - Makale HTML'i Discord markdown'ına çevrilir (`html_to_text`): başlık ve kalın/italik/kod/bağlantı/liste korunur,
