@@ -30,8 +30,8 @@ const CUSTOM_ID_LIMIT: usize = 100;
 /// Daraltılmış kartta gösterilen özet uzunluğu.
 const PREVIEW_CHARS: usize = 500;
 /// Bu uzunluğa kadar makale tam gösterilir; daha uzunu özetlenir ve sayfalara bölünür. Sayfa başına
-/// ~2000 karakter ≈ 25-30 satırdır; başlık ve kullanıcı notuyla 4000 karakterlik V2 sınırında kalır.
-const PAGE_CHARS: usize = 2000;
+/// ~1000 karakter ≈ 12-15 satırdır; başlık ve kullanıcı notuyla 4000 karakterlik V2 sınırında kalır.
+const PAGE_CHARS: usize = 1000;
 /// Sayfadaki saat dilimsiz `datetime` değeri Türkiye saatindedir.
 /// shortcut: UTC+3 sabit; Miniflux hesabı başka saat dilimindeyse zaman kayar.
 const PAGE_UTC_OFFSET_SECS: i64 = 3 * 3600;
@@ -456,14 +456,14 @@ mod tests {
         let (body, row) = body_components(&article, host, CODE, View::Page(1));
         assert!(replace_by_id(&mut tree, &body, Some(&row)));
         let pager = &tree[3]["components"];
-        assert_eq!(pager[1]["label"], "2/3");
+        assert_eq!(pager[1]["label"], "2/5");
         assert_eq!(pager[0]["disabled"], false);
         assert_eq!(pager[2]["disabled"], false);
         assert_eq!(pager[3]["label"], "Daralt");
         assert!(tree[2]["content"].as_str().unwrap().chars().count() <= PAGE_CHARS);
         // Son sayfadan ötesi son sayfaya sabitlenir.
         let (_, last) = body_components(&article, host, CODE, View::Page(99));
-        assert_eq!(last["components"][1]["label"], "3/3");
+        assert_eq!(last["components"][1]["label"], "5/5");
         assert_eq!(last["components"][2]["disabled"], true);
     }
 
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn short_text_is_shown_in_full_and_spoiler_is_kept() {
-        let text = "bir ".repeat(450); // 1800 karakter: sayfa sınırının altında
+        let text = "bir ".repeat(240); // 960 karakter: sayfa sınırının altında
         let article = parse_article(&page(&format!("<p>{text}</p>"))).unwrap();
         let (body, row) = body_components(&article, "miniflux.example.com", CODE, View::Collapsed);
         assert_eq!(body["content"], article.text);
