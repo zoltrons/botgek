@@ -30,7 +30,6 @@
 use serde_json::{Value, json};
 use serenity::all::UserId;
 
-use super::pager;
 use super::render::{RenderOptions, ResolvedMedia, escape_markdown, format_count};
 use super::{BuiltinPost, Impersonation};
 use crate::converters::parser::Platform;
@@ -398,17 +397,6 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     }
     if let Some(gallery) = media_gallery(card, nested_has_thumbnail) {
         children.push(gallery);
-        // Yalnızca uzak URL'li görseller sayfalanır (indirilen `attachment://` dosyalar değil).
-        if !nested_has_thumbnail
-            && card
-                .resolved
-                .images
-                .iter()
-                .all(|url| url.starts_with("http"))
-            && let Some(row) = pager::pager_row(card.post, card.options, 0)
-        {
-            children.push(row);
-        }
     }
     if let Some(metrics) = metrics_line(card.post, card.options, card.emojis) {
         children.push(text(metrics));
@@ -658,7 +646,7 @@ fn media_gallery(card: &V2Card<'_>, skip_images: bool) -> Option<Value> {
     }
 
     items.truncate(MEDIA_GALLERY_LIMIT);
-    Some(json!({"type": TYPE_MEDIA_GALLERY, "id": pager::GALLERY_COMPONENT_ID, "items": items}))
+    Some(json!({"type": TYPE_MEDIA_GALLERY, "items": items}))
 }
 
 /// Bölüm bileşeni (Section): solunda metin, sağında aksesuar (küçük görsel/thumbnail).
