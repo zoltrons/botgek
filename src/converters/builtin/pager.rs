@@ -1,4 +1,4 @@
-//! Görsel galerisi sayfalama: `max_images`'tan fazla görseli olan gönderilerde ◀ ▶ butonlarıyla
+//! Görsel galerisi sayfalama: galeri sınırından (10) fazla görseli olan gönderilerde ◀ ▶ butonlarıyla
 //! galerinin içeriği yerinde değiştirilir. Durum mesajda tutulmaz: `custom_id` sayfa ile
 //! gönderi bağlantısını taşır, tıklamada gönderi (önbellekten) yeniden alınır.
 
@@ -32,8 +32,9 @@ pub fn all_images(post: &BuiltinPost) -> Vec<&str> {
     post.media.iter().map(|media| media.url.as_str()).collect()
 }
 
-fn page_size(options: &RenderOptions) -> usize {
-    (options.max_images as usize).clamp(1, GALLERY_LIMIT)
+/// Sayfa boyutu galeri sınırıdır: 10 görsele kadar tek galeri, fazlası ek sayfalarda.
+fn page_size(_options: &RenderOptions) -> usize {
+    GALLERY_LIMIT
 }
 
 /// Sayfa butonu satırı; sayfalanacak bir şey yoksa ya da `custom_id` sığmıyorsa `None`.
@@ -148,11 +149,11 @@ mod tests {
     #[test]
     fn pager_only_for_more_images_than_page_size() {
         let options = RenderOptions::from_engine(&EngineSettings::default(), "bluesky");
-        assert!(pager_row(&post(4), &options, 0).is_none());
-        let row = pager_row(&post(9), &options, 0).unwrap();
+        assert!(pager_row(&post(10), &options, 0).is_none());
+        let row = pager_row(&post(25), &options, 0).unwrap();
         assert_eq!(row["components"][1]["label"], "1/3");
         assert_eq!(row["components"][0]["disabled"], true);
-        let last = pager_row(&post(9), &options, 2).unwrap();
+        let last = pager_row(&post(25), &options, 2).unwrap();
         assert_eq!(last["components"][2]["disabled"], true);
     }
 
