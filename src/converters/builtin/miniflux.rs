@@ -31,7 +31,9 @@ const CUSTOM_ID_LIMIT: usize = 100;
 const PREVIEW_CHARS: usize = 500;
 /// Genişletilmiş metin; başlık ve kullanıcı notuyla birlikte 4000 karakterlik V2 sınırında kalır.
 const FULL_CHARS: usize = 3200;
-const ACCENT: u32 = 0x1E8F6E;
+/// Sayfadaki saat dilimsiz `datetime` değeri Türkiye saatindedir.
+/// shortcut: UTC+3 sabit; Miniflux hesabı başka saat dilimindeyse zaman kayar.
+const PAGE_UTC_OFFSET_SECS: i64 = 3 * 3600;
 
 static TITLE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<h1 id="page-header-title"[^>]*>\s*<a href="([^"]*)"[^>]*>(.*?)</a>"#)
@@ -48,6 +50,10 @@ static AUTHOR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static CONTENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<article class="entry-content[^"]*"[^>]*>(.*)</article>"#)
         .expect("geçerli Miniflux içerik regex")
+});
+static DATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<time datetime="(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})""#)
+        .expect("geçerli Miniflux tarih regex")
 });
 static IMAGE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<img\s[^>]*?src="(https://[^"]+)""#).expect("geçerli Miniflux görsel regex")
@@ -75,6 +81,7 @@ struct Article {
     feed: String,
     author: Option<String>,
     image: Option<String>,
+    created_at: Option<i64>,
     text: String,
 }
 
@@ -104,6 +111,7 @@ pub async fn fetch(parsed: &ParsedPost) -> Result<BuiltinPost, String> {
         Author::new(article.feed.clone(), ""),
     );
     post.title = Some(article.title.clone());
+    post.created_at = article.created_at;
     post.text = truncate_chars(&article.text, PREVIEW_CHARS);
     post.extra_label = Some("Miniflux".to_string());
     post.custom_card = Some(build_card(&article, &host, &code));
@@ -113,6 +121,21 @@ pub async fn fetch(parsed: &ParsedPost) -> Result<BuiltinPost, String> {
 async fn fetch_article(share_url: &str) -> Result<Article, String> {
     let (_, html) = super::safe_http::preview(share_url).await?;
     parse_article(&html).ok_or_else(|| format!("Miniflux makalesi okunamadı: {share_url}"))
+}
+
+/// `<time datetime="2026-10-30 11:37:32">` → Unix saniye.
+fn page_timestamp(html: &str) -> Option<i64> {
+    let caps = DATE_REGEX.captures(html)?;
+    let n = |i: usize| caps[i].parse::<i64>().ok();
+    let (y, m, d) = (n(1)?, n(2)?, n(3)?);
+    // Takvim günü → 1970'ten gün sayısı (Howard Hinnant algoritması).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + n(4)? * 3600 + n(5)? * 60 + n(6)? - PAGE_UTC_OFFSET_SECS)
 }
 
 fn parse_article(html: &str) -> Option<Article> {
@@ -139,6 +162,7 @@ fn parse_article(html: &str) -> Option<Article> {
             .captures(html)
             .map(|caps| one_line(&caps[1]))
             .filter(|author| !author.is_empty()),
+        created_at: page_timestamp(html),
         image: IMAGE_REGEX
             .captures(content)
             .map(|caps| unescape_html(&caps[1])),
@@ -225,6 +249,9 @@ fn build_card(article: &Article, host: &str, code: &str) -> CustomCard {
     if let Some(author) = &article.author {
         header.push_str(&format!(" · {}", escape_markdown(author)));
     }
+    if let Some(ts) = article.created_at {
+        header.push_str(&format!(" · <t:{ts}:R>"));
+    }
     let head = match &article.image {
         Some(image) => json!({
             "type": TYPE_SECTION,
@@ -239,7 +266,7 @@ fn build_card(article: &Article, host: &str, code: &str) -> CustomCard {
     components.extend(row);
     CustomCard {
         components,
-        accent_color: Some(ACCENT),
+        accent_color: None,
         video_components: None,
     }
 }
