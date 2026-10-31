@@ -19,6 +19,10 @@ etiketi olmadığı için Discord önizlemesi boş kalır.
   1000 karakterlik sayfalara (paragraf/satır/boşluk sınırında bölünür) geçirir: `◀ n/N ▶ Daralt`. `less` özete döner.
   Gövde ve buton satırı sabit `id`'lerle (7401, 7402) bulunur; spoiler sarmalı korunur.
 
+- Makale HTML'i Discord markdown'ına çevrilir (`html_to_text`): başlık ve kalın/italik/kod/bağlantı/liste korunur,
+  `blockquote` ve gömülü içerik (iframe, video, ses) `>` alıntısına dönüşür (iç içe alıntı düzleştirilir),
+  `pre` kod bloğu olur, görsel/script atılır. Yalnızca http(s) bağlantılar alınır.
+
 ## Değişmezler
 
 - `custom_id` 100 karakteri aşarsa sayfa butonları konmaz, yalnızca ilk sayfa gösterilir.

@@ -59,18 +59,14 @@ static DATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static IMAGE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<img\s[^>]*?src="(https://[^"]+)""#).expect("geçerli Miniflux görsel regex")
 });
-static DROP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)<(?:script|style|figure|svg)\b.*?</(?:script|style|figure|svg)>|<(?:img|iframe)\b[^>]*>")
-        .expect("geçerli Miniflux atılacak regex")
+static TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)<!--.*?-->|<(/?)([A-Za-z][A-Za-z0-9]*)([^>]*)>")
+        .expect("geçerli Miniflux etiket belirteci regex")
 });
-static BLOCK_END_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)</(?:p|div|h[1-6]|ul|ol|blockquote|pre|tr)>")
-        .expect("geçerli Miniflux blok regex")
+static ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)\b(href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
+        .expect("geçerli Miniflux öznitelik regex")
 });
-static BREAK_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)<br\s*/?>|</li>").expect("geçerli Miniflux satır regex"));
-static LIST_ITEM_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)<li\b[^>]*>").expect("geçerli Miniflux madde regex"));
 static TAG_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<[^>]*>").expect("geçerli Miniflux etiket regex"));
 static BLANK_LINES_REGEX: LazyLock<Regex> =
@@ -172,36 +168,300 @@ fn parse_article(html: &str) -> Option<Article> {
     })
 }
 
-/// Makale HTML'ini Discord için güvenli düz metne çevirir: paragraflar korunur, işaretleme
-/// ve mention söz dizimi etkisiz hale getirilir.
+/// Makale HTML'ini Discord markdown'ına çevirir: başlık/kalın/italik/kod/bağlantı/liste korunur,
+/// `blockquote` ve gömülü içerik (iframe, video, ses) `>` alıntısına dönüşür; mention söz dizimi
+/// etkisiz kılınır.
 fn html_to_text(raw: &str) -> String {
-    let kept = DROP_REGEX.replace_all(raw, "");
-    let blocks = BLOCK_END_REGEX.replace_all(&kept, "\n\n");
-    let items = LIST_ITEM_REGEX.replace_all(&blocks, "• ");
-    let breaks = BREAK_REGEX.replace_all(&items, "\n");
-    let stripped = TAG_REGEX.replace_all(&breaks, "");
-    let decoded = unescape_html(&stripped).replace('<', "‹");
-    let lines: Vec<String> = decoded
-        .lines()
-        .map(|line| {
-            let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-            let line = escape_markdown(&line);
-            // Satır başındaki `#`, `-` ve `1.` kartta başlık/liste oluşturmasın.
-            if line.starts_with(['#', '-'])
-                || line
-                    .split_once(". ")
-                    .is_some_and(|(n, _)| n.parse::<u8>().is_ok())
-            {
-                format!("\\{line}")
-            } else {
-                line
-            }
+    let mut md = Markdown::default();
+    let mut last = 0;
+    for caps in TOKEN_REGEX.captures_iter(raw) {
+        let whole = caps.get(0).expect("eşleşme");
+        md.text(&raw[last..whole.start()]);
+        last = whole.end();
+        if let Some(tag) = caps.get(2) {
+            md.tag(
+                &tag.as_str().to_ascii_lowercase(),
+                caps[1].is_empty(),
+                &caps[3],
+            );
+        }
+    }
+    md.text(&raw[last..]);
+    md.finish()
+}
+
+fn attr(attrs: &str, name: &str) -> Option<String> {
+    ATTR_REGEX.captures_iter(attrs).find_map(|caps| {
+        caps[1].eq_ignore_ascii_case(name).then(|| {
+            unescape_html(
+                caps.get(2)
+                    .or_else(|| caps.get(3))
+                    .map_or("", |m| m.as_str()),
+            )
         })
-        .collect();
-    BLANK_LINES_REGEX
-        .replace_all(&lines.join("\n"), "\n\n")
-        .trim()
-        .to_string()
+    })
+}
+
+/// Yalnızca http(s) adresleri; Markdown'u bozan karakterler yüzde-kodlanır.
+fn safe_link(raw: &str) -> Option<String> {
+    let url = Url::parse(raw.trim()).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.as_str().len() <= 1500)
+        .then(|| super::preview::link_url(&url))
+}
+
+#[derive(Default)]
+struct Markdown {
+    out: String,
+    /// İçinde bulunulan `blockquote`'ların üst tamponları.
+    quotes: Vec<String>,
+    skip: usize,
+    pre: bool,
+    code: bool,
+    media_embedded: bool,
+    /// `None`: madde işaretli liste, `Some(n)`: numaralı liste (son verilen numara).
+    lists: Vec<Option<u32>>,
+    /// Açık bağlantılar: (`[`'nin konumu, adres).
+    links: Vec<(usize, Option<String>)>,
+}
+
+impl Markdown {
+    fn line_start(&self) -> bool {
+        self.out.is_empty() || self.out.ends_with('\n')
+    }
+
+    fn newline(&mut self) {
+        if !self.out.is_empty() && !self.out.ends_with('\n') {
+            self.out.push('\n');
+        }
+    }
+
+    /// Önceki içerikle arasına boş satır koyar.
+    fn block(&mut self) {
+        if self.out.is_empty() {
+            return;
+        }
+        self.out.truncate(self.out.trim_end_matches(' ').len());
+        while !self.out.ends_with("\n\n") {
+            self.out.push('\n');
+        }
+    }
+
+    fn text(&mut self, raw: &str) {
+        if self.skip > 0 || raw.is_empty() {
+            return;
+        }
+        let decoded = unescape_html(raw).replace('<', "‹");
+        if self.pre {
+            self.out.push_str(&decoded.replace("```", "`\u{200b}``"));
+            return;
+        }
+        let joined = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+        let leading = decoded.starts_with(char::is_whitespace);
+        if joined.is_empty() {
+            if leading && !self.line_start() && !self.out.ends_with(' ') {
+                self.out.push(' ');
+            }
+            return;
+        }
+        if self.line_start() {
+            // Satır başındaki `#`, `-` ve `1.` kartta başlık/liste oluşturmasın.
+            let numbered = joined
+                .split_once(". ")
+                .is_some_and(|(n, _)| n.parse::<u8>().is_ok());
+            if !self.code && (joined.starts_with(['#', '-']) || numbered) {
+                self.out.push('\\');
+            }
+        } else if leading && !self.out.ends_with(' ') {
+            self.out.push(' ');
+        }
+        if self.code {
+            self.out.push_str(&joined.replace('`', "ʼ"));
+        } else {
+            self.out.push_str(&escape_markdown(&joined));
+        }
+        if decoded.ends_with(char::is_whitespace) {
+            self.out.push(' ');
+        }
+    }
+
+    fn embed(&mut self, src: &str) {
+        let Some(link) = safe_link(src) else { return };
+        let host = Url::parse(&link)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .unwrap_or_else(|| "bağlantı".into());
+        if self.quotes.is_empty() {
+            self.block();
+            self.out.push_str(&format!("> [{host}]({link})\n\n"));
+        } else {
+            self.newline();
+            self.out.push_str(&format!("[{host}]({link})\n"));
+        }
+    }
+
+    fn open_quote(&mut self) {
+        self.block();
+        self.quotes.push(std::mem::take(&mut self.out));
+    }
+
+    fn close_quote(&mut self) {
+        let Some(parent) = self.quotes.pop() else {
+            return;
+        };
+        let inner = std::mem::replace(&mut self.out, parent);
+        let inner = inner.trim();
+        if inner.is_empty() {
+            return;
+        }
+        self.block();
+        if self.quotes.is_empty() {
+            for line in inner.lines() {
+                // Boş alıntı satırı Discord'da alıntıyı bölmesin (`>` tek başına alıntı sayılmaz).
+                let line = if line.is_empty() { "\u{200b}" } else { line };
+                self.out.push_str(&format!("> {line}\n"));
+            }
+        } else {
+            // Discord iç içe alıntıyı göstermez; dıştaki alıntıya düzleştirilir.
+            self.out.push_str(inner);
+        }
+        self.out.push_str("\n\n");
+    }
+
+    fn tag(&mut self, name: &str, opening: bool, attrs: &str) {
+        if matches!(
+            name,
+            "script" | "style" | "svg" | "noscript" | "head" | "template"
+        ) {
+            self.skip = if opening {
+                self.skip + 1
+            } else {
+                self.skip.saturating_sub(1)
+            };
+            return;
+        }
+        if self.skip > 0 {
+            return;
+        }
+        match (name, opening) {
+            ("br", _) => self.out.push('\n'),
+            ("hr", _) => {
+                self.block();
+                self.out.push_str("──────\n\n");
+            }
+            ("blockquote", true) => self.open_quote(),
+            ("blockquote", false) => self.close_quote(),
+            ("iframe" | "embed", true) => {
+                if let Some(src) = attr(attrs, "src") {
+                    self.embed(&src);
+                }
+            }
+            ("video" | "audio", true) => {
+                self.media_embedded = attr(attrs, "src").inspect(|src| self.embed(src)).is_some();
+            }
+            ("source", true) if !self.media_embedded => {
+                if let Some(src) = attr(attrs, "src") {
+                    self.embed(&src);
+                    self.media_embedded = true;
+                }
+            }
+            ("pre", true) => {
+                self.block();
+                self.out.push_str("```\n");
+                self.pre = true;
+            }
+            ("pre", false) => {
+                self.pre = false;
+                self.out.truncate(self.out.trim_end().len());
+                self.out.push_str("\n```\n\n");
+            }
+            ("code", _) if !self.pre => {
+                self.code = opening;
+                self.out.push('`');
+            }
+            ("strong" | "b", _) => self.out.push_str("**"),
+            ("em" | "i", _) => self.out.push('*'),
+            ("s" | "del" | "strike", _) => self.out.push_str("~~"),
+            ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", true) => {
+                self.block();
+                self.out.push_str("**");
+            }
+            ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", false) => self.out.push_str("**\n\n"),
+            ("figcaption", true) => {
+                self.block();
+                self.out.push('*');
+            }
+            ("figcaption", false) => self.out.push_str("*\n\n"),
+            ("ul" | "ol", true) => {
+                if self.lists.is_empty() {
+                    self.block();
+                } else {
+                    self.newline();
+                }
+                self.lists.push((name == "ol").then_some(0));
+            }
+            ("ul" | "ol", false) => {
+                self.lists.pop();
+                if self.lists.is_empty() {
+                    self.block();
+                } else {
+                    self.newline();
+                }
+            }
+            ("li", true) => {
+                self.newline();
+                let marker = match self.lists.last_mut() {
+                    Some(Some(n)) => {
+                        *n += 1;
+                        format!("{n}. ")
+                    }
+                    _ => "• ".to_string(),
+                };
+                let indent = "  ".repeat(self.lists.len().saturating_sub(1));
+                self.out.push_str(&format!("{indent}{marker}"));
+            }
+            ("li", false) => self.newline(),
+            ("a", true) => {
+                let href = attr(attrs, "href").and_then(|href| safe_link(&href));
+                if href.is_some() {
+                    self.out.push('[');
+                }
+                self.links.push((self.out.len().saturating_sub(1), href));
+            }
+            ("a", false) => {
+                if let Some((start, Some(href))) = self.links.pop() {
+                    if self.out[start + 1..].trim().is_empty() {
+                        self.out.truncate(start);
+                    } else {
+                        self.out.push_str(&format!("]({href})"));
+                    }
+                }
+            }
+            ("td" | "th", false) => self.out.push_str(" · "),
+            ("tr", false) => {
+                let trimmed = self.out.trim_end_matches([' ', '·']).len();
+                self.out.truncate(trimmed);
+                self.block();
+            }
+            (
+                "p" | "div" | "section" | "article" | "header" | "footer" | "main" | "aside"
+                | "figure" | "table" | "details" | "summary" | "dl" | "dt" | "dd" | "address"
+                | "form" | "fieldset" | "thead" | "tbody" | "tr",
+                _,
+            ) => self.block(),
+            _ => {}
+        }
+    }
+
+    fn finish(mut self) -> String {
+        while !self.quotes.is_empty() {
+            self.close_quote();
+        }
+        let lines: Vec<&str> = self.out.lines().map(str::trim_end).collect();
+        BLANK_LINES_REGEX
+            .replace_all(&lines.join("\n"), "\n\n")
+            .trim()
+            .to_string()
+    }
 }
 
 fn text_display(id: Option<u64>, content: String) -> Value {
@@ -432,7 +692,7 @@ mod tests {
         assert_eq!(article.url, "https://t24.com.tr/x,1");
         assert_eq!(
             article.text,
-            "T24\n\nBir & iki\n\n\\# başlık ‹@1\\>\n\n• bir\n• iki"
+            "**T24**\n\nBir & iki\n\n\\# başlık ‹@1\\>\n\n• bir\n• iki"
         );
         assert!(parse_article("<html>boş</html>").is_none());
     }
@@ -487,6 +747,23 @@ mod tests {
         let mut tree = json!([{ "type": 10, "id": BODY_COMPONENT_ID, "content": "||eski||" }]);
         assert!(replace_by_id(&mut tree, &body, None));
         assert_eq!(tree[0]["content"], format!("||{}||", article.text));
+    }
+
+    #[test]
+    fn html_becomes_discord_markdown() {
+        let text = html_to_text(
+            r#"<h3>Başlık</h3><p>Bir <a href="https://e.com/a(1)">bağlantı</a>, <em>italik</em> ve <code>kod</code>.</p>
+<blockquote><p>Alıntı satırı</p><p>İkinci <b>satır</b></p></blockquote>
+<iframe src="https://www.youtube.com/embed/x"></iframe>
+<ol><li>bir</li><li>iki</li></ol><pre>a  b
+c</pre><script>x()</script><p><a href="javascript:x()">tehlikeli</a></p>"#,
+        );
+        assert_eq!(
+            text,
+            "**Başlık**\n\nBir [bağlantı](https://e.com/a%281%29), *italik* ve `kod`.\n\n\
+> Alıntı satırı\n> \u{200b}\n> İkinci **satır**\n\n> [www.youtube.com](https://www.youtube.com/embed/x)\n\n\
+1. bir\n2. iki\n\n```\na  b\nc\n```\n\ntehlikeli"
+        );
     }
 
     #[test]
