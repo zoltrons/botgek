@@ -117,7 +117,8 @@ impl RenderOptions {
     pub fn from_engine(engine: &EngineSettings, platform_key: &str) -> Self {
         Self {
             video_requires_download: video_requires_download(platform_key),
-            max_images: engine.max_images,
+            // Components V2 galerisi 10 öğeye kadar destekler: ayardaki düşük sınır yok sayılır.
+            max_images: super::v2::MEDIA_GALLERY_LIMIT as u8,
             max_video_mb: engine.max_video_mb,
             show_metrics: engine.show_metrics,
             show_timestamp: engine.show_timestamp,
