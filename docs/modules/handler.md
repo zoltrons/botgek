@@ -25,7 +25,7 @@ ve `Http`.
 2. Botun kendi kartı olan mesajlar (`builtin::is_card_message`) işlenmez.
 3. Mesajda `://` yok, bot etiketlenmemiş ve yanıt değilse hiçbir akış tetiklenemez. Ayar çözümleme atlanır.
 4. Etkin ayarlar `get_message_settings(guild, channel, thread_parent)` ile çözülür.
-5. Yazar botsa: `respond_to_bots` açık, mesajda desteklenen girdi var ve `claim_bot_source` (5 dk içinde
+5. Yazar botsa: `respond_to_bots` açık ve `claim_bot_source` (5 dk içinde
    aynı mesaj bir kez) geçerse dönüşüm kuyruğa girer. Taklit zorla kapatılır ve AI hiç çalışmaz.
 6. Normal kullanıcı: önce `enqueue_message`, sonra `ai_chat` modülü açıksa `reply_with_ai`.
 
@@ -68,7 +68,7 @@ Kart, kaynağını `store` kaydındaki `source_id` ile tanır. Mantık `converte
   işlenir. Bağlantı değişmediyse hiçbir şey olmaz. Değiştiyse eski kart silinir, yeni bağlantı varsa
   mesaj REST'ten alınıp normal kuyruktan dönüştürülür. AI sohbeti tetiklenmez.
 - `DELETE_ORIGINAL=true` iken eşleme yazılmaz, çünkü orijinal bilerek silinir. Bu modda düzenleme/silme
-  takibi yoktur.
+  takibi yoktur. Eki veya çıkartması olan mesaj silinmez (kart dosyayı taşımaz); onun eşlemesi yazılır.
 
 ### `interaction_create`
 
@@ -77,8 +77,8 @@ Slash, mesaj komutu, bileşen ve modal etkileşimleri `commands::handle`a verili
 
 ## Değişmezler
 
-- Botun kendi kartları ve yanıtları AI sohbetini tetiklemez. `is_converted_message` bunu hem eski proxy
-  biçimi (`<@id> [**Platform**](<url>)`) hem native kartlar için denetler.
+- Botun kendi kartları ve yanıtları AI sohbetini tetiklemez. Kartları `is_card_message` tanır
+  (kalıcı kayıt ya da Components V2 bayraklı içeriksiz bot mesajı). Eski metin biçimli proxy mesajları artık tanınmaz.
 - Yanıt referansı `soft_reply` ile kurulur: hedef mesaj silinmişse Discord isteği reddetmez, yanıt normal
   mesaj olarak gider.
 - Bot kaynaklı dönüşümde taklit yoktur.

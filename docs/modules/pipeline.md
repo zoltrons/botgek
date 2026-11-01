@@ -58,7 +58,7 @@ Sıra, gerçek kodda ayrıntılı yorumlanmıştır. Özet:
 4. Gönderim: taklit açıksa kullanıcının adı ve avatarıyla webhook (`execute_webhook`), değilse kanal mesajı
    (`send_channel_message`), etkileşimde etkileşim yanıtı (`InteractionDelivery`). Webhook belirsizse ya da
    token eskiyse bir kez yenilenir.
-5. Başarıdan sonra `finish()`: `DELETE_ORIGINAL` açıksa orijinal mesaj silinir, `store` kaydı yazılır,
+5. Başarıdan sonra `finish()`: `DELETE_ORIGINAL` açıksa ve mesajda ek/çıkartma yoksa orijinal mesaj silinir, `store` kaydı yazılır,
    telemetri güncellenir.
 
 Orijinal mesaj gönderimden **önce** silinmez. Erken silme, göndericinin istemcisinde "hayalet mesaj"

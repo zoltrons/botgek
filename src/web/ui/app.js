@@ -67,8 +67,6 @@ const ENGINE_PLATFORMS = [
 ];
 
 const ENGINE_DEFAULTS = {
-    twitter_source: 'syndication',
-    max_images: 4,
     max_video_mb: 8,
     show_metrics: true,
     show_timestamp: true,
@@ -112,8 +110,6 @@ const EMOJI_FIELDS = [
 const DIFF_LABELS = {
     'ai.model': 'AI modeli',
     'ai.system_prompt': 'AI kişiliği',
-    'engine.twitter_source': 'X veri kaynağı',
-    'engine.max_images': 'Maks. görsel sayısı',
     'engine.max_video_mb': 'Maks. video boyutu',
     'engine.show_metrics': 'Etkileşim metrikleri',
     'engine.show_timestamp': 'Gönderi tarihi',
@@ -229,13 +225,15 @@ function getEngineConfig(cfg) {
     delete engine.modes;
     delete engine.domains;
     delete engine.fallback_to_proxy;
+    delete engine.twitter_source;
+    delete engine.max_images;
     if (!engine.emojis) engine.emojis = Object.assign({}, ENGINE_DEFAULTS.emojis);
     EMOJI_FIELDS.forEach(field => {
         if (engine.emojis[field.key] === undefined || engine.emojis[field.key] === null) {
             engine.emojis[field.key] = ENGINE_DEFAULTS.emojis[field.key];
         }
     });
-    ['twitter_source', 'max_images', 'max_video_mb', 'show_metrics',
+    ['max_video_mb', 'show_metrics',
       'show_timestamp', 'show_community_note', 'show_quote', 'auto_translate',
       'impersonate_user', 'impersonate_skip_replies', 'respond_to_bots', 'sensitive_mode'].forEach(field => {
          if (engine[field] === undefined || engine[field] === null) engine[field] = ENGINE_DEFAULTS[field];
@@ -846,9 +844,7 @@ function updateEngineNote(key) {
 function updateEngineSummary() {
     const engine = getEngineConfig(getActiveConfig());
     const nativeCount = ENGINE_PLATFORMS.length;
-    const images = $('engine-max-images');
     const video = $('engine-max-video');
-    if (images && $('engine-max-images-value')) $('engine-max-images-value').textContent = images.value + ' adet';
     if (video && $('engine-max-video-value')) $('engine-max-video-value').textContent = video.value + ' MB';
 
     const parts = [nativeCount + '/' + ENGINE_PLATFORMS.length + ' native'];

@@ -489,10 +489,6 @@ fn match_pair(
     None
 }
 
-fn native(original_url: String) -> Option<String> {
-    Some(original_url)
-}
-
 /// Genel desenler bağlantının tamamını spoiler'da ilk grupta, düz biçimde eşleşmenin kendisinde taşır.
 fn whole_link<'h>(caps: &Captures<'h>) -> Option<&'h str> {
     caps.get(1).or_else(|| caps.get(0)).map(|m| m.as_str())
@@ -512,7 +508,7 @@ fn parse_twitter(raw_content: &str) -> Option<ParsedPost> {
                 .get(3)
                 .map(|m| format!("/{}", m.as_str()))
                 .unwrap_or_default();
-            native(format!("https://x.com/{username}/status/{tweet_id}{extra}"))
+            Some(format!("https://x.com/{username}/status/{tweet_id}{extra}"))
         },
     )
 }
@@ -572,7 +568,7 @@ fn parse_instagram(raw_content: &str) -> Option<ParsedPost> {
         |caps| {
             let kind = caps.get(1)?.as_str();
             let id = caps.get(2)?.as_str();
-            native(format!("https://www.instagram.com/{kind}/{id}"))
+            Some(format!("https://www.instagram.com/{kind}/{id}"))
         },
     )
 }
@@ -596,7 +592,7 @@ fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
                 .get(4)
                 .map(|comment| format!("/_/{}", comment.as_str()))
                 .unwrap_or_default();
-            native(format!(
+            Some(format!(
                 "https://www.reddit.com/{section}/{target}/comments/{id}{comment}"
             ))
         },
@@ -611,7 +607,7 @@ fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
             |caps| {
                 let sub = caps.get(1)?.as_str();
                 let share_id = caps.get(2)?.as_str();
-                native(format!("https://www.reddit.com/r/{sub}/s/{share_id}"))
+                Some(format!("https://www.reddit.com/r/{sub}/s/{share_id}"))
             },
         )
     })
@@ -624,7 +620,7 @@ fn parse_reddit(raw_content: &str) -> Option<ParsedPost> {
             &REDDIT_SHORT_REGEX,
             |caps| {
                 let id = caps.get(1).or_else(|| caps.get(2))?.as_str();
-                native(format!("https://redd.it/{id}"))
+                Some(format!("https://redd.it/{id}"))
             },
         )
     })
@@ -685,7 +681,7 @@ fn parse_twitch(raw_content: &str) -> Option<ParsedPost> {
         Platform::Twitch,
         &TWITCH_CLIP_SPOILER_REGEX,
         &TWITCH_CLIP_REGEX,
-        |caps| native(canonical_clip_url(whole_link(caps)?)?),
+        |caps| canonical_clip_url(whole_link(caps)?),
     )
 }
 
@@ -702,7 +698,7 @@ fn parse_pixiv(raw_content: &str) -> Option<ParsedPost> {
         Platform::Pixiv,
         &PIXIV_ARTWORK_SPOILER_REGEX,
         &PIXIV_ARTWORK_REGEX,
-        |caps| native(canonical_path_url(whole_link(caps)?, "www.pixiv.net")?),
+        |caps| canonical_path_url(whole_link(caps)?, "www.pixiv.net"),
     )
 }
 
@@ -741,7 +737,7 @@ fn parse_tumblr(raw_content: &str) -> Option<ParsedPost> {
         Platform::Tumblr,
         &TUMBLR_POST_SPOILER_REGEX,
         &TUMBLR_POST_REGEX,
-        |caps| native(tumblr_canonical(whole_link(caps)?)?),
+        |caps| tumblr_canonical(whole_link(caps)?),
     )
 }
 
@@ -761,7 +757,7 @@ fn parse_facebook(raw_content: &str) -> Option<ParsedPost> {
                 original_url.push('?');
                 original_url.push_str(query);
             }
-            native(original_url)
+            Some(original_url)
         },
     )
 }
@@ -772,7 +768,7 @@ fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
         Platform::YouTube,
         &YOUTUBE_COMMUNITY_SPOILER_REGEX,
         &YOUTUBE_COMMUNITY_REGEX,
-        |caps| native(canonical_path_url(whole_link(caps)?, "www.youtube.com")?),
+        |caps| canonical_path_url(whole_link(caps)?, "www.youtube.com"),
     )
 }
 
@@ -787,7 +783,7 @@ fn parse_miniflux(raw_content: &str) -> Option<ParsedPost> {
         |caps| {
             let host = caps.get(1)?.as_str().to_ascii_lowercase();
             let code = caps.get(2)?.as_str().to_ascii_lowercase();
-            native(format!("https://{host}/share/{code}"))
+            Some(format!("https://{host}/share/{code}"))
         },
     )
 }
@@ -808,7 +804,7 @@ fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
                 .get(3)
                 .map(|n| format!("{}/", n.as_str()))
                 .unwrap_or_default();
-            native(format!("https://letterboxd.com/{user}/film/{slug}/{entry}"))
+            Some(format!("https://letterboxd.com/{user}/film/{slug}/{entry}"))
         },
     )
     .or_else(|| {
@@ -818,7 +814,7 @@ fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
             &LETTERBOXD_FILM_SPOILER_REGEX,
             &LETTERBOXD_FILM_REGEX,
             |caps| {
-                native(format!(
+                Some(format!(
                     "https://letterboxd.com/film/{}/",
                     caps.get(1)?.as_str()
                 ))
@@ -831,7 +827,7 @@ fn parse_letterboxd(raw_content: &str) -> Option<ParsedPost> {
             Platform::Letterboxd,
             &LETTERBOXD_SHORT_SPOILER_REGEX,
             &LETTERBOXD_SHORT_REGEX,
-            |caps| native(format!("https://boxd.it/{}", caps.get(1)?.as_str())),
+            |caps| Some(format!("https://boxd.it/{}", caps.get(1)?.as_str())),
         )
     })
     .or_else(|| parse_letterboxd_profile(raw_content))

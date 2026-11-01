@@ -30,7 +30,7 @@ halkasını sağlar.
 5. Tek bir `reqwest::Client` kurulur: rustls, HTTP/2, 30 sn toplam zaman aşımı, 8 sn bağlantı zaman aşımı,
    300 sn havuz boşta süresi. Panel, MCP ve dönüştürücüler aynı istemciyi paylaşır.
 6. Discord, X, Reddit ve diğer uçlar arka planda ısıtılır (`prewarm_connections`). Isıtma aralığı
-   (45 sn) havuz boşta süresinden kısa olmak zorundadır, aksi halde kazanç kaybolur.
+   (240 sn) havuz boşta süresinden kısa olmak zorundadır, aksi halde kazanç kaybolur.
 7. Gateway istemcisi başlar. Panel ayrı bir `tokio` görevinde, Discord `Http` ve önbelleğiyle kalkar.
 8. Ctrl+C ve SIGTERM dinlenir, shard yöneticisi temiz kapatılır.
 

@@ -7,7 +7,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::sync::LazyLock;
 
-use super::{Author, BuiltinPost, Media, MediaKind, Stats, encode_component, parse_timestamp};
+use super::{Author, BuiltinPost, Media, MediaKind, Stats, parse_timestamp};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const API_BASE: &str = "https://public.api.bsky.app/xrpc";
@@ -47,9 +47,9 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let uri = format!("at://{handle}/app.bsky.feed.post/{rkey}");
     let url = format!(
         "{API_BASE}/app.bsky.feed.getPostThread?depth={THREAD_DEPTH}&parentHeight={THREAD_PARENT_HEIGHT}&uri={}",
-        encode_component(&uri)
+        urlencoding::encode(&uri)
     );
-    let value = super::get_json(client, &url).await?;
+    let value: serde_json::Value = super::get_json(client, &url).await?;
 
     let response: ThreadResponse = serde_json::from_value(value)
         .map_err(|e| format!("Bluesky yanıtı çözümlenemedi ({rkey}): {e}"))?;
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn at_uri_query_component_is_encoded() {
         assert_eq!(
-            encode_component("at://did:plc:abc/app.bsky.feed.post/1"),
+            urlencoding::encode("at://did:plc:abc/app.bsky.feed.post/1"),
             "at%3A%2F%2Fdid%3Aplc%3Aabc%2Fapp.bsky.feed.post%2F1"
         );
     }

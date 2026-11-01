@@ -19,7 +19,7 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `WEB_BIND` | `127.0.0.1` | Panelin bağlanacağı adres. Docker'da container içinde `0.0.0.0` kullanılır, port host tarafında yalnızca loopback'e yayınlanır. |
 | `WEB_SECURE_COOKIE` | `false` | HTTPS ters proxy arkasında `true` yapın; oturum çerezine `Secure` ekler. |
 | `OPENROUTER_API_KEY` | boş | AI sohbetini etkinleştirir. Boşsa AI kapalıdır; dolu her değer gerçek anahtar sayılır (yer tutucu metin 401 üretir). |
-| `DELETE_ORIGINAL` | `true` | Başarılı dönüşümden sonra orijinal mesajı siler. **Manage Messages** yetkisi gerekir. |
+| `DELETE_ORIGINAL` | `true` | Başarılı dönüşümden sonra orijinal mesajı siler; eki veya çıkartması olan mesaj silinmez. **Manage Messages** yetkisi gerekir. |
 | `FXTUMBLR_DOMAIN` | `tpmblr.com` | fxtumblr uyumlu Tumblr render hizmeti. Boş bırakılırsa public OG fallback kullanılır. |
 | `INSTAGRAM_SESSIONID` | boş | Instagram oturum çerezi. Reels videolarının kart içinde oynaması için gerekir; gizlidir, `settings.json`'a ve panele yazılmaz. |
 | `DEV_GUILD_ID` | yok | Tanımlıysa slash komutları global yerine yalnızca bu sunucuya kaydedilir ve anında görünür. Global kayda dokunmaz; user install/DM bağlamları sunucu komutlarında yoktur. Yalnızca geliştirme botunda kullanın. |
@@ -63,8 +63,6 @@ dosya, flush ve atomik replacement ile yazılır.
   "engine": {
     "respond_to_bots": false,
     "sensitive_mode": "hide_always",
-    "twitter_source": "vxtwitter",
-    "max_images": 4,
     "max_video_mb": 8,
     "show_metrics": true,
     "show_timestamp": true,
@@ -113,8 +111,6 @@ yazmak gerekmez.
 | `modules.*` | `true` / `false` | Platform ve AI sohbeti modülleri. |
 | `role_filters.*.mode` | `disabled`, `blacklist`, `allowlist` | Boş `allowlist` kimseye erişim vermez. Rol sorgusu başarısız olursa etkin filtre reddeder. |
 | `role_filters.*.roles` | En fazla 200 Discord rol kimliği | Geçersiz kimlikler ayıklanır. |
-| `engine.twitter_source` | `vxtwitter`, `fxtwitter`, `syndication`, `hybrid` | **Etkisiz** (eski ayar dosyaları bozulmasın diye okunur). X verisi her zaman FxTwitter'dan gelir; vxTwitter yalnızca `/dönüştür kaynak:` ile seçilir. |
-| `engine.max_images` | `1..=10` (varsayılan 4) | Tek kartta eklenecek görsel sayısı. |
 | `engine.max_video_mb` | `1..=50` (varsayılan 8) | Kart için video boyutu sınırı. |
 | `engine.sensitive_mode` | `hide_always`, `allow_in_nsfw` | Kaynak spoiler'ı ve elle işaretlenen içerik her durumda gizli kalır. |
 | `engine.auto_translate` | `true` / `false` | X gönderilerini X'in kendi çevirisiyle hedef dile çevirir. |

@@ -4,7 +4,6 @@
 
 use serde_json::{Value, json};
 
-use super::render::RenderOptions;
 use super::{BuiltinPost, MediaKind};
 use crate::config::Config;
 use crate::converters::parser::parse_message;
@@ -17,7 +16,7 @@ const PAGER_COMPONENT_ID: u64 = 7412;
 /// `imgs:{sayfa}:{bağlantı (https:// olmadan)}`; Discord `custom_id` sınırı 100 karakterdir.
 pub const CUSTOM_ID_PREFIX: &str = "imgs:";
 const CUSTOM_ID_LIMIT: usize = 100;
-/// Media Gallery en fazla 10 öğe alır.
+/// Media Gallery en fazla 10 öğe alır: 10 görsele kadar tek galeri, fazlası ek sayfalarda.
 const GALLERY_LIMIT: usize = 10;
 
 /// Gönderinin sayfalanabilir görselleri: yalnızca hepsi düz görselse (video/GIF yoksa).
@@ -32,15 +31,10 @@ pub fn all_images(post: &BuiltinPost) -> Vec<&str> {
     post.media.iter().map(|media| media.url.as_str()).collect()
 }
 
-/// Sayfa boyutu galeri sınırıdır: 10 görsele kadar tek galeri, fazlası ek sayfalarda.
-fn page_size(_options: &RenderOptions) -> usize {
-    GALLERY_LIMIT
-}
-
 /// Sayfa butonu satırı; sayfalanacak bir şey yoksa ya da `custom_id` sığmıyorsa `None`.
-pub fn pager_row(post: &BuiltinPost, options: &RenderOptions, page: usize) -> Option<Value> {
+pub fn pager_row(post: &BuiltinPost, page: usize) -> Option<Value> {
     let total = all_images(post).len();
-    let pages = total.div_ceil(page_size(options));
+    let pages = total.div_ceil(GALLERY_LIMIT);
     let rest = post.url.strip_prefix("https://")?;
     let target = |page: usize| format!("{CUSTOM_ID_PREFIX}{page}:{rest}");
     if pages < 2 || target(pages - 1).len() > CUSTOM_ID_LIMIT {
@@ -73,15 +67,13 @@ pub async fn turn_page(
     let page: usize = page.parse().map_err(|_| "geçersiz sayfa")?;
     let parsed = parse_message(&format!("https://{rest}")).ok_or("bağlantı çözülemedi")?;
     let post = super::fetch(client, &parsed, engine, config).await?;
-    let options = RenderOptions::from_engine(engine, super::platform_key(parsed.platform));
-    let size = page_size(&options);
     let images = all_images(&post);
-    let row = pager_row(&post, &options, page).ok_or("sayfalanacak görsel yok")?;
+    let row = pager_row(&post, page).ok_or("sayfalanacak görsel yok")?;
     let slice = images
-        .get(page * size..)
+        .get(page * GALLERY_LIMIT..)
         .filter(|s| !s.is_empty())
         .ok_or("sayfa yok")?;
-    let slice = &slice[..slice.len().min(size)];
+    let slice = &slice[..slice.len().min(GALLERY_LIMIT)];
     if swap(components, slice, &row) {
         Ok(())
     } else {
@@ -148,12 +140,11 @@ mod tests {
 
     #[test]
     fn pager_only_for_more_images_than_page_size() {
-        let options = RenderOptions::from_engine(&EngineSettings::default(), "bluesky");
-        assert!(pager_row(&post(10), &options, 0).is_none());
-        let row = pager_row(&post(25), &options, 0).unwrap();
+        assert!(pager_row(&post(10), 0).is_none());
+        let row = pager_row(&post(25), 0).unwrap();
         assert_eq!(row["components"][1]["label"], "1/3");
         assert_eq!(row["components"][0]["disabled"], true);
-        let last = pager_row(&post(25), &options, 2).unwrap();
+        let last = pager_row(&post(25), 2).unwrap();
         assert_eq!(last["components"][2]["disabled"], true);
     }
 

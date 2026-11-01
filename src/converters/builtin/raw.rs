@@ -20,9 +20,6 @@ use super::transport::retry_after as extract_retry_after;
 pub const API_BASE: &str = "https://discord.com/api/v10";
 /// Medya yüklemesi içeren istekler için zaman aşımı.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(90);
-/// Hata gövdesinden log'a yazılacak en fazla karakter.
-#[cfg(test)]
-const MAX_ERROR_BYTES: usize = 600;
 static BOUNDARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn message_request(
@@ -96,14 +93,14 @@ pub async fn edit_interaction_response(
     // Etkileşim yanıtı webhook kimliği ve mesaj referansı taşımaz.
     let payload = payload_without_fields(payload, &["username", "avatar_url", "message_reference"]);
     let request = message_request_with(reqwest::Method::PATCH, client, &url, &payload, files)?;
-    let body =
-        super::transport::send(client, request, format!("interaction:{application_id}")).await?;
-    // Düzenleme başarılıysa gövde mesaj nesnesidir; boş gövde de kabul edilir.
-    match parse_message_id(&body) {
-        Ok(id) => Ok(id),
-        Err(_) if body.trim().is_empty() => Ok(MessageId::new(0)),
-        Err(_) => Err(DiscordError::Ambiguous),
-    }
+    let body = super::transport::send(client, request, interaction_route(token)).await?;
+    parse_message_id(&body).map_err(|_| DiscordError::Ambiguous)
+}
+
+/// Etkileşim başına ayrı rota: tek bir büyük yükleme diğer kullanıcıların kartlarını ve
+/// butonlarını bekletmesin. Rota yalnızca bellekteki kilit/bekleme anahtarıdır, loglanmaz.
+fn interaction_route(token: &str) -> String {
+    format!("interaction:{token}")
 }
 
 /// Etkileşimin bağlı olduğu mesajı **ham JSON** olarak okur.
@@ -121,8 +118,7 @@ pub async fn get_interaction_original(
         .get(url)
         .header("user-agent", DISCORD_USER_AGENT)
         .timeout(Duration::from_secs(10));
-    let body =
-        super::transport::send(client, request, format!("interaction:{application_id}")).await?;
+    let body = super::transport::send(client, request, interaction_route(token)).await?;
     serde_json::from_str(&body).map_err(|_| DiscordError::Ambiguous)
 }
 
@@ -352,13 +348,6 @@ pub fn parse_message_id(body: &str) -> Result<MessageId, String> {
         .ok_or_else(|| "Yanıtta mesaj kimliği yok".to_string())
 }
 
-/// Discord hata gövdesini log'lanabilir tek satıra çevirir.
-#[cfg(test)]
-fn error_message(status: u16, body: &str) -> String {
-    let trimmed: String = body.chars().take(MAX_ERROR_BYTES).collect();
-    format!("Discord {} döndü: {}", status, trimmed.replace('\n', " "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,13 +469,5 @@ mod tests {
         assert!(matches!(&filtered, Cow::Owned(_)));
         assert_eq!(filtered.as_ref(), &serde_json::json!({"content": "hello"}));
         assert_eq!(webhook_payload["username"], "webhook");
-    }
-
-    #[test]
-    fn error_bodies_are_truncated_for_logs() {
-        let long_body = "x".repeat(MAX_ERROR_BYTES * 2);
-        let message = error_message(400, &long_body);
-        assert!(message.starts_with("Discord 400 döndü: "));
-        assert!(message.chars().count() < MAX_ERROR_BYTES + 40);
     }
 }

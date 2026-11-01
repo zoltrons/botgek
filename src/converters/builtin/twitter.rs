@@ -561,7 +561,7 @@ pub fn find_tweet_url(text: &str) -> Option<String> {
 pub async fn gif_links(client: &reqwest::Client, url: &str) -> Result<Vec<String>, String> {
     let id = extract_tweet_id(url).ok_or("Geçerli bir X/Twitter gönderi bağlantısı değil.")?;
     let response: FxResponse =
-        super::get_json_as(client, &format!("{FXTWITTER_URL}/i/status/{id}")).await?;
+        super::get_json(client, &format!("{FXTWITTER_URL}/i/status/{id}")).await?;
     let tweet = response
         .tweet
         .ok_or_else(|| format!("fxtwitter yanıtında gönderi yok: {id}"))?;
@@ -657,7 +657,7 @@ async fn from_vxtwitter(
         // vx yoldaki kullanıcı adını yalnızca adres biçimi için kullanır; her segment çalışır.
         .unwrap_or_else(|| "Twitter".to_string());
     let url = format!("{VXTWITTER_URL}/{handle}/status/{id}{language_suffix}");
-    let tweet: VxTweet = super::get_json_as(client, &url).await?;
+    let tweet: VxTweet = super::get_json(client, &url).await?;
 
     if tweet.tweet_id.is_none() {
         return Err(format!("vxtwitter yanıtında gönderi kimliği yok: {id}"));
@@ -1123,7 +1123,7 @@ async fn from_syndication(
         "{SYNDICATION_URL}?id={id}&token={}&lang=en",
         syndication_token(id)
     );
-    let tweet: SyndicationTweet = super::get_json_as(client, &url).await?;
+    let tweet: SyndicationTweet = super::get_json(client, &url).await?;
 
     if tweet.is_empty() {
         return Err(format!(
@@ -1452,7 +1452,7 @@ async fn from_fxtwitter(
     // Dil eki (`/tr`) verildiğinde yanıt orijinal metinle birlikte X'in çevirisini de içerir.
     let language_suffix = language.map(|lang| format!("/{lang}")).unwrap_or_default();
     let url = format!("{FXTWITTER_URL}/i/status/{id}{language_suffix}");
-    let response: FxResponse = super::get_json_as(client, &url).await?;
+    let response: FxResponse = super::get_json(client, &url).await?;
 
     if let Some(code) = response.code
         && code != 200

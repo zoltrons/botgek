@@ -79,21 +79,21 @@ fn conversion_sender() -> &'static Sender<ConversionJob> {
     })
 }
 
-fn module_enabled(settings: &GuildSettings, platform: parser::Platform) -> (bool, &'static str) {
+fn module_enabled(settings: &GuildSettings, platform: parser::Platform) -> bool {
     match platform {
-        parser::Platform::Twitter => (settings.modules.twitter, "twitter"),
-        parser::Platform::TikTok => (settings.modules.tiktok, "tiktok"),
-        parser::Platform::Instagram => (settings.modules.instagram, "instagram"),
-        parser::Platform::Reddit => (settings.modules.reddit, "reddit"),
-        parser::Platform::Bluesky => (settings.modules.bluesky, "bluesky"),
-        parser::Platform::Spotify => (settings.modules.spotify, "spotify"),
-        parser::Platform::Twitch => (settings.modules.twitch, "twitch"),
-        parser::Platform::Pixiv => (settings.modules.pixiv, "pixiv"),
-        parser::Platform::Tumblr => (settings.modules.tumblr, "tumblr"),
-        parser::Platform::Facebook => (settings.modules.facebook, "facebook"),
-        parser::Platform::YouTube => (settings.modules.youtube, "youtube"),
-        parser::Platform::Letterboxd => (settings.modules.letterboxd, "letterboxd"),
-        parser::Platform::Miniflux => (settings.modules.miniflux, "miniflux"),
+        parser::Platform::Twitter => settings.modules.twitter,
+        parser::Platform::TikTok => settings.modules.tiktok,
+        parser::Platform::Instagram => settings.modules.instagram,
+        parser::Platform::Reddit => settings.modules.reddit,
+        parser::Platform::Bluesky => settings.modules.bluesky,
+        parser::Platform::Spotify => settings.modules.spotify,
+        parser::Platform::Twitch => settings.modules.twitch,
+        parser::Platform::Pixiv => settings.modules.pixiv,
+        parser::Platform::Tumblr => settings.modules.tumblr,
+        parser::Platform::Facebook => settings.modules.facebook,
+        parser::Platform::YouTube => settings.modules.youtube,
+        parser::Platform::Letterboxd => settings.modules.letterboxd,
+        parser::Platform::Miniflux => settings.modules.miniflux,
     }
 }
 
@@ -295,9 +295,8 @@ pub async fn convert_now(
 /// doldurur. Bu işte silme ve taklit kapalıdır, dolayısıyla kimlik hiçbir REST çağrısında
 /// kullanılmaz. Yine de sıfır olmayan, tarihçe olarak tutarlı bir snowflake üretilir.
 fn generated_message_id() -> serenity::all::MessageId {
-    const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
     let now_ms = crate::utils::unix_millis();
-    serenity::all::MessageId::new(now_ms.saturating_sub(DISCORD_EPOCH_MS) << 22)
+    serenity::all::MessageId::new(now_ms.saturating_sub(crate::utils::DISCORD_EPOCH_MS) << 22)
 }
 
 async fn prepare_job(
@@ -313,14 +312,12 @@ async fn prepare_job(
     };
 
     // 1. Modül Etkinlik Kontrolü
-    let (module_enabled, module_key) = module_enabled(settings, parsed.platform);
-
-    if !module_enabled {
+    if !module_enabled(settings, parsed.platform) {
         return None;
     }
 
     // 2. Modüle Özel Rol Tabanlı Allowlist / Blacklist Filtresi
-    let role_filter = settings.get_role_filter(module_key);
+    let role_filter = settings.get_role_filter(builtin::platform_key(parsed.platform));
     if !crate::policy::allows(
         ctx,
         msg.guild_id,

@@ -83,8 +83,9 @@ pub async fn send(
             return Err(Error::InvalidPayload);
         }
     };
-    let _route = super::coordination::lock(format!("rest:{route}")).await;
+    // Sıra beklemek de süre sınırına dahildir: önündeki istek takılırsa bu istek sonsuza dek beklemez.
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
+        let _route = super::coordination::lock(format!("rest:{route}")).await;
         for attempt in 0..3 {
             let wait = {
                 let mut cooldowns = COOLDOWNS.lock().await;

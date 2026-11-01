@@ -27,7 +27,7 @@ doğrular, atomik yazar ve eski dosyaları göç ettirir. `policy.rs` rol filtre
 
 - `modules` (`PlatformModules`): her platform için bir anahtar ve `ai_chat`. Hepsi varsayılan açıktır.
 - `role_filters`: modül başına `RoleFilterSettings` (`mode`: `disabled`, `blacklist` ya da `allowlist`; en fazla 200 rol kimliği).
-- `engine` (`EngineSettings`): `respond_to_bots`, `sensitive_mode`, `max_images` (1 ile 10), `max_video_mb`
+- `engine` (`EngineSettings`): `respond_to_bots`, `sensitive_mode`, `max_video_mb`
   (1 ile 50), `show_metrics`, `show_timestamp`, `show_community_note`, `show_quote`, `auto_translate`,
   `translation_target`, `impersonate_user`, `impersonate_skip_replies`, `emojis`.
 - `ai` (`AiSettings`): model ve sistem istemi (persona).
@@ -62,7 +62,7 @@ Bu mantık `src/web/ui/app.js` içinde de uygulanır. İkisi aynı fixture ile t
 
 - Şema sürümü 0 olan dosyalarda `migrate_legacy_guild_overrides` ve `migrate_legacy_role_filter` bir kez
   çalışır. Eski tek `role_filter` modül filtrelerine kopyalanır ve bir daha yazılmaz.
-- `twitter_source` eski bir alandır ve etkisizdir.
+- Kaldırılan `twitter_source` ve `max_images` anahtarları eski dosyalarda bulunabilir; okunurken yok sayılır.
 
 ### Rol politikası
 

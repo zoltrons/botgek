@@ -101,8 +101,9 @@ const KEEPALIVE_TARGETS: [(&str, &str); 5] = [
 const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Bağlantı havuzunu sıcak tutmak için yoklama aralığı. [`POOL_IDLE_TIMEOUT`] değerinden
-/// **küçük** olmalı; aksi hâlde bağlantı iki yoklama arasında atıl kalır.
-const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
+/// **küçük** olmalı; aksi hâlde bağlantı iki yoklama arasında atıl kalır. Daha sık yoklamak kazanç
+/// getirmez, yalnızca dış servislere gereksiz istek gönderir.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(240);
 
 /// Tek bir uca **arka planda** ısıtma isteği yapar (yanıt içeriği önemsiz: amaç DNS +
 /// TCP + TLS + HTTP/2 el sıkışmasını kurup bağlantı havuzunu sıcak tutmak).

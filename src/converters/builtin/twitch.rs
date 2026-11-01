@@ -179,8 +179,8 @@ fn video_url(clip: &Clip) -> Option<String> {
         .map(|(_, url)| url)?;
     Some(format!(
         "{source}?sig={}&token={}",
-        super::encode_component(&token.signature),
-        super::encode_component(&token.value)
+        urlencoding::encode(&token.signature),
+        urlencoding::encode(&token.value)
     ))
 }
 

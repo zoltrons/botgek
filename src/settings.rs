@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
@@ -89,28 +89,6 @@ impl RoleFilterSettings {
 // =====================================================================================
 // LINK DÖNÜŞTÜRME MOTORU (NATIVE)
 // =====================================================================================
-
-/// Eski "X veri kaynağı" ayarı.
-///
-/// **Artık etkisizdir:** X verisi her zaman FxTwitter'dan çekilir (yedek: X syndication);
-/// vxTwitter yalnızca `/dönüştür kaynak:vx` ile elle seçilir ([`EngineSettings::x_alternative_source`]).
-/// Değer, eski ayar dosyaları ve panel kayıtları bozulmasın diye okunup yazılmaya devam eder.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum TwitterSource {
-    /// X'in kendi syndication uç noktası (üçüncü taraf yok, ücretsiz).
-    #[default]
-    Syndication,
-    /// api.fxtwitter.com: repost/alıntı/görüntülenme ve topluluk notu gibi ek veriler içerir.
-    Fxtwitter,
-    /// api.vxtwitter.com: tek yanıtta gönderi + topluluk notu + X'in Grok çevirisi.
-    Vxtwitter,
-    /// Önce X syndication denenir, yanıt gelmezse fxtwitter'a düşülür.
-    Hybrid,
-}
-
-/// Tek mesajda ek olarak yüklenecek maksimum görsel sayısı sınırı.
-pub const MAX_IMAGES_RANGE: std::ops::RangeInclusive<u8> = 1..=10;
 
 /// Components V2 kartında kullanılacak özel emoji seti.
 ///
@@ -375,10 +353,6 @@ pub struct EngineSettings {
     /// kanalda da gizli kalır (bkz. `render::VisibilityDecision`).
     #[serde(default)]
     pub sensitive_mode: SensitiveMode,
-    /// Eski X veri kaynağı ayarı; etkisizdir (bkz. [`TwitterSource`]).
-    pub twitter_source: TwitterSource,
-    /// Tek mesajda ek olarak yüklenecek maksimum görsel sayısı.
-    pub max_images: u8,
     /// Eklenecek maksimum video boyutu (MB).
     pub max_video_mb: u8,
     /// Beğeni/yanıt/repost vb. metrikleri göster.
@@ -416,8 +390,6 @@ impl Default for EngineSettings {
         Self {
             respond_to_bots: false,
             sensitive_mode: SensitiveMode::HideAlways,
-            twitter_source: TwitterSource::default(),
-            max_images: 4,
             max_video_mb: 8,
             show_metrics: true,
             show_timestamp: true,
@@ -445,9 +417,6 @@ pub enum SensitiveMode {
 impl EngineSettings {
     /// WebUI girdilerini güvenli sınırlara çeker.
     pub fn sanitize(&mut self) {
-        if !MAX_IMAGES_RANGE.contains(&self.max_images) {
-            self.max_images = self.max_images.clamp(1, 10);
-        }
         if !MAX_VIDEO_MB_RANGE.contains(&self.max_video_mb) {
             self.max_video_mb = self.max_video_mb.clamp(1, 50);
         }
@@ -617,8 +586,8 @@ pub struct GuildOverride {
     pub ai: Option<AiSettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<EngineSettings>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub channels: HashMap<String, ChannelOverride>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub channels: BTreeMap<String, ChannelOverride>,
 }
 
 /// Anahtarları Discord kimliğinin kanonik ondalık biçimine çevirir; geçersiz/sıfır kimlikler atılır.
@@ -626,9 +595,8 @@ pub struct GuildOverride {
 /// Ayarlar `GuildId::to_string()` ile arandığından `"042"` veya `"+42"` gibi elle yazılmış
 /// anahtarlar doğrulamadan geçip hiçbir mesajla eşleşmiyor, override sessizce etkisiz kalıyordu.
 /// İki anahtar aynı kimliğe düşerse kanonik yazılmış olan korunur.
-fn canonicalize_ids<T>(map: &mut HashMap<String, T>) {
-    let entries: Vec<(String, T)> = map.drain().collect();
-    for (key, value) in entries {
+fn canonicalize_ids<T>(map: &mut BTreeMap<String, T>) {
+    for (key, value) in std::mem::take(map) {
         let Some(id) = key.parse::<u64>().ok().filter(|id| *id > 0) else {
             continue;
         };
@@ -769,7 +737,7 @@ pub struct AppSettings {
     /// Sunucuya özel **sparse** ayarlar (Guild ID -> yalnızca bilerek değiştirilen bölümler).
     /// Boş bölümler yazılmaz; kaydın kendisi yoksa sunucu genel ayarları **miras alır**.
     #[serde(default)]
-    pub guilds: HashMap<String, GuildOverride>,
+    pub guilds: BTreeMap<String, GuildOverride>,
 }
 
 impl Default for AppSettings {
@@ -782,7 +750,7 @@ impl Default for AppSettings {
             role_filter: None,
             ai: AiSettings::default(),
             engine: EngineSettings::default(),
-            guilds: HashMap::new(),
+            guilds: BTreeMap::new(),
         }
     }
 }
@@ -1258,7 +1226,7 @@ mod tests {
 
     #[test]
     fn hand_written_ids_are_canonicalized() {
-        let mut map: HashMap<String, u8> = HashMap::new();
+        let mut map: BTreeMap<String, u8> = BTreeMap::new();
         for (key, value) in [
             ("042", 1),
             ("+7", 2),
@@ -1453,13 +1421,11 @@ mod tests {
     #[test]
     fn engine_settings_round_trip_through_json() {
         let mut settings = AppSettings::default();
-        settings.engine.twitter_source = TwitterSource::Fxtwitter;
         settings.engine.max_video_mb = 12;
 
         let json = serde_json::to_string(&settings).unwrap();
         let decoded: AppSettings = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(decoded.engine.twitter_source, TwitterSource::Fxtwitter);
         assert_eq!(decoded.engine.max_video_mb, 12);
     }
 
@@ -1544,7 +1510,6 @@ mod tests {
             serde_json::from_str(json).expect("eski settings.json düzeni hatasız yüklenmeli");
 
         // Kaldırılan proxy anahtarları yok sayılır; diğer değerler okunur.
-        assert_eq!(settings.engine.twitter_source, TwitterSource::Syndication);
         assert!(settings.engine.impersonate_user);
         // Eski dosyada bulunmayan yeni alan varsayılanını alır ve çalışır.
         assert_eq!(settings.engine.emojis.reddit, DEFAULT_REDDIT_EMOJI);
@@ -1561,21 +1526,17 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(json).unwrap();
 
         // Eksik alanlar varsayılan kalmalı
-        assert_eq!(settings.engine.twitter_source, TwitterSource::Syndication);
-        assert_eq!(settings.engine.max_images, 4);
         assert!(settings.engine.auto_translate);
     }
 
     #[test]
     fn engine_sanitize_clamps_values() {
         let mut engine = EngineSettings {
-            max_images: 0,
             max_video_mb: 200,
             ..Default::default()
         };
         engine.sanitize();
 
-        assert!(MAX_IMAGES_RANGE.contains(&engine.max_images));
         assert!(MAX_VIDEO_MB_RANGE.contains(&engine.max_video_mb));
     }
 
@@ -1601,11 +1562,9 @@ mod tests {
         let mut settings: AppSettings = serde_json::from_str(json).unwrap();
         settings.engine.sanitize();
 
-        assert_eq!(settings.engine.twitter_source, TwitterSource::Hybrid);
         assert!(!settings.engine.show_timestamp);
         assert!(!settings.engine.show_quote);
         assert!(!settings.engine.auto_translate);
-        assert_eq!(settings.engine.max_images, 7);
         // WebUI aralık dışı değer gönderirse güvenli sınıra çekilir
         assert_eq!(
             settings.engine.max_video_mb,
@@ -1760,12 +1719,12 @@ mod tests {
         let guild_id = serenity::all::GuildId::new(4242);
 
         // Genel varsayılan: sunucu kaydı yok → miras.
-        settings.engine.max_images = 9;
+        settings.engine.max_video_mb = 9;
         assert_eq!(
             settings
                 .get_guild_settings(Some(guild_id))
                 .engine
-                .max_images,
+                .max_video_mb,
             9
         );
 
@@ -1774,7 +1733,7 @@ mod tests {
             guild_id.to_string(),
             GuildOverride {
                 engine: Some(EngineSettings {
-                    max_images: 2,
+                    max_video_mb: 2,
                     ..EngineSettings::default()
                 }),
                 ..GuildOverride::default()
@@ -1785,7 +1744,7 @@ mod tests {
             settings
                 .get_guild_settings(Some(guild_id))
                 .engine
-                .max_images,
+                .max_video_mb,
             2
         );
         // Bilinmeyen sunucu geneli miras alır.
@@ -1793,7 +1752,7 @@ mod tests {
             settings
                 .get_guild_settings(Some(serenity::all::GuildId::new(7)))
                 .engine
-                .max_images,
+                .max_video_mb,
             9
         );
     }
@@ -1846,12 +1805,12 @@ mod tests {
     fn resolve_empty_override_returns_global() {
         let mut global = AppSettings::default();
         global.modules.twitter = false;
-        global.engine.max_images = 9;
+        global.engine.max_video_mb = 9;
 
         let resolved = resolve_settings(&global, Some(&GuildOverride::default()));
 
         assert!(!resolved.modules.twitter);
-        assert_eq!(resolved.engine.max_images, 9);
+        assert_eq!(resolved.engine.max_video_mb, 9);
         assert_eq!(resolved.ai, global.ai);
         assert_eq!(resolved.role_filters, global.role_filters);
     }
@@ -1875,7 +1834,7 @@ mod tests {
     #[test]
     fn resolve_partial_override_and_global_change_propagation() {
         let mut global = AppSettings::default();
-        global.engine.max_images = 3;
+        global.engine.max_video_mb = 3;
         global.ai.model = "global/model".to_string();
 
         let over = GuildOverride {
@@ -1888,15 +1847,15 @@ mod tests {
 
         let resolved = resolve_settings(&global, Some(&over));
         assert!(!resolved.modules.tiktok);
-        assert_eq!(resolved.engine.max_images, 3);
+        assert_eq!(resolved.engine.max_video_mb, 3);
         assert_eq!(resolved.ai.model, "global/model");
 
         // Genel değişti: miras alan bölüm yeni değeri alır, sabitlenen bölüm etkilenmez.
-        global.engine.max_images = 7;
+        global.engine.max_video_mb = 7;
         global.modules.tiktok = true;
         let resolved = resolve_settings(&global, Some(&over));
         assert_eq!(
-            resolved.engine.max_images, 7,
+            resolved.engine.max_video_mb, 7,
             "override'ı olmayan bölüm genel değişimini izlemeli"
         );
         assert!(
@@ -1968,21 +1927,24 @@ mod tests {
     #[test]
     fn resolve_removing_override_returns_to_inheritance() {
         let mut global = AppSettings::default();
-        global.engine.max_images = 5;
+        global.engine.max_video_mb = 5;
 
         let mut over = GuildOverride {
             engine: Some(EngineSettings {
-                max_images: 2,
+                max_video_mb: 2,
                 ..EngineSettings::default()
             }),
             ..GuildOverride::default()
         };
-        assert_eq!(resolve_settings(&global, Some(&over)).engine.max_images, 2);
+        assert_eq!(
+            resolve_settings(&global, Some(&over)).engine.max_video_mb,
+            2
+        );
 
         over.engine = None;
         assert!(over.is_empty(), "hiç bölüm kalmayınca kayıt miras sayılır");
         assert_eq!(
-            resolve_settings(&global, Some(&over)).engine.max_images,
+            resolve_settings(&global, Some(&over)).engine.max_video_mb,
             5,
             "override kaldırılınca genel geçerli olur"
         );
@@ -1992,7 +1954,7 @@ mod tests {
     #[test]
     fn guild_override_serializes_sparse() {
         let settings = AppSettings {
-            guilds: HashMap::from([(
+            guilds: BTreeMap::from([(
                 "42".to_string(),
                 GuildOverride {
                     ai: Some(AiSettings {
@@ -2023,7 +1985,7 @@ mod tests {
     #[test]
     fn migrate_reduces_identical_blocks_and_keeps_different_ones() {
         let mut settings = AppSettings::default();
-        settings.engine.max_images = 5;
+        settings.engine.max_video_mb = 5;
 
         // Eski "tam kopya": modules/role_filters/ai genelle aynı, engine farklı.
         settings.guilds.insert(
@@ -2033,10 +1995,10 @@ mod tests {
                 role_filters: Some(settings.role_filters.clone()),
                 ai: Some(settings.ai.clone()),
                 engine: Some(EngineSettings {
-                    max_images: 2,
+                    max_video_mb: 2,
                     ..settings.engine.clone()
                 }),
-                channels: HashMap::new(),
+                channels: BTreeMap::new(),
             },
         );
 
@@ -2046,7 +2008,7 @@ mod tests {
         assert!(over.modules.is_none());
         assert!(over.role_filters.is_none());
         assert!(over.ai.is_none());
-        assert_eq!(over.engine.as_ref().unwrap().max_images, 2);
+        assert_eq!(over.engine.as_ref().unwrap().max_video_mb, 2);
     }
 
     /// Göç: tamamen genelle aynı olan sunucu kaydı silinir (artık "özel" değildir).
@@ -2060,7 +2022,7 @@ mod tests {
                 role_filters: Some(settings.role_filters.clone()),
                 ai: Some(settings.ai.clone()),
                 engine: Some(settings.engine.clone()),
-                channels: HashMap::new(),
+                channels: BTreeMap::new(),
             },
         );
 
@@ -2094,13 +2056,13 @@ mod tests {
     #[test]
     fn migrate_is_idempotent() {
         let mut settings = AppSettings::default();
-        settings.engine.max_images = 5;
+        settings.engine.max_video_mb = 5;
         settings.guilds.insert(
             "1".to_string(),
             GuildOverride {
                 modules: Some(settings.modules.clone()),
                 engine: Some(EngineSettings {
-                    max_images: 2,
+                    max_video_mb: 2,
                     ..settings.engine.clone()
                 }),
                 ..GuildOverride::default()
@@ -2175,7 +2137,7 @@ mod tests {
             channel.to_string(),
             ChannelOverride {
                 engine: Some(EngineSettings {
-                    max_images: 2,
+                    max_video_mb: 2,
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -2186,11 +2148,11 @@ mod tests {
         let resolved = settings.get_message_settings(Some(guild_id), channel, Some(parent));
         assert!(resolved.modules.twitter);
         assert_eq!(resolved.ai.system_prompt, "parent");
-        assert_eq!(resolved.engine.max_images, 2);
+        assert_eq!(resolved.engine.max_video_mb, 2);
         // No parent means a normal channel does not inherit the category/thread entry.
         let normal = settings.get_message_settings(Some(guild_id), channel, None);
         assert!(!normal.modules.twitter);
-        assert_eq!(normal.engine.max_images, 2);
+        assert_eq!(normal.engine.max_video_mb, 2);
         let dm = settings.get_message_settings(None, channel, Some(parent));
         assert!(dm.modules.twitter);
     }

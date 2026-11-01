@@ -156,7 +156,7 @@ async fn resolve_target(_client: &reqwest::Client, original_url: &str) -> Result
         return Err(format!("Spotify link biçimi tanınamadı: {original_url}"));
     }
 
-    let url = format!("{SPOTIFY_LINK}/{}", super::encode_component(token));
+    let url = format!("{SPOTIFY_LINK}/{}", urlencoding::encode(token));
     // Kısa linkler güvenilmeyen bir redirect/HTML sınırıdır. Ortak güvenli HTTP yolu;
     // durum kodunu doğrular, yönlendirmeleri elle ve sınırlı sayıda takip eder, her hedefi
     // public HTTP endpoint olarak doğrular ve gövdeyi akış sırasında sınırlar.
@@ -654,7 +654,7 @@ fn search_query(view: &EntityView) -> String {
 fn apple_music_search_url(view: &EntityView) -> String {
     format!(
         "https://music.apple.com/search?term={}",
-        super::encode_component(&search_query(view))
+        urlencoding::encode(&search_query(view))
     )
 }
 
@@ -662,7 +662,7 @@ fn apple_music_search_url(view: &EntityView) -> String {
 fn youtube_music_search_url(view: &EntityView) -> String {
     format!(
         "https://music.youtube.com/search?q={}",
-        super::encode_component(&search_query(view))
+        urlencoding::encode(&search_query(view))
     )
 }
 

@@ -64,6 +64,27 @@ fn is_not_found(err: &serenity::Error) -> bool {
     )
 }
 
+/// Düzenlenen mesajda ne yapılacağı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditAction {
+    /// Bağlantı değişmedi (ya da hiç yok): yazım düzeltmesi kartı yeniden üretmez.
+    Keep,
+    /// Bağlantı kaldırıldı: kart silinir.
+    RemoveCard,
+    /// Yeni bağlantı var: varsa eski kart silinir, yenisi dönüştürülür.
+    Convert,
+}
+
+/// Kararın saf çekirdeği: kartın bağlantısı ve mesajın yeni bağlantısı.
+fn edit_action(card_url: Option<&str>, new_url: Option<&str>) -> EditAction {
+    match (card_url, new_url) {
+        (None, None) => EditAction::Keep,
+        (Some(card), Some(new)) if card == new => EditAction::Keep,
+        (Some(_), None) => EditAction::RemoveCard,
+        (_, Some(_)) => EditAction::Convert,
+    }
+}
+
 /// Kaynak mesaj düzenlendiğinde kartı günceller (bkz. modül belgesi).
 pub async fn source_edited(
     ctx: &Context,
@@ -94,17 +115,19 @@ pub async fn source_edited(
     let id = event.id;
     let existing = crate::store::blocking(move || crate::store::card_for_source(id)).await;
 
-    match (&existing, &parsed) {
-        (None, None) => return,
-        (Some(card), Some(parsed)) if card.source_url == parsed.original_url => return,
-        _ => {}
+    let action = edit_action(
+        existing.as_ref().map(|card| card.source_url.as_str()),
+        parsed.as_ref().map(|parsed| parsed.original_url.as_str()),
+    );
+    if action == EditAction::Keep {
+        return;
     }
     info!(message = %event.id, edited_at = %edited_at, "Kaynak mesaj düzenlendi");
 
     if let Some(card) = &existing {
         delete_card(ctx, card).await;
     }
-    if parsed.is_none() {
+    if action == EditAction::RemoveCard {
         return;
     }
 
@@ -145,8 +168,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn edits_only_touch_the_card_when_the_link_changes() {
+        let (a, b) = (Some("https://x.com/a"), Some("https://x.com/b"));
+        assert_eq!(edit_action(None, None), EditAction::Keep);
+        assert_eq!(edit_action(a, a), EditAction::Keep);
+        assert_eq!(edit_action(a, None), EditAction::RemoveCard);
+        assert_eq!(edit_action(a, b), EditAction::Convert);
+        assert_eq!(edit_action(None, b), EditAction::Convert);
+    }
+
+    #[test]
     fn fresh_snowflake_is_inside_the_edit_window() {
-        const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+        use crate::utils::DISCORD_EPOCH_MS;
         let now = crate::utils::unix_millis();
         let fresh = MessageId::new((now - DISCORD_EPOCH_MS) << 22);
         assert!(!too_old(fresh));

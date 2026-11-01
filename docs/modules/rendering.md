@@ -31,7 +31,9 @@ Varsayılan olarak hiçbir medya indirilmez. Görseller ve GIF'ler CDN bağlant�
 Twitch ve TikTok. Bunun yanında Pixiv görselleri `Referer` gerektirdiği için indirilip eklenir, indirilemezse
 aynadan gösterilir. Facebook'un imzalı MP4'ü de dosya olarak eklenir.
 
-`resolve_media` indirmeleri bütçeyle paralel yürütür. Bütçe dolarsa video kartta uzak bağlantıyla oynar
+`resolve_media` indirmeleri bütçeyle paralel yürütür. Aynı anda en çok 3 kart medyayı bellekte tutar
+(`MEDIA_SLOT_COUNT`); yuva yoksa kart beklemeden uzak bağlantıya düşer. Tek Pixiv görseli en çok
+`DISCORD_FILE_LIMIT / MAX_PAGES` olabilir, böylece 10 sayfa birlikte dosya sınırına sığar. Bütçe dolarsa video kartta uzak bağlantıyla oynar
 ya da hiç gösterilmez (platforma göre). İndirilen dosyalar `attachment://ad` ile Media Gallery'ye bağlanır.
 Spoiler dosyaları `SPOILER_` önekiyle yüklenir ve referans adı eşleşmelidir.
 

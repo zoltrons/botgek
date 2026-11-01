@@ -101,6 +101,29 @@ fn rate_key(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// Başarısız girişin sayılacağı adres. Ters proxy arkasında tüm ziyaretçiler proxy'nin adresiyle
+/// gelir ve tek saldırgan yöneticiyi kilitleyebilirdi. Yerel/özel bir bağlantıda bu yüzden
+/// `X-Forwarded-For`'un son girdisi (proxy'nin gördüğü adres) esas alınır; dışarıdan gelen
+/// bağlantının başlığına güvenilmez.
+/// shortcut: yerel ağdaki istemci başlığı sahteleyip sınırı aşabilir; token 32+ karakter olduğu için kabul edildi.
+fn client_ip(peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+    let local = match peer.to_canonical() {
+        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
+        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
+    };
+    if !local {
+        return peer;
+    }
+    headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .next_back()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit(',').next())
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(peer)
+}
+
 fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::COOKIE)?
@@ -153,10 +176,11 @@ pub async fn login(
     Json(input): Json<Login>,
 ) -> Response {
     let auth = &state.auth;
-    let ip = peer.map_or(
+    let peer = peer.map_or(
         IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         |Extension(ConnectInfo(addr))| addr.ip(),
     );
+    let ip = client_ip(peer, &headers);
     if auth.locked_out(ip).await {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
@@ -273,6 +297,34 @@ mod tests {
         }
         assert!(auth.locked_out(attacker).await);
         assert!(!auth.locked_out(admin).await);
+    }
+
+    /// Proxy başlığına yalnızca yerel bağlantıda güvenilir; son girdi esas alınır.
+    #[test]
+    fn forwarded_address_is_trusted_only_from_local_peers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.1.1.1, 203.0.113.7".parse().unwrap());
+        let client: IpAddr = "203.0.113.7".parse().unwrap();
+        for local in [
+            "127.0.0.1",
+            "172.18.0.1",
+            "::1",
+            "::ffff:10.0.0.2",
+            "fd00::1",
+        ] {
+            assert_eq!(
+                client_ip(local.parse().unwrap(), &headers),
+                client,
+                "{local}"
+            );
+        }
+        let public: IpAddr = "8.8.8.8".parse().unwrap();
+        assert_eq!(client_ip(public, &headers), public);
+
+        let proxy: IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(client_ip(proxy, &HeaderMap::new()), proxy);
+        headers.insert("x-forwarded-for", "bozuk".parse().unwrap());
+        assert_eq!(client_ip(proxy, &headers), proxy);
     }
 
     /// Aynı /64 içindeki adres değişimi kilidi atlatamaz; komşu /64 etkilenmez.

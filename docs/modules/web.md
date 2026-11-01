@@ -44,6 +44,7 @@ Oturum gerektirir:
   `Secure` ekler. En fazla 64 eşzamanlı oturum.
 - Giriş hız sınırı: istemci adresi başına 60 sn içinde 20 başarısız deneme, izlenen adres tablosu en fazla
   1024 girdi. IPv6 adresler /64 önekine, IPv4'e eşlenmiş adresler IPv4'e indirgenir (`rate_key`).
+  Bağlantı yerel/özel adresten geliyorsa adres `X-Forwarded-For`'un son girdisinden alınır (`client_ip`).
 - `auth::csrf`: GET, HEAD ve OPTIONS dışındaki her istek `X-Botgek-Request: 1` başlığını taşımalıdır.
   Yoksa 403.
 

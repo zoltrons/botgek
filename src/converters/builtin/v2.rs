@@ -422,7 +422,7 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
                 .images
                 .iter()
                 .all(|url| url.starts_with("http"))
-            && let Some(row) = pager::pager_row(card.post, card.options, 0)
+            && let Some(row) = pager::pager_row(card.post, 0)
         {
             children.push(row);
         }

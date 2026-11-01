@@ -121,13 +121,8 @@ pub use model::{
 // HTTP YARDIMCILARI
 // =====================================================================================
 
-/// JSON yanıtını çeker ve çözümler. Gövde boyutu `MAX_BODY_BYTES` ile sınırlıdır.
-pub async fn get_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
-    get_json_as(client, url).await
-}
-
-/// JSON yanıtını doğrudan `T`'ye çözümler: ara `serde_json::Value` ağacı kurulmaz.
-pub async fn get_json_as<T: serde::de::DeserializeOwned>(
+/// JSON yanıtını doğrudan `T`'ye çözümler. Gövde boyutu `MAX_BODY_BYTES` ile sınırlıdır.
+pub async fn get_json<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<T, String> {
@@ -436,20 +431,6 @@ pub(super) fn https_url_on(raw: &str, domains: &[&str]) -> Option<url::Url> {
         .then_some(url)
 }
 
-/// Sorgu parametrelerinde kullanılmak üzere percent-encoding uygular.
-pub fn encode_component(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
 /// `975K`, `1.5M`, `60,279,326`, `16.7k` gibi kısaltmalı sayaçları tam sayıya çevirir.
 ///
 /// Binlik ayırıcı olarak virgül ve her tür boşluk (normal/bölünmez) atılır; sonuç yuvarlanır
@@ -531,12 +512,6 @@ fn decode_entity(name: &str) -> Option<char> {
 #[cfg(test)]
 mod encoding_tests {
     use super::*;
-
-    #[test]
-    fn query_components_are_encoded() {
-        assert_eq!(encode_component("a b/c?d=e"), "a%20b%2Fc%3Fd%3De");
-        assert_eq!(encode_component("abc-._~"), "abc-._~");
-    }
 
     #[test]
     fn html_entities_are_decoded() {
@@ -630,7 +605,7 @@ mod tests {
     /// Verilen UNIX-milisaniye anına denk gelen bir snowflake `MessageId` üretir
     /// (testte "taze"/"eski" mesaj kurmak için).
     fn snowflake_at(ms: i64) -> MessageId {
-        MessageId::new(((ms - DISCORD_EPOCH_MS) as u64) << 22)
+        MessageId::new(((ms - crate::utils::DISCORD_EPOCH_MS as i64) as u64) << 22)
     }
 
     #[test]
@@ -706,7 +681,7 @@ impl WebhookTarget {
 ///
 /// Forum gönderileri Discord'da `PublicThread` olarak gelir; duyuru alt başlıkları ve kapalı
 /// alt başlıklar da aynı kuralla üst kanallarında webhook kullanır.
-fn is_thread_kind(kind: ChannelType) -> bool {
+pub(crate) fn is_thread_kind(kind: ChannelType) -> bool {
     matches!(
         kind,
         ChannelType::NewsThread | ChannelType::PublicThread | ChannelType::PrivateThread
@@ -1287,16 +1262,13 @@ async fn delete_user_message(ctx: &Context, msg: &Message) {
     }
 }
 
-/// Discord snowflake epoch (2015-01-01T00:00:00Z), milisaniye cinsinden.
-const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
-
 /// "Hayalet penceresi"ni güvenle aşmak için beklenecek kalan süre; mesaj zaten
 /// yeterince yaşlıysa `None` (ek gecikme yok). Yaş, mesaj kimliğinin (snowflake)
 /// içerdiği oluşturulma anından ölçülür; böylece `Timestamp`'in chrono/time arka
 /// ucundan bağımsız ve milisaniye hassasiyetinde kalır.
 fn delete_wait(id: MessageId) -> Option<Duration> {
     let now_ms = crate::utils::unix_millis() as i64;
-    let created_ms = (id.get() >> 22) as i64 + DISCORD_EPOCH_MS;
+    let created_ms = (id.get() >> 22) as i64 + crate::utils::DISCORD_EPOCH_MS as i64;
     let age_ms = now_ms - created_ms;
     if age_ms < DELETE_MIN_AGE.as_millis() as i64 {
         Some(Duration::from_millis(
@@ -1671,6 +1643,11 @@ async fn send_components_v2(
     .await?;
     Ok((message_id, false))
 }
+/// Mesajda kartın taşımadığı dosya (ek, çıkartma) var mı? Varsa silmek onları geri dönüşsüz yok eder.
+fn carries_files(msg: &Message) -> bool {
+    !msg.attachments.is_empty() || !msg.sticker_items.is_empty()
+}
+
 /// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
 ///
 /// Reaksiyon ve silme **arka planda ve birbirine paralel** yapılır: kart kullanıcıya çoktan
@@ -1685,7 +1662,8 @@ async fn finish(
     message_id: MessageId,
     source_url: &str,
 ) {
-    if config.delete_original {
+    let delete_original = config.delete_original && !carries_files(msg);
+    if delete_original {
         // Kaynak bilerek silinecek: eşleme tutulsaydı silme olayı kartı da götürürdü.
         remember_author(message_id, msg.channel_id, msg.author.id).await;
     } else {
@@ -1701,7 +1679,6 @@ async fn finish(
 
     let ctx = ctx.clone();
     let msg = msg.clone();
-    let delete_original = config.delete_original;
     tokio::spawn(async move {
         let reaction = async {
             let reaction_started = std::time::Instant::now();
@@ -1740,19 +1717,31 @@ async fn finish(
     });
 }
 
-/// Discord'un 4xx yanıtı kalıcı bir ret anlamına gelir (ağ hatasından farklı olarak
-/// tekrar denemek anlamsızdır).
-#[cfg(test)]
-fn is_discord_rejection(error: &str) -> bool {
-    if error.starts_with("Discord 429") || error.starts_with("Discord 408") {
-        return false;
-    }
-    error.starts_with("Discord 4")
-}
-
 #[cfg(test)]
 mod message_tests {
     use super::*;
+
+    /// DELETE_ORIGINAL açıkken bile dosyalı mesaj silinmemeli: kart dosyayı taşımaz.
+    #[test]
+    fn messages_with_files_are_never_deleted() {
+        let mut msg = Message::default();
+        assert!(!carries_files(&msg));
+        msg.attachments = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "1", "filename": "foto.png", "size": 1, "url": "u", "proxy_url": "p"
+            }))
+            .unwrap(),
+        ];
+        assert!(carries_files(&msg));
+        msg.attachments.clear();
+        msg.sticker_items = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "1", "name": "s", "format_type": 1
+            }))
+            .unwrap(),
+        ];
+        assert!(carries_files(&msg));
+    }
 
     /// Webhook beklemesi 1 saniyelik hedefi **kendi içinde** tutmalı: veri fazı hedefin
     /// içinde bittiyse webhook beklemesi + Discord POST payı kalan bütçeyi aşamaz.
@@ -1819,23 +1808,6 @@ mod message_tests {
             post_cache_key(&parsed, &full),
             post_cache_key(&parsed, &alternative)
         );
-    }
-
-    #[test]
-    fn is_discord_rejection_treats_transient_rates_and_timeouts_as_non_rejections() {
-        assert!(is_discord_rejection("Discord 400 döndü: Bad Request"));
-
-        assert!(is_discord_rejection(
-            "Discord 403 döndü: Missing Permissions"
-        ));
-        assert!(is_discord_rejection("Discord 404 döndü: Unknown Webhook"));
-        assert!(!is_discord_rejection(
-            "Discord 429 döndü: Too Many Requests"
-        ));
-        assert!(!is_discord_rejection("Discord 408 döndü: Request Timeout"));
-        assert!(!is_discord_rejection(
-            "Discord 500 döndü: Internal Server Error"
-        ));
     }
 
     #[test]

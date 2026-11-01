@@ -21,7 +21,7 @@ const PXIMG: &str = "https://i.pximg.net/";
 /// `Referer` istemeyen görsel aynası (pixiv.cat); yol `i.pximg.net` ile aynıdır.
 const IMAGE_MIRROR: &str = "https://i.pixiv.re/";
 /// Kartta en fazla gösterilecek sayfa (Discord medya galerisi sınırı).
-const MAX_PAGES: usize = 10;
+pub(super) const MAX_PAGES: usize = 10;
 /// Açıklamanın altında gösterilecek en fazla etiket.
 const MAX_TAGS: usize = 6;
 
@@ -103,8 +103,8 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let illust_url = format!("{PIXIV}/ajax/illust/{id}");
     let pages_url = format!("{PIXIV}/ajax/illust/{id}/pages");
     let (illust, pages) = tokio::join!(
-        super::get_json_as::<Envelope<Illust>>(client, &illust_url),
-        super::get_json_as::<Envelope<Vec<Page>>>(client, &pages_url),
+        super::get_json::<Envelope<Illust>>(client, &illust_url),
+        super::get_json::<Envelope<Vec<Page>>>(client, &pages_url),
     );
     let illust = match illust.and_then(|e| unwrap(e, &id)) {
         Ok(illust) => illust,
@@ -203,7 +203,7 @@ fn tag_line(illust: &Illust) -> Option<String> {
             format!(
                 "[#{}]({PIXIV}/tags/{}/artworks)",
                 escape_markdown(tag),
-                super::encode_component(tag)
+                urlencoding::encode(tag)
             )
         })
         .collect();

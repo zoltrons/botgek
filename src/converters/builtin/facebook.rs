@@ -48,7 +48,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let player_url = is_video(url).then(|| {
         format!(
             "{FACEBOOK}/plugins/video.php?href={}",
-            super::encode_component(url)
+            urlencoding::encode(url)
         )
     });
     let (page, player) = tokio::join!(get_page(client, url), async {

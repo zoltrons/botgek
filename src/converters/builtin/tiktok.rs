@@ -13,9 +13,7 @@ use std::sync::{LazyLock, Mutex};
 use serde::Deserialize;
 use tracing::debug;
 
-use super::{
-    Author, BuiltinPost, Media, MediaKind, REQUEST_TIMEOUT, Stats, USER_AGENT, encode_component,
-};
+use super::{Author, BuiltinPost, Media, MediaKind, REQUEST_TIMEOUT, Stats, USER_AGENT};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const OEMBED_URL: &str = "https://www.tiktok.com/oembed";
@@ -120,9 +118,9 @@ async fn fetch_oembed(
 ) -> Result<BuiltinPost, String> {
     let url = format!(
         "{OEMBED_URL}?url={}",
-        encode_component(&parsed.original_url)
+        urlencoding::encode(&parsed.original_url)
     );
-    let value = super::get_json(client, &url).await?;
+    let value: serde_json::Value = super::get_json(client, &url).await?;
     let oembed: TikTokOEmbed = serde_json::from_value(value)
         .map_err(|e| format!("TikTok oEmbed yanıtı çözümlenemedi: {e}"))?;
 
@@ -322,11 +320,15 @@ fn item_post(item: &Item) -> Result<BuiltinPost, String> {
         .avatar_medium
         .clone()
         .filter(|url| allowed_tiktok_url(url));
-    author.profile_url = Some(format!("{TIKTOK}/@{}", encode_component(handle)));
+    author.profile_url = Some(format!("{TIKTOK}/@{}", urlencoding::encode(handle)));
 
     let is_photo = item.image_post.is_some();
     let kind = if is_photo { "photo" } else { "video" };
-    let url = format!("{TIKTOK}/@{}/{kind}/{}", encode_component(handle), item.id);
+    let url = format!(
+        "{TIKTOK}/@{}/{kind}/{}",
+        urlencoding::encode(handle),
+        item.id
+    );
     let mut post = BuiltinPost::new(Platform::TikTok, url, author);
     post.text = super::preview::escape_preview_markdown(&item.desc);
     post.created_at = item.create_time.as_ref().and_then(Count::as_i64);
@@ -715,7 +717,7 @@ mod tests {
     fn oembed_request_url_is_encoded() {
         let url = format!(
             "{OEMBED_URL}?url={}",
-            encode_component(&parsed().original_url)
+            urlencoding::encode(&parsed().original_url)
         );
         assert!(
             url.contains("%3A%2F%2Fwww.tiktok.com%2F%40kullanici"),

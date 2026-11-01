@@ -4,9 +4,11 @@
 //! `attachment://` referansıyla kartın **Media Gallery** bileşenine bağlanır. Klasik
 //! `CreateEmbed` düzeni kaldırılmıştır.
 
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use serenity::all::CreateAttachment;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::debug;
 
 use super::media::{self, DISCORD_FILE_LIMIT};
@@ -117,7 +119,7 @@ impl RenderOptions {
     pub fn from_engine(engine: &EngineSettings, platform_key: &str) -> Self {
         Self {
             video_requires_download: video_requires_download(platform_key),
-            // Components V2 galerisi 10 öğeye kadar destekler: ayardaki düşük sınır yok sayılır.
+            // Components V2 galerisi 10 öğeye kadar destekler.
             max_images: super::v2::MEDIA_GALLERY_LIMIT as u8,
             max_video_mb: engine.max_video_mb,
             show_metrics: engine.show_metrics,
@@ -130,11 +132,6 @@ impl RenderOptions {
     /// Video indirme üst sınırı: ayar ne olursa olsun Discord limitini aşmaz.
     pub fn max_video_bytes(&self) -> u64 {
         (self.max_video_mb as u64 * 1024 * 1024).min(DISCORD_FILE_LIMIT)
-    }
-
-    /// Video birleştirme bütçesi (yalnızca zorunlu platformlarda kullanılır).
-    pub fn video_budget(&self) -> Duration {
-        VIDEO_MERGE_BUDGET
     }
 }
 
@@ -160,7 +157,16 @@ pub struct ResolvedMedia {
     pub attached_video: Option<String>,
     /// Video eklenemediyse doğrudan bağlantı (mesaj metnine yazılır).
     pub video_link: Option<String>,
+    /// Ekler gönderilene dek bellekte durur; yuva bu değerle birlikte serbest kalır.
+    pub(super) memory_slot: Option<Arc<OwnedSemaphorePermit>>,
 }
+
+/// Aynı anda bellekte medya eki tutabilen kart sayısı. Bir ek gönderim sırasında iki kopya
+/// (dosya + multipart gövde) tutar: 25 MB'lık üç kart ~150 MB eder, 256 MB sınırına sığar.
+/// Yuva yoksa kart beklemez, uzak bağlantıya düşer.
+const MEDIA_SLOT_COUNT: usize = 3;
+static MEDIA_SLOTS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MEDIA_SLOT_COUNT)));
 
 /// Gönderi medyasını indirme planına çevirir.
 ///
@@ -256,34 +262,65 @@ pub async fn resolve_media(
     options: &RenderOptions,
 ) -> ResolvedMedia {
     let mut resolved = direct_media(plan);
-    if post.platform == crate::converters::parser::Platform::Pixiv {
-        attach_pixiv_images(post, &mut resolved, options).await;
-    }
-    if !options.video_requires_download {
+    let pixiv = post.platform == crate::converters::parser::Platform::Pixiv;
+    let video_url = plan
+        .video
+        .as_ref()
+        .filter(|_| options.video_requires_download);
+    if !pixiv && video_url.is_none() {
         return resolved;
     }
-    let Some(video_url) = plan.video.as_ref() else {
-        return resolved;
-    };
+    resolved.memory_slot = MEDIA_SLOTS.clone().try_acquire_owned().ok().map(Arc::new);
+    if pixiv {
+        if resolved.memory_slot.is_some() {
+            attach_pixiv_images(post, &mut resolved).await;
+        } else {
+            for url in &mut resolved.images {
+                if let Some(mirror) = super::pixiv::mirror(url) {
+                    *url = mirror;
+                }
+            }
+        }
+    }
+    if let Some(video_url) = video_url {
+        attach_video(client, post, video_url, options, &mut resolved).await;
+    }
+    if resolved.attachments.is_empty() {
+        resolved.memory_slot = None;
+    }
+    resolved
+}
 
+/// Videoyu ek olarak indirmeyi dener; bellek yuvası yoksa ya da indirilemezse uzak yedeğe düşer.
+async fn attach_video(
+    client: &reqwest::Client,
+    post: &BuiltinPost,
+    video_url: &str,
+    options: &RenderOptions,
+    resolved: &mut ResolvedMedia,
+) {
     // `download_video`: Reddit videolarında video+ses birleştirmesini, Spotify önizlemesinde
     // kapak+ses MP4 üretimini dener (ffmpeg'siz). Spotify için kapak, medyanın posteridir.
     let max_bytes = options.max_video_bytes();
     let poster = post
         .media
         .iter()
-        .find(|media| media.url == *video_url)
+        .find(|media| media.url == video_url)
         .and_then(|media| media.poster.clone());
     let fallback_poster = poster.clone();
-    let handle = {
+    let file = if resolved.memory_slot.is_some() {
         let client = client.clone();
-        let url = video_url.clone();
-        tokio::spawn(async move {
+        let url = video_url.to_string();
+        let handle = tokio::spawn(async move {
             media::download_video(&client, &url, poster.as_deref(), max_bytes).await
-        })
+        });
+        within(VIDEO_MERGE_BUDGET, handle).await
+    } else {
+        debug!("Medya bellek yuvaları dolu, video indirilmiyor: {video_url}");
+        None
     };
 
-    match within(options.video_budget(), handle).await {
+    match file {
         Some(file) => {
             let name = attachment_name(&file.filename, post.sensitive);
             resolved
@@ -302,11 +339,9 @@ pub async fn resolve_media(
         // İndirilemedi ya da bütçe doldu: video kartın içinde uzak bağlantıyla (sessiz) oynar.
         None => debug!(
             "Video ek olarak indirilemedi (bütçe {} ms), uzak bağlantı kullanılıyor: {video_url}",
-            options.video_budget().as_millis()
+            VIDEO_MERGE_BUDGET.as_millis()
         ),
     }
-
-    resolved
 }
 
 /// Medyayı **hiç indirmeden** karta bağlar (kartın tek modu).
@@ -342,22 +377,15 @@ pub fn remote_gif_url(url: &str) -> String {
     media::gif_convert_url(url).unwrap_or_else(|| url.to_string())
 }
 
-/// Bir indirme görevini **süre bütçesi** içinde bekler. Bütçe dolarsa görev iptal edilir
-/// (yarıda kalan indirme ağ trafiğini de tüketmez) ve `None` döner; çağıran taraf uzak
-/// bağlantıya düşerek kartı yine anında gönderir.
-/// Tek Pixiv görseli için indirme sınırı: dört sayfa birlikte Discord'un dosya sınırını aşmaz.
-const PIXIV_IMAGE_LIMIT: u64 = DISCORD_FILE_LIMIT / 4;
+/// Tek Pixiv görseli için indirme sınırı: en çok sayfa birlikte Discord'un dosya sınırını aşmaz.
+const PIXIV_IMAGE_LIMIT: u64 = DISCORD_FILE_LIMIT / super::pixiv::MAX_PAGES as u64;
 
 /// Pixiv görselleri yalnızca Pixiv Referer'ıyla verilir ve Discord bu başlığı gönderemez;
 /// Referer istemeyen ayna da önbelleğinde olmayan görseli Discord'un bekleme süresinden geç
 /// verir. Görseller bu yüzden paralel indirilip mesaja ek olarak konur. Bütçe içinde
 /// indirilemeyen görsel aynadan gösterilir.
-async fn attach_pixiv_images(
-    post: &BuiltinPost,
-    resolved: &mut ResolvedMedia,
-    options: &RenderOptions,
-) {
-    let deadline = tokio::time::Instant::now() + options.video_budget();
+async fn attach_pixiv_images(post: &BuiltinPost, resolved: &mut ResolvedMedia) {
+    let deadline = tokio::time::Instant::now() + VIDEO_MERGE_BUDGET;
     let handles: Vec<_> = resolved
         .images
         .iter()
@@ -390,6 +418,9 @@ async fn attach_pixiv_images(
     }
 }
 
+/// Bir indirme görevini **süre bütçesi** içinde bekler. Bütçe dolarsa görev iptal edilir
+/// (yarıda kalan indirme ağ trafiğini de tüketmez) ve `None` döner; çağıran taraf uzak
+/// bağlantıya düşerek kartı yine anında gönderir.
 async fn within<T>(budget: Duration, mut handle: tokio::task::JoinHandle<Option<T>>) -> Option<T> {
     match tokio::time::timeout(budget, &mut handle).await {
         Ok(Ok(value)) => value,
@@ -617,12 +648,34 @@ mod tests {
         assert_eq!(resolved.video_link.as_deref(), Some("https://cdn/v1.mp4"));
     }
 
+    /// Yuvalar doluyken video belleğe alınmaz, uzak bağlantıya düşülür; yuva boşalınca geri gelir.
+    #[tokio::test]
+    async fn full_media_slots_fall_back_to_the_remote_link() {
+        let held = MEDIA_SLOTS
+            .clone()
+            .acquire_many_owned(MEDIA_SLOT_COUNT as u32)
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+        let mut post = sample_post();
+        post.platform = Platform::Twitch;
+        post.media = vec![video("https://cdn/v1.mp4", "https://cdn/v1.jpg")];
+        let options = RenderOptions::from_engine(&EngineSettings::default(), "twitch");
+        let plan = plan_media(&post, &options);
+
+        let resolved = resolve_media(&client, &post, &plan, &options).await;
+        assert!(resolved.attachments.is_empty());
+        assert_eq!(resolved.video_link.as_deref(), Some("https://cdn/v1.mp4"));
+
+        drop(held);
+        assert_eq!(MEDIA_SLOTS.available_permits(), MEDIA_SLOT_COUNT);
+    }
+
     #[test]
     fn video_size_limit_never_exceeds_discord_limit() {
         let mut options = options();
         options.max_video_mb = u8::MAX;
         assert!(options.max_video_bytes() <= DISCORD_FILE_LIMIT);
-        assert_eq!(options.video_budget(), VIDEO_MERGE_BUDGET);
     }
 
     #[test]
@@ -772,7 +825,6 @@ mod tests {
     async fn pixiv_images_that_cannot_be_downloaded_fall_back_to_the_mirror() {
         let mut post = sample_post();
         post.platform = Platform::Pixiv;
-        let options = RenderOptions::from_engine(&EngineSettings::default(), "pixiv");
         // Pixiv görseli olmayan adres indirilmez; aynası da olmadığı için olduğu gibi kalır.
         let mut resolved = ResolvedMedia {
             images: vec![
@@ -781,7 +833,7 @@ mod tests {
             ],
             ..ResolvedMedia::default()
         };
-        attach_pixiv_images(&post, &mut resolved, &options).await;
+        attach_pixiv_images(&post, &mut resolved).await;
         assert!(resolved.attachments.is_empty());
         assert_eq!(
             resolved.images,
@@ -797,7 +849,6 @@ mod tests {
     async fn live_pixiv_images_are_attached() {
         let mut post = sample_post();
         post.platform = Platform::Pixiv;
-        let options = RenderOptions::from_engine(&EngineSettings::default(), "pixiv");
         let mut resolved = ResolvedMedia {
             images: (0..4)
                 .map(|page| {
@@ -809,7 +860,7 @@ mod tests {
             ..ResolvedMedia::default()
         };
         let started = std::time::Instant::now();
-        attach_pixiv_images(&post, &mut resolved, &options).await;
+        attach_pixiv_images(&post, &mut resolved).await;
         println!("{:?} {:?}", started.elapsed(), resolved.images);
         assert_eq!(resolved.attachments.len(), 4);
         assert!(

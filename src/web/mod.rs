@@ -190,6 +190,8 @@ pub async fn start_web_server(
     }
 }
 
+const SETTINGS_BODY_LIMIT: usize = 1024 * 1024;
+
 /// Panelin rotalarını kurar (sunucu ve testler aynı yapıyı kullanır).
 ///
 /// `/mcp` panel router'ının **dışında** tutulur: oturum çerezine değil Bearer tokena
@@ -199,7 +201,13 @@ fn build_router(state: WebState) -> Router {
     let panel = Router::new()
         .route("/", get(index_handler))
         .route("/app.js", get(app_js_handler))
-        .route("/api/settings", get(get_settings).post(save_settings))
+        // Panel ayarların tamamını gönderir: çok sunuculu kurulum genel 64 KB sınırını aşabilir.
+        .route(
+            "/api/settings",
+            get(get_settings)
+                .post(save_settings)
+                .layer(DefaultBodyLimit::max(SETTINGS_BODY_LIMIT)),
+        )
         .route("/api/info", get(get_info))
         .route("/api/discord/roles", get(get_discord_roles))
         .route("/api/discord/channels", get(get_discord_channels))
@@ -1181,6 +1189,21 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
+        // Genel 64 KB sınırını aşan ayar gövdesi kabul edilir; ayar sınırını aşan reddedilir.
+        for (padding, status) in [
+            (100 * 1024, StatusCode::OK),
+            (SETTINGS_BODY_LIMIT, StatusCode::PAYLOAD_TOO_LARGE),
+        ] {
+            let response = client
+                .post(format!("{base}/api/settings"))
+                .header("x-botgek-request", "1")
+                .header("content-type", "application/json")
+                .body(format!("{{}}{}", " ".repeat(padding)))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
         let saved = client.post(format!("{base}/api/settings"))
             .header("x-botgek-request", "1")
             .json(&serde_json::json!({"schema_version":999,"role_filters":{"spotify":{"mode":"allowlist","roles":[" 42 ", "bad", "42"]}}}))

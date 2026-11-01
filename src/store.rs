@@ -35,33 +35,13 @@ const PRUNE_EVERY: u64 = 512;
 /// tutar; süre sınırı olmadan sonsuz bir `WITH RECURSIVE` sorgusu kayıtları süresiz kilitlerdi.
 const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Controls whether opening a database may fall back to an in-memory store.
-/// Production startup uses [`PersistencePolicy::RequirePersistent`]; allowing
-/// the fallback remains useful for isolated tests and explicit local tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PersistencePolicy {
-    RequirePersistent,
-    AllowEphemeral,
-}
-
-/// Başlatma politikası: üretimde kalıcılık **zorunludur**; testler bellek içi yedeğe izin verir
-/// (testler zaten `:memory:` yolunu kullanır, gerçek dosyaya dokunmaz).
-fn startup_policy() -> PersistencePolicy {
-    if cfg!(test) {
-        PersistencePolicy::AllowEphemeral
-    } else {
-        PersistencePolicy::RequirePersistent
-    }
-}
-
 /// Tek paylaşılan veritabanı bağlantısı.
 ///
-/// Açılış **hata döndürebilir** ve bu hata `LazyLock` içinde panikletilmez: release profilinde
-/// `panic = "abort"` olduğu için bir panik, startup tanılamasını (ve `exit(1)`'i) atlayıp süreci
-/// sessizce sonlandırırdı. Hata saklanır; [`init`] onu startup'a **aynen** iletir, kayıt
+/// Açılış **hata döndürebilir** ve bu hata `LazyLock` içinde panikletilmez: bir panik, startup
+/// tanılamasını (ve `exit(1)`'i) atlardı. Hata saklanır; [`init`] onu startup'a **aynen** iletir, kayıt
 /// gerektiren akışlar ise paniklemeden çalışmaya devam eder.
 static DB: LazyLock<Result<Db, String>> = LazyLock::new(|| {
-    Db::open_with_policy(&default_path(), startup_policy()).inspect_err(|err| {
+    Db::open(&default_path()).inspect_err(|err| {
         error!("Kalıcı kayıt veritabanı açılamadı: {err}");
     })
 });
@@ -220,32 +200,15 @@ pub struct Db {
 }
 
 impl Db {
-    /// Veritabanını açar, şemayı kurar ve performans pragmalarını uygular.
-    /// Opens SQLite according to an explicit persistence policy.
-    pub fn open_with_policy(path: &str, policy: PersistencePolicy) -> Result<Self, String> {
-        match Self::connect(path) {
-            Ok(connection) => Ok(Self {
-                connection: Mutex::new(connection),
-                path: path.to_string(),
-            }),
-            Err(err) if policy == PersistencePolicy::AllowEphemeral => {
-                warn!(
-                    "Kayıt veritabanı açılamadı ({}): {} — bellekte çalışılacak",
-                    path, err
-                );
-                let connection = Self::connect(":memory:").map_err(|memory_err| {
-                    format!("SQLite bellek içi açılış hatası: {memory_err}")
-                })?;
-                Ok(Self {
-                    connection: Mutex::new(connection),
-                    path: ":memory:".to_string(),
-                })
-            }
-            Err(err) => Err(format!(
-                "kalıcı SQLite veritabanı açılamadı ({}): {}",
-                path, err
-            )),
-        }
+    /// Veritabanını açar, şemayı kurar ve performans pragmalarını uygular. Bellek içi yedeğe
+    /// düşmez: kalıcı olmayan kayıtla başlamak yerine hata döner.
+    pub fn open(path: &str) -> Result<Self, String> {
+        let connection = Self::connect(path)
+            .map_err(|err| format!("kalıcı SQLite veritabanı açılamadı ({path}): {err}"))?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+            path: path.to_string(),
+        })
     }
 
     fn connect(path: &str) -> Result<Connection, rusqlite::Error> {
@@ -683,7 +646,7 @@ mod tests {
     use super::*;
 
     fn open_test(path: &str) -> Db {
-        Db::open_with_policy(path, PersistencePolicy::AllowEphemeral).expect("test database")
+        Db::open(path).expect("test database")
     }
 
     /// Sonsuz sorgu kesilir ve bağlantı sonraki işler için kullanılabilir kalır.
@@ -822,37 +785,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_persistence_policy_rejects_unknown_paths() {
+    fn opening_an_unreachable_path_fails_instead_of_going_ephemeral() {
         let path = std::env::temp_dir()
             .join(format!("botgek-store-missing-{}", std::process::id()))
             .join("database.db");
-        assert!(
-            Db::open_with_policy(
-                &path.display().to_string(),
-                PersistencePolicy::RequirePersistent
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn explicit_ephemeral_policy_remains_available_for_tests() {
-        let db = Db::open_with_policy(
-            "/olmayan-dizin/veritabani.db",
-            PersistencePolicy::AllowEphemeral,
-        )
-        .expect("test fallback");
-        assert_eq!(db.path(), ":memory:");
-        db.remember(MessageId::new(5), ChannelId::new(1), UserId::new(2));
-        assert!(
-            db.contains(MessageId::new(5)),
-            "bellek içi veritabanı çalışmalı"
-        );
+        assert!(Db::open(&path.display().to_string()).is_err());
     }
 
     #[test]
     fn startup_returns_open_failures_instead_of_aborting() {
-        // Üretimde `RequirePersistent` açılış hatası üretir; `init` bunu startup'a **aynen**
+        // Açılış hatası `init` tarafından startup'a **aynen**
         // iletmek zorundadır (panik/abort startup tanılamasını gizlerdi).
         let failure =
             "kalıcı SQLite veritabanı açılamadı (/olmayan-dizin/x.db): unable to open".to_string();

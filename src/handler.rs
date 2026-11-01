@@ -1,6 +1,6 @@
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, CreateAllowedMentions, CreateMessage, EventHandler,
-    GuildId, Interaction, Message, MessageId, MessageReference, MessageType, MessageUpdateEvent,
+    Channel, ChannelId, Context, CreateAllowedMentions, CreateMessage, EventHandler, GuildId,
+    Interaction, Message, MessageId, MessageReference, MessageType, MessageUpdateEvent,
     Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
@@ -192,10 +192,7 @@ impl EventHandler for Handler {
         // Bot kaynakları yalnızca açıkça etkinleştirilmiş dönüşüme girebilir. AI akışı aşağıda
         // bot girdileri için hiç çalıştırılmaz; taklit de botlar için zorla kapatılır.
         if msg.author.bot {
-            if !current_settings.engine.respond_to_bots
-                || !has_supported_bot_input(&msg.content)
-                || !claim_bot_source(msg.id).await
-            {
+            if !current_settings.engine.respond_to_bots || !claim_bot_source(msg.id).await {
                 return;
             }
             let mut bot_settings = current_settings.clone();
@@ -285,36 +282,24 @@ impl EventHandler for Handler {
         // Silme İşlemi (🗑️)
         if reaction.emoji == ReactionType::Unicode("🗑️".to_string()) {
             // Kartı paylaşan kullanıcı kalıcı kayıttan okunur (taklit webhook mesajlarında
-            // mesajın yazarı bot/kullanıcı olmadığı için); proxy mesajlarında ise mesaj
-            // gövdesindeki `<@id>` etiketi kullanılır.
+            // mesajın yazarı bot/kullanıcı olmadığı için).
             let recorded_author =
                 crate::converters::builtin::original_author(reaction.message_id).await;
-            let original_author_id = match recorded_author {
-                Some(author) => Some(author),
-                None => {
-                    let target_msg = match reaction.message(&ctx.http).await {
-                        Ok(m) => m,
-                        Err(e) => {
-                            error!("Silme reaksiyon mesajı alınamadı: {:?}", e);
-                            return;
-                        }
-                    };
-
-                    // Mesaj bu bot tarafından atılmamışsa işlem yapma
-                    if target_msg.author.id != current_user_id {
+            if recorded_author.is_none() {
+                let target_msg = match reaction.message(&ctx.http).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!("Silme reaksiyon mesajı alınamadı: {:?}", e);
                         return;
                     }
+                };
 
-                    // Baştaki `<@id>` yalnızca proxy dönüşüm mesajında paylaşanı gösterir. AI
-                    // yanıtları gibi diğer bot mesajlarının içeriğini model/kullanıcı belirler;
-                    // oradaki bir etiket kimseye silme yetkisi vermemeli.
-                    if is_link_conversion_message(&target_msg.content) {
-                        extract_author_id(&target_msg.content)
-                    } else {
-                        None
-                    }
+                // Mesaj bu bot tarafından atılmamışsa işlem yapma
+                if target_msg.author.id != current_user_id {
+                    return;
                 }
-            };
+            }
+            let original_author_id = recorded_author;
             let is_author = original_author_id == Some(user_id);
 
             // Yazar zaten yetkili: üye/izin sorgusu yapılmaz.
@@ -331,7 +316,7 @@ impl EventHandler for Handler {
                 _ => false,
             };
 
-            if is_author || is_admin_or_mod {
+            if may_delete_card(original_author_id, user_id, is_admin_or_mod) {
                 info!(
                     "Reaksiyon ile mesaj silme onaylandı. Silen: {} (Orijinal Yazar: {:?})",
                     user_id, original_author_id
@@ -382,7 +367,6 @@ impl Handler {
         let should_trigger = should_trigger_ai_chat(
             msg.mentions.iter().any(|u| u.id == bot_id),
             referenced.as_ref().map(|r| r.message.author.id),
-            referenced.as_ref().map(|r| r.message.content.as_str()),
             referenced.as_ref().is_some_and(|r| r.converted),
             bot_id,
         );
@@ -512,7 +496,7 @@ async fn referenced_message_info(
         }
     };
     Some(ReferencedMessage {
-        converted: is_converted_message(referenced, bot_id).await,
+        converted: crate::converters::builtin::is_card_message(referenced, bot_id).await,
         command_response: referenced.author.id == bot_id
             && referenced.interaction_metadata.is_some(),
         message: referenced.clone(),
@@ -577,30 +561,24 @@ pub(crate) async fn discord_thread_parent(
             .map(|channel| (channel.kind, channel.parent_id))
     });
     if let Some((kind, parent)) = cached {
-        return if matches!(
-            kind,
-            ChannelType::NewsThread | ChannelType::PublicThread | ChannelType::PrivateThread
-        ) {
-            parent
-        } else {
-            None
-        };
+        return parent.filter(|_| crate::converters::builtin::is_thread_kind(kind));
     }
     let fetched = tokio::time::timeout(Duration::from_secs(3), ctx.http.get_channel(channel_id))
         .await
         .ok()?
         .ok()?;
     match fetched {
-        Channel::Guild(channel)
-            if matches!(
-                channel.kind,
-                ChannelType::NewsThread | ChannelType::PublicThread | ChannelType::PrivateThread
-            ) =>
-        {
+        Channel::Guild(channel) if crate::converters::builtin::is_thread_kind(channel.kind) => {
             channel.parent_id
         }
         _ => None,
     }
+}
+
+/// 🗑️ ile silme kararı: kaydedilmiş paylaşan ya da mesaj yönetme izni olan kişi silebilir.
+/// Kaydı olmayan bot mesajını (AI yanıtı) yalnızca moderatör siler.
+fn may_delete_card(author: Option<UserId>, user: UserId, moderator: bool) -> bool {
+    author == Some(user) || moderator
 }
 
 /// Üyenin bu kanalda mesaj yönetme (veya yönetici) izni var mı?
@@ -638,32 +616,6 @@ fn soft_reply(msg: &Message) -> MessageReference {
     MessageReference::from(msg).fail_if_not_exists(false)
 }
 
-fn has_supported_bot_input(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    is_link_conversion_message(content)
-        || [
-            "twitter.com/",
-            "x.com/",
-            "t.co/",
-            "tiktok.com/",
-            "instagram.com/",
-            "reddit.com/",
-            "redd.it/",
-            "bsky.app/",
-            "spotify.com/",
-            "twitch.tv/",
-            "pixiv.net/",
-            "tumblr.com/",
-            "facebook.com/",
-            "youtube.com/",
-            "letterboxd.com/",
-            "boxd.it/",
-            "/share/",
-        ]
-        .iter()
-        .any(|host| lower.contains(host))
-}
-
 async fn claim_bot_source(message_id: MessageId) -> bool {
     let now = Instant::now();
     let mut guard = BOT_SOURCE_GUARD.lock().await;
@@ -675,50 +627,9 @@ async fn claim_bot_source(message_id: MessageId) -> bool {
     true
 }
 
-/// Mesaj başındaki <@123456789> veya <@!123456789> formatından kullanıcı ID'sini çıkarır
-fn extract_author_id(content: &str) -> Option<UserId> {
-    if let Some(rest) = content.strip_prefix("<@") {
-        let rest = rest.strip_prefix('!').unwrap_or(rest);
-        if let Some(end) = rest.find('>') {
-            return rest[..end].parse::<u64>().ok().map(UserId::new);
-        }
-    }
-    None
-}
-
-/// Bu mesaj Botgek'in dönüştürme (proxy veya native kart) mesajı mı?
-///
-/// Kartlara verilen yanıtlarda AI sohbeti tetiklenmez. Proxy mesajları gövdedeki
-/// `<@id>` etiketiyle, native kartlar ise [`crate::converters::builtin::is_card_message`]
-/// ile (embed alt bilgisi imzası, içeriksiz modern kart veya kalıcı kayıt) tanınır.
-async fn is_converted_message(msg: &Message, bot_id: UserId) -> bool {
-    is_link_conversion_message(&msg.content)
-        || crate::converters::builtin::is_card_message(msg, bot_id).await
-}
-
-/// Link dönüştürme mesajlarını tespit eder.
-/// Format: `<@userid> [**Platform**](<url>)` veya taklit modunda
-/// `<@userid> [Platform](url)` (eski kayıtlarda `[:](url)` biçimi de tanınır).
-/// Bu mesajlara gelen yanıtlarda AI sohbet tetiklenmemeli.
-pub fn is_link_conversion_message(content: &str) -> bool {
-    if !content.starts_with("<@") {
-        return false;
-    }
-    const LINK_MARKERS: [&str; 5] = [
-        "[Twitter](",
-        "[TikTok](",
-        "[Instagram](",
-        "[Reddit](",
-        "[Bluesky](",
-    ];
-    content.contains("[:](")
-        || content.contains("[**")
-        || LINK_MARKERS.iter().any(|marker| content.contains(marker))
-}
-
 /// Mesajın AI sohbeti tetikleyip tetiklemeyeceğini belirler.
 /// Kurallar:
-/// 1. Mesaj botun bir link dönüştürme (native/proxy) mesajına yanıtsa -> ASLA tetikleme
+/// 1. Mesaj botun bir dönüşüm kartına yanıtsa -> ASLA tetikleme
 ///    (kullanıcının yanıtında mention olsa bile).
 /// 2. Mesaj botun AI sohbet veya diğer mesajlarına yanıtsa -> Tetikle.
 /// 3. Mesaj bota yanıt değilse ama bot etiketlenmişse -> Tetikle.
@@ -726,7 +637,6 @@ pub fn is_link_conversion_message(content: &str) -> bool {
 pub fn should_trigger_ai_chat(
     is_mentioned: bool,
     referenced_author_id: Option<UserId>,
-    referenced_content: Option<&str>,
     referenced_is_conversion: bool,
     bot_id: UserId,
 ) -> bool {
@@ -735,17 +645,7 @@ pub fn should_trigger_ai_chat(
         return false;
     }
 
-    if let Some(author_id) = referenced_author_id
-        && author_id == bot_id
-    {
-        if let Some(content) = referenced_content
-            && is_link_conversion_message(content)
-        {
-            return false;
-        }
-        return true;
-    }
-    is_mentioned
+    referenced_author_id == Some(bot_id) || is_mentioned
 }
 
 /// LLM veya kullanıcı girdilerinden kaynaklanan @everyone, @here veya rol pingleme risklerini
@@ -804,132 +704,39 @@ mod tests {
     }
 
     #[test]
-    fn test_is_link_conversion_message() {
-        // Link dönüştürme mesajları (AI tetiklenmemeli)
-        assert!(is_link_conversion_message(
-            "<@123456789>[:](https://vxtwitter.com/user/status/123) [**Twitter**](<https://twitter.com/user/status/123>)"
-        ));
-        assert!(is_link_conversion_message(
-            "<@999>[:](https://vxtiktok.com/t/abc) [**TikTok**](<https://tiktok.com/t/abc>)"
-        ));
-        // Yeni biçim: link hilesi yok, okunabilir masked link
-        assert!(is_link_conversion_message(
-            "<@123456789> [Twitter](https://x.com/user/status/123)"
-        ));
-        assert!(is_link_conversion_message(
-            "<@123456789> [Reddit](https://www.reddit.com/r/rust/comments/abc/x/)"
-        ));
-
-        // AI sohbet yanıtları veya normal mesajlar (AI tetiklenmeli)
-        assert!(!is_link_conversion_message("Evet, haklısın bu konuda."));
-        assert!(!is_link_conversion_message("Selam! Ben Botgek."));
-        assert!(!is_link_conversion_message(""));
-        // Kullanıcının kendi mesajı link içerse bile dönüştürme mesajı sayılmaz
-        assert!(!is_link_conversion_message(
-            "[Twitter](https://x.com/user/status/123)"
-        ));
-    }
-
-    #[test]
-    fn test_extract_author_id() {
-        assert_eq!(
-            extract_author_id("<@123456789>[:](url)"),
-            Some(UserId::new(123456789))
-        );
-        assert_eq!(
-            extract_author_id("<@!987654321>[:](url)"),
-            Some(UserId::new(987654321))
-        );
-        assert_eq!(extract_author_id("Normal mesaj"), None);
-    }
-
-    #[test]
     fn test_should_trigger_ai_chat() {
         let bot_id = UserId::new(100);
         let user_id = UserId::new(200);
 
-        let link_conversion_content =
-            "<@200>[:](https://vxtwitter.com/u/123) [**Twitter**](<https://x.com/u/123>)";
-        let new_link_conversion_content = "<@200> [Twitter](https://x.com/u/123)";
-        let ai_response_content = "Sen Botgek'e ne dedin öyle?";
+        // 1. Karta yanıt: yazar bot ya da taklit webhook olsun, mention açık olsa bile ASLA.
+        assert!(!should_trigger_ai_chat(true, Some(bot_id), true, bot_id));
+        assert!(!should_trigger_ai_chat(true, Some(user_id), true, bot_id));
 
-        // 1. Link dönüştürme mesajına verilen yanıt (Discord mention'ı açık olsa bile ASLA tetiklenmemeli)
-        assert!(!should_trigger_ai_chat(
-            true, // Discord reply otomatik bot mention eklese bile
-            Some(bot_id),
-            Some(link_conversion_content),
-            false,
-            bot_id
-        ));
-        assert!(!should_trigger_ai_chat(
-            true,
-            Some(bot_id),
-            Some(new_link_conversion_content),
-            false,
-            bot_id
-        ));
+        // 2. Botun AI yanıtına verilen yanıt, mention kapalı olsa bile tetikler.
+        assert!(should_trigger_ai_chat(true, Some(bot_id), false, bot_id));
+        assert!(should_trigger_ai_chat(false, Some(bot_id), false, bot_id));
 
-        // 1b. Taklit (webhook) dönüştürme mesajına yanıt: yazar bot değil, kayıt bilgisi ile engellenir
-        assert!(!should_trigger_ai_chat(
-            true,
-            Some(user_id),
-            Some(new_link_conversion_content),
-            true,
-            bot_id
-        ));
+        // 3. Direkt bot etiketleme.
+        assert!(should_trigger_ai_chat(true, None, false, bot_id));
 
-        // 2. Botun AI yanıtına verilen yanıt (tetiklenmeli)
-        assert!(should_trigger_ai_chat(
-            true,
-            Some(bot_id),
-            Some(ai_response_content),
-            false,
-            bot_id
-        ));
-        assert!(should_trigger_ai_chat(
-            false, // Mention toggle kapalı yanıt verilse bile tetiklenmeli
-            Some(bot_id),
-            Some(ai_response_content),
-            false,
-            bot_id
-        ));
+        // 4. Başka bir kullanıcının mesajına yanıt verip botu etiketleme.
+        assert!(should_trigger_ai_chat(true, Some(user_id), false, bot_id));
 
-        // 3. Direkt bot etiketleme (yanıt yok, mention var -> tetiklenmeli)
-        assert!(should_trigger_ai_chat(true, None, None, false, bot_id));
-
-        // 4. Başka bir kullanıcının mesajına yanıt verip botu etiketleme (tetiklenmeli)
-        assert!(should_trigger_ai_chat(
-            true,
-            Some(user_id),
-            Some("Buna baksana"),
-            false,
-            bot_id
-        ));
-
-        // 5. Normal mesaj (etiket yok, yanıt yok -> tetiklenmemeli)
-        assert!(!should_trigger_ai_chat(false, None, None, false, bot_id));
+        // 5. Normal mesaj: etiket yok, bota yanıt yok.
+        assert!(!should_trigger_ai_chat(false, None, false, bot_id));
+        assert!(!should_trigger_ai_chat(false, Some(user_id), false, bot_id));
     }
 
+    /// 🗑️: paylaşan ve moderatör siler; başkası, kaydı olmayan mesajı dahil, silemez.
     #[test]
-    fn bot_conversion_policy_requires_opt_in_supported_plain_input() {
-        assert!(has_supported_bot_input("https://x.com/user/status/1"));
-        assert!(has_supported_bot_input("https://clips.twitch.tv/Ab_C-123"));
-        assert!(has_supported_bot_input(
-            "https://www.pixiv.net/en/artworks/12345"
-        ));
-        assert!(has_supported_bot_input(
-            "https://artist.tumblr.com/post/987654321"
-        ));
-        assert!(has_supported_bot_input(
-            "https://www.facebook.com/example/posts/123456"
-        ));
-        assert!(has_supported_bot_input(
-            "https://www.youtube.com/post/UCabc_123"
-        ));
-        assert!(has_supported_bot_input(
-            "<@1> [Twitter](https://x.com/user/status/1)"
-        ));
-        assert!(!has_supported_bot_input("hello from an integration"));
+    fn only_the_author_or_a_moderator_may_delete_a_card() {
+        let author = UserId::new(1);
+        let stranger = UserId::new(2);
+        assert!(may_delete_card(Some(author), author, false));
+        assert!(may_delete_card(Some(author), stranger, true));
+        assert!(may_delete_card(None, stranger, true));
+        assert!(!may_delete_card(Some(author), stranger, false));
+        assert!(!may_delete_card(None, stranger, false));
     }
 
     #[tokio::test]
@@ -949,7 +756,7 @@ mod tests {
         let modern = crate::converters::builtin::has_card_signature(bot_id, false, "", &[], bot_id);
         assert!(modern, "içeriksiz modern kart tanınmalı");
         assert!(
-            !should_trigger_ai_chat(true, Some(bot_id), Some(""), modern, bot_id),
+            !should_trigger_ai_chat(true, Some(bot_id), modern, bot_id),
             "modern karta verilen yanıt AI'yı tetiklememeli"
         );
 
@@ -963,13 +770,7 @@ mod tests {
         );
         assert!(!ai_reply);
         assert!(
-            should_trigger_ai_chat(
-                true,
-                Some(bot_id),
-                Some("Evet, haklısın."),
-                ai_reply,
-                bot_id
-            ),
+            should_trigger_ai_chat(true, Some(bot_id), ai_reply, bot_id),
             "AI yanıtına verilen yanıt AI'yı tetiklemeli"
         );
     }

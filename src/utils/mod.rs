@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Discord rejects any message whose content exceeds this many characters.
 pub const DISCORD_CONTENT_LIMIT: usize = 2000;
 
+/// Discord snowflake epoch (2015-01-01T00:00:00Z), milisaniye cinsinden.
+pub const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+
 /// Gizli değerlerin (`ADMIN_TOKEN`, `MCP_TOKEN`) en büyük uzunluğu.
 pub const MAX_SECRET_LEN: usize = 512;
 

@@ -53,7 +53,7 @@ gibi, dil adı için tablo vardır).
 
 ## Değişmezler
 
-- X verisi FxTwitter'dan gelir. `settings::TwitterSource` eski ve etkisizdir.
+- X verisi FxTwitter'dan gelir; vxTwitter yalnızca `/dönüştür kaynak:` ile seçilir.
 - Eksik sonuç önbelleğe yazılmaz: sonraki paylaşım ana kaynağı yeniden dener.
 - Alıntı zinciri tek seviyedir.
 - Çeviri yalnızca X'in kendi çevirisidir (sağlayıcı alanı ör. `grok`).
