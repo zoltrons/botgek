@@ -72,6 +72,15 @@ native-tls = { version = "0.2", features = ["vendored"] }
 [profile.dev]
 debug = "line-tables-only"
 
+# Bağımlılıklar için debug bilgisi üretme; `target/` hacminin çoğu buradan geliyordu.
+[profile.dev.package."*"]
+debug = false
+
+# Tam debugger deneyimi gerektiğinde: `cargo build --profile debugging`
+[profile.debugging]
+inherits = "dev"
+debug = true
+
 [profile.release]
 opt-level = 3
 # İnce LTO: çalışma zamanı hızı ile CI derleme süresi arasında denge.
