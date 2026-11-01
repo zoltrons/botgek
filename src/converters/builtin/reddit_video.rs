@@ -27,9 +27,9 @@ use hls_transmux::crypto::key::{
 };
 use hls_transmux::playlist::{InputId, PlaylistContext, parse_playlist_snapshot};
 use hls_transmux::{
-    ByteRange, ContinuousError, ContinuousInput, ContinuousOptions, ContinuousWait, EmbeddedAudio,
-    Error as HlsError, MultiTrackInputs, MultiTrackSession, OutputFormat, Source, SourceLocation,
-    TextResource, TrackMetadata,
+    ByteRange, ContinuousError, ContinuousInput, ContinuousLimits, ContinuousOptions,
+    ContinuousWait, EmbeddedAudio, Error as HlsError, MultiTrackInputs, MultiTrackSession,
+    OutputFormat, Source, SourceLocation, TextResource, TrackMetadata,
 };
 use tracing::{debug, warn};
 use url::Url;
@@ -42,6 +42,8 @@ use super::{REQUEST_TIMEOUT, USER_AGENT};
 /// HLS parçaları genelde birkaç yüz KB'dir; BYTERANGE kullanılmayan listelerde parça tek dosyanın
 /// tamamı olabilir — bu yüzden kart medya sınırından (`MAX_BODY_BYTES` = 2 MB) geniş tutulur.
 const MAX_PART_BYTES: usize = 16 * 1024 * 1024;
+/// Oturum kuyruğundaki en fazla parça (video + ses); boyut ve süre bütçesi asıl sınırı koyar.
+const MAX_QUEUED_SEGMENTS: usize = 2048;
 const MERGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Birleştirmeler arasında v.redd.it bağlantısının havuzda tutulduğu süre.
 const MERGE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -440,6 +442,18 @@ impl ContinuousWait for Waiter {
     }
 }
 
+/// Birleştirme oturumunun seçenekleri.
+///
+/// Kuyruk sınırı video ve ses parçalarının **toplamına** uygulanır. Varsayılan 128 parça, 4 sn'lik
+/// parçalarla ~4 dakikadan uzun videoda ses izini `WouldBlock` ile reddettirip videoyu sessiz bırakıyordu.
+fn session_options() -> ContinuousOptions {
+    let limits = ContinuousLimits::default().with_queue(MAX_QUEUED_SEGMENTS, 4 * 1024 * 1024);
+    // Çok-izli oturumda `waiter` zorunludur (aksi halde motor `InvalidOptions` döner).
+    ContinuousOptions::default()
+        .with_limits(limits)
+        .with_waiter(Arc::new(Waiter), Duration::from_secs(30))
+}
+
 /// Reddit videosunu **sesli** tek MP4'e birleştirir.
 ///
 /// `hls-transmux`'ın future'ları `Send` **değildir**; bu yüzden birleştirme, kendi current-thread
@@ -715,10 +729,7 @@ async fn render_variant(
         KeySessionOptions::default(),
     )
     .map_err(hls_err)?;
-    // Çok-izli oturumda `waiter` zorunludur (aksi halde motor `InvalidOptions` döner).
-    let options =
-        ContinuousOptions::default().with_waiter(Arc::new(Waiter), Duration::from_secs(30));
-    let session = MultiTrackSession::new(inputs, keys, options).map_err(engine_err)?;
+    let session = MultiTrackSession::new(inputs, keys, session_options()).map_err(engine_err)?;
 
     session
         .handle()
@@ -962,6 +973,60 @@ CMAF_720.m3u8"#;
         // 2 Mbps × 6,5 sn = 1,625 MB.
         assert_eq!(estimated_bytes(2_000_000, 6.5), 1_625_000);
         assert_eq!(estimated_bytes(0, 6.5), 0);
+    }
+
+    /// 67 video + 67 ses parçalı (~4,5 dk) video: ses izi kuyruğa sığmazsa kart sessiz kalır.
+    #[test]
+    fn long_video_fits_both_tracks_in_the_session_queue() {
+        let snapshot = |name: &str, input: &InputId| {
+            let segments = format!("#EXTINF:4,\n#EXT-X-BYTERANGE:10@0\n{name}.mp4\n").repeat(67);
+            parse_playlist_snapshot(
+                &TextResource {
+                    location: SourceLocation::Url(
+                        Url::parse(&format!("https://v.redd.it/x/{name}.m3u8")).unwrap(),
+                    ),
+                    content: format!(
+                        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:5\n#EXT-X-PLAYLIST-TYPE:VOD\n\
+                         #EXT-X-MAP:URI=\"{name}.mp4\",BYTERANGE=\"10@0\"\n{segments}#EXT-X-ENDLIST\n"
+                    ),
+                },
+                PlaylistContext::new(input.clone(), 0),
+            )
+            .unwrap()
+        };
+        let source = Arc::new(ReqwestSource {
+            client: reqwest::Client::new(),
+        });
+        let (video, audio) = (
+            InputId::new("video").unwrap(),
+            InputId::new("audio").unwrap(),
+        );
+        let inputs = MultiTrackInputs::new(
+            ContinuousInput::new(video.clone(), source.clone()),
+            EmbeddedAudio::Exclude,
+        )
+        .with_audio(
+            ContinuousInput::new(audio.clone(), source),
+            TrackMetadata::new("und", "audio"),
+        );
+        let keys = KeySession::new(
+            "botgek",
+            "reddit",
+            Arc::new(NoKeys),
+            Arc::new(Clock),
+            KeySessionOptions::default(),
+        )
+        .unwrap();
+        let session = MultiTrackSession::new(inputs, keys, session_options()).unwrap();
+
+        session
+            .handle()
+            .accept_snapshot(&video, &snapshot("v", &video))
+            .unwrap();
+        session
+            .handle()
+            .accept_snapshot(&audio, &snapshot("a", &audio))
+            .expect("ses izi kuyruğa sığmalı");
     }
 
     /// Canlı liste üzerinden video gönderisi bulup kimliğini döner (yoksa `None`).
