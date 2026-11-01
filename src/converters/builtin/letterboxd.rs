@@ -1122,9 +1122,17 @@ struct ReviewLink {
 }
 
 fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
-    let mut header = format!("### [{}]({})", escape_markdown(&film.title), film.url);
+    // Sıra ve boyut inceleme kartıyla aynı: büyük başlık (`##`), ondan küçük puan (`###`),
+    // sonra en küçük künye satırı (`-#`) ve slogan.
+    let mut header = format!("## [{}]({})", escape_markdown(&film.title), film.url);
     if let Some(year) = &film.year {
         header.push_str(&format!(" ({year})"));
+    }
+    if let Some(rating) = film.rating {
+        header.push_str(&format!("\n### {} **{rating:.2}**/5", stars(rating)));
+        if let Some(count) = film.rating_count {
+            header.push_str(&format!(" · {} oy", format_count(count)));
+        }
     }
     let mut byline: Vec<String> = Vec::new();
     if let Some(original) = &film.original_title {
@@ -1143,13 +1151,6 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     let mut section_children = vec![text(header)];
     if let Some(tagline) = &film.tagline {
         section_children.push(text(format!("*“{}”*", escape_markdown(tagline))));
-    }
-    if let Some(rating) = film.rating {
-        let mut line = format!("{} **{rating:.2}**/5", stars(rating));
-        if let Some(count) = film.rating_count {
-            line.push_str(&format!(" · {} oy", format_count(count)));
-        }
-        section_children.push(text(line));
     }
 
     let mut components = Vec::new();
@@ -1979,11 +1980,11 @@ mod tests {
         assert_eq!(card.components[0]["accessory"]["type"], TYPE_THUMBNAIL);
         let text = contents(&card);
         assert!(
-            text.contains("### [Parasite](https://letterboxd.com/film/parasite-2019/) (2019)"),
+            text.contains("## [Parasite](https://letterboxd.com/film/parasite-2019/) (2019)"),
             "{text}"
         );
         assert!(text.contains("*기생충* · Yönetmen: Bong Joon Ho"), "{text}");
-        assert!(text.contains("★★★★½ **4.51**/5 · 6M oy"), "{text}");
+        assert!(text.contains("### ★★★★½ **4.51**/5 · 6M oy"), "{text}");
         assert!(text.contains("Act like you own the place."), "{text}");
         assert!(
             text.contains("Thriller · Comedy · Drama · 2 sa 13 dk · South Korea"),
