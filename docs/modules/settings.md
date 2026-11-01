@@ -28,7 +28,7 @@ doğrular, atomik yazar ve eski dosyaları göç ettirir. `policy.rs` rol filtre
 - `modules` (`PlatformModules`): her platform için bir anahtar ve `ai_chat`. Hepsi varsayılan açıktır.
 - `role_filters`: modül başına `RoleFilterSettings` (`mode`: `disabled`, `blacklist` ya da `allowlist`; en fazla 200 rol kimliği).
 - `engine` (`EngineSettings`): `respond_to_bots`, `sensitive_mode`, `max_video_mb`
-  (1 ile 50), `show_metrics`, `show_timestamp`, `show_community_note`, `show_quote`, `auto_translate`,
+  (1 ile 100), `show_metrics`, `show_timestamp`, `show_community_note`, `show_quote`, `auto_translate`,
   `translation_target`, `impersonate_user`, `impersonate_skip_replies`, `emojis`.
 - `ai` (`AiSettings`): model ve sistem istemi (persona).
 - `guilds`: sunucu kimliğine göre seyrek override. Sunucu içinde kanal bazlı `ChannelOverride` vardır.

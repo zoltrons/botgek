@@ -63,7 +63,7 @@ dosya, flush ve atomik replacement ile yazılır.
   "engine": {
     "respond_to_bots": false,
     "sensitive_mode": "hide_always",
-    "max_video_mb": 8,
+    "max_video_mb": 100,
     "show_metrics": true,
     "show_timestamp": true,
     "show_community_note": true,
@@ -111,7 +111,7 @@ yazmak gerekmez.
 | `modules.*` | `true` / `false` | Platform ve AI sohbeti modülleri. |
 | `role_filters.*.mode` | `disabled`, `blacklist`, `allowlist` | Boş `allowlist` kimseye erişim vermez. Rol sorgusu başarısız olursa etkin filtre reddeder. |
 | `role_filters.*.roles` | En fazla 200 Discord rol kimliği | Geçersiz kimlikler ayıklanır. |
-| `engine.max_video_mb` | `1..=50` (varsayılan 8) | Kart için video boyutu sınırı. |
+| `engine.max_video_mb` | `1..=100` (varsayılan 100) | Kart için video boyutu sınırı. Sunucunun Discord sınırını (varsayılan 20, boost 2. seviye 50, 3. seviye 100 MiB) aşamaz. |
 | `engine.sensitive_mode` | `hide_always`, `allow_in_nsfw` | Kaynak spoiler'ı ve elle işaretlenen içerik her durumda gizli kalır. |
 | `engine.auto_translate` | `true` / `false` | X gönderilerini X'in kendi çevirisiyle hedef dile çevirir. |
 | `engine.translation_target` | `tr`, `en`, `de` veya BCP-47 kodu | Otomatik çeviri hedef dili. |

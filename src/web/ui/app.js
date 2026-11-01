@@ -67,7 +67,7 @@ const ENGINE_PLATFORMS = [
 ];
 
 const ENGINE_DEFAULTS = {
-    max_video_mb: 8,
+    max_video_mb: 100,
     show_metrics: true,
     show_timestamp: true,
     show_community_note: true,

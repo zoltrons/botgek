@@ -1310,6 +1310,21 @@ fn spawn_webhook_warmup(
 pub struct InteractionDelivery {
     pub application_id: u64,
     pub token: String,
+    /// Discord'un bu etkileşim için bildirdiği dosya sınırı (`attachment_size_limit`).
+    pub file_limit: u64,
+}
+
+/// Kartın dosya başına sınırı. Sunucu önbellekte yoksa varsayılan kullanılır: fazla iyimser
+/// tahmin Discord'un eki, dolayısıyla kartın tamamını reddetmesine yol açardı.
+fn upload_limit(ctx: &Context, msg: &Message, delivery: Option<&InteractionDelivery>) -> u64 {
+    if let Some(delivery) = delivery {
+        return delivery.file_limit;
+    }
+    msg.guild_id
+        .and_then(|guild| ctx.cache.guild(guild))
+        .map_or(media::DISCORD_FILE_LIMIT, |guild| {
+            media::guild_file_limit(guild.premium_tier)
+        })
 }
 
 /// Native dönüşümün sonucu.
@@ -1393,7 +1408,8 @@ pub async fn handle(
     );
 
     let platform = platform_key(parsed.platform);
-    let options = render::RenderOptions::from_engine(engine, platform);
+    let mut options = render::RenderOptions::from_engine(engine, platform);
+    options.file_limit = upload_limit(ctx, msg, delivery);
     debug!(
         "Kart: V2 (tek mod: doğrudan; video indirme: {}) — {}",
         options.video_requires_download, parsed.original_url

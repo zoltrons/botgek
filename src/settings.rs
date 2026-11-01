@@ -335,9 +335,9 @@ fn valid_emoji(value: &str) -> bool {
             .any(|c| "[\\]()`<>|*_~".contains(c) || c.is_control())
 }
 
-/// Discord'un (boost'suz sunucularda) yüklenen dosya limiti 25 MB'tır; üzerine çıkılırsa
-/// video indirilmez, link olarak paylaşılır.
-pub const MAX_VIDEO_MB_RANGE: std::ops::RangeInclusive<u8> = 1..=50;
+/// Üst değer Discord'un en yüksek boost sınırıdır. Asıl sınır sunucuya göre belirlenir (varsayılan
+/// 20 MiB); ona sığmayan video indirilmez, link olarak paylaşılır.
+pub const MAX_VIDEO_MB_RANGE: std::ops::RangeInclusive<u8> = 1..=100;
 
 /// Native (built-in) embed motorunun davranış ayarları.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -390,7 +390,7 @@ impl Default for EngineSettings {
         Self {
             respond_to_bots: false,
             sensitive_mode: SensitiveMode::HideAlways,
-            max_video_mb: 8,
+            max_video_mb: 100,
             show_metrics: true,
             show_timestamp: true,
             show_community_note: true,
@@ -418,7 +418,7 @@ impl EngineSettings {
     /// WebUI girdilerini güvenli sınırlara çeker.
     pub fn sanitize(&mut self) {
         if !MAX_VIDEO_MB_RANGE.contains(&self.max_video_mb) {
-            self.max_video_mb = self.max_video_mb.clamp(1, 50);
+            self.max_video_mb = self.max_video_mb.clamp(1, 100);
         }
 
         let target = self.translation_target.trim().to_ascii_lowercase();
@@ -1550,7 +1550,7 @@ mod tests {
             "engine": {
                 "twitter_source": "hybrid",
                 "max_images": 7,
-                "max_video_mb": 99,
+                "max_video_mb": 200,
                 "show_metrics": true,
                 "show_timestamp": false,
                 "show_community_note": true,

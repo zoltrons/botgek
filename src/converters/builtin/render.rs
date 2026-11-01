@@ -104,6 +104,8 @@ pub struct RenderOptions {
     pub video_requires_download: bool,
     pub max_images: u8,
     pub max_video_mb: u8,
+    /// Hedef kanaldaki dosya başına Discord sınırı (bayt); bilinmiyorsa varsayılan.
+    pub file_limit: u64,
     pub show_metrics: bool,
     pub show_timestamp: bool,
     pub show_community_note: bool,
@@ -122,6 +124,7 @@ impl RenderOptions {
             // Components V2 galerisi 10 öğeye kadar destekler.
             max_images: super::v2::MEDIA_GALLERY_LIMIT as u8,
             max_video_mb: engine.max_video_mb,
+            file_limit: DISCORD_FILE_LIMIT,
             show_metrics: engine.show_metrics,
             show_timestamp: engine.show_timestamp,
             show_community_note: engine.show_community_note,
@@ -129,9 +132,9 @@ impl RenderOptions {
         }
     }
 
-    /// Video indirme üst sınırı: ayar ne olursa olsun Discord limitini aşmaz.
+    /// Video indirme üst sınırı: ayar ne olursa olsun hedefin Discord sınırını aşmaz.
     pub fn max_video_bytes(&self) -> u64 {
-        (self.max_video_mb as u64 * 1024 * 1024).min(DISCORD_FILE_LIMIT)
+        (self.max_video_mb as u64 * 1024 * 1024).min(self.file_limit)
     }
 }
 
@@ -161,12 +164,12 @@ pub struct ResolvedMedia {
     pub(super) memory_slot: Option<Arc<OwnedSemaphorePermit>>,
 }
 
-/// Aynı anda bellekte medya eki tutabilen kart sayısı. Bir ek gönderim sırasında iki kopya
-/// (dosya + multipart gövde) tutar: 25 MB'lık üç kart ~150 MB eder, 256 MB sınırına sığar.
-/// Yuva yoksa kart beklemez, uzak bağlantıya düşer.
-const MEDIA_SLOT_COUNT: usize = 3;
+/// Aynı anda bellekte tutulabilecek medya eki bütçesi (MiB). Bir ek gönderim sırasında iki kopya
+/// (dosya + multipart gövde) tutar: 100 MiB ~200 MB eder, 256 MB sınırına sığar. Kart üst sınırı
+/// kadar yer ayırır; yer yoksa beklemez, uzak bağlantıya düşer.
+const MEDIA_BUDGET_MIB: usize = 100;
 static MEDIA_SLOTS: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::new(MEDIA_SLOT_COUNT)));
+    LazyLock::new(|| Arc::new(Semaphore::new(MEDIA_BUDGET_MIB)));
 
 /// Gönderi medyasını indirme planına çevirir.
 ///
@@ -270,7 +273,17 @@ pub async fn resolve_media(
     if !pixiv && video_url.is_none() {
         return resolved;
     }
-    resolved.memory_slot = MEDIA_SLOTS.clone().try_acquire_owned().ok().map(Arc::new);
+    let reserve = if pixiv {
+        PIXIV_IMAGE_LIMIT * super::pixiv::MAX_PAGES as u64
+    } else {
+        options.max_video_bytes()
+    }
+    .div_ceil(1024 * 1024) as u32;
+    resolved.memory_slot = MEDIA_SLOTS
+        .clone()
+        .try_acquire_many_owned(reserve)
+        .ok()
+        .map(Arc::new);
     if pixiv {
         if resolved.memory_slot.is_some() {
             attach_pixiv_images(post, &mut resolved).await;
@@ -377,8 +390,8 @@ pub fn remote_gif_url(url: &str) -> String {
     media::gif_convert_url(url).unwrap_or_else(|| url.to_string())
 }
 
-/// Tek Pixiv görseli için indirme sınırı: en çok sayfa birlikte Discord'un dosya sınırını aşmaz.
-const PIXIV_IMAGE_LIMIT: u64 = DISCORD_FILE_LIMIT / super::pixiv::MAX_PAGES as u64;
+/// Tek Pixiv görseli için indirme sınırı. Discord sınırı ek başınadır; bu değer belleği korur.
+const PIXIV_IMAGE_LIMIT: u64 = 5 * 1024 * 1024;
 
 /// Pixiv görselleri yalnızca Pixiv Referer'ıyla verilir ve Discord bu başlığı gönderemez;
 /// Referer istemeyen ayna da önbelleğinde olmayan görseli Discord'un bekleme süresinden geç
@@ -653,7 +666,7 @@ mod tests {
     async fn full_media_slots_fall_back_to_the_remote_link() {
         let held = MEDIA_SLOTS
             .clone()
-            .acquire_many_owned(MEDIA_SLOT_COUNT as u32)
+            .acquire_many_owned(MEDIA_BUDGET_MIB as u32)
             .await
             .unwrap();
         let client = reqwest::Client::new();
@@ -668,14 +681,18 @@ mod tests {
         assert_eq!(resolved.video_link.as_deref(), Some("https://cdn/v1.mp4"));
 
         drop(held);
-        assert_eq!(MEDIA_SLOTS.available_permits(), MEDIA_SLOT_COUNT);
+        assert_eq!(MEDIA_SLOTS.available_permits(), MEDIA_BUDGET_MIB);
     }
 
     #[test]
     fn video_size_limit_never_exceeds_discord_limit() {
         let mut options = options();
         options.max_video_mb = u8::MAX;
-        assert!(options.max_video_bytes() <= DISCORD_FILE_LIMIT);
+        assert_eq!(options.max_video_bytes(), DISCORD_FILE_LIMIT);
+        options.file_limit = 100 * 1024 * 1024;
+        assert_eq!(options.max_video_bytes(), 100 * 1024 * 1024);
+        options.max_video_mb = 8;
+        assert_eq!(options.max_video_bytes(), 8 * 1024 * 1024);
     }
 
     #[test]

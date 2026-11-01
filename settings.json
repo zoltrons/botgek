@@ -71,7 +71,7 @@
   "engine": {
     "respond_to_bots": false,
     "sensitive_mode": "hide_always",
-    "max_video_mb": 25,
+    "max_video_mb": 100,
     "show_metrics": true,
     "show_timestamp": true,
     "show_community_note": true,

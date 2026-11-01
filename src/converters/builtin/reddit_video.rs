@@ -44,6 +44,8 @@ use super::{REQUEST_TIMEOUT, USER_AGENT};
 const MAX_PART_BYTES: usize = 16 * 1024 * 1024;
 /// Oturum kuyruğundaki en fazla parça (video + ses); boyut ve süre bütçesi asıl sınırı koyar.
 const MAX_QUEUED_SEGMENTS: usize = 2048;
+/// En küçük varyant dışındakilerin payı: iki üst kaliteden sonra en küçüğe bütçenin üçte biri kalır.
+const UPPER_VARIANT_BUDGET: Duration = Duration::from_millis(1_666);
 const MERGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Birleştirmeler arasında v.redd.it bağlantısının havuzda tutulduğu süre.
 const MERGE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -614,16 +616,27 @@ async fn merge_inner(
         let audio_uri = variant.audio.clone();
         // `BANDWIDTH` tepe değerdir ve boyutu abartabilir; bu yüzden son (en küçük) varyant tahmine bakılmadan yine de denenir.
         let size_guard = (index < last && variant.bandwidth > 0).then_some(variant.bandwidth);
-        match render_variant(
+        let render = render_variant(
             &master_url,
             &video_uri,
             audio_uri.as_deref(),
             source.clone(),
             max_bytes,
             size_guard,
-        )
-        .await
-        {
+        );
+        // Üst kalite bütçeyi tüketirse hiç ses kalmaz: en küçük varyanta süre bırakılır.
+        let rendered = if index < last {
+            match tokio::time::timeout(UPPER_VARIANT_BUDGET, render).await {
+                Ok(rendered) => rendered,
+                Err(_) => {
+                    debug!("Reddit varyantı süresine sığmadı, küçüğü deneniyor: {video_uri}");
+                    continue;
+                }
+            }
+        } else {
+            render.await
+        };
+        match rendered {
             Ok(None) => {}
             Ok(Some(bytes)) if bytes.len() as u64 <= max_bytes => {
                 debug!(

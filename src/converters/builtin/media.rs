@@ -7,8 +7,18 @@ use serenity::all::CreateAttachment;
 
 use super::{MEDIA_TIMEOUT, USER_AGENT};
 
-/// Discord'un boost'suz sunuculardaki dosya limiti (25 MB).
-pub const DISCORD_FILE_LIMIT: u64 = 25 * 1024 * 1024;
+/// Discord'un dosya başına varsayılan sınırı (20 MiB). Sınır mesaj toplamına değil, her eke uygulanır.
+pub const DISCORD_FILE_LIMIT: u64 = 20 * 1024 * 1024;
+
+/// Sunucunun boost seviyesindeki dosya başına sınır (2. seviye 50, 3. seviye 100 MiB).
+pub fn guild_file_limit(tier: serenity::all::PremiumTier) -> u64 {
+    use serenity::all::PremiumTier;
+    match tier {
+        PremiumTier::Tier2 => 50 * 1024 * 1024,
+        PremiumTier::Tier3 => 100 * 1024 * 1024,
+        _ => DISCORD_FILE_LIMIT,
+    }
+}
 
 /// İndirilmiş medya dosyası.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +318,15 @@ async fn download_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_limit_follows_the_boost_tier() {
+        use serenity::all::PremiumTier;
+        assert_eq!(guild_file_limit(PremiumTier::Tier0), DISCORD_FILE_LIMIT);
+        assert_eq!(guild_file_limit(PremiumTier::Tier1), DISCORD_FILE_LIMIT);
+        assert_eq!(guild_file_limit(PremiumTier::Tier2), 50 * 1024 * 1024);
+        assert_eq!(guild_file_limit(PremiumTier::Tier3), 100 * 1024 * 1024);
+    }
 
     #[test]
     fn card_image_url_ensures_orig_variant() {

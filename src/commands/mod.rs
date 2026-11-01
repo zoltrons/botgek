@@ -287,6 +287,7 @@ async fn dispatch(
     let delivery = private.then(|| converters::builtin::InteractionDelivery {
         application_id: command.application_id.get(),
         token: command.token.clone(),
+        file_limit: u64::from(command.attachment_size_limit),
     });
 
     // Kart her iki akışta da komutu kullanan kişiyi gönderen gösterir; silme yetkisi de ona
