@@ -283,7 +283,7 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
             (None, None) => escape_markdown(&preview.url),
         };
         let line = format!("**🔗 [{label}]({})**", preview.url);
-        return Some(text(spoiler_wrap(&line, hidden(card))));
+        return Some(text(line));
     }
 
     let mut lines: Vec<String> = Vec::new();
@@ -307,7 +307,7 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
         lines.push(format!("-# {site_name}"));
     }
 
-    Some(text(spoiler_wrap(&lines.join("\n"), hidden(card))))
+    Some(text(lines.join("\n")))
 }
 
 /// Genel kart düzeni: yazar satırı, (Reddit için) başlık, gövde metni,
@@ -321,6 +321,8 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
         children.push(text(header));
     }
 
+    // Başlık, gövde ve (gizliyken) alıntı metni tek metin bileşeninde, tek spoiler içinde durur.
+    let mut body: Vec<String> = Vec::new();
     if card.post.platform == Platform::Reddit
         && let Some(title) = card
             .post
@@ -329,14 +331,13 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             .map(str::trim)
             .filter(|t| !t.is_empty())
     {
-        children.push(text(spoiler_wrap(
-            &format!("**{}**", escape_markdown(title)),
-            hidden(card),
-        )));
+        body.push(format!("**{}**", escape_markdown(title)));
     }
     if !card.post.text.trim().is_empty() {
-        children.push(text(spoiler_wrap(card.post.text.trim(), hidden(card))));
+        body.push(card.post.text.trim().to_string());
     }
+    let body_pos = children.len();
+    let hidden = hidden(card);
     if card.options.show_community_note
         && let Some(note) = card
             .post
@@ -363,38 +364,54 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             None
         };
 
-        if let Some(component) = quote_component(quote, card.emojis, hidden(card)) {
-            // Hiyerarşi: alıntı bloğundan önce ince bir ayraç çizgisi ve büyük bir dikey
-            // boşluk bırakılır, böylece alıntı kartın gövdesinden ayrı okunur.
-            children.push(separator());
-            children.push(component);
-        }
-        if let Some(nested) = nested
-            && let Some(component) =
-                quote_component(nested, card.emojis, hidden(card) || quote.sensitive)
-        {
-            // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
-            // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
-            children.push(separator());
-
-            // 3'lü alıntıda medya en alttaki orijinal tweete ait tek bir görselse
-            // ayrı bir büyük galeri yerine alıntı metninin yanında küçük görsel (Section
-            // Thumbnail aksesuarı) olarak gösterilir (X'in arayüz düzeni).
-            let is_nested_image = card.post.media.is_empty()
-                && quote.media.is_empty()
-                && !nested.media.is_empty()
-                && card.resolved.attached_video.is_none()
-                && card.resolved.video_link.is_none()
-                && card.resolved.images.len() == 1;
-
-            if is_nested_image && let Some(image_url) = card.resolved.images.first() {
-                let accessory = thumbnail(image_url, hidden(card));
-                children.push(section(vec![component], accessory));
-                nested_has_thumbnail = true;
+        if let Some(component) = quote_component(quote, card.emojis, false) {
+            if hidden {
+                body.push(content_of(&component));
             } else {
+                // Hiyerarşi: alıntı bloğundan önce ince bir ayraç çizgisi ve büyük bir dikey
+                // boşluk bırakılır, böylece alıntı kartın gövdesinden ayrı okunur.
+                children.push(separator());
                 children.push(component);
             }
         }
+        let is_nested_image = card.post.media.is_empty()
+            && quote.media.is_empty()
+            && nested.is_some_and(|n| !n.media.is_empty())
+            && card.resolved.attached_video.is_none()
+            && card.resolved.video_link.is_none()
+            && card.resolved.images.len() == 1;
+        // Gizliyken iç içe alıntı da ana spoilera katılır; yalnızca küçük görselli düzen
+        // (Section aksesuarı) kendi metnini ayrıca gizler.
+        let fold_nested = hidden && !is_nested_image;
+        if let Some(nested) = nested
+            && let Some(component) = quote_component(
+                nested,
+                card.emojis,
+                !fold_nested && (hidden || quote.sensitive),
+            )
+        {
+            if fold_nested {
+                body.push(content_of(&component));
+            } else {
+                // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
+                // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
+                children.push(separator());
+
+                // 3'lü alıntıda medya en alttaki orijinal tweete ait tek bir görselse
+                // ayrı bir büyük galeri yerine alıntı metninin yanında küçük görsel (Section
+                // Thumbnail aksesuarı) olarak gösterilir (X'in arayüz düzeni).
+                if is_nested_image && let Some(image_url) = card.resolved.images.first() {
+                    let accessory = thumbnail(image_url, hidden);
+                    children.push(section(vec![component], accessory));
+                    nested_has_thumbnail = true;
+                } else {
+                    children.push(component);
+                }
+            }
+        }
+    }
+    if !body.is_empty() {
+        children.insert(body_pos, text(spoiler_wrap(&body.join("\n\n"), hidden)));
     }
     if let Some(gallery) = media_gallery(card, nested_has_thumbnail) {
         children.push(gallery);
@@ -813,7 +830,7 @@ fn meta_line(card: &V2Card<'_>) -> String {
 
     // Gönderi linki kartın içinde durur.
     let link = format!("[Link]({})", post.url);
-    parts.push(spoiler_wrap(&link, hidden(card)));
+    parts.push(link);
 
     // Gönderen: kart bot adına gönderildiğinde (taklit kapalı) linki atan kişi **kartın
     // sağ altında** düz `@kullanıcı` olarak görünür. Etiket `allowed_mentions` ile
@@ -845,6 +862,14 @@ fn truncate_display(content: &str, max: usize) -> String {
     }
 }
 
+/// Metin bileşeninin `content` alanı.
+fn content_of(component: &Value) -> String {
+    component["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Hassas gönderilerde metni spoiler içine alır.
 fn spoiler_wrap(text: &str, spoiler: bool) -> String {
     if spoiler && !text.is_empty() {
@@ -866,15 +891,52 @@ fn hidden(card: &V2Card<'_>) -> bool {
 /// Applies native Discord spoiler markers to an already-built custom component tree without
 /// mutating the cached `CustomCard`. Components V2 uses `content` for text and `media` for
 /// thumbnails/gallery items, so walking the JSON tree also covers future Spotify card details.
-fn apply_spoiler_to_components(components: &mut [Value]) {
+fn apply_spoiler_to_components(components: &mut Vec<Value>) {
+    merge_text_displays(components);
     for component in components {
         apply_spoiler_to_value(component);
     }
 }
 
+/// `-# ` ile başlayan alt bilgi satırları spoiler dışında kalır.
+fn is_footer(component: &Value) -> bool {
+    component["content"]
+        .as_str()
+        .is_some_and(|c| c.starts_with("-#"))
+}
+
+/// Aynı listedeki metin bileşenlerini tek bileşende birleştirir: tek spoiler, tek tık.
+fn merge_text_displays(components: &mut Vec<Value>) {
+    let idx: Vec<usize> = components
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            c["type"] == TYPE_TEXT_DISPLAY && c["content"].is_string() && !is_footer(c)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if idx.len() < 2 {
+        return;
+    }
+    let joined = idx
+        .iter()
+        .map(|&i| content_of(&components[i]))
+        .collect::<Vec<_>>()
+        .join("\n");
+    components[idx[0]]["content"] = Value::String(joined);
+    for &i in idx[1..].iter().rev() {
+        components.remove(i);
+    }
+}
+
 fn apply_spoiler_to_value(value: &mut Value) {
     if let Some(object) = value.as_object_mut() {
-        if let Some(content) = object.get("content").and_then(Value::as_str) {
+        if let Some(Value::Array(children)) = object.get_mut("components") {
+            merge_text_displays(children);
+        }
+        if let Some(content) = object.get("content").and_then(Value::as_str)
+            && !content.starts_with("-#")
+        {
             let content = content.to_string();
             object.insert(
                 "content".to_string(),
@@ -1397,8 +1459,10 @@ mod tests {
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let lines = texts(&payload);
-        assert_eq!(lines[1], r"**Kulaklık \*\*önerisi\*\* \[link\]**");
-        assert_eq!(lines[2], "Gövde metni");
+        assert_eq!(
+            lines[1],
+            "**Kulaklık \\*\\*önerisi\\*\\* \\[link\\]**\n\nGövde metni"
+        );
     }
 
     #[test]
@@ -2223,8 +2287,8 @@ mod tests {
 
         let meta = texts(&payload).pop().unwrap();
         assert!(
-            meta.contains("||[Link](https://x.com/kullanici/status/1)||"),
-            "spoiler link: {meta}"
+            meta.contains("[Link](https://x.com/kullanici/status/1)") && !meta.contains("||"),
+            "link açıkta kalmalı: {meta}"
         );
     }
 
@@ -2254,8 +2318,8 @@ mod tests {
 
         let meta = texts(&payload).pop().unwrap();
         assert!(
-            meta.contains("||[Link](https://x.com/kullanici/status/1)||"),
-            "spoiler link: {meta}"
+            meta.contains("[Link](https://x.com/kullanici/status/1)") && !meta.contains("||"),
+            "link açıkta kalmalı: {meta}"
         );
     }
 
@@ -2466,5 +2530,38 @@ mod tests {
     fn inner_spoiler_bars_cannot_close_the_spoiler_early() {
         let wrapped = spoiler_wrap("a || gizli", true);
         assert_eq!(wrapped.matches("||").count(), 2);
+    }
+
+    #[test]
+    fn hidden_card_folds_quote_and_custom_texts_into_one_spoiler() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/a/status/2",
+            Author::new("a", "A"),
+        );
+        quote.text = "alıntı".to_string();
+        post.quote = Some(Box::new(quote));
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let mut c = card(&post, &options, &resolved, &emojis);
+        c.spoiler = true;
+        let lines = texts(&build_payload(&c));
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("||")).count(),
+            1,
+            "{lines:?}"
+        );
+
+        let mut parts = vec![
+            json!({"type": TYPE_TEXT_DISPLAY, "content": "başlık"}),
+            json!({"type": TYPE_TEXT_DISPLAY, "content": "açıklama"}),
+            json!({"type": TYPE_TEXT_DISPLAY, "content": "-# alt bilgi"}),
+        ];
+        apply_spoiler_to_components(&mut parts);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["content"], "||başlık\naçıklama||");
+        assert_eq!(parts[1]["content"], "-# alt bilgi");
     }
 }
