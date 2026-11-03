@@ -593,7 +593,10 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
     // `Site | Başlık` olarak tek satırda gösterir. Başlık/site **async** katmanda (`fetch`)
     // gönderinin kendi sayfasından (OG) doldurulur; burada yalnızca adres işaretlenir.
     // `image` **bilerek boş bırakılır**: kart sağ üstünde/galerisinde ek görsel istemiyoruz.
-    if built.media.is_empty()
+    // Haber bağlantılarında tek medya makalenin küçük resmidir (`preview`): satır yine eklenir.
+    let only_preview_thumbnail = built.media.len() == 1
+        && preview_image(content).is_some_and(|thumb| built.media[0].url == thumb);
+    if (built.media.is_empty() || only_preview_thumbnail)
         && built.link_preview.is_none()
         && let Some(url) = external_link_url(content)
     {
@@ -1164,25 +1167,38 @@ mod tests {
             "Reddit'in kendi adresi dış bağlantı sayılmaz"
         );
 
-        // Medyası olan gönderide harici adres link satırına dönüşmez (medya galeride kalır).
+        // Harici adresin kendisi medya (doğrudan görsel) ise ayrıca link satırı olmaz.
         let media_post = parse(
             r#"[{ "data": { "children": [{ "data": {
                 "id": "img1",
                 "title": "Manzara",
                 "author": "gezgin",
                 "permalink": "/r/EarthPorn/comments/img1/manzara/",
-                "url_overridden_by_dest": "https://blog.counter-strike.net/x",
+                "url_overridden_by_dest": "https://i.imgur.com/x.jpg"
+            }}] }}]"#,
+        );
+        assert_eq!(media_post.media.len(), 1);
+        assert!(
+            media_post.link_preview.is_none(),
+            "medyanın kendisi olan adres link satırı olmaz"
+        );
+    }
+
+    #[test]
+    fn article_posts_keep_the_thumbnail_and_the_link_line() {
+        let post = parse(
+            r#"[{ "data": { "children": [{ "data": {
+                "id": "news1",
+                "title": "17 Disney and Universal employees among 281 arrested",
+                "permalink": "/r/news/comments/news1/t/",
+                "url_overridden_by_dest": "https://apnews.com/article/disney",
                 "preview": { "images": [{ "source": { "url": "https://preview.redd.it/x.jpg" } }] }
             }}] }}]"#,
         );
+        assert_eq!(post.media.len(), 1, "makale küçük resmi galeride kalmalı");
         assert_eq!(
-            media_post.media.len(),
-            1,
-            "önizleme görseli galeriye girmeli"
-        );
-        assert!(
-            media_post.link_preview.is_none(),
-            "medyalı gönderide link satırı olmaz"
+            post.link_preview.expect("makale bağlantısı").url,
+            "https://apnews.com/article/disney"
         );
     }
 
