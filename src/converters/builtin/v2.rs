@@ -524,6 +524,8 @@ fn reddit_header_body(post: &BuiltinPost) -> String {
     } else {
         name
     };
+    // Adaptör adı `u/kullanici` olarak verir; önek burada bir kez yazılır.
+    let author = author.strip_prefix("u/").unwrap_or(author);
     if !author.is_empty() {
         let author = escape_markdown(author);
         let profile = post
@@ -1641,7 +1643,7 @@ mod tests {
         let mut post = BuiltinPost::new(
             Platform::Reddit,
             "https://www.reddit.com/r/rust/comments/abc/x/",
-            Author::new("rustfan", "rustfan"),
+            Author::new("u/rustfan", ""),
         );
         post.extra_label = Some("r/rust".to_string());
         post.author.profile_url = Some("https://www.reddit.com/user/rustfan".to_string());

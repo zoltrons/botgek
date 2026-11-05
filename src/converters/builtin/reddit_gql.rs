@@ -27,9 +27,14 @@ pub(super) struct Comment {
     pub id: String,
     pub author: String,
     pub body: String,
+    /// Yanıtlanan yorumun kimliği (`t1_` öneki atılmış); üst seviye yorumda `None`.
+    pub parent_id: Option<String>,
+    pub score: Option<i64>,
+    pub permalink: Option<String>,
 }
 
-/// Gönderinin yorumlarını getirir; `focused` verilirse yalnızca o yorumun dalı istenir.
+/// Gönderinin yorumlarını getirir; `focused` verilirse o yorumun dalı (kök yorumdan itibaren
+/// ataları dahil) istenir.
 ///
 /// Herhangi bir hata boş liste döner: yorum bağlamı kartın zorunlu parçası değildir.
 pub(super) async fn comments(
@@ -85,8 +90,8 @@ pub(super) async fn comments(
 
 /// Kalıcı `PostComments` isteğinin gövdesi.
 ///
-/// `focused` verilirse Reddit yalnızca o yorumun bulunduğu dalı döndürür; bağlam kartı için
-/// tüm ağacı çekmeye gerek yoktur (odaklı yanıt 200 yorum sınırına takılmaz).
+/// `focused` verilirse Reddit yalnızca o yorumun bulunduğu dalı döndürür. `isFocusedThreadOnly`
+/// kapalıdır: açıkken dal odaklı yorumdan başlar ve yanıtlanan üst yorum gelmez.
 fn query_body(post_id: &str, focused: Option<&str>) -> serde_json::Value {
     let mut variables = serde_json::json!({
         "id": format!("t3_{post_id}"),
@@ -99,7 +104,7 @@ fn query_body(post_id: &str, focused: Option<&str>) -> serde_json::Value {
     if let Some(comment_id) = focused {
         variables["focusedCommentContext"] = serde_json::json!({
             "commentId": format!("t1_{comment_id}"),
-            "isFocusedThreadOnly": true,
+            "isFocusedThreadOnly": false,
         });
     }
     serde_json::json!({
@@ -141,6 +146,16 @@ fn parse_comments(json: &serde_json::Value) -> Vec<Comment> {
                 id,
                 author: author.to_string(),
                 body: body.to_string(),
+                parent_id: tree
+                    .get("parentId")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|id| id.strip_prefix("t1_"))
+                    .map(str::to_string),
+                score: node.get("score").and_then(serde_json::Value::as_i64),
+                permalink: node
+                    .get("permalink")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
             })
         })
         .collect()
@@ -161,7 +176,7 @@ mod tests {
         );
         assert_eq!(
             body["variables"]["focusedCommentContext"]["isFocusedThreadOnly"],
-            true
+            false
         );
         assert_eq!(
             body["extensions"]["persistedQuery"]["sha256Hash"],
@@ -181,8 +196,13 @@ mod tests {
             "data": { "postInfoById": { "commentForest": { "trees": [
                 { "depth": 0, "node": {
                     "__typename": "Comment", "id": "t1_aaa",
-                    "authorInfo": { "name": "yazar" },
+                    "authorInfo": { "name": "yazar" }, "score": 5,
+                    "permalink": "/r/x/comments/p/_/aaa/",
                     "content": { "markdown": "  metin  " } } },
+                { "depth": 1, "parentId": "t1_aaa", "node": {
+                    "__typename": "Comment", "id": "t1_ddd",
+                    "authorInfo": { "name": "yanitci" },
+                    "content": { "markdown": "yanıt" } } },
                 { "depth": 1, "node": { "__typename": "MoreComments" } },
                 { "depth": 1, "more": { "count": 3, "cursor": "abc" } },
                 { "depth": 1, "node": {
@@ -199,11 +219,24 @@ mod tests {
 
         assert_eq!(
             parse_comments(&json),
-            vec![Comment {
-                id: "aaa".to_string(),
-                author: "yazar".to_string(),
-                body: "metin".to_string(),
-            }]
+            vec![
+                Comment {
+                    id: "aaa".to_string(),
+                    author: "yazar".to_string(),
+                    body: "metin".to_string(),
+                    parent_id: None,
+                    score: Some(5),
+                    permalink: Some("/r/x/comments/p/_/aaa/".to_string()),
+                },
+                Comment {
+                    id: "ddd".to_string(),
+                    author: "yanitci".to_string(),
+                    body: "yanıt".to_string(),
+                    parent_id: Some("aaa".to_string()),
+                    score: None,
+                    permalink: None,
+                },
+            ]
         );
     }
 

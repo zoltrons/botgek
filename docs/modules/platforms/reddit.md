@@ -2,8 +2,8 @@
 
 ## Görev
 
-Reddit gönderisini (başlık, metin, skor, yorum sayısı, galeri ve video, crosspost) ve tek yorum
-bağlantılarının bağlam metnini `BuiltinPost`'a çevirir. Videonun görüntü ve sesini tek MP4'te birleştirir.
+Reddit gönderisini (başlık, metin, skor, yorum sayısı, galeri ve video, crosspost) ve yorum
+bağlantılarını yanıt kartı olarak `BuiltinPost`'a çevirir. Videonun görüntü ve sesini tek MP4'te birleştirir.
 
 ## Dosyalar
 
@@ -30,9 +30,11 @@ bağlantılarının bağlam metnini `BuiltinPost`'a çevirir. Videonun görünt�
 - Gönderi `oauth.reddit.com/by_id/t3_{id}.json` ile alınır. `/comments/` yolu anonim istemciye kapalıdır.
 - Gönderi kimliği URL'den çıkarılır (`/comments/{id}` ve `redd.it/{id}`). Mobil paylaşım linki
   (`/r/{sub}/s/{kod}`) tarayıcı User-Agent'ıyla istenir, varılan kalıcı adresten kimlik okunur
-  (`extract_post_id`).
-- Yorum bağlantısında (`.../comment/{id}`) yorumun metni `reddit_gql` ile alınır ve gönderiye alıntı
-  satırlarıyla eklenir, bağlam en fazla 1200 karakter.
+  (`resolve_permalink`). Paylaşım linki bir yoruma çıkıyorsa yorum kimliği de bu adresten okunur.
+- Yorum bağlantısında (`.../comment/{id}`) kart yorumun kendisidir (`reply_card`): yazar, metin ve skor
+  yorumdan gelir, `extra_label` `Yanıt • u/...` olur. Alıntıda yanıtlanan üst yorum (varsa) ve en altta
+  gönderi başlığı durur; gönderi medyası galeriye düşer. Üst yorum `reddit_gql` dalından
+  (`isFocusedThreadOnly: false`, ataları da döndürür) bulunur; kimliksiz yolda yalnızca gönderi alıntılanır.
 - Medya: tek görsel, galeri, GIF, Reddit videosu (`fallback_url`, `secure_media`), RedGifs. Yalnızca izinli
   RedGifs varlık adresleri kabul edilir (`allowed_redgifs_asset`).
 - `source_spoiler` Reddit'in `spoiler` bayrağından, `sensitive` NSFW'den gelir. `extra_label` flair ve
@@ -57,14 +59,14 @@ bkz. [rendering.md](../rendering.md)).
 
 - Reddit videosu `video_requires_download` listesindedir.
 - Birleştirme başarısızsa kart bozulmaz, sessiz uzak video korunur.
-- GraphQL kalıcı sorgu karması (`POST_COMMENTS_HASH`) Reddit tarafında değişirse yorum bağlamı sessizce
-  boş döner. Bu durumda gönderi kartı yine de üretilir.
+- GraphQL kalıcı sorgu karması (`POST_COMMENTS_HASH`) Reddit tarafında değişirse yanıt kartı sessizce
+  kurulmaz. Bu durumda gönderi kartı yine de üretilir.
 
 ## Değiştirirken
 
 - Yeni medya türü: `single_media` ve `reddit_media`.
 - Yeni video kalitesi kuralı: `variant_ladder` ve `estimated_bytes`.
-- Yorum bağlamı sınırı: `MAX_COMMENT_CONTEXT_CHARS`, `COMMENT_COUNT`, `MAX_DEPTH`.
+- Yorum isteği sınırı: `COMMENT_COUNT`, `MAX_DEPTH`.
 
 ## Testler
 

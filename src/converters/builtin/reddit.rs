@@ -31,7 +31,6 @@ use super::preview::meta_value;
 use super::reddit_gql;
 use super::{Author, BuiltinPost, LinkPreview, Media, MediaKind, REQUEST_TIMEOUT, Stats};
 use crate::converters::parser::{ParsedPost, Platform};
-use crate::utils::truncate_chars;
 use serde::de::DeserializeOwned;
 use url::Url;
 
@@ -52,8 +51,6 @@ static COMMENT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"/comments/[A-Za-z0-9]+/[^/?#]+/([A-Za-z0-9]+)")
         .expect("geçerli reddit yorum regex")
 });
-
-const MAX_COMMENT_CONTEXT_CHARS: usize = 1_200;
 
 /// Harici bağlantı önizlemesi için toplam süre: kart **asla** bağlantı için bekletilmez.
 ///
@@ -201,8 +198,15 @@ pub async fn fetch(
     parsed: &ParsedPost,
     client_id: &str,
 ) -> Result<BuiltinPost, String> {
-    let id = extract_post_id(client, &parsed.original_url).await?;
-    let comment_id = comment_id_from_url(&parsed.original_url);
+    // Paylaşım linki bir yoruma çıkabilir: yorum kimliği de çözülen kalıcı adresten okunur.
+    let url = resolve_permalink(client, &parsed.original_url).await?;
+    let id = post_id_from_url(&url).ok_or_else(|| {
+        format!(
+            "Reddit gönderi kimliği çözümlenemedi: {}",
+            parsed.original_url
+        )
+    })?;
+    let comment_id = comment_id_from_url(&url);
     let query = comments_query(comment_id);
 
     // 1) OAuth: gönderi verisi `/by_id` ile alınır. Reddit `/comments/` JSON yolunu anonim
@@ -213,8 +217,7 @@ pub async fn fetch(
             Ok(listing) => match listings_to_post(vec![listing], None) {
                 Ok(mut post) => {
                     if let Some(comment_id) = comment_id {
-                        append_graph_comment_context(client, &mut post, &token, &id, comment_id)
-                            .await;
+                        post = graph_reply_card(client, post, &token, &id, comment_id).await;
                     }
                     fill_link_preview(&mut post).await;
                     return Ok(post);
@@ -241,34 +244,40 @@ fn by_id_url(id: &str) -> String {
     format!("{OAUTH_API_BASE}/by_id/t3_{id}.json?raw_json=1")
 }
 
-/// `/by_id` yanıtından kurulan karta GraphQL yorum bağlamını ekler.
+/// Yorum bağlantısını GraphQL'den gelen yorumla yanıt kartına çevirir.
 ///
-/// Yorum bulunamazsa veya GraphQL isteği başarısız olursa kart yine döner: bağlam zorunlu değildir.
-async fn append_graph_comment_context(
+/// Yorum bulunamazsa veya GraphQL isteği başarısız olursa gönderi kartı döner.
+async fn graph_reply_card(
     client: &reqwest::Client,
-    post: &mut BuiltinPost,
+    post: BuiltinPost,
     token: &str,
     post_id: &str,
     comment_id: &str,
-) {
+) -> BuiltinPost {
     let comments =
         reddit_gql::comments(client, token, REDDIT_USER_AGENT, post_id, Some(comment_id)).await;
-    let Some(comment) = comments
-        .into_iter()
-        .find(|comment| comment.id == comment_id)
-    else {
-        debug!("Reddit yorum bağlamı bulunamadı ({post_id}/{comment_id})");
-        return;
+    let Some(comment) = comments.iter().find(|comment| comment.id == comment_id) else {
+        debug!("Reddit yorumu bulunamadı ({post_id}/{comment_id})");
+        return post;
     };
-    append_comment_context(
-        post,
-        &RedditPost {
-            id: Some(comment.id),
-            author: Some(comment.author),
-            body: Some(comment.body),
-            ..Default::default()
-        },
-    );
+    // Silinmiş üst yorum listede yoktur: kart o zaman doğrudan gönderiye yanıt gibi görünür.
+    let parent = comment
+        .parent_id
+        .as_deref()
+        .and_then(|id| comments.iter().find(|comment| comment.id == id))
+        .map(gql_comment);
+    reply_card(&gql_comment(comment), parent.as_ref(), post)
+}
+
+fn gql_comment(comment: &reddit_gql::Comment) -> RedditPost {
+    RedditPost {
+        id: Some(comment.id.clone()),
+        author: Some(comment.author.clone()),
+        body: Some(comment.body.clone()),
+        score: comment.score,
+        permalink: comment.permalink.clone(),
+        ..Default::default()
+    }
 }
 
 /// Yorum listesi sorgusu; `raw_json=1` her zaman bulunur çünkü metin alanları bir daha HTML çözülmez.
@@ -300,19 +309,21 @@ fn listings_to_post(
         .and_then(|parents| parents.first())
         .unwrap_or(post);
 
-    let mut built = reddit_to_post(post, content);
-    if let Some(comment_id) = comment_id.and_then(|id| find_comment(&listings, id)) {
-        append_comment_context(&mut built, comment_id);
-    }
-    Ok(built)
+    let built = reddit_to_post(post, content);
+    Ok(
+        match comment_id.and_then(|id| find_comment(&listings, id)) {
+            Some(comment) => reply_card(comment, None, built),
+            None => built,
+        },
+    )
 }
 
-/// Gönderi kimliğini linkten çıkarır; kimlik adres üzerinde yoksa (mobil paylaşım linki)
+/// Gönderi kimliği linkte varsa linki olduğu gibi döner; yoksa (mobil paylaşım linki)
 /// linki yönlendirme izleyerek kalıcı adrese çözer.
-async fn extract_post_id(client: &reqwest::Client, original_url: &str) -> Result<String, String> {
+async fn resolve_permalink(client: &reqwest::Client, original_url: &str) -> Result<String, String> {
     // 1) Adres üzerinde gömülü kimlik (normal linkler ve kısa linkler).
-    if let Some(id) = post_id_from_url(original_url) {
-        return Ok(id);
+    if post_id_from_url(original_url).is_some() {
+        return Ok(original_url.to_string());
     }
 
     // 2) Mobil paylaşım linki (`/r/{sub}/s/{kod}`): Reddit içeriği yalnızca hedef adrese
@@ -337,9 +348,7 @@ async fn extract_post_id(client: &reqwest::Client, original_url: &str) -> Result
         ));
     }
 
-    let final_url = response.url().to_string();
-    post_id_from_url(&final_url)
-        .ok_or_else(|| format!("Reddit gönderi kimliği çözümlenemedi: {original_url}"))
+    Ok(response.url().to_string())
 }
 
 /// Gönderi kimliği adres üzerinde taşınıyorsa döner: normal `/r/.../comments/{id}` linkleri
@@ -394,40 +403,46 @@ fn find_comment_in_post<'a>(
         })
 }
 
-fn append_comment_context(post: &mut BuiltinPost, comment: &RedditPost) {
-    let Some(body) = comment
+/// Yorum bağlantısı için yanıt kartı: kartın kendisi yorumdur, alıntıda yanıtlanan yorum ve
+/// onun altında gönderi (başlığıyla) durur. Yorum metni yoksa (silinmiş) gönderi kartı döner.
+fn reply_card(comment: &RedditPost, parent: Option<&RedditPost>, post: BuiltinPost) -> BuiltinPost {
+    let Some(mut card) = comment_post(comment) else {
+        return post;
+    };
+    // Alıntıda gönderinin yalnızca başlığı durur (medyası galeriye düşer); gövde yanıtı boğmasın.
+    let mut post = post;
+    post.text = post
+        .title
+        .take()
+        .filter(|title| !title.is_empty())
+        .map(|title| format!("**{title}**"))
+        .unwrap_or_default();
+    card.sensitive = post.sensitive;
+    card.source_spoiler = post.source_spoiler;
+    let replied = match parent.and_then(comment_post) {
+        Some(mut parent) => {
+            parent.sensitive = post.sensitive;
+            parent.source_spoiler = post.source_spoiler;
+            parent.quote = Some(Box::new(post));
+            parent
+        }
+        None => post,
+    };
+    card.extra_label = Some(format!("Yanıt • {}", replied.author.name));
+    card.quote = Some(Box::new(replied));
+    card
+}
+
+/// Yorumu kart modeline çevirir; silinmiş/kaldırılmış yorumda `None`.
+fn comment_post(comment: &RedditPost) -> Option<BuiltinPost> {
+    let body = comment
         .body
         .as_deref()
         .map(str::trim)
-        .filter(|body| !body.is_empty() && *body != "[removed]" && *body != "[deleted]")
-    else {
-        return;
-    };
-    let body = quote_lines(&truncate_chars(body, MAX_COMMENT_CONTEXT_CHARS));
-    if body.is_empty() {
-        return;
-    }
-    let author = comment
-        .author
-        .as_deref()
-        .filter(|author| !author.trim().is_empty())
-        .map(|author| format!("u/{author}"))
-        .unwrap_or_else(|| "silinmiş kullanıcı".to_string());
-    if !post.text.is_empty() {
-        post.text.push_str("\n\n");
-    }
-    post.text
-        .push_str(&format!("**Yorum bağlamı ({author}):**\n{body}"));
-}
-
-/// Her dolu satırı `> ` ile alıntılar; boş satırlar atılır çünkü Discord çıplak `>` satırını ayrı, boş bir şerit gibi çizer.
-fn quote_lines(text: &str) -> String {
-    text.lines()
-        .map(str::trim_end)
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| format!("> {line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .filter(|body| !body.is_empty() && *body != "[removed]" && *body != "[deleted]")?;
+    let mut card = reddit_to_post(comment, comment);
+    card.text = body.to_string();
+    Some(card)
 }
 
 /// Kimliksiz JSON isteği. Tarayıcı kılığındaki User-Agent, Reddit'in bot isteklerine
@@ -1646,28 +1661,58 @@ mod tests {
     }
 
     #[test]
-    fn direct_comment_context_is_bounded_and_deleted_comments_are_safe() {
-        let body = "x".repeat(MAX_COMMENT_CONTEXT_CHARS + 100);
-        let json = format!(
-            r#"[
-                {{"data":{{"children":[{{"data":{{"id":"post1","title":"Gönderi","author":"op","permalink":"/r/test/comments/post1/baslik/"}}}}]}}}},
-                {{"data":{{"children":[{{"data":{{"id":"comment1","author":"yorumcu","body":"{body}"}}}},{{"data":{{"id":"deleted","author":null,"body":"[deleted]"}}}}]}}}}
-            ]"#
-        );
+    fn comment_links_become_reply_cards_and_deleted_comments_are_safe() {
+        let json = r#"[
+            {"data":{"children":[{"data":{"id":"post1","title":"Gönderi","selftext":"gövde","author":"op","over_18":true,"permalink":"/r/test/comments/post1/baslik/"}}]}},
+            {"data":{"children":[{"data":{"id":"comment1","author":"yorumcu","body":"yorum metni","permalink":"/r/test/comments/post1/baslik/comment1/"}},{"data":{"id":"deleted","author":null,"body":"[deleted]"}}]}}
+        ]"#;
         let post = listings_to_post(
-            serde_json::from_str(&json).expect("listing geçerli olmalı"),
+            serde_json::from_str(json).expect("listing geçerli olmalı"),
             Some("comment1"),
         )
         .expect("gönderi dönüşmeli");
-        assert!(post.text.contains("Yorum bağlamı (u/yorumcu):"));
-        assert!(post.text.chars().count() < MAX_COMMENT_CONTEXT_CHARS + 100);
+        assert_eq!(post.text, "yorum metni");
+        assert_eq!(post.author.name, "u/yorumcu");
+        assert_eq!(post.title, None);
+        assert_eq!(
+            post.url,
+            "https://www.reddit.com/r/test/comments/post1/baslik/comment1/"
+        );
+        assert_eq!(post.extra_label.as_deref(), Some("Yanıt • u/op"));
+        assert!(post.sensitive, "NSFW gönderinin yorumu da gizli kalır");
+        let quote = post.quote.expect("gönderi alıntıda olmalı");
+        assert_eq!(quote.text, "**Gönderi**");
 
         let deleted = listings_to_post(
-            serde_json::from_str(&json).expect("listing geçerli olmalı"),
+            serde_json::from_str(json).expect("listing geçerli olmalı"),
             Some("deleted"),
         )
         .expect("silinmiş yorum kartı bozmaz");
-        assert!(!deleted.text.contains("Yorum bağlamı"));
+        assert_eq!(deleted.title.as_deref(), Some("Gönderi"));
+        assert!(deleted.quote.is_none());
+    }
+
+    #[test]
+    fn nested_replies_quote_the_parent_comment_then_the_post() {
+        let mut post = BuiltinPost::new(Platform::Reddit, "https://r/p", Author::new("u/op", ""));
+        post.title = Some("Başlık".to_string());
+        let comment = RedditPost {
+            id: Some("c2".to_string()),
+            author: Some("yanitci".to_string()),
+            body: Some("yanıt".to_string()),
+            ..Default::default()
+        };
+        let parent = RedditPost {
+            id: Some("c1".to_string()),
+            author: Some("ustyorum".to_string()),
+            body: Some("üst".to_string()),
+            ..Default::default()
+        };
+        let card = reply_card(&comment, Some(&parent), post);
+        assert_eq!(card.extra_label.as_deref(), Some("Yanıt • u/ustyorum"));
+        let quote = card.quote.expect("üst yorum alıntılanır");
+        assert_eq!(quote.text, "üst");
+        assert_eq!(quote.quote.expect("gönderi en altta").text, "**Başlık**");
     }
 
     #[test]
@@ -1682,7 +1727,7 @@ mod tests {
         )
         .expect("negatif skor yanıtı bozmamalı");
         assert_eq!(post.stats.likes, 0, "negatif skor sıfıra kırpılır");
-        assert!(post.text.contains("> eksi"));
+        assert_eq!(post.text, "eksi");
     }
 
     #[test]
@@ -1695,22 +1740,6 @@ mod tests {
             comments_query(cid),
             "raw_json=1&depth=2&limit=20&comment=kx9z1q&context=0"
         );
-    }
-
-    #[test]
-    fn multiline_comment_context_quotes_every_line_without_bare_markers() {
-        let json = r#"[
-            {"data":{"children":[{"data":{"id":"post1","title":"Gönderi","author":"op","permalink":"/r/test/comments/post1/baslik/"}}]}},
-            {"data":{"children":[{"data":{"id":"c1","author":"yorumcu","body":"ilk satır\n\nikinci satır\nüçüncü"}}]}}
-        ]"#;
-        let post = listings_to_post(
-            serde_json::from_str(json).expect("listing geçerli olmalı"),
-            Some("c1"),
-        )
-        .expect("gönderi dönüşmeli");
-        let quoted: Vec<&str> = post.text.lines().skip(1).collect();
-        assert_eq!(quoted, vec!["> ilk satır", "> ikinci satır", "> üçüncü"]);
-        assert!(!post.text.lines().any(|line| line.trim() == ">"));
     }
 
     #[test]
@@ -1845,7 +1874,7 @@ mod tests {
             post.title
         );
 
-        // Yorum bağlamı: canlı gönderinin ilk yorumunu bulup kalıcı bağlantısıyla tekrar çek.
+        // Yanıt kartı: canlı gönderinin ilk yorumunu bulup kalıcı bağlantısıyla tekrar çek.
         let comments = reddit_gql::comments(&client, &token, REDDIT_USER_AGENT, &id, None).await;
         let comment = comments
             .first()
@@ -1859,10 +1888,7 @@ mod tests {
         let post = fetch(&client, &parsed, DEFAULT_CLIENT_ID)
             .await
             .expect("Reddit yorum bağlantısı çekilmeli");
-        assert!(
-            post.text.contains("**Yorum bağlamı (u/"),
-            "yorum bağlamı karta girmeli: {}",
-            post.text
-        );
+        assert_eq!(post.text, comment.body, "kart yorumun kendisi olmalı");
+        assert!(post.quote.is_some(), "gönderi alıntıda olmalı");
     }
 }
