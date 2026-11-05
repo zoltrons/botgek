@@ -52,8 +52,10 @@ Bileşen/modal etiketleri `custom_id`nin ilk parçasıdır (oyun durumu loga sı
 
 - Karta sağ tık → **Apps → Yenile**. Kartı paylaşan kişi (🗑️ yetkisiyle aynı kayıt) kendi kartını,
   `OWNER_ID` ile eşleşen bot sahibi her kartı yenileyebilir. Komut menüde herkese görünür.
-- `builtin::regenerate` kartın ham JSON'undan alt bilgideki `[Link](...)`, kart üstündeki kullanıcı notu
-  ve spoiler durumunu okur, gönderi önbelleğini atlayıp veriyi yeniden çeker ve kartı **aynı mesajda**
+- `builtin::regenerate` gönderi bağlantısını kayıttaki `source_url`'den alır (özel kartlar — Spotify,
+  Twitch, Letterboxd, Miniflux — `[Link](...)` satırı taşımaz; bağlantısı kaydedilmemiş eski kartlarda alt
+  bilgideki `[Link](...)` okunur). Kart üstündeki kullanıcı notu ve spoiler durumu kartın ham JSON'undan okunur;
+  komut gönderi önbelleğini atlayıp veriyi yeniden çeker ve kartı **aynı mesajda**
   `PATCH` ile düzenler. Mesaj kimliği değişmediği için gönderen, 🗑️ ve silme yetkisi kaydı aynen kalır.
 - Taklit kartı kanalın güncel Botgek webhook'uyla düzenlenir. Kartı gönderen webhook silinmiş ya da
   değişmişse (düzenleme 401/404) kart eski adı ve avatarıyla güncel webhook'tan yeniden gönderilir, kayıt

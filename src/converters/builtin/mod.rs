@@ -886,9 +886,16 @@ fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> 
 /// emojisiyle çeviri ayrımı için kullanılır. Bot yeniden başlasa, çökse veya güncellense
 /// de kayıt kaybolmaz (eskiden bellekteki bir `HashMap` içindeydi ve yeniden başlatmada
 /// siliniyordu).
-pub async fn remember_author(message_id: MessageId, channel_id: ChannelId, author: UserId) {
-    crate::store::blocking(move || crate::store::remember_card(message_id, channel_id, author))
-        .await;
+pub async fn remember_author(
+    message_id: MessageId,
+    channel_id: ChannelId,
+    author: UserId,
+    source_url: String,
+) {
+    crate::store::blocking(move || {
+        crate::store::remember_card(message_id, channel_id, author, &source_url)
+    })
+    .await;
 }
 
 /// Kartı, üretildiği kaynak mesajla birlikte kaydeder: kaynak düzenlenir ya da silinirse kart
@@ -1484,7 +1491,13 @@ pub async fn handle(
             if delivery.is_some() {
                 // Etkileşim yanıtı kartın kendisidir: kanal üyeliği olmadığı için reaksiyon
                 // eklenemez, ama kart sonraki mesajlarda tanınabilsin diye kaydedilir.
-                remember_author(message_id, msg.channel_id, msg.author.id).await;
+                remember_author(
+                    message_id,
+                    msg.channel_id,
+                    msg.author.id,
+                    parsed.original_url.clone(),
+                )
+                .await;
             } else {
                 finish(ctx, msg, config, message_id, &parsed.original_url).await;
             }
@@ -1503,9 +1516,13 @@ pub async fn handle(
     }
 }
 
-/// Var olan kartın JSON'undan yeniden üretim girdisi: gönderi bağlantısı (alt bilgideki
-/// `[Link](...)`), kartın üstündeki kullanıcı notu ve kartın gizli (spoiler) olup olmadığı.
-fn card_source(card: &serde_json::Value) -> Option<ParsedPost> {
+/// Var olan kartın JSON'undan yeniden üretim girdisi: gönderi bağlantısı, kartın üstündeki
+/// kullanıcı notu ve kartın gizli (spoiler) olup olmadığı.
+///
+/// Bağlantı önce kayıttan (`stored`) alınır: özel kartlar (Spotify, Twitch, Letterboxd,
+/// Miniflux) `[Link](...)` satırı taşımaz. Bağlantısı kaydedilmemiş eski kartlarda alt
+/// bilgideki `[Link](...)` okunur.
+fn card_source(card: &serde_json::Value, stored: Option<&str>) -> Option<ParsedPost> {
     fn texts<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>, hidden: &mut bool) {
         match value {
             serde_json::Value::Object(map) => {
@@ -1531,10 +1548,12 @@ fn card_source(card: &serde_json::Value) -> Option<ParsedPost> {
     texts(container, &mut contents, &mut hidden);
     // `spoiler_wrap` metnin tamamını `||` içine alır; alt bilgi (`-# `) hiç gizlenmez.
     hidden |= contents.iter().any(|text| text.starts_with("||"));
-    let url = contents.iter().rev().find_map(|text| {
-        let start = text.rfind("[Link](")? + "[Link](".len();
-        let end = start + text[start..].find(')')?;
-        Some(&text[start..end])
+    let url = stored.filter(|url| !url.is_empty()).or_else(|| {
+        contents.iter().rev().find_map(|text| {
+            let start = text.rfind("[Link](")? + "[Link](".len();
+            let end = start + text[start..].find(')')?;
+            Some(&text[start..end])
+        })
     })?;
 
     let mut parsed = super::parser::parse_message(url)?;
@@ -1579,7 +1598,9 @@ pub async fn regenerate(
     {
         return Err("Bu mesaj Botgek kartı değil.".into());
     }
-    let parsed = card_source(card).ok_or("Kartta yeniden üretilecek bağlantı bulunamadı.")?;
+    let stored = crate::store::blocking(move || crate::store::card_source_url(message_id)).await;
+    let parsed = card_source(card, stored.as_deref())
+        .ok_or("Kartta yeniden üretilecek bağlantı bulunamadı.")?;
 
     cache::forget(&post_cache_key(&parsed, engine)).await;
     let mut msg = Message::default();
@@ -1925,7 +1946,13 @@ async fn finish(
     let delete_original = config.delete_original && !carries_files(msg);
     if delete_original {
         // Kaynak bilerek silinecek: eşleme tutulsaydı silme olayı kartı da götürürdü.
-        remember_author(message_id, msg.channel_id, msg.author.id).await;
+        remember_author(
+            message_id,
+            msg.channel_id,
+            msg.author.id,
+            source_url.to_string(),
+        )
+        .await;
     } else {
         remember_card_for_source(
             message_id,
@@ -1991,7 +2018,7 @@ mod message_tests {
                 {"type": 10, "content": "-# X • [Link](https://x.com/u/status/123) • Gönderen: <@5>"}
             ]}
         ]});
-        let parsed = card_source(&card).expect("kart çözülmeli");
+        let parsed = card_source(&card, None).expect("kart çözülmeli");
         assert_eq!(parsed.platform, Platform::Twitter);
         assert!(parsed.original_url.contains("/status/123"));
         assert_eq!(parsed.user_comment.as_deref(), Some("şuna bak"));
@@ -2001,9 +2028,36 @@ mod message_tests {
             {"type": 10, "content": "metin"},
             {"type": 10, "content": "-# X • [Link](https://x.com/u/status/123)"}
         ]}]});
-        let parsed = card_source(&plain).expect("kart çözülmeli");
+        let parsed = card_source(&plain, None).expect("kart çözülmeli");
         assert_eq!(parsed.user_comment, None);
         assert!(!parsed.is_spoiler);
+    }
+
+    /// Özel kartlarda `[Link](...)` yok: bağlantı kayıttan gelir. Miniflux başlığı makalenin
+    /// kendisine (burada bir Reddit gönderisi) gider; kart yine Miniflux kartı olarak yenilenir.
+    #[test]
+    fn card_source_prefers_the_stored_link_for_custom_cards() {
+        let share = format!("https://miniflux.example.com/share/{}", "a".repeat(40));
+        let card = serde_json::json!({"components": [{"type": 17, "components": [
+            {"type": 10, "content": "### [Başlık](https://www.reddit.com/r/rust/comments/abc/x/)\n-# Akış"},
+            {"type": 1, "components": [{"type": 2, "style": 5, "label": "Makaleyi aç", "url": share}]}
+        ]}]});
+        assert!(
+            card_source(&card, None).is_none(),
+            "özel kartta [Link] satırı yok"
+        );
+        let parsed = card_source(&card, Some(&share)).expect("kayıtlı bağlantı kullanılmalı");
+        assert_eq!(parsed.platform, Platform::Miniflux);
+
+        let spotify = serde_json::json!({"components": [{"type": 17, "components": [
+            {"type": 10, "content": "### [Şarkı](https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC)"}
+        ]}]});
+        let parsed = card_source(
+            &spotify,
+            Some("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC"),
+        )
+        .expect("kayıtlı bağlantı kullanılmalı");
+        assert_eq!(parsed.platform, Platform::Spotify);
     }
 
     /// DELETE_ORIGINAL açıkken bile dosyalı mesaj silinmemeli: kart dosyayı taşımaz.
@@ -2170,7 +2224,7 @@ mod message_tests {
         let recorded =
             message_fixture(recorded_id, user_id, "eski biçim", vec![], Some(webhook_id));
         assert!(!is_card_message(&recorded, bot_id).await);
-        remember_author(recorded_id, ChannelId::new(5), user_id).await;
+        remember_author(recorded_id, ChannelId::new(5), user_id, String::new()).await;
         assert!(is_card_message(&recorded, bot_id).await);
 
         // Botun AI yanıtı ve kullanıcı mesajı kart değildir (AI tetiklenebilmeli).
@@ -2342,7 +2396,13 @@ mod message_tests {
     async fn remembered_authors_can_be_queried() {
         let message_id = MessageId::new(777);
         assert_eq!(original_author(message_id).await, None);
-        remember_author(message_id, ChannelId::new(5), UserId::new(42)).await;
+        remember_author(
+            message_id,
+            ChannelId::new(5),
+            UserId::new(42),
+            String::new(),
+        )
+        .await;
         assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
         assert!(is_native_message(message_id).await);
 

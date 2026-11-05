@@ -255,25 +255,24 @@ impl Db {
         &self.path
     }
 
-    /// Kart kaydını yazar (aynı mesaj kimliği yeniden yazılırsa güncellenir).
+    /// Kaynaksız kart kaydı yazar (yalnızca testler; üretim yolu bağlantıyı da yazar).
+    #[cfg(test)]
     pub fn remember(&self, message_id: MessageId, channel_id: ChannelId, author_id: UserId) {
-        self.remember_with_source(message_id, channel_id, author_id, None);
+        self.remember_with_source(message_id, channel_id, author_id, None, None);
     }
 
-    /// Kart kaydını, varsa kaynak mesajıyla birlikte yazar. Kaynak verilmezse var olan kaynak
-    /// bilgisi korunur.
+    /// Kart kaydını, varsa kaynak mesajı ve bağlantısıyla birlikte yazar. Verilmeyen kaynak
+    /// bilgisi korunur. Bağlantı kaynak mesajı olmadan da yazılır (Apps → Yenile onu okur).
     pub fn remember_with_source(
         &self,
         message_id: MessageId,
         channel_id: ChannelId,
         author_id: UserId,
-        source: Option<(MessageId, &str)>,
+        source_id: Option<MessageId>,
+        source_url: Option<&str>,
     ) {
         let created_at = now_unix();
-        let (source_id, source_url) = match source {
-            Some((id, url)) => (Some(id.get() as i64), Some(url)),
-            None => (None, None),
-        };
+        let source_id = source_id.map(|id| id.get() as i64);
         let result = self.with_connection(crate::telemetry::DbOp::Remember, |connection| {
             connection
                 .execute(
@@ -372,6 +371,22 @@ impl Db {
         )
         .and_then(|value| u64::try_from(value).ok())
         .map(UserId::new)
+    }
+
+    /// Kartın üretildiği bağlantı (eski kayıtlarda ya da kayıt yoksa `None`).
+    pub fn source_url(&self, message_id: MessageId) -> Option<String> {
+        self.with_connection(crate::telemetry::DbOp::Author, |connection| {
+            connection
+                .query_row(
+                    "SELECT source_url FROM cards WHERE message_id = ?1",
+                    params![message_id.get() as i64],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+        })
+        .ok()
+        .flatten()
+        .flatten()
     }
 
     /// Bu mesaj için kayıt var mı? (kart tanıma)
@@ -508,11 +523,16 @@ fn run_readonly(
     })
 }
 
-pub fn remember_card(message_id: MessageId, channel_id: ChannelId, author_id: UserId) {
+pub fn remember_card(
+    message_id: MessageId,
+    channel_id: ChannelId,
+    author_id: UserId,
+    source_url: &str,
+) {
     let Some(db) = database() else {
         return;
     };
-    db.remember(message_id, channel_id, author_id);
+    db.remember_with_source(message_id, channel_id, author_id, None, Some(source_url));
 
     if WRITES.fetch_add(1, Ordering::Relaxed) + 1 >= PRUNE_EVERY {
         WRITES.store(0, Ordering::Relaxed);
@@ -535,7 +555,8 @@ pub fn remember_card_for_source(
         message_id,
         channel_id,
         author_id,
-        Some((source_id, source_url)),
+        Some(source_id),
+        Some(source_url),
     );
 
     if WRITES.fetch_add(1, Ordering::Relaxed) + 1 >= PRUNE_EVERY {
@@ -566,6 +587,11 @@ pub fn move_card(from: MessageId, to: MessageId) {
 /// Kartı paylaşan kullanıcı.
 pub fn card_author(message_id: MessageId) -> Option<UserId> {
     database().and_then(|db| db.author(message_id))
+}
+
+/// Kartın üretildiği bağlantı.
+pub fn card_source_url(message_id: MessageId) -> Option<String> {
+    database().and_then(|db| db.source_url(message_id))
 }
 
 /// Bu mesaj için kayıt var mı?
@@ -696,7 +722,8 @@ mod tests {
             MessageId::new(1),
             ChannelId::new(9),
             UserId::new(42),
-            Some((MessageId::new(7), "https://x.com/u/status/1")),
+            Some(MessageId::new(7)),
+            Some("https://x.com/u/status/1"),
         );
         db.move_card(MessageId::new(1), MessageId::new(2));
 
@@ -707,6 +734,26 @@ mod tests {
             .expect("kaynak korunmalı");
         assert_eq!(card.card_id, MessageId::new(2));
         assert_eq!(card.source_url, "https://x.com/u/status/1");
+        assert_eq!(
+            db.source_url(MessageId::new(2)).as_deref(),
+            Some("https://x.com/u/status/1")
+        );
+
+        // Kaynak mesajı olmayan kart da bağlantısını taşır; eski kayıtta bağlantı yoktur.
+        db.remember_with_source(
+            MessageId::new(3),
+            ChannelId::new(9),
+            UserId::new(42),
+            None,
+            Some("https://open.spotify.com/track/abc"),
+        );
+        assert_eq!(
+            db.source_url(MessageId::new(3)).as_deref(),
+            Some("https://open.spotify.com/track/abc")
+        );
+        assert!(db.card_for_source(MessageId::new(3)).is_none());
+        db.remember(MessageId::new(4), ChannelId::new(9), UserId::new(42));
+        assert_eq!(db.source_url(MessageId::new(4)), None);
     }
 
     #[test]
@@ -741,7 +788,8 @@ mod tests {
             MessageId::new(20),
             ChannelId::new(1),
             UserId::new(2),
-            Some((MessageId::new(10), "https://x.com/u/status/1")),
+            Some(MessageId::new(10)),
+            Some("https://x.com/u/status/1"),
         );
         // Kaynaksız yeniden yazım var olan eşlemeyi silmemeli.
         db.remember(MessageId::new(20), ChannelId::new(1), UserId::new(2));
@@ -781,7 +829,8 @@ mod tests {
             MessageId::new(6),
             ChannelId::new(1),
             UserId::new(2),
-            Some((MessageId::new(7), "u")),
+            Some(MessageId::new(7)),
+            Some("u"),
         );
         assert!(db.card_for_source(MessageId::new(7)).is_some());
         cleanup(&path);
