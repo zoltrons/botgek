@@ -154,7 +154,7 @@ fn definitions() -> Vec<CreateCommand> {
             .kind(CommandType::Message)
             // Discord, USER/MESSAGE komutlarında açıklamayı boş string olarak bekler.
             .description(""),
-        // Herkese görünür ama yalnızca `OWNER_ID` çalıştırabilir (global komut kişiye gizlenemez).
+        // Herkese görünür; kartı paylaşan ya da `OWNER_ID` çalıştırabilir (bkz. `refresh_card`).
         everywhere(CreateCommand::new(REFRESH_COMMAND))
             .kind(CommandType::Message)
             .description(""),
@@ -486,7 +486,7 @@ async fn edit_card_component(
     }
 }
 
-/// Apps → Yenile: bot sahibi, sağ tıkladığı kartı yeniden üretir (bkz. `builtin::regenerate`).
+/// Apps → Yenile: kartı paylaşan kişi ya da bot sahibi, sağ tıkladığı kartı yeniden üretir (bkz. `builtin::regenerate`).
 async fn refresh_card(
     ctx: &Context,
     command: &CommandInteraction,
@@ -494,13 +494,21 @@ async fn refresh_card(
     config: &Config,
     app_settings: &Arc<RwLock<AppSettings>>,
 ) {
-    if config.owner_id != Some(command.user.id) {
-        reply_ephemeral(ctx, command, "Bu komutu yalnızca bot sahibi kullanabilir.").await;
-        return;
-    }
     let Some(message_id) = command.data.target_id.map(|id| MessageId::new(id.get())) else {
         return;
     };
+    // Sahip her kartı, diğerleri yalnızca kendi paylaştığı kartı yeniler (🗑️ ile aynı kayıt).
+    if config.owner_id != Some(command.user.id)
+        && converters::builtin::original_author(message_id).await != Some(command.user.id)
+    {
+        reply_ephemeral(
+            ctx,
+            command,
+            "Bu kartı yalnızca paylaşan kişi ya da bot sahibi yenileyebilir.",
+        )
+        .await;
+        return;
+    }
     let (guild_id, channel_id) = (command.guild_id, command.channel_id);
     if let Err(err) = command.defer_ephemeral(&ctx.http).await {
         warn!(interaction = %command.id, "Etkileşim ertelenemedi: {err:?}");

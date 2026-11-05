@@ -26,8 +26,8 @@ pub struct Config {
     /// sunucuya kaydedilir; yayılma beklenmeden anında görünür. Kullanıcı kurulumu (user install)
     /// ve DM bağlamları sunucu komutlarında yoktur, bu yüzden yalnızca geliştirme botunda kullanılır.
     pub dev_guild_id: Option<serenity::all::GuildId>,
-    /// Bot sahibinin Discord kullanıcı kimliği (`OWNER_ID`). Yalnızca sahibe açık komutlar
-    /// (Apps → Yenile) bu kimliği kontrol eder; tanımlı değilse o komutları kimse kullanamaz.
+    /// Bot sahibinin Discord kullanıcı kimliği (`OWNER_ID`). Sahip Apps → Yenile ile her kartı
+    /// yenileyebilir; diğer kullanıcılar yalnızca kendi paylaştığı kartı.
     pub owner_id: Option<serenity::all::UserId>,
 }
 

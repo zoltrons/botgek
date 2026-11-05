@@ -48,10 +48,10 @@ Bileşen/modal etiketleri `custom_id`nin ilk parçasıdır (oyun durumu loga sı
   sunucu kanalında gizli ertelenir ve kart ayrı mesaj olarak gönderilir, DM'de kart etkileşim yanıtı olur.
 - Etkileşim dönüşümleri 4 eşzamanlı işle sınırlıdır; dolunca anında "meşgul" döner.
 
-### Apps → Yenile (yalnızca bot sahibi)
+### Apps → Yenile
 
-- Karta sağ tık → **Apps → Yenile**. Yalnızca `OWNER_ID` ile eşleşen kullanıcı çalıştırabilir; tanımlı
-  değilse kimse. Komut menüde herkese görünür.
+- Karta sağ tık → **Apps → Yenile**. Kartı paylaşan kişi (🗑️ yetkisiyle aynı kayıt) kendi kartını,
+  `OWNER_ID` ile eşleşen bot sahibi her kartı yenileyebilir. Komut menüde herkese görünür.
 - `builtin::regenerate` kartın ham JSON'undan alt bilgideki `[Link](...)`, kart üstündeki kullanıcı notu
   ve spoiler durumunu okur, gönderi önbelleğini atlayıp veriyi yeniden çeker ve kartı **aynı mesajda**
   `PATCH` ile düzenler. Mesaj kimliği değişmediği için gönderen, 🗑️ ve silme yetkisi kaydı aynen kalır.
