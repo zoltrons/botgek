@@ -7,6 +7,7 @@
 //! - Kaynak silinirse kart da silinir.
 //! - Kaynak düzenlenirse: bağlantı değişmediyse hiçbir şey yapılmaz; bağlantı değiştiyse eski
 //!   kart silinir ve yeni bağlantı varsa normal akıştan yeniden dönüştürülür.
+//! - Mesajın dönüşümü sürerken gelen düzenleme yok sayılır (kart henüz kaydedilmemiştir).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,7 +108,8 @@ pub async fn source_edited(
     {
         return;
     }
-    if too_old(event.id) {
+    // Kart henüz kaydedilmedi: kayıt aranırsa bulunamaz ve düzenleme ikinci kart üretirdi.
+    if too_old(event.id) || super::converting(event.id) {
         return;
     }
 

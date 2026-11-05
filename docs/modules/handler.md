@@ -67,6 +67,8 @@ Kart, kaynağını `store` kaydındaki `source_id` ile tanır. Mantık `converte
 - Kaynak düzenlenirse yalnızca gerçek düzenlemeler (`edited_timestamp` dolu) ve son 1 saatteki mesajlar
   işlenir. Bağlantı değişmediyse hiçbir şey olmaz. Değiştiyse eski kart silinir, yeni bağlantı varsa
   mesaj REST'ten alınıp normal kuyruktan dönüştürülür. AI sohbeti tetiklenmez.
+- Dönüşümü hâlâ süren mesajın düzenlemesi yok sayılır (`converters::converting`): kart kaydı iş bitince
+  yazılır, öncesinde gelen düzenleme kartı bulamayıp ikinci kart üretirdi.
 - `DELETE_ORIGINAL=true` iken eşleme yazılmaz, çünkü orijinal bilerek silinir. Bu modda düzenleme/silme
   takibi yoktur. Eki veya çıkartması olan mesaj silinmez (kart dosyayı taşımaz); onun eşlemesi yazılır.
 

@@ -32,9 +32,44 @@ struct ConversionJob {
     parsed: parser::ParsedPost,
     /// Kuyruğa giriş anı; işçi aldığında bekleme süresi metriklenir.
     enqueued_at: std::time::Instant,
+    /// Kaynak mesaj iş bitene kadar "dönüşümde" sayılır.
+    _in_flight: InFlight,
 }
 
 static CONVERSION_QUEUE: OnceLock<Sender<ConversionJob>> = OnceLock::new();
+
+/// Kuyruğa girip kartı henüz kaydedilmemiş kaynak mesajlar. Kart kaydı `finish()` içinde
+/// yazıldığı için bu sürede gelen düzenleme kartı bulamaz ve ikinci kart üretirdi
+/// (bkz. [`tracking::source_edited`]). En fazla kuyruk + işçi kadar kimlik tutar.
+static IN_FLIGHT: LazyLock<std::sync::Mutex<std::collections::HashSet<MessageId>>> =
+    LazyLock::new(Default::default);
+
+/// Kimliği iş bitene (ya da görev paniklenene) kadar [`IN_FLIGHT`]'ta tutar.
+struct InFlight(MessageId);
+
+impl InFlight {
+    fn new(id: MessageId) -> Self {
+        in_flight().insert(id);
+        Self(id)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        in_flight().remove(&self.0);
+    }
+}
+
+fn in_flight() -> std::sync::MutexGuard<'static, std::collections::HashSet<MessageId>> {
+    IN_FLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Bu kaynak mesajın dönüşümü hâlâ sürüyor mu?
+pub(crate) fn converting(id: MessageId) -> bool {
+    in_flight().contains(&id)
+}
 
 fn conversion_sender() -> &'static Sender<ConversionJob> {
     CONVERSION_QUEUE.get_or_init(|| {
@@ -338,6 +373,7 @@ async fn prepare_job(
         settings: settings.clone(),
         parsed,
         enqueued_at: std::time::Instant::now(),
+        _in_flight: InFlight::new(msg.id),
     })
 }
 
@@ -369,6 +405,19 @@ async fn process_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_stays_in_flight_until_its_job_is_dropped() {
+        let id = MessageId::new(424_242);
+        assert!(!converting(id));
+        let guard = InFlight::new(id);
+        assert!(converting(id), "kuyruktaki iş düzenlemeyi bekletmeli");
+        drop(guard);
+        assert!(
+            !converting(id),
+            "iş bitince (ya da kuyruk reddedince) kimlik bırakılmalı"
+        );
+    }
 
     #[tokio::test]
     async fn conversion_queue_rejects_after_fixed_capacity_and_keeps_fifo_order() {
