@@ -33,7 +33,8 @@ Amaç SSRF'yi önlemektir. İstek öncesi ve her yönlendirmede:
   engeli). Sabitlenmiş istemciler 90 sn ve en fazla 32 girdiyle önbelleklenir ve yalnızca aynı doğrulanmış
   adres kümesi için yeniden kullanılır.
 - En fazla 3 yönlendirme izlenir, her yönlendirme baştan doğrulanır. İstek başına zaman aşımı çağıran tarafça verilir.
-- `public_get_with` her adımda ek başlık gönderebilir (TikTok çerezi ve Referer için).
+- `public_get_with` her adımda ek başlık gönderebilir (TikTok çerezi ve Referer için). `cookie` başlığı yalnızca
+  ilk adresin sitesinde (son iki etiket) gönderilir; başka siteye yönlendirmede düşürülür.
 
 ### `preview`
 

@@ -164,6 +164,7 @@ pub async fn public_get_with(
     headers: &[(&str, String)],
 ) -> Result<(Url, reqwest::Response), String> {
     let mut url = Url::parse(raw).map_err(|_| "invalid preview URL")?;
+    let first_site = url.host_str().map(site).unwrap_or_default().to_string();
     for _ in 0..=3 {
         validate_url(&url)?;
         let host = url.host_str().ok_or("preview host missing")?;
@@ -175,8 +176,13 @@ pub async fn public_get_with(
             .get(url.clone())
             .timeout(timeout)
             .header("user-agent", user_agent);
+        // Çerez, tarayıcıdaki gibi yalnızca ilk adresin sitesine gider: başka bir CDN'e
+        // yönlendirmede sızmaz.
+        let same_site = site(host).eq_ignore_ascii_case(&first_site);
         for (name, value) in headers {
-            request = request.header(*name, value);
+            if same_site || !name.eq_ignore_ascii_case("cookie") {
+                request = request.header(*name, value);
+            }
         }
         let response = request.send().await.map_err(|_| "preview request failed")?;
         if response.status().is_redirection() {
@@ -196,9 +202,29 @@ pub async fn public_get_with(
     Err("too many preview redirects".into())
 }
 
+/// Host'un son iki etiketi (`v16-webapp.tiktok.com` → `tiktok.com`).
+/// shortcut: `co.uk` gibi iki parçalı soneklerde site fazla geniş sayılır; şu an çerez yalnızca
+/// TikTok indirmesinde gönderildiği için yeterli.
+fn site(host: &str) -> &str {
+    let host = host.trim_end_matches('.');
+    match host.rmatch_indices('.').nth(1) {
+        Some((dot, _)) => &host[dot + 1..],
+        None => host,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cookie_site_is_the_last_two_labels() {
+        assert_eq!(site("v16-webapp-prime.tiktok.com"), "tiktok.com");
+        assert_eq!(site("www.tiktok.com."), "tiktok.com");
+        assert_eq!(site("tiktok.com"), "tiktok.com");
+        assert_eq!(site("localhost"), "localhost");
+        assert_ne!(site("cdn.tiktokcdn.com"), site("www.tiktok.com"));
+    }
+
     #[test]
     fn private_reserved_and_transition_addresses_are_denied() {
         for ip in [
