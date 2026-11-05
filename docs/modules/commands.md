@@ -2,7 +2,7 @@
 
 ## Görev
 
-Slash komutlarını, mesaj ve kullanıcı sağ tık komutlarını kaydeder ve işler: `/dönüştür`, `/gif-yap`,
+Slash komutlarını, mesaj ve kullanıcı sağ tık komutlarını kaydeder ve işler: `/dönüştür`, Apps → Yenile, `/gif-yap`,
 eğlence oyunları.
 
 ## Dosyalar
@@ -47,6 +47,18 @@ Bileşen/modal etiketleri `custom_id`nin ilk parçasıdır (oyun durumu loga sı
   sır içermeyen kısa metin gösterilir. Hata metinleri gizli (ephemeral) gider. Yanıt önce ertelenir (defer):
   sunucu kanalında gizli ertelenir ve kart ayrı mesaj olarak gönderilir, DM'de kart etkileşim yanıtı olur.
 - Etkileşim dönüşümleri 4 eşzamanlı işle sınırlıdır; dolunca anında "meşgul" döner.
+
+### Apps → Yenile (yalnızca bot sahibi)
+
+- Karta sağ tık → **Apps → Yenile**. Yalnızca `OWNER_ID` ile eşleşen kullanıcı çalıştırabilir; tanımlı
+  değilse kimse. Komut menüde herkese görünür.
+- `builtin::regenerate` kartın ham JSON'undan alt bilgideki `[Link](...)`, kart üstündeki kullanıcı notu
+  ve spoiler durumunu okur, gönderi önbelleğini atlayıp veriyi yeniden çeker ve kartı **aynı mesajda**
+  `PATCH` ile düzenler. Mesaj kimliği değişmediği için gönderen, 🗑️ ve silme yetkisi kaydı aynen kalır.
+- Taklit kartı kanalın güncel Botgek webhook'uyla düzenlenir. Kartı gönderen webhook silinmiş ya da
+  değişmişse (düzenleme 401/404) kart eski adı ve avatarıyla güncel webhook'tan yeniden gönderilir, kayıt
+  (`store::move_card`) yeni mesaja taşınır, 🗑️ eklenir ve eski kart silinir (Mesajları Yönet gerekir).
+- Kanal ayarları otomatik akıştaki gibi çözülür (`/dönüştür`'deki zorunlu X çevirisi uygulanmaz).
 
 ### `/gif-yap`
 

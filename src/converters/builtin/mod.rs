@@ -1503,6 +1503,250 @@ pub async fn handle(
     }
 }
 
+/// Var olan kartın JSON'undan yeniden üretim girdisi: gönderi bağlantısı (alt bilgideki
+/// `[Link](...)`), kartın üstündeki kullanıcı notu ve kartın gizli (spoiler) olup olmadığı.
+fn card_source(card: &serde_json::Value) -> Option<ParsedPost> {
+    fn texts<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>, hidden: &mut bool) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.get("spoiler") == Some(&serde_json::Value::Bool(true)) {
+                    *hidden = true;
+                }
+                if let Some(content) = map.get("content").and_then(serde_json::Value::as_str) {
+                    out.push(content);
+                }
+                map.values().for_each(|child| texts(child, out, hidden));
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().for_each(|child| texts(child, out, hidden));
+            }
+            _ => {}
+        }
+    }
+
+    let components = card.get("components")?.as_array()?;
+    let (container, top) = components.split_last()?;
+    let mut contents = Vec::new();
+    let mut hidden = false;
+    texts(container, &mut contents, &mut hidden);
+    // `spoiler_wrap` metnin tamamını `||` içine alır; alt bilgi (`-# `) hiç gizlenmez.
+    hidden |= contents.iter().any(|text| text.starts_with("||"));
+    let url = contents.iter().rev().find_map(|text| {
+        let start = text.rfind("[Link](")? + "[Link](".len();
+        let end = start + text[start..].find(')')?;
+        Some(&text[start..end])
+    })?;
+
+    let mut parsed = super::parser::parse_message(url)?;
+    parsed.is_spoiler = hidden;
+    parsed.user_comment = top
+        .iter()
+        .filter_map(|component| component.get("content")?.as_str())
+        .next()
+        .map(str::to_string);
+    Some(parsed)
+}
+
+/// Var olan bir kartı güncel veriyle **yerinde** yeniden üretir (Apps → Yenile).
+///
+/// Mesaj kimliği değişmez: gönderen (taklit adı/avatarı ya da `Gönderen:` etiketi), 🗑️
+/// reaksiyonu ve silme yetkisi kaydı olduğu gibi kalır. Önbellek atlanır ki veri tazelensin.
+/// Taklit kartının webhook'u artık yoksa kart aynı kimlikle yeniden gönderilir ve eskisi silinir
+/// (dönüşteki `bool`). `card` mesajın ham JSON'udur; hata metni yalnızca bot sahibine gösterilir.
+pub async fn regenerate(
+    ctx: &Context,
+    client: &reqwest::Client,
+    config: &Config,
+    engine: &EngineSettings,
+    guild_id: Option<serenity::all::GuildId>,
+    card: &serde_json::Value,
+) -> Result<(Platform, bool), String> {
+    let id_of = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|id| *id != 0)
+    };
+    let message_id = MessageId::new(id_of(card.get("id")).ok_or("mesaj kimliği okunamadı")?);
+    let channel_id =
+        ChannelId::new(id_of(card.get("channel_id")).ok_or("kanal kimliği okunamadı")?);
+    let webhook_id = id_of(card.get("webhook_id")).map(WebhookId::new);
+    let author_id = id_of(card.get("author").and_then(|author| author.get("id")));
+
+    let bot_id = ctx.cache.current_user().id;
+    if !is_native_message(message_id).await
+        || (webhook_id.is_none() && author_id != Some(bot_id.get()))
+    {
+        return Err("Bu mesaj Botgek kartı değil.".into());
+    }
+    let parsed = card_source(card).ok_or("Kartta yeniden üretilecek bağlantı bulunamadı.")?;
+
+    cache::forget(&post_cache_key(&parsed, engine)).await;
+    let mut msg = Message::default();
+    msg.id = message_id;
+    msg.channel_id = channel_id;
+    msg.guild_id = guild_id;
+
+    let (post, channel_nsfw) = tokio::join!(
+        fetch(client, &parsed, engine, config),
+        resolve_channel_nsfw(ctx, &msg)
+    );
+    let post = post.map_err(|err| format!("Gönderi verisi alınamadı: {err}"))?;
+    let post = render::apply_visibility(
+        &post,
+        parsed.is_spoiler,
+        engine.sensitive_mode,
+        channel_nsfw,
+    );
+    let mut options = render::RenderOptions::from_engine(engine, platform_key(parsed.platform));
+    options.file_limit = upload_limit(ctx, &msg, None);
+    let plan = render::plan_media(&post, &options);
+    let resolved = render::resolve_media(client, &post, &plan, &options).await;
+
+    // Taklit kartında ad/avatar mesajda kalır (düzenlemeyle değişmez); bot kartında etiket yeniden yazılır.
+    let sender = match webhook_id {
+        Some(_) => None,
+        None => original_author(message_id).await,
+    };
+    let payload = v2::build_payload(&v2::V2Card {
+        post: &post,
+        options: &options,
+        resolved: &resolved,
+        emojis: &engine.emojis,
+        spoiler: parsed.is_spoiler,
+        sender,
+        user_comment: parsed.user_comment.as_deref(),
+        impersonation: None,
+        // Düzenleme kimseyi yeniden etiketlemez; yine de ping olasılığı tamamen kapatılır.
+        allowed_mentions: Some(serde_json::json!({ "parse": [] })),
+    });
+
+    let resent = match webhook_id {
+        Some(webhook_id) => {
+            let target = webhook_target(ctx, &msg).await;
+            let hook = channel_webhook(ctx, client, config, target.channel_id, false)
+                .await
+                .filter(|hook| hook.id == webhook_id);
+            let edited = match hook {
+                Some(hook) => {
+                    let mut url = format!(
+                        "{}/webhooks/{}/{}/messages/{}",
+                        raw::API_BASE,
+                        webhook_id.get(),
+                        hook.token,
+                        message_id.get()
+                    );
+                    if let Some(thread) = target.thread_id {
+                        url.push_str(&format!("?thread_id={}", thread.get()));
+                    }
+                    raw::edit_message(
+                        client,
+                        &url,
+                        None,
+                        format!("hook_exec:{webhook_id}"),
+                        &payload,
+                        &resolved.attachments,
+                    )
+                    .await
+                }
+                // Kartı gönderen webhook silinmiş ya da yenilenmiş: o mesajı artık kimse düzenleyemez.
+                None => Err(raw::DiscordError::Rejected(404)),
+            };
+            match edited {
+                Ok(_) => false,
+                Err(err) if err.expired_webhook() => {
+                    let mut payload = payload;
+                    impersonate_like(&mut payload, card, webhook_id);
+                    resend_card(ctx, client, config, target, message_id, &payload, &resolved)
+                        .await?;
+                    true
+                }
+                Err(err) => return Err(format!("Kart düzenlenemedi: {err}")),
+            }
+        }
+        None => {
+            let url = format!(
+                "{}/channels/{}/messages/{}",
+                raw::API_BASE,
+                channel_id.get(),
+                message_id.get()
+            );
+            raw::edit_message(
+                client,
+                &url,
+                Some(&config.discord_token),
+                format!("channel:{channel_id}"),
+                &payload,
+                &resolved.attachments,
+            )
+            .await
+            .map_err(|err| format!("Kart düzenlenemedi: {err}"))?;
+            false
+        }
+    };
+    info!(message = %message_id, resent, "Kart yeniden üretildi: {}", parsed.original_url);
+    Ok((parsed.platform, resent))
+}
+
+/// Eski webhook kartının görünen adını ve avatarını yeni gönderime taşır. Webhook mesajında
+/// `author` taklit edilen kimliktir; avatar CDN'de webhook kimliği altında durur.
+fn impersonate_like(
+    payload: &mut serde_json::Value,
+    card: &serde_json::Value,
+    webhook_id: WebhookId,
+) {
+    let author = &card["author"];
+    if let Some(name) = author["username"].as_str() {
+        payload["username"] = serde_json::json!(name);
+    }
+    if let Some(hash) = author["avatar"].as_str() {
+        payload["avatar_url"] = serde_json::json!(format!(
+            "https://cdn.discordapp.com/avatars/{}/{hash}.png",
+            webhook_id.get()
+        ));
+    }
+}
+
+/// Düzenlenemeyen webhook kartını kanalın güncel webhook'uyla aynı kimlikte yeniden gönderir:
+/// kayıt (paylaşan, kaynak) yeni mesaja taşınır, 🗑️ eklenir ve eski kart silinir.
+async fn resend_card(
+    ctx: &Context,
+    client: &reqwest::Client,
+    config: &Config,
+    target: WebhookTarget,
+    old_id: MessageId,
+    payload: &serde_json::Value,
+    resolved: &render::ResolvedMedia,
+) -> Result<(), String> {
+    let hook = channel_webhook(ctx, client, config, target.channel_id, true)
+        .await
+        .ok_or("Kanalda webhook kullanılamıyor (Webhookları Yönet izni gerekir).")?;
+    let new_id = raw::execute_webhook(
+        client,
+        hook.id,
+        &hook.token,
+        target.thread_id,
+        payload,
+        &resolved.attachments,
+    )
+    .await
+    .map_err(|err| format!("Kart yeniden gönderilemedi: {err}"))?
+    .ok_or("Kart yeniden gönderildi ama kimliği okunamadı.")?;
+    crate::store::blocking(move || crate::store::move_card(old_id, new_id)).await;
+
+    let channel = target.thread_id.unwrap_or(target.channel_id);
+    if let Err(err) = channel
+        .create_reaction(&ctx.http, new_id, ReactionType::Unicode("🗑️".to_string()))
+        .await
+    {
+        warn!("Yenilenen karta silme reaksiyonu eklenemedi: {err:?}");
+    }
+    channel
+        .delete_message(&ctx.http, old_id)
+        .await
+        .map_err(|err| format!("Yeni kart gönderildi ama eskisi silinemedi: {err}"))
+}
+
 /// V2 kartı için `allowed_mentions` gövdesi.
 ///
 /// Kart bot adına gönderildiğinde (`tag_sender`) paylaşanın etiketi kartın üstünde `<@id>`
@@ -1736,6 +1980,31 @@ async fn finish(
 #[cfg(test)]
 mod message_tests {
     use super::*;
+
+    #[test]
+    fn card_source_recovers_link_comment_and_spoiler() {
+        let card = serde_json::json!({"components": [
+            {"type": 10, "content": "şuna bak"},
+            {"type": 17, "components": [
+                {"type": 10, "content": "||gizli metin||"},
+                {"type": 12, "items": [{"media": {"url": "https://a/b.png"}, "spoiler": true}]},
+                {"type": 10, "content": "-# X • [Link](https://x.com/u/status/123) • Gönderen: <@5>"}
+            ]}
+        ]});
+        let parsed = card_source(&card).expect("kart çözülmeli");
+        assert_eq!(parsed.platform, Platform::Twitter);
+        assert!(parsed.original_url.contains("/status/123"));
+        assert_eq!(parsed.user_comment.as_deref(), Some("şuna bak"));
+        assert!(parsed.is_spoiler);
+
+        let plain = serde_json::json!({"components": [{"type": 17, "components": [
+            {"type": 10, "content": "metin"},
+            {"type": 10, "content": "-# X • [Link](https://x.com/u/status/123)"}
+        ]}]});
+        let parsed = card_source(&plain).expect("kart çözülmeli");
+        assert_eq!(parsed.user_comment, None);
+        assert!(!parsed.is_spoiler);
+    }
 
     /// DELETE_ORIGINAL açıkken bile dosyalı mesaj silinmemeli: kart dosyayı taşımaz.
     #[test]

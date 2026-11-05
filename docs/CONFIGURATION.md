@@ -23,6 +23,7 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `FXTUMBLR_DOMAIN` | `tpmblr.com` | fxtumblr uyumlu Tumblr render hizmeti. Boş bırakılırsa public OG fallback kullanılır. |
 | `INSTAGRAM_SESSIONID` | boş | Instagram oturum çerezi. Reels videolarının kart içinde oynaması için gerekir; gizlidir, `settings.json`'a ve panele yazılmaz. |
 | `DEV_GUILD_ID` | yok | Tanımlıysa slash komutları global yerine yalnızca bu sunucuya kaydedilir ve anında görünür. Global kayda dokunmaz; user install/DM bağlamları sunucu komutlarında yoktur. Yalnızca geliştirme botunda kullanın. |
+| `OWNER_ID` | yok | Bot sahibinin Discord kullanıcı kimliği. Apps → Yenile yalnızca bu kullanıcıya açıktır; boşsa komutu kimse kullanamaz. |
 | `REDDIT_CLIENT_ID` | gömülü public kimlik | Reddit `installed_client` OAuth kimliği. Sır değildir; normalde değiştirmek gerekmez. |
 | `BOTGEK_DB_PATH` | `botgek.db` | Kart kayıtları için SQLite dosyası. Docker'da `/app/data/botgek.db`. |
 | `BOTGEK_SETTINGS_PATH` | türetilir | Ayar dosyası. Boşsa `BOTGEK_DB_PATH` bir dizin içeriyorsa o dizindeki `settings.json`, aksi hâlde çalışma dizinindeki `settings.json` kullanılır. |

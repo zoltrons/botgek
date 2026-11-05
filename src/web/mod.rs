@@ -636,6 +636,7 @@ mod tests {
             instagram_sessionid: None,
             web_port: 8123,
             dev_guild_id: None,
+            owner_id: None,
         }
     }
 

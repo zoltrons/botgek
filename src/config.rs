@@ -26,6 +26,9 @@ pub struct Config {
     /// sunucuya kaydedilir; yayılma beklenmeden anında görünür. Kullanıcı kurulumu (user install)
     /// ve DM bağlamları sunucu komutlarında yoktur, bu yüzden yalnızca geliştirme botunda kullanılır.
     pub dev_guild_id: Option<serenity::all::GuildId>,
+    /// Bot sahibinin Discord kullanıcı kimliği (`OWNER_ID`). Yalnızca sahibe açık komutlar
+    /// (Apps → Yenile) bu kimliği kontrol eder; tanımlı değilse o komutları kimse kullanamaz.
+    pub owner_id: Option<serenity::all::UserId>,
 }
 
 impl std::fmt::Debug for Config {
@@ -44,6 +47,7 @@ impl std::fmt::Debug for Config {
             )
             .field("web_port", &self.web_port)
             .field("dev_guild_id", &self.dev_guild_id)
+            .field("owner_id", &self.owner_id)
             .finish()
     }
 }
@@ -114,6 +118,17 @@ impl Config {
             _ => None,
         };
 
+        let owner_id = match env::var("OWNER_ID") {
+            Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+                Ok(id) if id != 0 => Some(serenity::all::UserId::new(id)),
+                _ => {
+                    tracing::warn!("OWNER_ID={raw:?} geçersiz; sahip komutları kapalı");
+                    None
+                }
+            },
+            _ => None,
+        };
+
         Ok(Self {
             discord_token,
             delete_original,
@@ -122,6 +137,7 @@ impl Config {
             instagram_sessionid,
             web_port,
             dev_guild_id,
+            owner_id,
         })
     }
 }

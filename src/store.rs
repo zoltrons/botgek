@@ -348,6 +348,21 @@ impl Db {
         }
     }
 
+    /// Kaydı yeni mesaj kimliğine taşır (kart yeniden gönderildiğinde; paylaşan ve kaynak korunur).
+    pub fn move_card(&self, from: MessageId, to: MessageId) {
+        let result = self.with_connection(crate::telemetry::DbOp::Remember, |connection| {
+            connection
+                .execute(
+                    "UPDATE cards SET message_id = ?2 WHERE message_id = ?1",
+                    params![from.get() as i64, to.get() as i64],
+                )
+                .map(|_| ())
+        });
+        if let Err(err) = result {
+            warn!("Kart kaydı taşınamadı ({} → {}): {}", from, to, err);
+        }
+    }
+
     /// Kartı paylaşan kullanıcı (kayıt yoksa `None`).
     pub fn author(&self, message_id: MessageId) -> Option<UserId> {
         self.query_one(
@@ -541,6 +556,13 @@ pub fn forget_card(message_id: MessageId) {
     }
 }
 
+/// Kart kaydını yeni mesaj kimliğine taşır.
+pub fn move_card(from: MessageId, to: MessageId) {
+    if let Some(db) = database() {
+        db.move_card(from, to);
+    }
+}
+
 /// Kartı paylaşan kullanıcı.
 pub fn card_author(message_id: MessageId) -> Option<UserId> {
     database().and_then(|db| db.author(message_id))
@@ -665,6 +687,26 @@ mod tests {
             .query_readonly("SELECT 1", 10)
             .expect("bağlantı kullanılabilir");
         assert_eq!(ok.rows, vec![vec![serde_json::json!(1)]]);
+    }
+
+    #[test]
+    fn moved_card_keeps_author_and_source() {
+        let db = open_test(":memory:");
+        db.remember_with_source(
+            MessageId::new(1),
+            ChannelId::new(9),
+            UserId::new(42),
+            Some((MessageId::new(7), "https://x.com/u/status/1")),
+        );
+        db.move_card(MessageId::new(1), MessageId::new(2));
+
+        assert!(!db.contains(MessageId::new(1)));
+        assert_eq!(db.author(MessageId::new(2)), Some(UserId::new(42)));
+        let card = db
+            .card_for_source(MessageId::new(7))
+            .expect("kaynak korunmalı");
+        assert_eq!(card.card_id, MessageId::new(2));
+        assert_eq!(card.source_url, "https://x.com/u/status/1");
     }
 
     #[test]

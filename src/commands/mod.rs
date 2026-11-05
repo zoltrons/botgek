@@ -49,6 +49,9 @@ pub const SOURCE_OPTION: &str = "kaynak";
 /// [`SOURCE_OPTION`] değeri: yedek X kaynağı (vxTwitter).
 const SOURCE_VX: &str = "vx";
 
+/// Bot sahibinin karta sağ tıklayıp kartı yeniden ürettiği mesaj komutu.
+pub const REFRESH_COMMAND: &str = "Yenile";
+
 /// Komut yokken gösterilen kısa kullanım metni.
 pub const USAGE: &str = "Bir bağlantı ver: `/dönüştür https://x.com/kullanici/status/123`\n\
 Bir mesajı dönüştürmek için: sağ tık → **Apps → Dönüştür**. \
@@ -151,6 +154,10 @@ fn definitions() -> Vec<CreateCommand> {
             .kind(CommandType::Message)
             // Discord, USER/MESSAGE komutlarında açıklamayı boş string olarak bekler.
             .description(""),
+        // Herkese görünür ama yalnızca `OWNER_ID` çalıştırabilir (global komut kişiye gizlenemez).
+        everywhere(CreateCommand::new(REFRESH_COMMAND))
+            .kind(CommandType::Message)
+            .description(""),
     ]
 }
 
@@ -239,6 +246,12 @@ async fn dispatch(
                     .starts_with(pager::CUSTOM_ID_PREFIX) =>
         {
             return edit_card_component(ctx, component, http_client, config, app_settings).await;
+        }
+        Interaction::Command(command)
+            if command.data.kind == CommandType::Message
+                && command.data.name == REFRESH_COMMAND =>
+        {
+            return refresh_card(ctx, command, http_client, config, app_settings).await;
         }
         Interaction::Command(command) => command,
         _ => return,
@@ -473,6 +486,70 @@ async fn edit_card_component(
     }
 }
 
+/// Apps → Yenile: bot sahibi, sağ tıkladığı kartı yeniden üretir (bkz. `builtin::regenerate`).
+async fn refresh_card(
+    ctx: &Context,
+    command: &CommandInteraction,
+    client: &reqwest::Client,
+    config: &Config,
+    app_settings: &Arc<RwLock<AppSettings>>,
+) {
+    if config.owner_id != Some(command.user.id) {
+        reply_ephemeral(ctx, command, "Bu komutu yalnızca bot sahibi kullanabilir.").await;
+        return;
+    }
+    let Some(message_id) = command.data.target_id.map(|id| MessageId::new(id.get())) else {
+        return;
+    };
+    let (guild_id, channel_id) = (command.guild_id, command.channel_id);
+    if let Err(err) = command.defer_ephemeral(&ctx.http).await {
+        warn!(interaction = %command.id, "Etkileşim ertelenemedi: {err:?}");
+        return;
+    }
+
+    let result = async {
+        // `resolved.messages` Components V2 bileşenlerini taşımaz: kart ham JSON olarak okunur.
+        let card = raw::get_channel_messages(
+            client,
+            &config.discord_token,
+            channel_id,
+            Some(message_id),
+            1,
+        )
+        .await
+        .map_err(|err| format!("Mesaj okunamadı (bot bu kanalda mı?): {err}"))?;
+        let parent_id = crate::handler::discord_thread_parent(ctx, guild_id, channel_id).await;
+        let settings = app_settings
+            .read()
+            .await
+            .get_message_settings(guild_id, channel_id, parent_id);
+        converters::builtin::regenerate(ctx, client, config, &settings.engine, guild_id, &card)
+            .await
+    }
+    .await;
+
+    let content = match result {
+        Ok((platform, false)) => {
+            format!("✅ {} kartı yeniden oluşturuldu.", platform.display_name())
+        }
+        Ok((platform, true)) => format!(
+            "✅ {} kartı yeniden oluşturuldu. Eski webhook artık olmadığı için kart aynı \
+             gönderenle yeniden gönderildi, eskisi silindi.",
+            platform.display_name()
+        ),
+        Err(err) => {
+            warn!(message = %message_id, "Kart yeniden oluşturulamadı: {err}");
+            format!("❌ {err}")
+        }
+    };
+    if let Err(err) = command
+        .edit_response(&ctx.http, EditInteractionResponse::new().content(content))
+        .await
+    {
+        error!(interaction = %command.id, "Etkileşim yanıtı güncellenemedi: {err:?}");
+    }
+}
+
 async fn reply_ephemeral(ctx: &Context, command: &CommandInteraction, content: &str) {
     let builder = CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
@@ -496,7 +573,8 @@ mod tests {
         assert!(CONVERT_MESSAGE_COMMAND.len() <= 32);
 
         let definitions = definitions();
-        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions.len(), 3);
+        assert!(REFRESH_COMMAND.len() <= 32);
     }
 
     #[test]

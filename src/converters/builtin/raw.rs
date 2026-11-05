@@ -97,6 +97,26 @@ pub async fn edit_interaction_response(
     parse_message_id(&body).map_err(|_| DiscordError::Ambiguous)
 }
 
+/// Var olan bir mesajı yerinde düzenler (`PATCH`). `bot_token` verilirse bot yetkisiyle
+/// (kanal mesajı), verilmezse URL'deki webhook token'ıyla doğrulanır. Gövdedeki `attachments`
+/// listesi yalnızca yeni dosyaları içerdiği için eski ekler mesajdan kalkar.
+pub async fn edit_message(
+    client: &reqwest::Client,
+    url: &str,
+    bot_token: Option<&str>,
+    route: String,
+    payload: &serde_json::Value,
+    files: &[CreateAttachment],
+) -> Result<MessageId, DiscordError> {
+    let payload = payload_without_fields(payload, &["username", "avatar_url", "message_reference"]);
+    let mut request = message_request_with(reqwest::Method::PATCH, client, url, &payload, files)?;
+    if let Some(token) = bot_token {
+        request = request.header("authorization", format!("Bot {token}"));
+    }
+    let body = super::transport::send(client, request, route).await?;
+    parse_message_id(&body).map_err(|_| DiscordError::Ambiguous)
+}
+
 /// Etkileşim başına ayrı rota: tek bir büyük yükleme diğer kullanıcıların kartlarını ve
 /// butonlarını bekletmesin. Rota yalnızca bellekteki kilit/bekleme anahtarıdır, loglanmaz.
 fn interaction_route(token: &str) -> String {

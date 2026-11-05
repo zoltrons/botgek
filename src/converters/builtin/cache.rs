@@ -98,6 +98,12 @@ pub async fn put_failure(key: String, reason: String) {
     }
 }
 
+/// Anahtarın başarılı ve başarısız kaydını siler: Apps → Yenile güncel veriyle yeniden çeksin.
+pub async fn forget(key: &str) {
+    CACHE.lock().await.remove(key);
+    FAILURES.lock().await.remove(key);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
