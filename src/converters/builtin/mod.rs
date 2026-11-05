@@ -1592,6 +1592,9 @@ pub async fn regenerate(
     let webhook_id = id_of(card.get("webhook_id")).map(WebhookId::new);
     let author_id = id_of(card.get("author").and_then(|author| author.get("id")));
 
+    // Aynı kartın iki yenilemesi sırayla yürür: ikisi birden yeniden gönderirse iki kart kalırdı.
+    // Sonraki tıklama, kart yeni mesaja taşındıysa aşağıdaki kayıt denetiminde durur.
+    let _card = coordination::lock(format!("refresh:{message_id}")).await;
     let bot_id = ctx.cache.current_user().id;
     if !is_native_message(message_id).await
         || (webhook_id.is_none() && author_id != Some(bot_id.get()))

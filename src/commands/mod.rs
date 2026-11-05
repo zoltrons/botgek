@@ -509,6 +509,11 @@ async fn refresh_card(
         .await;
         return;
     }
+    // Yenileme önbelleği atlayıp medyayı yeniden indirir: `/dönüştür` ile aynı yuvaları kullanır.
+    let Ok(_slot) = converters::INTERACTION_SLOTS.try_acquire() else {
+        reply_ephemeral(ctx, command, converters::ConvertError::Busy.message()).await;
+        return;
+    };
     let (guild_id, channel_id) = (command.guild_id, command.channel_id);
     if let Err(err) = command.defer_ephemeral(&ctx.http).await {
         warn!(interaction = %command.id, "Etkileşim ertelenemedi: {err:?}");

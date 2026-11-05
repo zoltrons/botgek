@@ -61,6 +61,8 @@ Bileşen/modal etiketleri `custom_id`nin ilk parçasıdır (oyun durumu loga sı
   değişmişse (düzenleme 401/404) kart eski adı ve avatarıyla güncel webhook'tan yeniden gönderilir, kayıt
   (`store::move_card`) yeni mesaja taşınır, 🗑️ eklenir ve eski kart silinir (Mesajları Yönet gerekir).
 - Kanal ayarları otomatik akıştaki gibi çözülür (`/dönüştür`'deki zorunlu X çevirisi uygulanmaz).
+- Yenileme `/dönüştür` ile aynı eşzamanlılık yuvalarını (`INTERACTION_SLOTS`, 4) kullanır; dolunca "meşgul"
+  yanıtı verir. Aynı kartın yenilemeleri `refresh:<mesaj>` kilidiyle sırayla yürür.
 
 ### `/gif-yap`
 

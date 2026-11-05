@@ -185,7 +185,7 @@ pub async fn enqueue_message(
 /// kapasiteyle sınırlanır: yoğunlukta komut anında "meşgul" yanıtı alır, kuyruktaki
 /// konuşmaların kartları gecikmez.
 const INTERACTION_WORKERS: usize = 4;
-static INTERACTION_SLOTS: LazyLock<Semaphore> =
+pub(crate) static INTERACTION_SLOTS: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(INTERACTION_WORKERS));
 
 /// Etkileşimden (slash/mesaj komutu) yapılan dönüşümün sonucu.
