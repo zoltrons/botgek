@@ -28,7 +28,6 @@ use tracing::{info, warn};
 
 use crate::converters::builtin::{self, BuiltinPost};
 use crate::converters::parser;
-use crate::settings::AppSettings;
 use crate::store;
 use crate::web::WebState;
 
@@ -579,51 +578,22 @@ async fn tool_settings_patch(state: &WebState, args: &Value) -> Result<Value, St
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    // WebUI kaydıyla aynı: disk + bellek yayını sahiplenilmiş görevde tamamlanır. İstek
-    // future'ı (ör. istemci bağlantıyı kesince) yazma ile bellek güncellemesi arasında
-    // düşürülürse disk yeni, bellek eski ayarı tutar ve revizyonlar ayrışırdı.
-    let state = state.clone();
     let patch = patch.clone();
-    tokio::spawn(async move { apply_settings_patch(&state, &patch, expected_revision).await })
-        .await
-        .map_err(|error| format!("ayar güncelleme görevi düştü: {error}"))?
-}
-
-async fn apply_settings_patch(
-    state: &WebState,
-    patch: &Value,
-    expected_revision: Option<String>,
-) -> Result<Value, String> {
-    let _writer = state.save_lock.lock().await;
-    let current = state.settings.read().await.clone();
-    let current_revision = crate::web::settings_revision(&current);
-    if let Some(expected) = expected_revision.as_deref()
-        && expected.trim_matches('"') != current_revision.trim_matches('"')
-    {
-        return Err(format!(
-            "revizyon çakışması: beklenen {expected}, güncel {current_revision}"
-        ));
-    }
-
-    let mut merged = serde_json::to_value(&current).map_err(|error| error.to_string())?;
-    merge_json(&mut merged, patch);
-    let mut next: AppSettings = serde_json::from_value(merged)
-        .map_err(|error| format!("geçersiz ayar gövdesi: {error}"))?;
-    // Şema sürümü panelden/MCP'den değiştirilemez; göçü yeniden tetiklememeli.
-    next.schema_version = current.schema_version;
-    next.sanitize_for_save();
-
-    let path = state.settings_path.clone();
-    let persisted = next.clone();
-    tokio::task::spawn_blocking(move || persisted.save_to(&path))
-        .await
-        .map_err(|error| format!("ayar yazma görevi düştü: {error}"))?
-        .map_err(|error| format!("ayarlar yazılamadı: {error}"))?;
-
-    let revision = crate::web::settings_revision(&next);
-    *state.settings.write().await = next.clone();
+    let next = crate::web::commit_settings(state.clone(), expected_revision, move |current| {
+        let mut merged = serde_json::to_value(current).map_err(|error| error.to_string())?;
+        merge_json(&mut merged, &patch);
+        serde_json::from_value(merged).map_err(|error| format!("geçersiz ayar gövdesi: {error}"))
+    })
+    .await
+    .map_err(|failure| match failure {
+        crate::web::SaveFailure::Conflict => {
+            "revizyon çakışması: ayarlar bu arada değişti".to_string()
+        }
+        crate::web::SaveFailure::Invalid(reason) => reason,
+        crate::web::SaveFailure::Write(reason) => format!("ayarlar yazılamadı: {reason}"),
+    })?;
     Ok(json!({
-        "revision": revision,
+        "revision": crate::web::settings_revision(&next),
         "path": state.settings_path.display().to_string(),
         "settings": next
     }))

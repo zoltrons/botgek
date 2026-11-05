@@ -50,12 +50,13 @@ Oturum gerektirir:
 
 ### Ayar kaydetme
 
-1. Gövde `AppSettings` olarak ayrıştırılır ve `sanitize_for_save` uygulanır. Panel ve MCP aynı normalizasyonu
-   kullanır.
-2. `If-Match` ile gelen revizyon, kilit altında mevcut ayarın hash'iyle karşılaştırılır. İki sekme aynı anda
-   kaydederse yalnızca ilki geçer.
-3. `schema_version` panelden gelmez, sunucudaki değer korunur.
-4. Dosya atomik yazılır, sonra bellekteki ayar değiştirilir. İş HTTP istemcisi koparsa bile tamamlanır.
+Panel (`POST /api/settings`) ve MCP (`settings_patch`) tek yoldan kaydeder: `web::commit_settings`.
+
+1. Kilit altında beklenen revizyon (panelde `If-Match`) mevcut ayarın hash'iyle karşılaştırılır. İki sekme
+   aynı anda kaydederse yalnızca ilki geçer.
+2. Yeni ayar kurulur (panel: gövdenin kendisi; MCP: güncel ayar + yama), `schema_version` sunucudaki değerde
+   tutulur ve `sanitize_for_save` uygulanır.
+3. Dosya atomik yazılır, sonra bellekteki ayar değiştirilir. İş HTTP istemcisi koparsa bile tamamlanır.
 
 ### Güvenlik başlıkları
 

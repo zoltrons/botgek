@@ -518,60 +518,73 @@ fn role_dto(role: &serenity::all::Role) -> DiscordRoleDto {
 
 /// Kayıt işleminin başarısızlık nedeni.
 #[derive(Debug)]
-enum SaveFailure {
-    /// `If-Match` güncel revizyonla uyuşmuyor: ayarlar bu görünüm yüklendikten sonra değişti.
+pub(crate) enum SaveFailure {
+    /// Beklenen revizyon güncel revizyonla uyuşmuyor: ayarlar bu görünüm yüklendikten sonra değişti.
     Conflict,
+    /// Yeni ayar gövdesi kurulamadı (ör. MCP yaması şemaya uymuyor).
+    Invalid(String),
     Write(String),
 }
 
-async fn save_settings(
-    State(state): State<WebState>,
-    headers: axum::http::HeaderMap,
-    Json(mut new_settings): Json<AppSettings>,
-) -> Response {
-    let expected_revision = headers
-        .get(header::IF_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.trim().to_string());
-    // Panel ve MCP aynı normalizasyonu kullanır: filtreler, motor aralıkları, kanal/sunucu
-    // kimlikleri ve AI metin sınırları tek yerde uygulanır (bkz. `sanitize_for_save`).
-    new_settings.sanitize_for_save();
-
-    // Şema sürümü panelden gelmez; sunucudaki değer **korunur**. Aksi hâlde sürüm 0'a düşer
-    // ve sunucu ayarları göçü her açılışta yeniden çalışarak bilerek sabitlenen bölümleri
-    // sessizce mirasa döndürebilirdi.
-    // The owned task completes disk + memory publication even if the HTTP caller disconnects.
-    let update = tokio::spawn(async move {
+/// Panelin ve MCP'nin tek ayar kayıt yolu. Kilit altında revizyonu karşılaştırır (iki sekme aynı
+/// anda kaydetse de yalnızca ilki geçer), `build` ile güncel ayardan yenisini kurar, normalize
+/// eder, diske yazar ve bellekte yayınlar.
+///
+/// Şema sürümü dışarıdan gelmez; sunucudaki değer **korunur**. Aksi hâlde sürüm 0'a düşer ve
+/// sunucu ayarları göçü her açılışta yeniden çalışarak bilerek sabitlenen bölümleri sessizce
+/// mirasa döndürebilirdi. İş sahiplenilmiş görevde yürür: çağıran bağlantıyı kesse de disk ve
+/// bellek ayrışmaz.
+pub(crate) async fn commit_settings(
+    state: WebState,
+    expected_revision: Option<String>,
+    build: impl FnOnce(&AppSettings) -> Result<AppSettings, String> + Send + 'static,
+) -> Result<AppSettings, SaveFailure> {
+    tokio::spawn(async move {
         let _writer = state.save_lock.lock_owned().await;
-        {
-            // Revizyon kilidin altında karşılaştırılır: iki sekme aynı anda kaydetse de yalnızca ilki geçer.
+        let mut next = {
             let current = state.settings.read().await;
-            if expected_revision
-                .as_deref()
-                .is_some_and(|expected| expected != settings_revision(&current))
-            {
+            if expected_revision.as_deref().is_some_and(|expected| {
+                expected.trim().trim_matches('"') != settings_revision(&current).trim_matches('"')
+            }) {
                 return Err(SaveFailure::Conflict);
             }
-            new_settings.schema_version = current.schema_version;
-        }
-        let persisted = new_settings.clone();
+            let mut next = build(&current).map_err(SaveFailure::Invalid)?;
+            next.schema_version = current.schema_version;
+            next
+        };
+        // Filtreler, motor aralıkları, kanal/sunucu kimlikleri ve AI metin sınırları tek yerde.
+        next.sanitize_for_save();
+        let persisted = next.clone();
         let settings_path = state.settings_path.clone();
         tokio::task::spawn_blocking(move || persisted.save_to(&settings_path))
             .await
             .map_err(|e| SaveFailure::Write(e.to_string()))?
             .map_err(|e| SaveFailure::Write(e.to_string()))?;
-        *state.settings.write().await = new_settings.clone();
-        Ok::<_, SaveFailure>(new_settings)
+        *state.settings.write().await = next.clone();
+        Ok(next)
     })
-    .await;
+    .await
+    .unwrap_or_else(|e| Err(SaveFailure::Write(e.to_string())))
+}
+
+async fn save_settings(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    Json(new_settings): Json<AppSettings>,
+) -> Response {
+    let expected_revision = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let update = commit_settings(state, expected_revision, move |_| Ok(new_settings)).await;
     match update {
-        Ok(Ok(settings)) => (
+        Ok(settings) => (
             StatusCode::OK,
             revision_header(&settings_revision(&settings)),
             Json(serde_json::json!({"success": true, "settings": settings})),
         )
             .into_response(),
-        Ok(Err(SaveFailure::Conflict)) => (
+        Err(SaveFailure::Conflict) => (
             StatusCode::PRECONDITION_FAILED,
             Json(serde_json::json!({
                 "success": false,
@@ -580,13 +593,8 @@ async fn save_settings(
             })),
         )
             .into_response(),
-        failure => {
-            match failure {
-                Ok(Err(SaveFailure::Write(reason))) => {
-                    error!("Settings transaction failed: {reason}")
-                }
-                other => error!("Settings transaction failed: {other:?}"),
-            }
+        Err(failure) => {
+            error!("Settings transaction failed: {failure:?}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(
