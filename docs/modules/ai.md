@@ -2,42 +2,48 @@
 
 ## Görev
 
-Bot etiketlendiğinde ya da bir mesajına yanıt verildiğinde OpenRouter üzerinden kısa bir yanıt üretir.
-Yalnızca `OPENROUTER_API_KEY` tanımlıysa ve etkin ayarda `ai_chat` modülü açıksa çalışır.
+Bot etiketlendiğinde ya da bir mesajına yanıt verildiğinde Groq (web aramalı) ve Gemini üzerinden kısa
+bir yanıt üretir. Yalnızca `GROQ_API_KEY` ya da `GEMINI_API_KEY` tanımlıysa ve etkin ayarda `ai_chat`
+modülü açıksa çalışır.
 
 ## Dosyalar
 
 | Dosya | İçerik |
 | --- | --- |
-| `src/ai/mod.rs` | OpenRouter istemcisi: istek kurma, model normalizasyonu, yedek zinciri, hata türleri. |
+| `src/ai/mod.rs` | Groq/Gemini istemcisi: istek kurma, sağlayıcı sıralaması ve yedekleme, hata türleri. |
 | `src/ai/discord.rs` | Discord'dan bağlam toplama: yanıtlanan mesaj, yanıt zinciri, görseller, sunucu emojileri, takma adlar. |
 | `src/handler.rs` | Tetikleme kuralları ve bütçeler (bkz. [handler.md](handler.md)). |
 
 ## Girdi ve çıktı
 
 - `ai::discord::gather(...)` bir `ChatPrompt` için bağlamı toplar.
-- `ai::query_openrouter(client, api_key, &ChatPrompt) -> Result<String, AiError>`.
+- `ai::query(client, &Keys, &ChatPrompt) -> Result<String, AiError>`. `Keys` iki isteğe bağlı anahtar taşır.
 - `ChatPrompt`: model, sistem istemi, kullanıcı istemi, konuşma bağlamı (geçmiş, görseller, emojiler).
 
 ## Nasıl çalışır
 
 ### İstek
 
-- Tek `POST https://openrouter.ai/api/v1/chat/completions`. Gövde yalnızca bir `system` ve bir `user`
-  mesajı içerir. Yanıtlanan mesaj ve yanıt zinciri `assistant` turu olarak değil, kullanıcı mesajının
-  içine bağlam olarak yazılır. Bazı sohbet şablonları `assistant` ile başlayan turları reddeder.
-- Görsel varsa `user` içeriği metin ve `image_url` parçalarına dönüşür.
-- Model adı normalize edilir (`openrouter:` öneki ve model sayfası adresi kabul edilir), 256 karakteri
-  aşamaz, boşluk içeremez.
-- Yedek: `models: [model, "openrouter/free"]`. Birincil model hata verirse OpenRouter aynı istekte ücretsiz
-  yönlendiriciye geçer. Model zaten `openrouter/free` ise yedek listesi gönderilmez.
-- Geçici hatalarda (ağ, zaman aşımı, 429, 5xx, boş yanıt) istemci süre bütçesi izin verirse ücretsiz
-  yönlendiriciyle bir kez daha dener. 400, 401, 402 ve 403 tekrar denenmez.
-- `reasoning.exclude: true`, `max_tokens` 2048, `temperature` 0.9. `finish_reason: "length"` ile boş içerik
+- Sağlayıcılar: Groq `https://api.groq.com/openai/v1/chat/completions`, Gemini
+  `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`. İkisi de OpenAI uyumludur.
+  Gövde yalnızca bir `system` ve bir `user` mesajı içerir. Yanıtlanan mesaj ve yanıt zinciri `assistant`
+  turu olarak değil, kullanıcı mesajının içine bağlam olarak yazılır. Bazı sohbet şablonları `assistant`
+  ile başlayan turları reddeder.
+- Sıra: görsel yoksa Groq, sonra Gemini; görsel varsa Gemini, sonra Groq (Groq'a görsel gönderilmez,
+  modelleri görsel okuyamaz; istem görsellerin eklenemediğini söyler). Anahtarı olmayan sağlayıcı atlanır. Herhangi bir hatada (ağ, zaman aşımı, 401,
+  404, 429, 5xx, boş yanıt) sıradaki sağlayıcı denenir. 401 ve 404 `error!` ile loglanır: yedek yanıt
+  verdiği için bozuk anahtar ya da kaldırılmış model aksi halde fark edilmez.
+- Groq isteği `tools: [{"type":"browser_search"}]` taşır: model güncel bilgi gerektiğinde kendisi arar.
+  Arama turları dakikalık token sınırının (8000) büyük kısmını harcar; üst üste iki aramalı soru 429
+  alıp Gemini'ye düşebilir. Yanıttaki atıf işaretleri (`【1†L4-L6】`) `strip_citations` ile silinir.
+- Model adı (`ai.model`) yalnızca Groq içindir, 256 karakteri aşamaz, boşluk içeremez. Boş değer ve eski
+  OpenRouter adları (`…:free`, `openrouter/…`) `DEFAULT_MODEL`'e çevrilir. Gemini modeli sabittir
+  (`GEMINI_MODEL`). Groq model kaldırmayı sık yapar; kaldırılan model 404 verir ve Gemini'ye düşülür.
+- Hata gövdesi Groq'ta `{"error":{...}}`, Gemini'de `[{"error":{...}}]` biçimindedir; ikisi de okunur.
+- Groq için `reasoning_effort: "low"`, `include_reasoning: false`; `max_tokens` 2048, `temperature` 0.9. `finish_reason: "length"` ile boş içerik
   ya da yanıtın ortasında kopma durumunda yarım metin gönderilmez.
-- Sağlayıcı zaman aşımı 20 sn. Yanıt gövdesi 1 MiB ile, istem ve yanıt metni 8000 karakterle sınırlıdır.
+- Sağlayıcı başına zaman aşımı 20 sn; takılan ilk sağlayıcı yedeğe geçişi engellemez (yuva en fazla ~40 sn). Yanıt gövdesi 1 MiB ile, istem ve yanıt metni 8000 karakterle sınırlıdır.
 - Süreç genelinde en fazla 2 eşzamanlı istek. Dolunca `AiError::Busy`.
-- İstek `HTTP-Referer` ve `X-OpenRouter-Title` ile uygulama künyesini taşır.
 
 ### Bağlam toplama (`discord.rs`)
 
@@ -55,13 +61,14 @@ Yalnızca `OPENROUTER_API_KEY` tanımlıysa ve etkin ayarda `ai_chat` modülü a
 - İstekte `user` alanı yoktur. Kullanıcı kimliği, adı ve takma adı sağlayıcıya gitmez. Konuşanlar ve
   metindeki etiketler tutarlı takma adlara çevrilir (`Kullanıcı`, `Kişi A`, ...). Rol ve kanal etiketleri
   `@rol` ve `#kanal` olur. Dosya adları gönderilmez, yalnızca ek sayısı söylenir.
-- `provider.data_collection: "deny"`: istem yalnızca saklamayan ve eğitimde kullanmayan sağlayıcılara gider.
-  Böyle sağlayıcı yoksa OpenRouter 404 döner (`AiError::NoProvider`) ve kullanıcıya ayrı bildirim çıkar.
+- Groq istemi varsayılan olarak saklamaz (hata ayıklama için en fazla 30 gün kayıt tutabilir). Gemini'nin
+  ücretsiz katmanı istemleri Google'ın ürün geliştirmesinde kullanabilir; görsel yalnızca Gemini
+  anahtarı tanımlıysa gönderilir.
 
 ### Hatalar
 
-`AiError` türleri: `Busy`, `InvalidModel`, `Network`, `Timeout`, `RateLimited`, `Auth`, `Credits`,
-`Blocked`, `BadRequest`, `NoProvider`, `Unavailable` ve düşünmeye bütçe harcama durumu. Kullanıcıya
+`AiError` türleri: `Busy`, `InvalidModel`, `Network`, `Timeout`, `RateLimited`, `Auth`,
+`Blocked`, `BadRequest`, `NoProvider` (model bulunamadı), `Unavailable` ve düşünmeye bütçe harcama durumu. Kullanıcıya
 gösterilen metin türden `handler::ai_error_notice` ile seçilir, ayrıntı yalnızca loga yazılır.
 
 ## Değişmezler
@@ -75,7 +82,7 @@ gösterilen metin türden `handler::ai_error_notice` ile seçilir, ayrıntı yal
 
 - Yeni bağlam kaynağı: `discord.rs` içinde takma adlandırma ve kırpma sınırlarından geçirin, sınırı sabit
   yapın.
-- Yeni hata türü: `AiError`, `from_code`, `retryable` ve `handler::ai_error_notice` birlikte güncellenir.
+- Yeni hata türü: `AiError`, `from_code` ve `handler::ai_error_notice` birlikte güncellenir.
 - Varsayılan model ve sistem istemi `AiSettings` içindedir, bkz. [settings.md](settings.md).
 
 ## Testler

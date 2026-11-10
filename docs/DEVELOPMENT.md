@@ -93,7 +93,7 @@ src/
 ├── settings.rs        # şema, kapsam çözümleme, göç
 ├── store.rs           # SQLite
 ├── web/               # API + panel (gömülü HTML/CSS/JS)
-└── ai/                # OpenRouter istemcisi
+└── ai/                # Groq/Gemini istemcisi
 tests/
 ├── web-ui.test.cjs    # panel testleri
 └── fixtures/          # Rust ve JS'in paylaştığı sözleşme

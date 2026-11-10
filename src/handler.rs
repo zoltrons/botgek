@@ -123,11 +123,15 @@ impl EventHandler for Handler {
             }
         );
         info!(
-            "OpenRouter Entegrasyonu: {}",
-            if self.config.openrouter_api_key.is_some() {
-                "Aktif"
-            } else {
-                "Devre Dışı (API Key yok)"
+            "AI Entegrasyonu: {}",
+            match (
+                self.config.groq_api_key.is_some(),
+                self.config.gemini_api_key.is_some(),
+            ) {
+                (true, true) => "Aktif (Groq + Gemini)",
+                (true, false) => "Aktif (Groq; görsel okuma ve yedek yok)",
+                (false, true) => "Aktif (Gemini; web araması yok)",
+                (false, false) => "Devre Dışı (API Key yok)",
             }
         );
         info!("Orijinal Mesajı Silme: {}", self.config.delete_original);
@@ -384,12 +388,16 @@ impl Handler {
         {
             return;
         }
-        let Some(api_key) = self.config.openrouter_api_key.as_deref() else {
+        let keys = crate::ai::Keys {
+            groq: self.config.groq_api_key.as_deref(),
+            gemini: self.config.gemini_api_key.as_deref(),
+        };
+        if !keys.any() {
             info!(
-                "Bot etiketlendi veya yanıtlandı fakat OPENROUTER_API_KEY .env dosyasında tanımlı değil."
+                "Bot etiketlendi veya yanıtlandı fakat GROQ_API_KEY ya da GEMINI_API_KEY .env dosyasında tanımlı değil."
             );
             return;
-        };
+        }
 
         // Boş etiket ancak yanıtlanan bir mesaj ya da görsel varsa anlamlıdır ("@bot" + yanıt
         // = "buna ne dersin?"). Bağlamın kendisi bütçe kontrollerinden sonra toplanır.
@@ -445,7 +453,7 @@ impl Handler {
             user_prompt: &gathered.query,
             conversation: &gathered.conversation,
         };
-        let content = match crate::ai::query_openrouter(&self.http_client, api_key, &prompt).await {
+        let content = match crate::ai::query(&self.http_client, &keys, &prompt).await {
             Ok(reply) => truncate_chars(
                 &sanitize_mentions(&emojis.render(&reply)),
                 DISCORD_CONTENT_LIMIT,
@@ -522,9 +530,9 @@ fn ai_error_notice(error: &crate::ai::AiError) -> &'static str {
             "Model sağlayıcısı şu an yoğunluk veya hız sınırı nedeniyle yanıt veremedi. Birkaç saniye sonra tekrar dene."
         }
         AiError::Auth(_)
-        | AiError::Credits(_)
         | AiError::BadRequest(_)
-        | AiError::InvalidModel(_) => {
+        | AiError::InvalidModel(_)
+        | AiError::NoProvider(_) => {
             "AI servisinin yapılandırmasında bir sorun var; bot sahibinin bakması gerekiyor."
         }
         AiError::Blocked(_) => {
@@ -532,9 +540,6 @@ fn ai_error_notice(error: &crate::ai::AiError) -> &'static str {
         }
         AiError::Truncated => {
             "Model uzun uzun düşündü ama bir cevaba varamadı 🤔 Soruyu biraz daha kısa sorar mısın?"
-        }
-        AiError::NoProvider(_) => {
-            "Gizlilik kuralıma (veri saklamayan sağlayıcı) uyan bir model şu an bulunamadı. Biraz sonra tekrar dene."
         }
         AiError::Network(_)
         | AiError::Timeout
@@ -681,10 +686,10 @@ mod tests {
     #[test]
     fn ai_error_notice_never_leaks_provider_details() {
         use crate::ai::AiError;
-        let notice = ai_error_notice(&AiError::Auth("invalid API key sk-or-123".into()));
-        assert!(!notice.contains("sk-or") && !notice.contains("401"));
-        let notice = ai_error_notice(&AiError::Credits("Add credits at openrouter.ai".into()));
-        assert!(!notice.contains("openrouter") && !notice.contains("402"));
+        let notice = ai_error_notice(&AiError::Auth("invalid API key gsk_123".into()));
+        assert!(!notice.contains("gsk_") && !notice.contains("401"));
+        let notice = ai_error_notice(&AiError::NoProvider("model nope not found".into()));
+        assert!(!notice.contains("nope") && !notice.contains("404"));
         assert!(ai_error_notice(&AiError::RateLimited(String::new())).contains("hız sınırı"));
     }
 

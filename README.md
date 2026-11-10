@@ -31,7 +31,7 @@ Discord'da paylaşılan sosyal medya bağlantılarını Components V2 kartların
 - Modüller, rol filtreleri ve çeviri ayarları sunucu ve kanal bazında web panelinden yönetilir.
 - X gönderilerini istenen dile çevirir.
 - Hassas içerik varsayılan olarak spoiler olur.
-- OpenRouter ile çalışan isteğe bağlı bir AI sohbeti vardır.
+- Groq (web aramalı) ve Gemini ile çalışan isteğe bağlı bir AI sohbeti vardır.
 - Geliştirme ve hata ayıklama için `/mcp` adresinde bir [MCP sunucusu](docs/MCP.md) sunar.
 
 ## Kurulum

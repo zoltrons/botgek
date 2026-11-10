@@ -84,7 +84,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/commands/hooks.rs` | `pre_command`/`post_command`, panik yakalama, sabit hata metni. |
 | `src/commands/gif.rs` | `/gif-yap`, Apps → GIF yap. |
 | `src/commands/fun.rs` | Mini oyunlar ve eğlence komutları. (~2400) |
-| `src/ai/mod.rs` | OpenRouter istemcisi, model normalizasyonu, yedek zincir, hata türleri. (~1020) |
+| `src/ai/mod.rs` | Groq/Gemini istemcisi, sağlayıcı sıralaması ve yedekleme, hata türleri. (~1020) |
 | `src/ai/discord.rs` | AI bağlamı: yanıt zinciri, yanıtlanan mesaj, görseller. |
 | `src/web/mod.rs` | Axum yönlendirmesi, panel API'si, gömülü varlıklar, panel testleri. (~1520) |
 | `src/web/auth.rs` | Yönetici girişi, oturum çerezi. |

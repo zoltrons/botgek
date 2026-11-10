@@ -639,7 +639,8 @@ mod tests {
         Config {
             discord_token: "test-token".to_string(),
             delete_original: true,
-            openrouter_api_key: None,
+            groq_api_key: None,
+            gemini_api_key: None,
             reddit_client_id: "test-id".to_string(),
             instagram_sessionid: None,
             web_port: 8123,

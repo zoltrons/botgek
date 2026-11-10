@@ -18,7 +18,8 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `WEB_PORT` | `3000` | Panel HTTP portu. Geçersiz değer uyarıyla `3000`'e döner. |
 | `WEB_BIND` | `127.0.0.1` | Panelin bağlanacağı adres. Docker'da container içinde `0.0.0.0` kullanılır, port host tarafında yalnızca loopback'e yayınlanır. |
 | `WEB_SECURE_COOKIE` | `false` | HTTPS ters proxy arkasında `true` yapın; oturum çerezine `Secure` ekler. |
-| `OPENROUTER_API_KEY` | boş | AI sohbetini etkinleştirir. Boşsa AI kapalıdır; dolu her değer gerçek anahtar sayılır (yer tutucu metin 401 üretir). |
+| `GROQ_API_KEY` | boş | Metin sohbeti ve web araması (Groq). `GEMINI_API_KEY` ile birlikte boşsa AI kapalıdır; dolu her değer gerçek anahtar sayılır (yer tutucu metin 401 üretir). |
+| `GEMINI_API_KEY` | boş | Görsel okuma ve Groq hata verdiğinde yedek (Gemini). Tek başına da AI'ı açar, ama web araması olmaz. |
 | `DELETE_ORIGINAL` | `true` | Başarılı dönüşümden sonra orijinal mesajı siler; eki veya çıkartması olan mesaj silinmez. **Manage Messages** yetkisi gerekir. |
 | `FXTUMBLR_DOMAIN` | `tpmblr.com` | fxtumblr uyumlu Tumblr render hizmeti. Boş bırakılırsa public OG fallback kullanılır. |
 | `INSTAGRAM_SESSIONID` | boş | Instagram oturum çerezi. Reels videolarının kart içinde oynaması için gerekir; gizlidir, `settings.json`'a ve panele yazılmaz. |
@@ -117,7 +118,7 @@ yazmak gerekmez.
 | `engine.auto_translate` | `true` / `false` | X gönderilerini X'in kendi çevirisiyle hedef dile çevirir. |
 | `engine.translation_target` | `tr`, `en`, `de` veya BCP-47 kodu | Otomatik çeviri hedef dili. |
 | `engine.emojis.*` | `<:ad:id>` biçimi | Alan boş bırakılırsa Unicode varsayılan kullanılır; özel emoji seti olmayan kurulumlar da kart üretebilir. |
-| `ai.model` | En fazla 128 karakter | OpenRouter model adı; panel `sağlayıcı/model` biçimini kabul eder. |
+| `ai.model` | En fazla 128 karakter | Groq model adı (varsayılan `openai/gpt-oss-120b`). Eski OpenRouter adları (`…:free`, `openrouter/free`) varsayılana döner. Gemini modeli sabittir. |
 | `ai.system_prompt` | En fazla 4.000 karakter | AI personası. |
 | `engine.impersonate_user` | `true` / `false` | Kartı, paylaşan kullanıcının adı ve avatarıyla webhook üzerinden gönderir. **Manage Webhooks** gerekir. |
 

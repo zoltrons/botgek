@@ -42,7 +42,7 @@ const MODULE_LABELS = {
     bluesky: 'Bluesky', spotify: 'Spotify', twitch: 'Twitch', pixiv: 'Pixiv', tumblr: 'Tumblr',
     facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', miniflux: 'Miniflux', ai_chat: 'AI sohbet'
 };
-const AI_DEFAULTS = { model: 'google/gemma-4-31b-it:free', system_prompt: '' };
+const AI_DEFAULTS = { model: 'openai/gpt-oss-120b', system_prompt: '' };
 
 /* Sunucuya özel ayar **bölümleri** (sparse override). Bir bölüm sabitlendiğinde bütün
    olarak geneli ezer; sabitlenmeyen bölüm genelden miras alır (alan bazlı kısmi miras yok). */
@@ -826,7 +826,7 @@ function updateNavCounts() {
         return f && f.mode !== 'disabled';
     }).length;
     if ($('nav-count-roles')) $('nav-count-roles').textContent = filtered + '/' + MODULE_KEYS.length;
-    const model = (cfg.ai.model || '').split('/').pop().replace(':free', '');
+    const model = (cfg.ai.model || '').split('/').pop();
     const state = cfg.modules.ai_chat ? (model || 'hazır') : 'modül kapalı';
     if ($('nav-count-ai')) $('nav-count-ai').textContent = state;
     if ($('ai-state')) $('ai-state').textContent = state;

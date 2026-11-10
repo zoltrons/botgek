@@ -554,7 +554,7 @@ async fn tool_bot_status(state: &WebState) -> Value {
         },
         "config": {
             "delete_original": state.config.delete_original,
-            "ai_configured": state.config.openrouter_api_key.is_some(),
+            "ai_configured": state.config.groq_api_key.is_some() || state.config.gemini_api_key.is_some(),
             "instagram_sessionid_set": state.config.instagram_sessionid.is_some(),
             "reddit_client_id": state.config.reddit_client_id
         },

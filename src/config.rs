@@ -5,7 +5,10 @@ pub const DEFAULT_REDDIT_CLIENT_ID: &str = "ohXpoqrZYub1kg";
 pub struct Config {
     pub discord_token: String,
     pub delete_original: bool,
-    pub openrouter_api_key: Option<String>,
+    /// Groq anahtarı (`GROQ_API_KEY`): metin sohbeti ve web araması.
+    pub groq_api_key: Option<String>,
+    /// Gemini anahtarı (`GEMINI_API_KEY`): görsel okuma ve yedek.
+    pub gemini_api_key: Option<String>,
     /// Reddit OAuth istemci kimliği (`REDDIT_CLIENT_ID`).
     ///
     /// Reddit, kimliksiz `.json` isteklerini 403 ile engelliyor. Bot, redlib'in kullandığı
@@ -37,8 +40,12 @@ impl std::fmt::Debug for Config {
             .field("discord_token", &"[REDACTED]")
             .field("delete_original", &self.delete_original)
             .field(
-                "openrouter_api_key",
-                &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"),
+                "groq_api_key",
+                &self.groq_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "gemini_api_key",
+                &self.gemini_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .field("reddit_client_id", &self.reddit_client_id)
             .field(
@@ -81,9 +88,9 @@ impl Config {
 
         let delete_original = env_bool("DELETE_ORIGINAL", true);
 
-        let openrouter_api_key = env::var("OPENROUTER_API_KEY")
-            .ok()
-            .filter(|k| !k.trim().is_empty());
+        let api_key = |name| env::var(name).ok().filter(|k| !k.trim().is_empty());
+        let groq_api_key = api_key("GROQ_API_KEY");
+        let gemini_api_key = api_key("GEMINI_API_KEY");
 
         // Reddit, kimliksiz `.json` isteklerini engellediği için `installed_client` OAuth
         // akışıyla okunur; istemci kimliği public'tir ve `.env`'den değiştirilebilir.
@@ -132,7 +139,8 @@ impl Config {
         Ok(Self {
             discord_token,
             delete_original,
-            openrouter_api_key,
+            groq_api_key,
+            gemini_api_key,
             reddit_client_id,
             instagram_sessionid,
             web_port,

@@ -1,39 +1,40 @@
-//! OpenRouter sohbet istemcisi.
+//! AI sohbet istemcisi: Groq (metin, web aramalı) ve Gemini (görsel, yedek).
 //!
-//! Tek bir `/chat/completions` çağrısı yapılır; birincil model hata verirse OpenRouter'ın
-//! sunucu tarafı yedekleme zinciri (`models`) ücretsiz yönlendiriciye (`openrouter/free`)
-//! geçer. Ağ hatası, zaman aşımı, hız sınırı veya boş yanıt gibi geçici durumlarda istemci,
-//! süre bütçesi el verdiği sürece ücretsiz yönlendiriciyle bir kez daha dener.
+//! Her iki sağlayıcı da OpenAI uyumlu `/chat/completions` sunar. Metin istekleri önce Groq'a
+//! gider; model gerektiğinde `browser_search` ile güncel bilgiyi kendisi arar. Görselli
+//! istekler önce Gemini'ye gider, çünkü Groq'taki modeller görsel okuyamaz. Ağ hatası, zaman
+//! aşımı, hız sınırı veya boş yanıt gibi geçici durumlarda, süre bütçesi el verdiği sürece
+//! diğer sağlayıcı denenir. Yalnızca anahtarı tanımlı sağlayıcılar kullanılır.
 //!
 //! Uyumluluk için istek en dar ortak biçimde kurulur: yalnızca bir `system` ve bir `user`
 //! mesajı gönderilir. Yanıt zinciri ve yanıtlanan mesaj ayrı `assistant` turları yerine
 //! kullanıcı mesajının içine bağlam olarak yazılır; bazı modellerin sohbet şablonları
-//! (ör. Gemma) `assistant` ile başlayan ya da sırası bozulan turları reddeder. Görsel varsa
-//! `user` içeriği metin + `image_url` parçalarına dönüşür.
+//! `assistant` ile başlayan ya da sırası bozulan turları reddeder. Görsel varsa `user`
+//! içeriği metin + `image_url` parçalarına dönüşür.
 //!
-//! Gizlilik (en az veri): istek kimlik taşımaz (`user` alanı yok), konuşmadaki kişiler
-//! [`discord`] tarafında takma adlarla gösterilir ve `provider.data_collection: "deny"` ile
-//! yalnızca veriyi saklamayan / eğitimde kullanmayan sağlayıcılara yönlendirilir.
+//! Gizlilik (en az veri): istek kimlik taşımaz (`user` alanı yok) ve konuşmadaki kişiler
+//! [`discord`] tarafında takma adlarla gösterilir. Groq istemi varsayılan olarak saklamaz;
+//! Gemini'nin ücretsiz katmanı istemleri Google'ın ürün geliştirmesinde kullanabilir.
 
 pub mod discord;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::utils::truncate_chars;
 
-pub const DEFAULT_MODEL: &str = "google/gemma-4-31b-it:free";
-/// Yalnızca ücretsiz modellere yönlendiren OpenRouter yönlendiricisi; yedek zincirin sonu.
-pub const AUTO_FALLBACK_MODEL: &str = "openrouter/free";
+/// Varsayılan Groq modeli (ayarlardaki `ai.model` ile değiştirilir).
+pub const DEFAULT_MODEL: &str = "openai/gpt-oss-120b";
+/// Görselli istekler ve Groq hata verdiğinde kullanılan Gemini modeli.
+const GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
 
-const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
-/// OpenRouter uygulama künyesi: `HTTP-Referer` uygulamayı tanımlar, başlık adını verir.
-const APP_URL: &str = "https://github.com/zoltrons/botgek";
-const APP_TITLE: &str = "Botgek";
+const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
+const GEMINI_ENDPOINT: &str =
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 
 /// Hard limits for an individual provider call. These are deliberately kept
 /// here, next to the request construction, so callers cannot accidentally
@@ -51,8 +52,8 @@ const MAX_IN_FLIGHT_REQUESTS: usize = 2;
 /// düşünmeyi de kapsar; küçük bir bütçe `finish_reason: "length"` ve boş içerikle biter.
 const MAX_COMPLETION_TOKENS: u32 = 2_048;
 const TEMPERATURE: f32 = 0.9;
-/// Tek çağrının üst sınırı. İkinci deneme yalnızca ilk çağrı bu sürenin altında
-/// bittiyse yapılır; böylece bir istek bir yuvayı en fazla ~2×20 sn tutar.
+/// Her sağlayıcı çağrısının üst sınırı. Takılan ilk sağlayıcı yedeğe geçişi engellemez; bir
+/// istek bir yuvayı en fazla ~2×20 sn tutar.
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 
 const SAFETY_GUARDRAIL: &str = "\n\n[KRİTİK GÜVENLİK TALİMATI]: Yanıtlarında ASLA '@everyone' veya '@here' etiketlerini KULLANMA. Kullanıcıları veya rolleri etiketleme. Bu kural kesindir ve çiğnenemez.\n[BİÇİM]: Yanıtın bir Discord mesajı olarak gösterilecek; 2000 karakteri geçme. Düşünme sürecini değil, yalnızca son cevabı yaz.\n[GİZLİLİK]: Konuşmadaki kişiler gizlilik için \"Kişi A\" gibi takma adlarla, seninle konuşan kişi \"Kullanıcı\" olarak gösterilir. Gerçek isimlerini sorma veya uydurma.";
@@ -85,15 +86,13 @@ pub enum AiError {
     /// HTTP 429 / `rate_limit_exceeded`.
     RateLimited(String),
     /// HTTP 401: anahtar geçersiz veya devre dışı.
+    /// HTTP 401: anahtar geçersiz veya devre dışı.
     Auth(String),
-    /// HTTP 402: hesapta ya da anahtarda kredi yok.
-    Credits(String),
     /// HTTP 403: moderasyon, guardrail veya yetki engeli.
     Blocked(String),
-    /// HTTP 400: geçersiz istek (ör. bilinmeyen model, desteklenmeyen parametre).
+    /// HTTP 400: geçersiz istek (ör. desteklenmeyen parametre).
     BadRequest(String),
-    /// HTTP 404: istenen özellikleri (ör. görsel girdi) ve veri politikasını karşılayan
-    /// sağlayıcı yok.
+    /// HTTP 404: model bulunamadı ya da hesap erişemiyor.
     NoProvider(String),
     /// HTTP 502/503 ve diğer 5xx: model kapalı ya da uygun sağlayıcı yok.
     Unavailable(String),
@@ -111,29 +110,12 @@ impl AiError {
         match code {
             400 => AiError::BadRequest(message),
             401 => AiError::Auth(message),
-            402 => AiError::Credits(message),
             403 => AiError::Blocked(message),
             404 => AiError::NoProvider(message),
             408 => AiError::Timeout,
             429 => AiError::RateLimited(message),
             _ => AiError::Unavailable(format!("{code}: {message}")),
         }
-    }
-
-    /// Ücretsiz yönlendiriciyle tekrar denemeye değer mi? İstek, kimlik ve kredi hataları
-    /// yedek modelde de aynen tekrar eder.
-    fn retryable(&self) -> bool {
-        matches!(
-            self,
-            AiError::Network(_)
-                | AiError::Timeout
-                | AiError::RateLimited(_)
-                | AiError::NoProvider(_)
-                | AiError::Unavailable(_)
-                | AiError::Truncated
-                | AiError::Empty
-                | AiError::Malformed(_)
-        )
     }
 }
 
@@ -142,24 +124,20 @@ impl fmt::Display for AiError {
         match self {
             AiError::Busy => write!(f, "AI istek sınırı dolu"),
             AiError::InvalidModel(detail) => write!(f, "geçersiz model: {detail}"),
-            AiError::Network(detail) => write!(f, "OpenRouter bağlantı hatası: {detail}"),
-            AiError::Timeout => write!(f, "OpenRouter isteği zaman aşımına uğradı"),
-            AiError::RateLimited(detail) => write!(f, "OpenRouter hız sınırı (429): {detail}"),
-            AiError::Auth(detail) => write!(f, "OpenRouter kimlik hatası (401): {detail}"),
-            AiError::Credits(detail) => write!(f, "OpenRouter kredisi yetersiz (402): {detail}"),
-            AiError::Blocked(detail) => write!(f, "OpenRouter isteği engelledi (403): {detail}"),
-            AiError::BadRequest(detail) => write!(f, "OpenRouter geçersiz istek (400): {detail}"),
-            AiError::NoProvider(detail) => write!(
-                f,
-                "OpenRouter'da isteği ve veri politikasını (data_collection: deny) karşılayan sağlayıcı yok (404): {detail}"
-            ),
-            AiError::Unavailable(detail) => write!(f, "OpenRouter modeli kullanılamıyor: {detail}"),
+            AiError::Network(detail) => write!(f, "AI bağlantı hatası: {detail}"),
+            AiError::Timeout => write!(f, "AI isteği zaman aşımına uğradı"),
+            AiError::RateLimited(detail) => write!(f, "AI hız sınırı (429): {detail}"),
+            AiError::Auth(detail) => write!(f, "AI kimlik hatası (401): {detail}"),
+            AiError::Blocked(detail) => write!(f, "AI isteği engelledi (403): {detail}"),
+            AiError::BadRequest(detail) => write!(f, "AI geçersiz istek (400): {detail}"),
+            AiError::NoProvider(detail) => write!(f, "AI modeli bulunamadı (404): {detail}"),
+            AiError::Unavailable(detail) => write!(f, "AI modeli kullanılamıyor: {detail}"),
             AiError::Truncated => write!(
                 f,
                 "model token bütçesini düşünmeye harcadı (finish_reason: length, içerik boş)"
             ),
-            AiError::Empty => write!(f, "OpenRouter'dan boş yanıt döndü"),
-            AiError::Malformed(detail) => write!(f, "OpenRouter yanıtı okunamadı: {detail}"),
+            AiError::Empty => write!(f, "AI'dan boş yanıt döndü"),
+            AiError::Malformed(detail) => write!(f, "AI yanıtı okunamadı: {detail}"),
         }
     }
 }
@@ -206,35 +184,17 @@ pub struct ChatPrompt<'a> {
     pub conversation: &'a Conversation,
 }
 
-#[derive(Serialize)]
-struct ChatMessage<'a> {
-    role: &'a str,
-    content: serde_json::Value,
+/// API anahtarları; en az biri tanımlıysa AI sohbeti açıktır.
+#[derive(Clone, Copy, Default)]
+pub struct Keys<'a> {
+    pub groq: Option<&'a str>,
+    pub gemini: Option<&'a str>,
 }
 
-#[derive(Serialize)]
-struct ReasoningOptions {
-    /// Düşünme metni yanıtta istenmez (kanala sızmasın, gövde şişmesin).
-    exclude: bool,
-}
-
-#[derive(Serialize)]
-struct ProviderPreferences {
-    /// `deny`: yalnızca istemi saklamayan ve eğitimde kullanmayan sağlayıcılar.
-    data_collection: &'static str,
-}
-
-#[derive(Serialize)]
-struct ChatCompletionRequest<'a> {
-    model: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    models: Option<Vec<&'a str>>,
-    messages: [ChatMessage<'a>; 2],
-    max_tokens: u32,
-    temperature: f32,
-    reasoning: ReasoningOptions,
-    provider: ProviderPreferences,
-    stream: bool,
+impl Keys<'_> {
+    pub fn any(&self) -> bool {
+        self.groq.is_some() || self.gemini.is_some()
+    }
 }
 
 // ─── Yanıt ────────────────────────────────────────────────────────────────────
@@ -242,11 +202,9 @@ struct ChatCompletionRequest<'a> {
 #[derive(Deserialize)]
 struct ChatCompletionResponse {
     #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
     choices: Option<Vec<ChatChoice>>,
     #[serde(default)]
-    error: Option<OpenRouterError>,
+    error: Option<ApiError>,
 }
 
 #[derive(Deserialize)]
@@ -256,7 +214,7 @@ struct ChatChoice {
     #[serde(default)]
     finish_reason: Option<String>,
     #[serde(default)]
-    error: Option<OpenRouterError>,
+    error: Option<ApiError>,
 }
 
 #[derive(Deserialize)]
@@ -268,16 +226,15 @@ struct ChatResponseMessage {
 }
 
 #[derive(Deserialize, Debug)]
-struct OpenRouterError {
+struct ApiError {
+    /// Groq'ta metin (`"rate_limit_exceeded"`), Gemini'de sayı olabilir.
     #[serde(default)]
     code: Option<serde_json::Value>,
     #[serde(default)]
     message: String,
-    #[serde(default)]
-    metadata: Option<serde_json::Value>,
 }
 
-impl OpenRouterError {
+impl ApiError {
     fn code(&self) -> Option<u16> {
         match self.code.as_ref()? {
             serde_json::Value::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
@@ -286,41 +243,17 @@ impl OpenRouterError {
         }
     }
 
-    /// Loga yazılacak açıklama: mesaj + sağlayıcı adı / tür (varsa).
-    fn describe(&self) -> String {
-        let mut text = preview(&self.message);
-        if let Some(metadata) = &self.metadata {
-            for key in ["provider_name", "error_type"] {
-                if let Some(value) = metadata.get(key).and_then(|v| v.as_str()) {
-                    text.push_str(&format!(" [{key}={value}]"));
-                }
-            }
-        }
-        text
-    }
-
     fn into_error(self, fallback_code: u16) -> AiError {
+        let rate_limited =
+            self.code.as_ref().and_then(|c| c.as_str()) == Some("rate_limit_exceeded");
         let code = self.code().unwrap_or(fallback_code);
-        let rate_limited = self
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("error_type"))
-            .and_then(|v| v.as_str())
-            == Some("rate_limit_exceeded");
-        let detail = self.describe();
+        let detail = preview(&self.message);
         if rate_limited {
             AiError::RateLimited(detail)
         } else {
             AiError::from_code(code, detail)
         }
     }
-}
-
-/// Başarılı yanıttaki metin ve onu üreten model.
-#[derive(Debug, PartialEq, Eq)]
-struct Reply {
-    text: String,
-    model: Option<String>,
 }
 
 /// Gövdeyi log/ hata metni için sınırlı tutar: ham yanıt logları şişirebilir ve
@@ -409,7 +342,7 @@ fn compose_user_prompt(query: &str, conversation: &Conversation) -> String {
     }
     if conversation.skipped_images > 0 {
         own.push_str(&format!(
-            "\n({} görsel boyut veya biçim nedeniyle eklenemedi; görmediğin görseli anlatmaya çalışma.)",
+            "\n({} görsel eklenemedi (boyut, biçim ya da görsel okuyamayan model); görmediğin görseli anlatmaya çalışma.)",
             conversation.skipped_images
         ));
     }
@@ -487,47 +420,14 @@ fn transport_error(err: reqwest::Error) -> AiError {
     }
 }
 
-/// WebUI / Cursor tarzı slug'ları OpenRouter'ın beklediği `sağlayıcı/model` biçimine çevirir.
-/// Model sayfasının adresi (`https://openrouter.ai/sağlayıcı/model`) de kabul edilir.
-pub fn normalize_openrouter_model(raw: &str) -> String {
-    let mut model = raw
-        .trim()
-        .trim_matches(|c| c == '"' || c == '\'')
-        .to_string();
-
-    for prefix in [
-        "https://openrouter.ai/",
-        "http://openrouter.ai/",
-        "openrouter.ai/",
-    ] {
-        if let Some(rest) = model.strip_prefix(prefix) {
-            let rest = rest.split(['?', '#']).next().unwrap_or_default();
-            model = rest
-                .trim_end_matches('/')
-                .trim_start_matches("models/")
-                .to_string();
-            break;
-        }
-    }
-
-    if let Some(rest) = model.strip_prefix("openrouter:") {
-        model = if rest.contains('/') {
-            rest.to_string()
-        } else {
-            format!("openrouter/{rest}")
-        };
-    }
-
-    if let Some(rest) = model.strip_prefix("openrouter/")
-        && rest.contains('/')
-    {
-        model = rest.to_string();
-    }
-
-    if model.is_empty() {
+/// Eski OpenRouter model adlarını (`sağlayıcı/model:free`, `openrouter/free`) ve boş değeri
+/// varsayılan Groq modeline çevirir; kayıtlı eski ayarlar böylece 404 üretmez.
+pub fn normalize_model(raw: &str) -> String {
+    let model = raw.trim().trim_matches(|c| c == '"' || c == '\'');
+    if model.is_empty() || model.contains(":free") || model.starts_with("openrouter") {
         DEFAULT_MODEL.to_string()
     } else {
-        model
+        model.to_string()
     }
 }
 
@@ -553,11 +453,26 @@ fn json_to_text(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::Object(obj) => return obj.get("text").and_then(json_to_text),
         _ => return None,
     };
-    let trimmed = text.trim();
+    let cleaned = strip_citations(&text);
+    let trimmed = cleaned.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-fn extract_reply(body_text: &str) -> Result<Reply, AiError> {
+/// Groq'un arama atıf işaretlerini (`【1†L4-L6】`) kaldırır; Discord'da anlamsız görünürler.
+fn strip_citations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('【') {
+        out.push_str(&rest[..start]);
+        match rest[start..].find('】') {
+            Some(end) => rest = &rest[start + end + '】'.len_utf8()..],
+            None => return out + &rest[start..],
+        }
+    }
+    out + rest
+}
+
+fn extract_reply(body_text: &str) -> Result<String, AiError> {
     let parsed: ChatCompletionResponse = serde_json::from_str(body_text.trim_start())
         .map_err(|e| AiError::Malformed(format!("{e} (gövde: {})", preview(body_text))))?;
 
@@ -585,18 +500,12 @@ fn extract_reply(body_text: &str) -> Result<Reply, AiError> {
     }
 
     match text {
-        Some(text) => Ok(Reply {
-            text: truncate_chars(&text, MAX_REPLY_CHARS),
-            model: parsed.model,
-        }),
+        Some(text) => Ok(truncate_chars(&text, MAX_REPLY_CHARS)),
         None => {
             if let Some(refusal) = message.and_then(|m| m.refusal.as_deref())
                 && !refusal.trim().is_empty()
             {
-                return Ok(Reply {
-                    text: truncate_chars(refusal.trim(), MAX_REPLY_CHARS),
-                    model: parsed.model,
-                });
+                return Ok(truncate_chars(refusal.trim(), MAX_REPLY_CHARS));
             }
             if choice.finish_reason.as_deref() == Some("length") {
                 Err(AiError::Truncated)
@@ -607,19 +516,49 @@ fn extract_reply(body_text: &str) -> Result<Reply, AiError> {
     }
 }
 
+/// Çağrı yapılacak sağlayıcı ve anahtarı.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Provider<'a> {
+    groq: bool,
+    key: &'a str,
+}
+
+impl Provider<'_> {
+    fn name(&self) -> &'static str {
+        if self.groq { "Groq" } else { "Gemini" }
+    }
+
+    fn endpoint(&self) -> &'static str {
+        if self.groq {
+            GROQ_ENDPOINT
+        } else {
+            GEMINI_ENDPOINT
+        }
+    }
+}
+
+/// Deneme sırası: metin önce Groq'a, görselli istek önce Gemini'ye gider (Groq modelleri görsel
+/// okuyamaz). Anahtarı olmayan sağlayıcı atlanır.
+fn chain<'a>(keys: &Keys<'a>, has_images: bool) -> Vec<Provider<'a>> {
+    let groq = keys.groq.map(|key| Provider { groq: true, key });
+    let gemini = keys.gemini.map(|key| Provider { groq: false, key });
+    let order = if has_images {
+        [gemini, groq]
+    } else {
+        [groq, gemini]
+    };
+    order.into_iter().flatten().collect()
+}
+
 /// Bir HTTP çağrısı: durum kodunu ve gövdeyi türlü hataya çevirir.
 async fn send(
     client: &reqwest::Client,
-    api_key: &str,
+    provider: &Provider<'_>,
     payload: &serde_json::Value,
-) -> Result<Reply, AiError> {
+) -> Result<String, AiError> {
     let response = client
-        .post(ENDPOINT)
-        .bearer_auth(api_key.trim())
-        .header("HTTP-Referer", APP_URL)
-        .header("X-OpenRouter-Title", APP_TITLE)
-        // Eski başlık adı; OpenRouter geriye dönük uyumluluk için hâlâ okuyor.
-        .header("X-Title", APP_TITLE)
+        .post(provider.endpoint())
+        .bearer_auth(provider.key.trim())
         .json(payload)
         .timeout(PROVIDER_TIMEOUT)
         .send()
@@ -632,21 +571,59 @@ async fn send(
         return extract_reply(&body);
     }
 
-    // Hata gövdesi OpenRouter biçimindeyse (`{"error": {...}}`) ondan, değilse (ör. ara
-    // vekil sunucunun HTML sayfası) yalnızca durum kodundan sınıflandırılır.
-    let parsed = serde_json::from_str::<ChatCompletionResponse>(body.trim_start())
+    // Hata gövdesi `{"error": {...}}` (Groq) ya da `[{"error": {...}}]` (Gemini) olabilir; değilse
+    // (ör. ara vekil sunucunun HTML sayfası) yalnızca durum kodundan sınıflandırılır.
+    let trimmed = body.trim_start();
+    let parsed = serde_json::from_str::<ChatCompletionResponse>(trimmed)
         .ok()
-        .and_then(|parsed| parsed.error);
+        .and_then(|parsed| parsed.error)
+        .or_else(|| {
+            serde_json::from_str::<Vec<ChatCompletionResponse>>(trimmed)
+                .ok()?
+                .into_iter()
+                .find_map(|parsed| parsed.error)
+        });
     Err(match parsed {
         Some(err) => err.into_error(status.as_u16()),
         None => AiError::from_code(status.as_u16(), preview(&body)),
     })
 }
 
-/// OpenRouter API'si üzerinden kullanıcı mesajına laf sokucu / esprili yanıt üretir.
-pub async fn query_openrouter(
+/// Sağlayıcıya özel istek gövdesi. Gövde yalnızca bir `system` ve bir `user` mesajı içerir;
+/// kullanıcı kimliği (`user` alanı) hiçbir zaman eklenmez.
+fn build_payload(
+    groq: bool,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    images: &[ImageInput],
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_content(user_prompt, images) },
+        ],
+        "max_tokens": MAX_COMPLETION_TOKENS,
+        "temperature": TEMPERATURE,
+        "stream": false,
+    });
+    if groq {
+        // Groq modeli güncel bilgi gerektiğinde kendi başına arar. Düşünme kısa tutulur ve
+        // yanıta konmaz: arama turları dakikalık token sınırının büyük kısmını harcar.
+        payload["tools"] = serde_json::json!([{ "type": "browser_search" }]);
+        payload["reasoning_effort"] = "low".into();
+        payload["include_reasoning"] = false.into();
+    }
+    payload
+}
+
+/// Kullanıcı mesajına laf sokucu / esprili yanıt üretir.
+///
+/// Sıra için bkz. [`chain`]; herhangi bir hatada sıradaki sağlayıcı denenir.
+pub async fn query(
     client: &reqwest::Client,
-    api_key: &str,
+    keys: &Keys<'_>,
     prompt: &ChatPrompt<'_>,
 ) -> Result<String, AiError> {
     let _permit = AI_IN_FLIGHT
@@ -654,79 +631,62 @@ pub async fn query_openrouter(
         .try_acquire_owned()
         .map_err(|_| AiError::Busy)?;
 
-    let model = normalize_openrouter_model(prompt.model);
-    if model.chars().count() > MAX_MODEL_CHARS || model.chars().any(char::is_whitespace) {
-        return Err(AiError::InvalidModel(preview(&model)));
+    let groq_model = normalize_model(prompt.model);
+    if groq_model.chars().count() > MAX_MODEL_CHARS || groq_model.chars().any(char::is_whitespace) {
+        return Err(AiError::InvalidModel(preview(&groq_model)));
     }
 
     let system_prompt = compose_system_prompt(prompt.system_prompt, prompt.conversation);
-    let user_prompt = compose_user_prompt(prompt.user_prompt, prompt.conversation);
-    let messages = || {
-        [
-            ChatMessage {
-                role: "system",
-                content: serde_json::Value::String(system_prompt.clone()),
-            },
-            ChatMessage {
-                role: "user",
-                content: user_content(&user_prompt, &prompt.conversation.images),
-            },
-        ]
-    };
-    let payload = |model: &str, models: Option<Vec<&str>>| {
-        ChatCompletionRequest {
-            model,
-            models,
-            messages: messages(),
-            max_tokens: MAX_COMPLETION_TOKENS,
-            temperature: TEMPERATURE,
-            reasoning: ReasoningOptions { exclude: true },
-            provider: ProviderPreferences {
-                data_collection: "deny",
-            },
-            stream: false,
-        }
-        .serialize(serde_json::value::Serializer)
-        .unwrap_or_default()
-    };
-
-    // Sunucu tarafı yedekleme: birincil model hata verirse OpenRouter aynı istekte ücretsiz
-    // yönlendiriciye geçer. Yönlendirici yalnızca ücretsiz modellere düştüğü için ücretli bir
-    // birincil modelin yedeği ek ücret doğurmaz; görsel varsa görsel okuyabilen bir model seçer.
-    let primary = if model == AUTO_FALLBACK_MODEL {
-        payload(&model, None)
-    } else {
-        payload(&model, Some(vec![model.as_str(), AUTO_FALLBACK_MODEL]))
-    };
-
-    info!("OpenRouter isteği gönderiliyor (Model: {model})...");
-    let started = Instant::now();
-    let first = send(client, api_key, &primary).await;
-    let error = match first {
-        Ok(reply) => return Ok(log_reply(reply, &model)),
-        Err(error) => error,
-    };
-
-    // İstemci tarafı ikinci savunma hattı: geçici hatalarda ücretsiz yönlendiriciyle bir kez
-    // daha denenir. İlk çağrı zaten süre bütçesini tükettiyse yuva daha fazla tutulmaz.
-    if !error.retryable() || started.elapsed() >= PROVIDER_TIMEOUT {
-        return Err(error);
+    let conversation = prompt.conversation;
+    let chain = chain(keys, !conversation.images.is_empty());
+    if chain.is_empty() {
+        return Err(AiError::Auth("API anahtarı tanımlı değil".to_string()));
     }
-    warn!(
-        "OpenRouter isteği başarısız ({error}), '{AUTO_FALLBACK_MODEL}' ile yeniden deneniyor..."
-    );
-    let fallback = payload(AUTO_FALLBACK_MODEL, None);
-    send(client, api_key, &fallback)
-        .await
-        .map(|reply| log_reply(reply, AUTO_FALLBACK_MODEL))
+
+    let mut last_error = None;
+    for provider in chain {
+        // Groq modelleri görsel okuyamaz: görseller çıkarılır ve istem bunu söyler; yoksa model
+        // eklenmemiş görseli anlatmaya kalkar.
+        let (model, conversation) = if provider.groq {
+            (groq_model.as_str(), without_images(conversation))
+        } else {
+            (GEMINI_MODEL, conversation.clone())
+        };
+        let user_prompt = compose_user_prompt(prompt.user_prompt, &conversation);
+        let payload = build_payload(
+            provider.groq,
+            model,
+            &system_prompt,
+            &user_prompt,
+            &conversation.images,
+        );
+        info!(
+            "{} isteği gönderiliyor (Model: {model})...",
+            provider.name()
+        );
+        match send(client, &provider, &payload).await {
+            Ok(reply) => return Ok(reply),
+            Err(error) => {
+                // Anahtar/model hataları sessizce yedeğe düşüp haftalarca fark edilmeden kalmasın.
+                if matches!(error, AiError::Auth(_) | AiError::NoProvider(_)) {
+                    error!("{} yapılandırma hatası: {error}", provider.name());
+                } else {
+                    warn!("{} isteği başarısız: {error}", provider.name());
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or(AiError::Empty))
 }
 
-fn log_reply(reply: Reply, requested: &str) -> String {
-    let served_by = reply.model.as_deref().unwrap_or(requested);
-    if served_by != requested {
-        info!("OpenRouter yanıtı '{served_by}' modelinden geldi (istenen: '{requested}')");
+/// Görselleri çıkarılmış bağlam; çıkarılanlar "eklenemedi" olarak sayılır.
+fn without_images(conversation: &Conversation) -> Conversation {
+    Conversation {
+        images: Vec::new(),
+        skipped_images: conversation.skipped_images + conversation.images.len(),
+        ..conversation.clone()
     }
-    reply.text
 }
 
 #[cfg(test)]
@@ -734,7 +694,7 @@ mod tests {
     use super::*;
 
     fn text(body: &str) -> String {
-        extract_reply(body).unwrap().text
+        extract_reply(body).unwrap()
     }
 
     #[test]
@@ -751,9 +711,7 @@ mod tests {
             ]
         }"#;
 
-        let reply = extract_reply(json_str).unwrap();
-        assert_eq!(reply.text, "Aferin sana, yine başardın!");
-        assert_eq!(reply.model.as_deref(), Some("google/gemma-4-31b-it:free"));
+        assert_eq!(text(json_str), "Aferin sana, yine başardın!");
     }
 
     /// Modelin iç düşüncesi (`reasoning`) kanala yazılmaz: içerik boşsa yanıt boş sayılır ve yedek modele geçilir.
@@ -779,7 +737,6 @@ mod tests {
             "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
         }"#;
         assert_eq!(extract_reply(json_str), Err(AiError::Truncated));
-        assert!(AiError::Truncated.retryable());
     }
 
     #[test]
@@ -824,31 +781,20 @@ mod tests {
 
     #[test]
     fn top_level_errors_are_typed() {
-        let rate = r#"{"error": {"code": 429, "message": "Rate limit exceeded", "metadata": {"error_type": "rate_limit_exceeded"}}}"#;
+        let rate = r#"{"error": {"code": "rate_limit_exceeded", "message": "Rate limit reached"}}"#;
         assert!(matches!(extract_reply(rate), Err(AiError::RateLimited(_))));
-        let credits = r#"{"error": {"code": 402, "message": "Insufficient credits"}}"#;
-        assert!(matches!(extract_reply(credits), Err(AiError::Credits(_))));
-        let moderated = r#"{"error": {"code": "403", "message": "flagged", "metadata": {"provider_name": "X"}}}"#;
-        let err = extract_reply(moderated).unwrap_err();
-        assert!(matches!(&err, AiError::Blocked(detail) if detail.contains("provider_name=X")));
-    }
-
-    #[test]
-    fn only_transient_errors_are_retried() {
-        assert!(AiError::from_code(429, String::new()).retryable());
-        assert!(AiError::from_code(503, String::new()).retryable());
-        assert!(AiError::from_code(408, String::new()).retryable());
-        for code in [400, 401, 402, 403] {
-            assert!(
-                !AiError::from_code(code, String::new()).retryable(),
-                "{code}"
-            );
-        }
+        let missing = r#"{"error": {"code": "model_not_found", "message": "no such model"}}"#;
+        assert!(matches!(
+            extract_reply(missing),
+            Err(AiError::Unavailable(_))
+        ));
+        let moderated = r#"{"error": {"code": "403", "message": "flagged"}}"#;
+        assert!(matches!(extract_reply(moderated), Err(AiError::Blocked(_))));
     }
 
     #[test]
     fn leading_whitespace_is_tolerated() {
-        // OpenRouter uzun süren isteklerde bağlantıyı açık tutmak için boşluk gönderebilir.
+        // Sağlayıcı uzun süren isteklerde bağlantıyı açık tutmak için boşluk gönderebilir.
         let body = "\n\n   {\"choices\": [{\"message\": {\"content\": \"selam\"}}]}";
         assert_eq!(text(body), "selam");
     }
@@ -944,78 +890,90 @@ mod tests {
     }
 
     #[test]
-    fn request_body_matches_openrouter_schema() {
-        let body = serde_json::to_value(ChatCompletionRequest {
-            model: "a/b",
-            models: Some(vec!["a/b", AUTO_FALLBACK_MODEL]),
-            messages: [
-                ChatMessage {
-                    role: "system",
-                    content: serde_json::json!("s"),
-                },
-                ChatMessage {
-                    role: "user",
-                    content: serde_json::json!("u"),
-                },
-            ],
-            max_tokens: MAX_COMPLETION_TOKENS,
-            temperature: TEMPERATURE,
-            reasoning: ReasoningOptions { exclude: true },
-            provider: ProviderPreferences {
-                data_collection: "deny",
-            },
-            stream: false,
-        })
-        .unwrap();
+    fn groq_request_enables_search_and_gemini_does_not() {
+        let groq = build_payload(true, "m", "s", "u", &[]);
         assert_eq!(
-            body["models"],
-            serde_json::json!(["a/b", "openrouter/free"])
+            groq["tools"],
+            serde_json::json!([{ "type": "browser_search" }])
         );
-        assert_eq!(body["reasoning"], serde_json::json!({ "exclude": true }));
-        assert_eq!(
-            body["provider"],
-            serde_json::json!({ "data_collection": "deny" })
-        );
-        assert_eq!(body["stream"], false);
-        assert_eq!(body["messages"][1]["role"], "user");
-        // En az veri: istek kullanıcı kimliği taşımaz.
-        assert!(body.get("user").is_none());
+        assert_eq!(groq["reasoning_effort"], "low");
+        assert_eq!(groq["include_reasoning"], false);
+        let gemini = build_payload(false, "m", "s", "u", &[]);
+        assert!(gemini.get("tools").is_none() && gemini.get("reasoning_effort").is_none());
+        for body in [&groq, &gemini] {
+            assert_eq!(body["stream"], false);
+            assert_eq!(body["messages"][1]["role"], "user");
+            // En az veri: istek kullanıcı kimliği taşımaz.
+            assert!(body.get("user").is_none());
+        }
     }
 
     #[test]
-    fn test_normalize_openrouter_model() {
+    fn gemini_error_body_is_an_array() {
+        let body =
+            r#"[{"error": {"code": 429, "message": "quota", "status": "RESOURCE_EXHAUSTED"}}]"#;
+        let parsed: Vec<ChatCompletionResponse> = serde_json::from_str(body).unwrap();
+        let err = parsed.into_iter().find_map(|p| p.error).unwrap();
+        assert!(matches!(err.into_error(500), AiError::RateLimited(_)));
+    }
+
+    #[test]
+    fn citations_are_stripped() {
         assert_eq!(
-            normalize_openrouter_model("openrouter:free"),
-            "openrouter/free"
+            strip_citations("Dolar 50 TL【1†L4-L6】 oldu."),
+            "Dolar 50 TL oldu."
         );
+        assert_eq!(strip_citations("a【1†L1】b【2†L2】"), "ab");
+        assert_eq!(strip_citations("açık【1†L1"), "açık【1†L1");
         assert_eq!(
-            normalize_openrouter_model("openrouter/free"),
-            "openrouter/free"
+            text(r#"{"choices":[{"message":{"content":"Merhaba【3†L1-L2】"}}]}"#),
+            "Merhaba"
         );
-        assert_eq!(normalize_openrouter_model("  "), DEFAULT_MODEL);
-        assert_eq!(
-            normalize_openrouter_model("google/gemma-4-31b-it:free"),
-            "google/gemma-4-31b-it:free"
-        );
-        assert_eq!(
-            normalize_openrouter_model("openrouter:google/gemma-4-31b-it:free"),
-            "google/gemma-4-31b-it:free"
-        );
-        assert_eq!(
-            normalize_openrouter_model("openrouter/google/gemma-4-31b-it:free"),
-            "google/gemma-4-31b-it:free"
-        );
-        assert_eq!(
-            normalize_openrouter_model("https://openrouter.ai/google/gemma-4-31b-it:free/"),
-            "google/gemma-4-31b-it:free"
-        );
-        assert_eq!(
-            normalize_openrouter_model("https://openrouter.ai/models/openai/gpt-5-mini?tab=api"),
-            "openai/gpt-5-mini"
-        );
-        assert_eq!(
-            normalize_openrouter_model("https://openrouter.ai/"),
-            DEFAULT_MODEL
-        );
+    }
+
+    #[test]
+    fn test_normalize_model() {
+        assert_eq!(normalize_model("  "), DEFAULT_MODEL);
+        assert_eq!(normalize_model("openai/gpt-oss-20b"), "openai/gpt-oss-20b");
+        assert_eq!(normalize_model("\"qwen/qwen3.8-27b\""), "qwen/qwen3.8-27b");
+        // Kayıtlı eski OpenRouter ayarları varsayılana döner.
+        assert_eq!(normalize_model("google/gemma-4-31b-it:free"), DEFAULT_MODEL);
+        assert_eq!(normalize_model("openrouter/free"), DEFAULT_MODEL);
+    }
+
+    fn keys(groq: bool, gemini: bool) -> Keys<'static> {
+        Keys {
+            groq: groq.then_some("g"),
+            gemini: gemini.then_some("m"),
+        }
+    }
+
+    fn order(keys: &Keys<'_>, has_images: bool) -> Vec<&'static str> {
+        chain(keys, has_images).iter().map(Provider::name).collect()
+    }
+
+    #[test]
+    fn providers_are_ordered_by_request_kind() {
+        assert_eq!(order(&keys(true, true), false), ["Groq", "Gemini"]);
+        assert_eq!(order(&keys(true, true), true), ["Gemini", "Groq"]);
+        assert_eq!(order(&keys(true, false), true), ["Groq"]);
+        assert_eq!(order(&keys(false, true), false), ["Gemini"]);
+        assert!(order(&keys(false, false), false).is_empty());
+    }
+
+    #[test]
+    fn dropped_images_are_not_claimed_as_attached() {
+        let conversation = Conversation {
+            images: vec![ImageInput {
+                data_url: "data:image/webp;base64,AA==".to_string(),
+                from_reply: false,
+            }],
+            ..Conversation::default()
+        };
+        let text_only = without_images(&conversation);
+        assert!(text_only.images.is_empty());
+        assert_eq!(text_only.skipped_images, 1);
+        let prompt = compose_user_prompt("bu ne?", &text_only);
+        assert!(!prompt.contains("isteğe ekli") && prompt.contains("1 görsel eklenemedi"));
     }
 }

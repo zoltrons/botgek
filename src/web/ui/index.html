@@ -353,7 +353,7 @@
         <p class="sheet-num mono" aria-hidden="true">03</p>
         <div class="sheet-title">
             <h2 class="sheet-h" id="h-ai">AI persona</h2>
-            <p class="sheet-lede">Bot etiketlendiğinde ya da mesajına yanıt verildiğinde OpenRouter üzerinden yanıt üretir.</p>
+            <p class="sheet-lede">Bot etiketlendiğinde ya da mesajına yanıt verildiğinde Groq üzerinden (güncel bilgi gerekirse web aramasıyla) yanıt üretir.</p>
         </div>
         <div class="sheet-scope">
             <p class="sheet-meta mono" id="ai-state">—</p>
@@ -365,14 +365,13 @@
     <div class="field">
         <div class="field-head">
             <label class="field-label" for="ai-model-box">model</label>
-            <span class="micro">openrouter</span>
+            <span class="micro">groq</span>
         </div>
-        <input class="input mono" type="text" id="ai-model-box" spellcheck="false" autocomplete="off" placeholder="google/gemma-4-31b-it:free">
+        <input class="input mono" type="text" id="ai-model-box" spellcheck="false" autocomplete="off" placeholder="openai/gpt-oss-120b">
         <div class="chips chips--presets">
-            <button class="chip-btn mono" type="button" data-model-preset="google/gemma-4-31b-it:free">gemma 4 31b · önerilen</button>
-            <button class="chip-btn mono" type="button" data-model-preset="openrouter/free">auto free router</button>
-            <button class="chip-btn mono" type="button" data-model-preset="meta-llama/llama-3.3-70b-instruct:free">llama 3.3 70b</button>
-            <button class="chip-btn mono" type="button" data-model-preset="mistralai/mistral-7b-instruct:free">mistral 7b</button>
+            <button class="chip-btn mono" type="button" data-model-preset="openai/gpt-oss-120b">gpt-oss 120b · önerilen</button>
+            <button class="chip-btn mono" type="button" data-model-preset="openai/gpt-oss-20b">gpt-oss 20b</button>
+            <button class="chip-btn mono" type="button" data-model-preset="qwen/qwen3.8-27b">qwen 3.8 27b</button>
         </div>
     </div>
 
