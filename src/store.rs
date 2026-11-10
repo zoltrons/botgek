@@ -497,8 +497,7 @@ fn run_readonly(
     }
     let columns = statement
         .column_names()
-        .iter()
-        .map(|name| (*name).to_string())
+        .map(str::to_string)
         .collect::<Vec<_>>();
     let mut rows = statement.query([])?;
     let mut values = Vec::new();

@@ -4,7 +4,7 @@
 
 | Araç | Sürüm / not |
 | --- | --- |
-| Rust | `rust-toolchain.toml` **1.98.1** sürümünü sabitler; kaynak dil tabanı **1.88** (edition 2024). |
+| Rust | `rust-toolchain.toml` **1.99.1** sürümünü sabitler; kaynak dil tabanı **1.89** (edition 2024). |
 | C derleyicisi / linker | Linux'ta gerekir; SQLite bundled olarak derlenir. |
 | Node.js | Yalnızca panel sözdizimi ve panel testleri için. |
 | Docker + Compose v2 | Yalnızca container ile çalıştırmak için (isteğe bağlı). |

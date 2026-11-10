@@ -48,7 +48,7 @@ docker compose up -d
 ```
 
 Kaynaktan derlemek için `docker compose up -d --build` çalıştırın.
-Docker olmadan `cargo run --locked` yeterlidir (Rust 1.88 veya üstü gerekir).
+Docker olmadan `cargo run --locked` yeterlidir (Rust 1.89 veya üstü gerekir).
 
 Panel `http://127.0.0.1:3000` adresinde açılır. Token üretmek için `openssl rand -hex 32` kullanabilirsiniz.
 

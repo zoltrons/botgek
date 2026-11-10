@@ -43,7 +43,7 @@ body:
     attributes:
       label: Ortam
       description: İşletim sistemi, mimari ve Rust sürümü (kaynaktan derlediyseniz).
-      placeholder: "Debian 12 / arm64 / Rust 1.98.1"
+      placeholder: "Debian 12 / arm64 / Rust 1.99.1"
   - type: dropdown
     id: platform
     attributes:
