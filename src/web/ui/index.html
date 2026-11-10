@@ -353,7 +353,7 @@
         <p class="sheet-num mono" aria-hidden="true">03</p>
         <div class="sheet-title">
             <h2 class="sheet-h" id="h-ai">AI persona</h2>
-            <p class="sheet-lede">Bot etiketlendiğinde ya da mesajına yanıt verildiğinde Groq üzerinden (güncel bilgi gerekirse web aramasıyla) yanıt üretir.</p>
+            <p class="sheet-lede">Bot etiketlendiğinde ya da mesajına yanıt verildiğinde yanıt üretir. Metin Groq'a gider ve güncel bilgi gerekirse web aramasıyla yanıtlanır; görselli mesajlar Gemini'ye gider.</p>
         </div>
         <div class="sheet-scope">
             <p class="sheet-meta mono" id="ai-state">—</p>
@@ -365,7 +365,7 @@
     <div class="field">
         <div class="field-head">
             <label class="field-label" for="ai-model-box">model</label>
-            <span class="micro">groq</span>
+            <span class="micro">groq · web aramalı</span>
         </div>
         <input class="input mono" type="text" id="ai-model-box" spellcheck="false" autocomplete="off" placeholder="openai/gpt-oss-120b">
         <div class="chips chips--presets">
@@ -373,6 +373,7 @@
             <button class="chip-btn mono" type="button" data-model-preset="openai/gpt-oss-20b">gpt-oss 20b</button>
             <button class="chip-btn mono" type="button" data-model-preset="qwen/qwen3.8-27b">qwen 3.8 27b</button>
         </div>
+        <p class="tile-hint">Bu alan yalnızca Groq modelidir. Görselli mesajlar ve Groq hata verdiğinde <span class="mono">gemini-3.5-flash-lite</span> yanıt verir; o sabittir. Hangi sağlayıcının açık olduğunu sunucudaki <span class="mono">GROQ_API_KEY</span> ve <span class="mono">GEMINI_API_KEY</span> belirler. Gemini'nin ücretsiz katmanı istemleri Google'ın ürün geliştirmesinde kullanabilir.</p>
     </div>
 
     <div class="field">
