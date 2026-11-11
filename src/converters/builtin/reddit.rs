@@ -34,10 +34,10 @@ use crate::converters::parser::{ParsedPost, Platform};
 use serde::de::DeserializeOwned;
 use url::Url;
 
-/// Reddit, tarayıcı dışı istekleri 403 ile engeller. fxreddit servisinin de kullandığı,
-/// gerçek bir Firefox istemcisi kılığındaki User-Agent gönderilir.
-const REDDIT_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0";
+/// Reddit, `installed_client` token'ıyla gelen `/by_id` ve GraphQL isteklerini tarayıcı
+/// User-Agent'ı (Firefox, iOS Safari) ile 403'le reddediyor; istemci kimliği Android
+/// uygulamasınınki olduğu için redlib gibi Android uygulamasının User-Agent'ı gönderilir.
+const REDDIT_USER_AGENT: &str = "Reddit/Version 2025.40.0/Build 2160000/Android 14";
 
 /// Kalıcı adresteki gönderi kimliğini (`.../comments/{id}`) yakalar.
 static COMMENTS_ID_REGEX: LazyLock<Regex> =
