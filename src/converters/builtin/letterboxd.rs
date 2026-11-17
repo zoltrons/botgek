@@ -129,9 +129,13 @@ static LETTERBOXD_USER_AGENT: LazyLock<String> = LazyLock::new(|| {
 /// Kartta gösterilen açıklama ve inceleme metni sınırları.
 const SYNOPSIS_LIMIT: usize = 600;
 const REVIEW_LIMIT: usize = 1_500;
+/// Gizli metin kapalıyken kara şeritten ibarettir; kısa tutulur.
+const SPOILER_LIMIT: usize = 280;
+/// Son etkinlikte uzun film adı kısaltılır: yıldızlar ve ikonlarla tek satırda kalsın.
+const ACTIVITY_TITLE_LIMIT: usize = 36;
 /// Profil bio'su ve listeleri için kart sınırları.
 const BIO_LIMIT: usize = 800;
-const MAX_CAST: usize = 5;
+const MAX_CAST: usize = 3;
 const MAX_GENRES: usize = 4;
 const MAX_FAVORITES: usize = 4;
 const MAX_RECENT: usize = 4;
@@ -199,7 +203,7 @@ static RESOLVABLE_POSTER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli çözülebilir poster regex")
 });
 static AVATAR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?s)<a class="avatar[^"]*" href="/([A-Za-z0-9_]+)/"\s*>\s*<img src="(https://a\.ltrbxd\.com/[^"]+)""#)
+    Regex::new(r#"(?s)<a class="avatar[^"]*" href="/([A-Za-z0-9_]+)/"\s*>\s*<img src="(https://(?:a\.ltrbxd\.com|secure\.gravatar\.com)/[^"]+)""#)
         .expect("geçerli avatar regex")
 });
 
@@ -703,7 +707,8 @@ fn parse_review(html: &str, target: &Target) -> Option<Review> {
         avatar: AVATAR_REGEX
             .captures_iter(html)
             .find(|caps| &caps[1] == user.as_str())
-            .map(|caps| caps[2].to_string()),
+            // Gravatar adresi HTML kaçışlı ve 48 piksel gelir; kartta keskin görünsün.
+            .map(|caps| unescape_html(&caps[2]).replace("size=48", "size=256")),
         badge: REVIEW_HEADER_REGEX
             .find(html)
             .and_then(|header| first_capture(&PROFILE_BADGE_REGEX, header.as_str()))
@@ -755,24 +760,35 @@ impl ProfileStats {
         self.render(true)
     }
 
+    /// İki satır: izleme sayaçları, sonra takipçi/takip edilen (satır ortasında kırılmasın).
+    /// Kişi ikonu ikinci satırın başında bir kez durur; iki sayı aynı ikonu paylaşmaz.
     fn render(&self, icons: bool) -> Option<String> {
-        let mut parts = Vec::new();
-        let mut push = |count: Option<u64>, icon: Emoji, label: &str| {
-            if let Some(count) = count {
-                let count = format_profile_count(count);
-                parts.push(if icons {
-                    format!("{} **{count}** {label}", icon.tag())
-                } else {
-                    format!("**{count}** {label}")
-                });
-            }
+        let part = |count: Option<u64>, icon: Option<Emoji>, label: &str| {
+            count.map(|count| {
+                let count = format_count(count);
+                match icon.filter(|_| icons) {
+                    Some(icon) => format!("{} **{count}** {label}", icon.tag()),
+                    None => format!("**{count}** {label}"),
+                }
+            })
         };
-        push(self.films, EMOJI_FILMS, "film");
-        push(self.this_year, EMOJI_THIS_YEAR, "bu yıl");
-        push(self.lists, EMOJI_LISTS, "liste");
-        push(self.following, EMOJI_PEOPLE, "takip");
-        push(self.followers, EMOJI_PEOPLE, "takipçi");
-        (!parts.is_empty()).then(|| parts.join(" · "))
+        let rows = [
+            vec![
+                part(self.films, Some(EMOJI_FILMS), "film"),
+                part(self.this_year, Some(EMOJI_THIS_YEAR), "bu yıl izlenen"),
+                part(self.lists, Some(EMOJI_LISTS), "liste"),
+            ],
+            vec![
+                part(self.followers, Some(EMOJI_PEOPLE), "takipçi"),
+                part(self.following, None, "takip ediyor"),
+            ],
+        ];
+        let lines: Vec<String> = rows
+            .into_iter()
+            .map(|row| row.into_iter().flatten().collect::<Vec<_>>().join(" · "))
+            .filter(|line| !line.is_empty())
+            .collect();
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 }
 
@@ -944,20 +960,6 @@ fn html_to_text(raw: &str) -> String {
     unescape_html(&stripped)
 }
 
-/// Profil sayaçlarını binlik ayırıcıyla yazar (`2.590`, `16.700`); sayaçların tam değeri
-/// Letterboxd'da göründüğü gibi korunur.
-fn format_profile_count(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push('.');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 /// `2,590`, `16.7K`, `1.2M` gibi profil sayaçlarını tam sayıya çevirir (HTML varlıkları çözülür).
 fn parse_stat_count(raw: &str) -> Option<u64> {
     super::parse_compact_count(&unescape_html(raw))
@@ -1044,6 +1046,32 @@ fn stars(rating: f64) -> String {
     out
 }
 
+/// Letterboxd'un sabit tür listesi Türkçe yazılır; bilinmeyen tür olduğu gibi kalır.
+fn genre_label(genre: &str) -> &str {
+    match genre {
+        "Action" => "Aksiyon",
+        "Adventure" => "Macera",
+        "Animation" => "Animasyon",
+        "Comedy" => "Komedi",
+        "Crime" => "Suç",
+        "Documentary" => "Belgesel",
+        "Drama" => "Dram",
+        "Family" => "Aile",
+        "Fantasy" => "Fantastik",
+        "History" => "Tarih",
+        "Horror" => "Korku",
+        "Music" => "Müzik",
+        "Mystery" => "Gizem",
+        "Romance" => "Romantik",
+        "Science Fiction" => "Bilim kurgu",
+        "Thriller" => "Gerilim",
+        "TV Movie" => "TV filmi",
+        "War" => "Savaş",
+        "Western" => "Western",
+        other => other,
+    }
+}
+
 fn runtime_label(minutes: u32) -> String {
     match (minutes / 60, minutes % 60) {
         (0, m) => format!("{m} dk"),
@@ -1115,6 +1143,17 @@ fn bounded(body: &str, limit: usize) -> String {
     }
 }
 
+/// Gizli metin kapalıyken yalnızca kara şeritlerden ibarettir: paragraflar tek satıra
+/// toplanır ve kısa tutulur, uzun metin bir duvara dönüşmez. `true`: metin kısaldı.
+fn spoiler_body(body: &str) -> (String, bool) {
+    let joined = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.chars().count() > SPOILER_LIMIT {
+        (truncate_chars(&joined, SPOILER_LIMIT), true)
+    } else {
+        (joined, false)
+    }
+}
+
 /// Engellenen incelemenin film kartına eklenen notu.
 struct ReviewLink {
     user: String,
@@ -1122,14 +1161,14 @@ struct ReviewLink {
 }
 
 fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
-    // Sıra ve boyut inceleme kartıyla aynı: büyük başlık (`##`), ondan küçük puan (`###`),
-    // sonra en küçük künye satırı (`-#`) ve slogan.
+    // Sıra ve boyut: büyük başlık (`##`), ondan küçük puan (`###`), sonra künye (`-#`: özgün ad,
+    // yönetmen, oyuncular), tür satırı ve slogan; özet ve butonlar bölümün altında.
     let mut header = format!("## [{}]({})", escape_markdown(&film.title), film.url);
     if let Some(year) = &film.year {
         header.push_str(&format!(" ({year})"));
     }
     if let Some(rating) = film.rating {
-        header.push_str(&format!("\n### {} **{rating:.2}**/5", stars(rating)));
+        header.push_str(&format!("\n### {} **{rating:.1}**/5", stars(rating)));
         if let Some(count) = film.rating_count {
             header.push_str(&format!(" · {} oy", format_count(count)));
         }
@@ -1147,10 +1186,40 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     if !byline.is_empty() {
         header.push_str(&format!("\n-# {}", byline.join(" · ")));
     }
+    // Künye tek yerde: oyuncular yönetmenin hemen altında.
+    if !film.cast.is_empty() {
+        let mut cast = film
+            .cast
+            .iter()
+            .take(MAX_CAST)
+            .map(|name| escape_markdown(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if film.cast.len() > MAX_CAST {
+            cast.push_str(" …");
+        }
+        header.push_str(&format!("\n-# Oyuncular: {cast}"));
+    }
+    let mut facts: Vec<String> = film
+        .genres
+        .iter()
+        .take(MAX_GENRES)
+        .map(|genre| escape_markdown(genre_label(genre)))
+        .collect();
+    if let Some(runtime) = film.runtime {
+        facts.push(runtime_label(runtime));
+    }
+    if let Some(country) = film.countries.first() {
+        facts.push(escape_markdown(country));
+    }
+    if !facts.is_empty() {
+        // Tür satırı soluk künyede kaybolmasın: normal yazı boyutunda.
+        header.push_str(&format!("\n{}", facts.join(" · ")));
+    }
 
     let mut section_children = vec![text(header)];
     if let Some(tagline) = &film.tagline {
-        section_children.push(text(format!("*“{}”*", escape_markdown(tagline))));
+        section_children.push(text(format!("-# *“{}”*", escape_markdown(tagline))));
     }
 
     let mut components = Vec::new();
@@ -1170,39 +1239,6 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     ));
     if let Some(synopsis) = &film.synopsis {
         components.push(text(escape_markdown(&bounded(synopsis, SYNOPSIS_LIMIT))));
-    }
-
-    let mut facts: Vec<String> = film
-        .genres
-        .iter()
-        .take(MAX_GENRES)
-        .map(|genre| escape_markdown(genre))
-        .collect();
-    if let Some(runtime) = film.runtime {
-        facts.push(runtime_label(runtime));
-    }
-    if let Some(country) = film.countries.first() {
-        facts.push(escape_markdown(country));
-    }
-    let mut details = Vec::new();
-    if !facts.is_empty() {
-        details.push(format!("-# {}", facts.join(" · ")));
-    }
-    if !film.cast.is_empty() {
-        let mut cast = film
-            .cast
-            .iter()
-            .take(MAX_CAST)
-            .map(|name| escape_markdown(name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if film.cast.len() > MAX_CAST {
-            cast.push_str(" …");
-        }
-        details.push(format!("**Oyuncular:** {cast}"));
-    }
-    if !details.is_empty() {
-        components.push(text(details.join("\n")));
     }
 
     let mut buttons = Vec::new();
@@ -1234,28 +1270,19 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
 }
 
 fn review_card(review: &Review) -> CustomCard {
-    let mut verdict = review.rating.map(stars).unwrap_or_default();
-    if review.liked {
-        if !verdict.is_empty() {
-            verdict.push(' ');
-        }
-        verdict.push_str(&EMOJI_LIKE.tag());
-    }
-    let mut film = format!(
-        "[{}]({})",
-        escape_markdown(&review.film_title),
-        review.film_url
-    );
+    let verdict = review.rating.map(stars).unwrap_or_default();
+    let mut film = escape_markdown(&review.film_title);
     if let Some(year) = &review.film_year {
         film.push_str(&format!(" ({year})"));
     }
-    // Letterboxd'daki sıra ve boyut: küçük "İnceleyen" satırı, ayraç, büyük film adı (`##`),
-    // ondan küçük yıldızlar (`###`), en küçük izleme günü (`-#`).
+    // Kartın öznesi incelemeyi yazan kişidir: en büyük başlık (`##`) onun. Tek görsel posterdir;
+    // film adı ve yıldızlar ondan küçük (`###`), izleme günü en küçük (`-#`).
     let mut byline = format!(
-        "-# İnceleyen: [{}]({})",
+        "## [{}]({})",
         escape_markdown(&review.author),
         review.profile_url
     );
+    let mut subline = Vec::new();
     if let Some(badge) = &review.badge {
         // Profil kartındaki gibi: Patron rozetine taç eşlik eder, diğerleri yalnızca yazı.
         let crown = if badge.eq_ignore_ascii_case("patron") {
@@ -1263,9 +1290,11 @@ fn review_card(review: &Review) -> CustomCard {
         } else {
             String::new()
         };
-        byline.push_str(&format!(" · {crown}{}", escape_markdown(badge)));
+        subline.push(format!("{crown}{}", escape_markdown(badge)));
     }
-    let mut header = format!("## {film}");
+    subline.push("Letterboxd incelemesi".to_string());
+    byline.push_str(&format!("\n-# {}", subline.join(" · ")));
+    let mut header = format!("### {film}");
     if !verdict.is_empty() {
         header.push_str(&format!("\n### {verdict}"));
     }
@@ -1280,11 +1309,11 @@ fn review_card(review: &Review) -> CustomCard {
         (None, Some(date)) => meta.push(format!("{} yazdı", date_label(date))),
         (None, None) => {}
     }
+    if review.liked {
+        meta.push(format!("{} Filmi beğendi", EMOJI_LIKE.tag()));
+    }
     if review.rewatch {
         meta.push(format!("{} Yeniden izleme", EMOJI_REWATCH.tag()));
-    }
-    if let Some(director) = &review.director {
-        meta.push(format!("Yönetmen: {}", escape_markdown(director)));
     }
 
     let mut section_children = vec![text(header)];
@@ -1302,25 +1331,33 @@ fn review_card(review: &Review) -> CustomCard {
             &format!("{} posteri", review.film_title),
         ),
     ];
-    match review
-        .body
-        .as_deref()
-        .map(|body| bounded(body, REVIEW_LIMIT))
-    {
-        Some(body) if !body.is_empty() => {
-            let body = escape_markdown(&body);
-            components.push(text(if review.spoiler {
-                format!("{} **Spoiler içerir**\n||{body}||", EMOJI_SPOILER.tag())
-            } else {
-                body
-            }));
+    match review.body.as_deref() {
+        Some(body) if review.spoiler => {
+            let (body, cut) = spoiler_body(body);
+            if !body.is_empty() {
+                let mut content = format!(
+                    "{} **Spoiler içerir**\n||{}||",
+                    EMOJI_SPOILER.tag(),
+                    escape_markdown(&body)
+                );
+                if cut {
+                    content.push_str(&format!(" [Devamını oku]({})", review.url));
+                }
+                components.push(text(content));
+            }
         }
-        _ => {}
+        Some(body) => {
+            let body = bounded(body, REVIEW_LIMIT);
+            if !body.is_empty() {
+                components.push(text(escape_markdown(&body)));
+            }
+        }
+        None => {}
     }
     // Letterboxd'da beğeni sayısı inceleme metninin altında durur.
     if let Some(likes) = review.likes {
         components.push(text(format!(
-            "-# {} {} beğeni",
+            "-# {} {} kişi incelemeyi beğendi",
             EMOJI_LIKES.tag(),
             format_count(likes)
         )));
@@ -1343,16 +1380,16 @@ fn review_card(review: &Review) -> CustomCard {
 
 /// Son etkinlik satırı: yıldızlar, filmin bağlantısı ve varsa kalp/yeniden izleme işaretleri.
 fn activity_line(activity: &ProfileActivity) -> String {
-    let mut line = String::new();
-    if let Some(rating) = activity.rating {
-        line.push_str(&stars(rating));
-        line.push(' ');
-    }
-    line.push_str(&format!(
+    // Ad önde: yıldız sayısı değiştikçe adların başladığı yer kaymasın.
+    let mut line = format!(
         "[{}]({})",
-        escape_markdown(&activity.title),
+        keep_year(&escape_markdown(&short_title(&activity.title))),
         activity.url
-    ));
+    );
+    if let Some(rating) = activity.rating {
+        line.push(' ');
+        line.push_str(&stars(rating));
+    }
     for (flag, icon) in [
         (activity.liked, EMOJI_LIKE),
         (activity.rewatch, EMOJI_REWATCH),
@@ -1364,6 +1401,60 @@ fn activity_line(activity: &ProfileActivity) -> String {
         }
     }
     line
+}
+
+/// `Uzun Bir Film Adı (1972)` → adı kısaltılmış, yılı korunmuş başlık.
+fn short_title(title: &str) -> String {
+    let (name, year) = match title.rfind(" (") {
+        Some(index) => (&title[..index], &title[index..]),
+        None => (title, ""),
+    };
+    if name.chars().count() <= ACTIVITY_TITLE_LIMIT {
+        return title.to_string();
+    }
+    format!("{}{year}", truncate_chars(name, ACTIVITY_TITLE_LIMIT))
+}
+
+/// Film adı ile `(yıl)` arasına bölünmez boşluk: satır sonunda yıl tek başına kalmasın.
+fn keep_year(title: &str) -> String {
+    match title.rfind(" (") {
+        Some(index) => format!("{}\u{a0}{}", &title[..index], &title[index + 1..]),
+        None => title.to_string(),
+    }
+}
+
+/// Son etkinlikte görünen ikonların açıklaması; ikon yoksa satır da yok.
+fn activity_legend(recent: &[ProfileActivity]) -> Option<String> {
+    let parts: Vec<String> = [
+        (recent.iter().any(|a| a.liked), EMOJI_LIKE, "beğendi"),
+        (
+            recent.iter().any(|a| a.rewatch),
+            EMOJI_REWATCH,
+            "yeniden izledi",
+        ),
+        (
+            recent.iter().any(|a| a.review),
+            EMOJI_REVIEW,
+            "inceleme yazdı",
+        ),
+    ]
+    .into_iter()
+    .filter(|(shown, ..)| *shown)
+    .map(|(_, icon, label)| format!("{} {label}", icon.tag()))
+    .collect();
+    (!parts.is_empty()).then(|| format!("-# {}", parts.join(" · ")))
+}
+
+/// Twitter/X bağlantısının etiketi çıplak kullanıcı adıdır; nereye gittiği belli olsun.
+fn link_label(link: &ProfileLink) -> String {
+    let host = url::Url::parse(&link.url).ok().and_then(|url| {
+        url.host_str()
+            .map(|host| host.trim_start_matches("www.").to_string())
+    });
+    match host.as_deref() {
+        Some("twitter.com" | "x.com") => format!("X: @{}", link.label.trim_start_matches('@')),
+        _ => link.label.clone(),
+    }
 }
 
 fn profile_subpage(user: &str, page: &str) -> String {
@@ -1393,7 +1484,11 @@ fn profile_card(profile: &Profile) -> CustomCard {
         meta.push(format!("📍 {}", escape_markdown(location)));
     }
     for link in &profile.links {
-        meta.push(format!("[{}]({})", escape_markdown(&link.label), link.url));
+        meta.push(format!(
+            "[{}]({})",
+            escape_markdown(&link_label(link)),
+            link.url
+        ));
     }
     if !meta.is_empty() {
         section_children.push(text(format!("-# {}", meta.join(" · "))));
@@ -1414,14 +1509,21 @@ fn profile_card(profile: &Profile) -> CustomCard {
         let favorites = profile
             .favorites
             .iter()
-            .map(|film| format!("[{}]({})", escape_markdown(&film.title), film.url))
+            .map(|film| {
+                format!(
+                    "[{}]({})",
+                    keep_year(&escape_markdown(&film.title)),
+                    film.url
+                )
+            })
             .collect::<Vec<_>>()
-            .join(", ");
-        components.push(text(format!("**Favori filmler:** {favorites}")));
+            .join("\n");
+        components.push(text(format!("**Favori filmler**\n{favorites}")));
     }
     if !profile.recent.is_empty() {
         let mut lines = vec!["**Son etkinlik**".to_string()];
         lines.extend(profile.recent.iter().map(activity_line));
+        lines.extend(activity_legend(&profile.recent));
         components.push(text(lines.join("\n")));
     }
 
@@ -1784,7 +1886,7 @@ mod tests {
         assert_eq!(
             profile.stats.line().as_deref(),
             Some(
-                "**2.590** film · **64** bu yıl · **14** liste · **396** takip · **16.700** takipçi"
+                "**2.6K** film · **64** bu yıl izlenen · **14** liste\n**16.7K** takipçi · **396** takip ediyor"
             )
         );
         assert_eq!(profile.favorites.len(), 4);
@@ -1822,7 +1924,7 @@ mod tests {
         assert!(text.contains("-# @hollieamanda · 👑 Patron"), "{text}");
         assert!(
             text.contains(
-                "🎞 **2.590** film · 📅 **64** bu yıl · ▦ **14** liste · 👤 **396** takip · 👤 **16.700** takipçi"
+                "🎞 **2.6K** film · 📅 **64** bu yıl izlenen · ▦ **14** liste\n👤 **16.7K** takipçi · **396** takip ediyor"
             ),
             "{text}"
         );
@@ -1832,24 +1934,26 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("**Favori filmler:** [Her (2013)](https://letterboxd.com/film/her/)"),
-            "{text}"
-        );
-        assert!(
             text.contains(
-                "★★★★ [Over the Garden Wall (2014)](https://letterboxd.com/hollieamanda/film/over-the-garden-wall-2014/) ♥"
+                "**Favori filmler**\n[Her\u{a0}(2013)](https://letterboxd.com/film/her/)"
             ),
             "{text}"
         );
         assert!(
             text.contains(
-                "★★★★ [The Devils (1971)](https://letterboxd.com/hollieamanda/film/the-devils/1/) ♥ 🔁"
+                "[Over the Garden Wall\u{a0}(2014)](https://letterboxd.com/hollieamanda/film/over-the-garden-wall-2014/) ★★★★ ♥"
             ),
             "{text}"
         );
         assert!(
             text.contains(
-                "★★★★½ [You Can See Everything (2026)](https://letterboxd.com/hollieamanda/film/you-can-see-everything/) 📝"
+                "[The Devils\u{a0}(1971)](https://letterboxd.com/hollieamanda/film/the-devils/1/) ★★★★ ♥ 🔁"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "[You Can See Everything\u{a0}(2026)](https://letterboxd.com/hollieamanda/film/you-can-see-everything/) ★★★★½ 📝"
             ),
             "{text}"
         );
@@ -1920,8 +2024,6 @@ mod tests {
         assert_eq!(parse_stat_count("1.2M"), Some(1_200_000));
         assert_eq!(parse_stat_count("0"), Some(0));
         assert_eq!(parse_stat_count("bilinmeyen"), None);
-        assert_eq!(format_profile_count(2_590), "2.590");
-        assert_eq!(format_profile_count(16_700), "16.700");
     }
 
     #[test]
@@ -1980,19 +2082,20 @@ mod tests {
         assert_eq!(card.components[0]["accessory"]["type"], TYPE_THUMBNAIL);
         let text = contents(&card);
         assert!(
-            text.contains("## [Parasite](https://letterboxd.com/film/parasite-2019/) (2019)"),
+            text.contains("## [Parasite](https://letterboxd.com/film/parasite-2019/) (2019)")
+                || text.contains("### Parasite (2019)"),
             "{text}"
         );
         assert!(text.contains("*기생충* · Yönetmen: Bong Joon Ho"), "{text}");
-        assert!(text.contains("### ★★★★½ **4.51**/5 · 6M oy"), "{text}");
+        assert!(text.contains("### ★★★★½ **4.5**/5 · 6M oy"), "{text}");
         assert!(text.contains("Act like you own the place."), "{text}");
         assert!(
-            text.contains("Thriller · Comedy · Drama · 2 sa 13 dk · South Korea"),
+            text.contains("\nGerilim · Komedi · Dram · 2 sa 13 dk · South Korea"),
             "{text}"
         );
         assert!(
             text.contains(
-                "Song Kang-ho, Lee Sun-kyun, Cho Yeo-jeong, Choi Woo-shik, Park So-dam …"
+                "Yönetmen: Bong Joon Ho\n-# Oyuncular: Song Kang-ho, Lee Sun-kyun, Cho Yeo-jeong …"
             ),
             "{text}"
         );
@@ -2032,24 +2135,26 @@ mod tests {
     }
 
     #[test]
-    fn review_card_hides_spoilers_and_keeps_paragraphs() {
+    fn review_card_hides_spoilers_in_one_short_block() {
         let review = parse_review(REVIEW_HTML, &review_target()).unwrap();
         let card = review_card(&review);
         assert_eq!(card.accent_color, Some(LETTERBOXD_ORANGE));
         let text = contents(&card);
-        assert!(text.contains("### ★★★★½ ♥"), "{text}");
+        assert!(text.contains("### ★★★★½\n"), "{text}");
         assert!(
-            text.contains("İnceleyen: [hollie amanda](https://letterboxd.com/hollieamanda/)"),
+            text.contains("## [hollie amanda](https://letterboxd.com/hollieamanda/)\n-# 👑 Patron · Letterboxd incelemesi"),
             "{text}"
         );
         assert!(
-            text.contains("👁 9 Ağu 2019 izledi · Yönetmen: Bong Joon Ho"),
+            text.contains("👁 9 Ağu 2019 izledi · ♥ Filmi beğendi"),
             "{text}"
         );
-        assert!(text.contains("-# ♡ 43.6K beğeni"), "{text}");
-        assert!(text.contains("hollieamanda/) · 👑 Patron"), "{text}");
         assert!(
-            text.contains("⚠️ **Spoiler içerir**\n||call me by your name’s peach walked\n\nso parasite’s peach could run||"),
+            text.contains("-# ♡ 43.6K kişi incelemeyi beğendi"),
+            "{text}"
+        );
+        assert!(
+            text.contains("⚠️ **Spoiler içerir**\n||call me by your name’s peach walked so parasite’s peach could run||"),
             "{text}"
         );
         let urls: Vec<String> = buttons(&card).into_iter().map(|(_, url)| url).collect();
@@ -2063,7 +2168,28 @@ mod tests {
 
         let mut plain = review.clone();
         plain.spoiler = false;
-        assert!(!contents(&review_card(&plain)).contains("||"));
+        let plain_text = contents(&review_card(&plain));
+        assert!(!plain_text.contains("||"));
+        assert!(
+            plain_text.contains("walked\n\nso"),
+            "spoilersız metin paragrafları korur"
+        );
+
+        let mut long = review.clone();
+        long.body = Some("kelime ".repeat(200));
+        let long_text = contents(&review_card(&long));
+        assert!(
+            long_text.contains(
+                "…|| [Devamını oku](https://letterboxd.com/hollieamanda/film/parasite-2019/)"
+            ),
+            "{long_text}"
+        );
+
+        let mut heart_only = review.clone();
+        heart_only.rating = None;
+        let heart_text = contents(&review_card(&heart_only));
+        assert!(!heart_text.contains("### ★"), "{heart_text}");
+        assert!(heart_text.contains("♥ Filmi beğendi"), "{heart_text}");
     }
 
     #[test]
@@ -2243,5 +2369,31 @@ mod tests {
             "{}",
             poster(&review)
         );
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn gravatar_reviewer_avatars_are_read_and_enlarged() {
+        let html = r#"<a class="avatar -a24" href="/biri/"> <img src="https://secure.gravatar.com/avatar/abc?rating=PG&amp;size=48&amp;border=" alt="Biri"></a>"#;
+        let caps = AVATAR_REGEX.captures(html).expect("gravatar eşleşmeli");
+        assert_eq!(&caps[1], "biri");
+        assert_eq!(
+            unescape_html(&caps[2]).replace("size=48", "size=256"),
+            "https://secure.gravatar.com/avatar/abc?rating=PG&size=256&border="
+        );
+    }
+
+    #[test]
+    fn long_activity_titles_are_shortened_but_keep_the_year() {
+        let long = "The Effect of Gamma Rays on Man-in-the-Moon Marigolds (1972)";
+        let short = short_title(long);
+        assert!(short.ends_with("… (1972)"), "{short}");
+        assert!(short.chars().count() < long.chars().count());
+        assert_eq!(short_title("Cure (1997)"), "Cure (1997)");
+        assert_eq!(keep_year("Cure (1997)"), "Cure\u{a0}(1997)");
     }
 }

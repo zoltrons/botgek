@@ -23,7 +23,10 @@ Veri anahtar gerektirmeyen herkese açık sayfalardan okunur:
 | İnceleme | `/{kullanıcı}/film/{slug}/` | JSON-LD `Review` (yazar, puan, metin, tarih). HTML'den beğeni sayısı, kalp, yeniden izleme, izleme tarihi, spoiler uyarısı. | Turuncu `0xFF8000` |
 | Profil | `/{kullanıcı}/` | JSON-LD yok. HTML'den görünen ad, avatar, rozet (Pro/Patron/HQ), bio, istatistikler, konum, harici bağlantılar, favori filmler, son etkinlik. | Mavi `0x40BCF4` |
 
-- Spoiler uyarılı incelemelerde metin `||...||` arkasındadır.
+- Spoiler uyarılı incelemelerde metin `||...||` arkasındadır; tek paragrafa toplanır ve `SPOILER_LIMIT` (280)
+  karakterde kesilip "Devamını oku" bağlantısı alır.
+- Kart başına tek görsel: inceleme kartında yalnızca poster durur, yazarın avatarı gösterilmez. Yazar `##` başlıktır.
+- Film kartında künye tek blokta: özgün ad, yönetmen, oyuncular (`MAX_CAST` = 3), ardından tür/süre/ülke satırı.
 - Açıklama (`SYNOPSIS_LIMIT`) 600 karakterle sınırlıdır.
 - `boxd.it` kısa bağlantıları hedefe çözülür. Yanıt engellenmiş olsa bile varılan adres hedefi belirler.
 - Cloudflare, profil ve numaralı inceleme sayfalarını sıradan User-Agent'lara 403 ile kapatır. Discord'un

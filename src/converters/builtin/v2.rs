@@ -1128,8 +1128,8 @@ fn content_of(component: &Value) -> String {
 /// Hassas gönderilerde metni spoiler içine alır.
 fn spoiler_wrap(text: &str, spoiler: bool) -> String {
     if spoiler && !text.is_empty() {
-        // Metindeki `||` gizlemeyi erken kapatıp devamını açığa çıkarmasın.
-        format!("||{}||", text.replace("||", "|\u{200b}|"))
+        // İç `||` gizlemeyi erken kapatırdı; tüm metin zaten gizli olduğundan işaret atılır.
+        format!("||{}||", text.replace("||", ""))
     } else {
         text.to_string()
     }
