@@ -218,10 +218,6 @@ pub async fn download_video(
     if super::spotify_video::is_preview_url(url) {
         return super::spotify_video::build(url, poster?, max_bytes).await;
     }
-    if let Some(headers) = super::tiktok::video_headers(url) {
-        return download_with(url, max_bytes, &headers).await;
-    }
-
     download(url, max_bytes).await
 }
 
@@ -231,7 +227,7 @@ pub async fn download(url: &str, max_bytes: u64) -> Option<MediaFile> {
     download_with(url, max_bytes, &[]).await
 }
 
-/// [`download`] ile aynı; her istekte ek başlıklar gönderir (TikTok çerezi ve Referer).
+/// [`download`] ile aynı; her istekte ek başlıklar gönderir (ör. Pixiv Referer'ı).
 pub(super) async fn download_with(
     url: &str,
     max_bytes: u64,

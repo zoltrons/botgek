@@ -89,11 +89,8 @@ pub const VIDEO_MERGE_BUDGET: Duration = Duration::from_millis(5_000);
 ///
 /// Twitch klibinin MP4 adresi ~24 saat geçerli bir imza taşır: dosya olarak eklenir ki
 /// imza süresi dolunca eski mesajlarda video kaybolmasın (sığmazsa imzalı adres oynar).
-///
-/// TikTok videosu yalnızca sayfayı veren isteğin çereziyle indirilebilir; Discord adresi
-/// uzaktan oynatamadığı için ek zorunludur (indirilemezse kapak gösterilir).
 fn video_requires_download(platform_key: &str) -> bool {
-    matches!(platform_key, "reddit" | "spotify" | "twitch" | "tiktok")
+    matches!(platform_key, "reddit" | "spotify" | "twitch")
 }
 
 /// Ayarlardan türetilen render davranışı (**tek mod: doğrudan**).
@@ -547,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn only_reddit_spotify_twitch_and_tiktok_require_a_video_download() {
+    fn only_reddit_spotify_and_twitch_require_a_video_download() {
         let engine = EngineSettings::default();
         assert!(
             RenderOptions::from_engine(&engine, "reddit").video_requires_download,
@@ -561,11 +558,7 @@ mod tests {
             RenderOptions::from_engine(&engine, "twitch").video_requires_download,
             "Twitch: imzalı adresin süresi dolar → dosya olarak eklenir"
         );
-        assert!(
-            RenderOptions::from_engine(&engine, "tiktok").video_requires_download,
-            "TikTok: adres çerez ister, Discord uzaktan oynatamaz → dosya olarak eklenir"
-        );
-        for platform in ["twitter", "instagram", "bluesky"] {
+        for platform in ["twitter", "instagram", "bluesky", "tiktok"] {
             assert!(
                 !RenderOptions::from_engine(&engine, platform).video_requires_download,
                 "{platform}: indirme yok"

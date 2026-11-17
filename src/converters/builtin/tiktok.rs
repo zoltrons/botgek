@@ -3,12 +3,9 @@
 //! oynatılabilir MP4 seçenekleri). Sayfa okunamazsa oEmbed'e düşülür; oEmbed yalnızca başlık,
 //! yazar ve kapak verir.
 //!
-//! Video CDN'i adresi yalnızca **o sayfayı veren isteğin** `tt_chain_token` çereziyle ve TikTok
-//! Referer'ıyla verir; Discord bu başlıkları gönderemediği için video mesaja dosya olarak eklenir
-//! ([`video_headers`] ile indirilir). İndirilemezse kartta kapak görseli gösterilir.
-
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+//! Video CDN'i sayfadaki adresleri yalnızca o isteğin `tt_chain_token` çereziyle verir; Discord
+//! bu çerezi gönderemez. Bu yüzden kartta fxTikTok'un ([`FXTIKTOK_VIDEO`]) çerezsiz imzalı CDN
+//! adresine yönlendiren video adresi uzaktan oynatılır: bot videoyu indirip yüklemez.
 
 use serde::Deserialize;
 use tracing::debug;
@@ -18,32 +15,8 @@ use crate::converters::parser::{ParsedPost, Platform};
 
 const OEMBED_URL: &str = "https://www.tiktok.com/oembed";
 const TIKTOK: &str = "https://www.tiktok.com";
-/// Discord'un boost'suz dosya sınırı: daha büyük kalite seçenekleri ek olarak gönderilemez.
-const MAX_VIDEO_BYTES: u64 = super::media::DISCORD_FILE_LIMIT;
-/// Bellekte tutulan video adresi → çerez eşlemesi sınırı (dolunca temizlenir).
-const MAX_TOKENS: usize = 512;
-
-static VIDEO_TOKENS: LazyLock<Mutex<HashMap<String, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// TikTok video adresinin indirilmesi için gereken başlıklar. Adres bu süreçte okunmuş bir
-/// TikTok sayfasından gelmiyorsa `None` döner (indirme denenmez).
-pub fn video_headers(url: &str) -> Option<Vec<(&'static str, String)>> {
-    let token = VIDEO_TOKENS.lock().ok()?.get(url).cloned()?;
-    Some(vec![
-        ("cookie", format!("tt_chain_token={token}")),
-        ("referer", format!("{TIKTOK}/")),
-    ])
-}
-
-fn remember_token(url: &str, token: &str) {
-    if let Ok(mut tokens) = VIDEO_TOKENS.lock() {
-        if tokens.len() >= MAX_TOKENS {
-            tokens.clear();
-        }
-        tokens.insert(url.to_string(), token.to_string());
-    }
-}
+/// fxTikTok (github.com/okdargy/fxtiktok): `<kimlik>` için oynatılabilir MP4'e 302 verir.
+const FXTIKTOK_VIDEO: &str = "https://tnktok.com/generate/video/";
 
 /// TikTok gönderisini çeker ve kart verisine dönüştürür.
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
@@ -59,6 +32,33 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
 /// Gönderi sayfası botun kendi User-Agent'ıyla istenir: tarayıcı kimliğiyle TikTok WAF sınama
 /// sayfası döndürür. Kısa bağlantılar (`vm.tiktok.com`, `/t/`) yönlendirmeyle gönderiye varır.
 async fn fetch_page(client: &reqwest::Client, url: &str) -> Result<BuiltinPost, String> {
+    let (final_url, html) = fetch_html(client, url).await?;
+    let item = match item_from_html(&html) {
+        Ok(item) => item,
+        // `/photo/` sayfası gönderi verisini taşımaz (oEmbed de 400 verir); aynı gönderinin
+        // `/video/` sayfası taşır.
+        Err(reason) => {
+            let video_url = photo_as_video(&final_url).ok_or(reason)?;
+            item_from_html(&fetch_html(client, &video_url).await?.1)?
+        }
+    };
+    item_post(&item)
+}
+
+/// `…/@kullanıcı/photo/<kimlik>` → `…/@kullanıcı/video/<kimlik>` (sorgu atılır).
+fn photo_as_video(url: &str) -> Option<String> {
+    let mut url = url::Url::parse(url).ok()?;
+    let path = url.path().replacen("/photo/", "/video/", 1);
+    if path == url.path() {
+        return None;
+    }
+    url.set_path(&path);
+    url.set_query(None);
+    Some(url.into())
+}
+
+/// Sayfayı alır; yönlendirmelerden sonraki son adresi ve HTML'i döndürür.
+async fn fetch_html(client: &reqwest::Client, url: &str) -> Result<(String, String), String> {
     let response = client
         .get(url)
         .header("user-agent", USER_AGENT)
@@ -72,36 +72,9 @@ async fn fetch_page(client: &reqwest::Client, url: &str) -> Result<BuiltinPost, 
     if super::https_url_on(response.url().as_str(), &["tiktok.com"]).is_none() {
         return Err("TikTok yönlendirmesi platform dışına çıktı".into());
     }
-    let token = chain_token(response.headers());
+    let final_url = response.url().to_string();
     let html = super::read_limited_text(response, url).await?;
-    let mut post = item_post(&item_from_html(&html)?)?;
-    match token {
-        Some(token) => {
-            if let Some(video) = post.media.first().filter(|media| media.is_video()) {
-                remember_token(&video.url, &token);
-            }
-        }
-        // Çerezsiz adres her istemcide 403 verir: kapak görseli gösterilir.
-        None => video_to_poster(&mut post),
-    }
-    Ok(post)
-}
-
-/// Yanıtın `Set-Cookie` başlıklarındaki `tt_chain_token` değeri.
-fn chain_token(headers: &reqwest::header::HeaderMap) -> Option<String> {
-    headers
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .find_map(|cookie| cookie.strip_prefix("tt_chain_token="))
-        .and_then(|rest| rest.split(';').next())
-        .filter(|token| {
-            !token.is_empty()
-                && token
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"+/=_-%.".contains(&b))
-        })
-        .map(str::to_string)
+    Ok((final_url, html))
 }
 
 /// İndirilemeyecek videoyu kapak görseline çevirir.
@@ -239,32 +212,10 @@ struct ItemAuthor {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct ItemVideo {
-    play_addr: Option<String>,
     cover: Option<String>,
     duration: Option<u64>,
     width: Option<u32>,
     height: Option<u32>,
-    bitrate_info: Vec<Bitrate>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct Bitrate {
-    #[serde(default)]
-    bitrate: u64,
-    #[serde(default)]
-    codec_type: String,
-    play_addr: BitrateAddr,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct BitrateAddr {
-    data_size: Option<Count>,
-    width: Option<u32>,
-    height: Option<u32>,
-    #[serde(default)]
-    url_list: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -302,40 +253,6 @@ fn item_from_html(html: &str) -> Result<Item, String> {
         .item_info
         .map(|info| info.item_struct)
         .ok_or_else(|| "TikTok gönderisi bulunamadı".into())
-}
-
-/// Ek olarak gönderilecek MP4: Discord'un her istemcide oynattığı h264 seçeneklerinden dosya
-/// sınırına sığan en yüksek bit hızlısı. Boyutu bilinmeyen seçenek atlanır; hiçbiri uymazsa
-/// sayfanın varsayılan oynatma adresi denenir.
-fn best_video(video: &ItemVideo) -> Option<(String, Option<u32>, Option<u32>)> {
-    video
-        .bitrate_info
-        .iter()
-        .filter(|b| b.codec_type == "h264")
-        .filter(|b| {
-            b.play_addr
-                .data_size
-                .as_ref()
-                .and_then(Count::as_u64)
-                .is_some_and(|size| size <= MAX_VIDEO_BYTES)
-        })
-        .filter_map(|b| {
-            let url = b
-                .play_addr
-                .url_list
-                .iter()
-                .find(|u| allowed_tiktok_url(u))?;
-            Some((
-                b.bitrate,
-                (url.clone(), b.play_addr.width, b.play_addr.height),
-            ))
-        })
-        .max_by_key(|(bitrate, _)| *bitrate)
-        .map(|(_, choice)| choice)
-        .or_else(|| {
-            let url = video.play_addr.clone().filter(|u| allowed_tiktok_url(u))?;
-            Some((url, video.width, video.height))
-        })
 }
 
 fn item_post(item: &Item) -> Result<BuiltinPost, String> {
@@ -403,15 +320,15 @@ fn item_post(item: &Item) -> Result<BuiltinPost, String> {
         );
     } else if let Some(video) = &item.video {
         let poster = video.cover.clone().filter(|url| allowed_tiktok_url(url));
-        match best_video(video) {
-            Some((url, width, height)) => post.media.push(Media {
+        match video.duration.filter(|d| *d > 0) {
+            Some(duration) => post.media.push(Media {
                 alt: None,
                 kind: MediaKind::Video,
-                url,
+                url: format!("{FXTIKTOK_VIDEO}{}", item.id),
                 poster,
-                width,
-                height,
-                duration: video.duration.filter(|d| *d > 0),
+                width: video.width,
+                height: video.height,
+                duration: Some(duration),
             }),
             None => post.media.extend(poster.map(image)),
         }
@@ -861,7 +778,7 @@ mod tests {
     }}}}}</script>"#;
 
     #[test]
-    fn page_item_becomes_a_full_card_with_the_best_fitting_h264_video() {
+    fn page_item_becomes_a_full_card_with_a_remote_fxtiktok_video() {
         let post = item_post(&item_from_html(PAGE).unwrap()).unwrap();
         assert_eq!(
             post.url,
@@ -879,8 +796,11 @@ mod tests {
         assert_eq!(post.media.len(), 1);
         let video = &post.media[0];
         assert!(video.is_video());
-        // h265 ve dosya sınırını aşan seçenek atlanır, güvenilmeyen ana bilgisayar kabul edilmez.
-        assert_eq!(video.url, "https://v16-webapp-prime.tiktok.com/video/540/");
+        assert_eq!(
+            video.url,
+            "https://tnktok.com/generate/video/6718335390845095173"
+        );
+        assert_eq!((video.width, video.height), (Some(576), Some(1024)));
         assert_eq!(
             video.poster.as_deref(),
             Some("https://p16-common-sign.tiktokcdn.com/cover.jpg")
@@ -889,26 +809,16 @@ mod tests {
     }
 
     #[test]
-    fn chain_token_is_read_from_set_cookie_and_used_for_download() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            "msToken=abc; Path=/".parse().unwrap(),
+    fn photo_page_url_is_retried_as_video_page() {
+        assert_eq!(
+            photo_as_video("https://www.tiktok.com/@flora/photo/7708955805491531040?_r=1&_t=x")
+                .as_deref(),
+            Some("https://www.tiktok.com/@flora/video/7708955805491531040")
         );
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            "tt_chain_token=Ab+c/1==; Max-Age=15552000; HttpOnly"
-                .parse()
-                .unwrap(),
+        assert_eq!(
+            photo_as_video("https://www.tiktok.com/@flora/video/7708955805491531040"),
+            None
         );
-        assert_eq!(chain_token(&headers).as_deref(), Some("Ab+c/1=="));
-
-        let url = "https://v16-webapp-prime.tiktok.com/video/token-test/";
-        assert!(video_headers(url).is_none(), "bilinmeyen adres indirilmez");
-        remember_token(url, "Ab+c/1==");
-        let headers = video_headers(url).unwrap();
-        assert!(headers.contains(&("cookie", "tt_chain_token=Ab+c/1==".to_string())));
-        assert!(headers.contains(&("referer", "https://www.tiktok.com/".to_string())));
     }
 
     #[test]
@@ -920,7 +830,23 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires live TikTok access; run explicitly"]
-    async fn live_tiktok_video_downloads_with_the_page_cookie() {
+    async fn live_tiktok_photo_short_link_becomes_a_card() {
+        let parsed = ParsedPost {
+            platform: Platform::TikTok,
+            original_url: "https://vt.tiktok.com/ZSptsf7Wc".into(),
+            is_spoiler: false,
+            user_comment: None,
+        };
+        let post = fetch(&reqwest::Client::new(), &parsed)
+            .await
+            .expect("gönderi okunmalı");
+        assert!(post.url.contains("/photo/"), "{}", post.url);
+        assert!(!post.media.is_empty() && post.media.iter().all(|m| !m.is_video()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live TikTok access; run explicitly"]
+    async fn live_tiktok_video_downloads_through_fxtiktok() {
         let url = "https://www.tiktok.com/@scout2015/video/6718335390845095173".to_string();
         let parsed = ParsedPost {
             platform: Platform::TikTok,
@@ -933,15 +859,15 @@ mod tests {
             .expect("gönderi okunmalı");
         println!("{post:#?}");
         let video = post.media.first().expect("medya olmalı");
-        assert!(video.is_video(), "çerezle oynatılabilir video bekleniyor");
+        assert!(video.is_video(), "video bekleniyor");
         let file = super::super::media::download_video(
             &reqwest::Client::new(),
             &video.url,
             None,
-            MAX_VIDEO_BYTES,
+            super::super::media::DISCORD_FILE_LIMIT,
         )
         .await
-        .expect("video çerezle indirilmeli");
+        .expect("video fxTikTok üzerinden indirilmeli");
         assert!(file.mime.starts_with("video/"), "{}", file.mime);
     }
 }
