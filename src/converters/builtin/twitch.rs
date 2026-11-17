@@ -336,6 +336,7 @@ fn build_card(clip: &Clip, post: &BuiltinPost) -> CustomCard {
     }
 
     CustomCard {
+        buttons: Vec::new(),
         components: vec![
             header_component,
             json!({ "type": TYPE_SEPARATOR, "spacing": 1 }),

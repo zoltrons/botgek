@@ -198,6 +198,10 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         container["accent_color"] = json!(color);
     }
     top.push(container);
+    // Platformun bağlantı butonları kartın dışında, hemen altında durur.
+    if let Some(custom) = &card.post.custom_card {
+        top.extend(custom.buttons.iter().cloned());
+    }
 
     let mut payload = json!({
         "flags": COMPONENTS_V2_FLAG,
@@ -1330,6 +1334,24 @@ mod tests {
     }
 
     #[test]
+    fn custom_card_buttons_sit_below_the_container() {
+        let mut post = sample_post();
+        let row = json!({"type": 1, "components": [{"type": 2, "style": 5, "label": "Aç", "url": "https://x"}]});
+        post.custom_card = Some(crate::converters::builtin::CustomCard {
+            components: vec![json!({"type": TYPE_TEXT_DISPLAY, "content": "kart"})],
+            accent_color: None,
+            video_components: None,
+            buttons: vec![row.clone()],
+        });
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let top = payload["components"].as_array().unwrap();
+        assert_eq!(top[top.len() - 2]["type"], TYPE_CONTAINER);
+        assert_eq!(top[top.len() - 1], row);
+    }
+
+    #[test]
     fn sensitive_custom_card_hides_text_and_media_without_mutating_source_card() {
         let mut post = sample_post();
         let source_components = vec![json!({
@@ -1338,6 +1360,7 @@ mod tests {
             "accessory": {"type": TYPE_THUMBNAIL, "media": {"url": "https://cdn/cover.jpg"}}
         })];
         post.custom_card = Some(crate::converters::builtin::CustomCard {
+            buttons: Vec::new(),
             components: source_components.clone(),
             accent_color: None,
             video_components: None,
@@ -1361,6 +1384,7 @@ mod tests {
     fn custom_card_plays_attached_video_below_its_section_only() {
         let mut post = sample_post();
         post.custom_card = Some(crate::converters::builtin::CustomCard {
+            buttons: Vec::new(),
             components: vec![
                 json!({"type": TYPE_SECTION, "components": [], "accessory": {}}),
                 json!({"type": TYPE_SEPARATOR}),

@@ -590,6 +590,7 @@ fn build_card(article: &Article, host: &str, code: &str) -> CustomCard {
         row,
     ];
     CustomCard {
+        buttons: Vec::new(),
         components,
         accent_color: None,
         video_components: None,

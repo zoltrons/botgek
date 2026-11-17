@@ -26,7 +26,9 @@ Veri anahtar gerektirmeyen herkese açık sayfalardan okunur:
 - Spoiler uyarılı incelemelerde metin `||...||` arkasındadır; tek paragrafa toplanır ve `SPOILER_LIMIT` (280)
   karakterde kesilip "Devamını oku" bağlantısı alır.
 - İnceleme/günlük kartı tek bölümdür (Filmlinkd düzeni): `**Ad** izledi|inceledi`, bağlantılı film adı (`###`),
-  kayda bağlı gün (bu yılsa yılsız) + yıldız + yeniden izleme + kalp; yanında poster. Metin ayraçla altta. Buton yok.
+  kayda bağlı gün (bu yılsa yılsız) + yıldız + yeniden izleme + kalp; yanında poster. Metin ayraçla altta.
+  Adın yanında rozet logosu (Patron tacı, Pro). "İncelemeyi/Kaydı aç" ve "Filmi aç" butonları kartın dışında,
+  hemen altında (`CustomCard::buttons`).
 - Kullanıcının seçtiği özel poster (`preferredAlternativePosterId`) kayıt sayfasından çözülür. Takip akışında RSS
   yalnızca varsayılan posteri verdiği için `DiaryEntry::post` gönderilecek kaydın sayfasını ayrıca okur.
 - Film kartında künye tek blokta: özgün ad, yönetmen, oyuncular (`MAX_CAST` = 3), ardından tür/süre/ülke satırı.

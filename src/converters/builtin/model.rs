@@ -111,6 +111,8 @@ pub struct CustomCard {
     /// kapak videoda göründüğü için küçük görselsiz, kompakt başlık). Video ilk bileşenin
     /// altına eklenir. `None`: video olsa da `components` kullanılır.
     pub video_components: Option<Vec<serde_json::Value>>,
+    /// Kartın (container) dışında, altında duran bileşenler: bağlantı butonu satırları.
+    pub buttons: Vec<serde_json::Value>,
 }
 
 /// Render katmanının platformdan bağımsız girdisi.

@@ -681,6 +681,15 @@ fn reaction_strip(html: &str) -> &str {
     &rest[..end]
 }
 
+/// Kayıt sayfasının başlığındaki yazar rozeti (`Patron`, `Pro`, `HQ`).
+fn review_badge(html: &str) -> Option<String> {
+    REVIEW_HEADER_REGEX
+        .find(html)
+        .and_then(|header| first_capture(&PROFILE_BADGE_REGEX, header.as_str()))
+        .map(|badge| badge.trim().to_string())
+        .filter(|badge| !badge.is_empty())
+}
+
 fn parse_review(html: &str, target: &Target) -> Option<Review> {
     let Target::Review { user, .. } = target else {
         return None;
@@ -713,11 +722,7 @@ fn parse_review(html: &str, target: &Target) -> Option<Review> {
             .find(|caps| &caps[1] == user.as_str())
             // Gravatar adresi HTML kaçışlı ve 48 piksel gelir; kartta keskin görünsün.
             .map(|caps| unescape_html(&caps[2]).replace("size=48", "size=256")),
-        badge: REVIEW_HEADER_REGEX
-            .find(html)
-            .and_then(|header| first_capture(&PROFILE_BADGE_REGEX, header.as_str()))
-            .map(|badge| badge.trim().to_string())
-            .filter(|badge| !badge.is_empty()),
+        badge: review_badge(html),
         rating: review
             .get("reviewRating")
             .and_then(|rating| rating.get("ratingValue"))
@@ -1095,6 +1100,16 @@ fn date_label((year, month, day): (u32, u32, u32)) -> String {
     format!("{day} {month} {year}")
 }
 
+/// Rozetin Letterboxd logosu: Patron tacı, Pro rozeti. Logosu olmayan rozet (HQ) gösterilmez.
+fn badge_icon(badge: &str) -> Option<String> {
+    match badge.to_ascii_lowercase().as_str() {
+        "patron" => Some(EMOJI_PATRON.tag()),
+        // shortcut: Pro logosu emoji olarak yüklenene dek metin rozeti; kimlik gelince EMOJI_PRO.
+        "pro" => Some("`PRO`".to_string()),
+        _ => None,
+    }
+}
+
 /// Bu yılın günü yılsız yazılır (`13 Kas`), eski kayıtlar yıllı (`9 Ağu 2019`).
 fn short_date_label(date: (u32, u32, u32)) -> String {
     let full = date_label(date);
@@ -1290,6 +1305,7 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
 
     CustomCard {
+        buttons: Vec::new(),
         components,
         accent_color: Some(LETTERBOXD_GREEN),
         video_components: None,
@@ -1303,10 +1319,12 @@ fn review_card(review: &Review) -> CustomCard {
     } else {
         "izledi"
     };
+    let badge = review.badge.as_deref().and_then(badge_icon);
     let who = format!(
-        "**[{}]({})** {verb}",
+        "**[{}]({})**{} {verb}",
         escape_markdown(&review.author),
-        review.profile_url
+        review.profile_url,
+        badge.map(|icon| format!(" {icon}")).unwrap_or_default()
     );
     let mut film = escape_markdown(&review.film_title);
     if let Some(year) = &review.film_year {
@@ -1378,10 +1396,22 @@ fn review_card(review: &Review) -> CustomCard {
         components,
         accent_color: Some(LETTERBOXD_ORANGE),
         video_components: None,
+        buttons: vec![json!({
+            "type": TYPE_ACTION_ROW,
+            "components": [
+                // İncelemesiz günlük kaydı (yalnızca izleme) inceleme diye açılmaz.
+                link_button(
+                    if review.body.is_some() { "İncelemeyi aç" } else { "Kaydı aç" },
+                    &review.url,
+                    Some(EMOJI_REVIEW),
+                ),
+                link_button("Filmi aç", &review.film_url, Some(EMOJI_LOGO)),
+            ],
+        })],
     }
 }
 
-/// Son etkinlik satırı: yıldızlar, filmin bağlantısı ve varsa kalp/yeniden izleme işaretleri.
+/// Son etkinlik satırı: filmin bağlantısı, yıldızlar ve varsa kalp/yeniden izleme işaretleri.
 fn activity_line(activity: &ProfileActivity) -> String {
     // Ad önde: yıldız sayısı değiştikçe adların başladığı yer kaymasın.
     let mut line = format!(
@@ -1552,6 +1582,7 @@ fn profile_card(profile: &Profile) -> CustomCard {
     components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
 
     CustomCard {
+        buttons: Vec::new(),
         components,
         accent_color: Some(LETTERBOXD_BLUE),
         video_components: None,
@@ -1621,9 +1652,11 @@ impl DiaryEntry {
             && let Ok(Page {
                 body: Some(html), ..
             }) = get_page(client, &review.url).await
-            && let Some(poster) = custom_poster(client, &html, &slug).await
         {
-            review.poster = Some(poster);
+            review.badge = review_badge(&html);
+            if let Some(poster) = custom_poster(client, &html, &slug).await {
+                review.poster = Some(poster);
+            }
         }
         review_post(&review)
     }
@@ -1893,6 +1926,7 @@ mod tests {
     fn button_icons(card: &CustomCard) -> Vec<String> {
         card.components
             .iter()
+            .chain(&card.buttons)
             .filter(|component| component["type"] == TYPE_ACTION_ROW)
             .flat_map(|row| row["components"].as_array().cloned().unwrap_or_default())
             .map(|button| {
@@ -1907,6 +1941,7 @@ mod tests {
     fn buttons(card: &CustomCard) -> Vec<(String, String)> {
         card.components
             .iter()
+            .chain(&card.buttons)
             .filter(|component| component["type"] == TYPE_ACTION_ROW)
             .flat_map(|row| row["components"].as_array().cloned().unwrap_or_default())
             .map(|button| {
@@ -2274,7 +2309,7 @@ mod tests {
         let text = contents(&card);
         assert!(
             text.starts_with(
-                "**[hollie amanda](https://letterboxd.com/hollieamanda/)** inceledi\n\
+                "**[hollie amanda](https://letterboxd.com/hollieamanda/)** 👑 inceledi\n\
                  ### [Parasite (2019)](https://letterboxd.com/film/parasite-2019/)\n\
                  **[9 Ağu 2019](https://letterboxd.com/hollieamanda/film/parasite-2019/)** ★★★★½ ♥"
             ),
@@ -2293,8 +2328,16 @@ mod tests {
             "{text}"
         );
         assert!(
-            buttons(&card).is_empty(),
-            "gün ve başlık bağlantı; buton yok"
+            !card.components.iter().any(|c| c["type"] == TYPE_ACTION_ROW),
+            "butonlar kartın dışında"
+        );
+        let urls: Vec<String> = buttons(&card).into_iter().map(|(_, url)| url).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://letterboxd.com/hollieamanda/film/parasite-2019/",
+                "https://letterboxd.com/film/parasite-2019/"
+            ]
         );
 
         let mut plain = review.clone();
@@ -2531,7 +2574,7 @@ mod tests {
         let json = serde_json::to_string(&card.components).unwrap();
         assert!(!json.contains("Watched on"), "{json}");
         assert!(json.contains("** izledi"), "{json}");
-        assert!(buttons(card).is_empty(), "{json}");
+        assert_eq!(buttons(card)[0].0, "Kaydı aç");
     }
 }
 
