@@ -27,7 +27,7 @@ Veri anahtar gerektirmeyen herkese açık sayfalardan okunur:
   karakterde kesilip "Devamını oku" bağlantısı alır.
 - İnceleme/günlük kartı tek bölümdür (Filmlinkd düzeni): `**Ad** izledi|inceledi`, bağlantılı film adı (`###`),
   kayda bağlı gün (bu yılsa yılsız) + yıldız + yeniden izleme + kalp; yanında poster. Metin ayraçla altta.
-  Adın yanında rozet logosu (Patron tacı, Pro). "İncelemeyi/Kaydı aç" ve "Filmi aç" butonları kartın dışında,
+  Adın yanında rozet logosu (Patron tacı `lb_patron`, Pro `lb_pro`; profil kartında da). "İncelemeyi/Kaydı aç" ve "Filmi aç" butonları kartın dışında,
   hemen altında (`CustomCard::buttons`).
 - Kullanıcının seçtiği özel poster (`preferredAlternativePosterId`) kayıt sayfasından çözülür. Takip akışında RSS
   yalnızca varsayılan posteri verdiği için `DiaryEntry::post` gönderilecek kaydın sayfasını ayrıca okur.

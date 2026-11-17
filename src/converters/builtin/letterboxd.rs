@@ -110,6 +110,10 @@ const EMOJI_PEOPLE: Emoji = Emoji {
     name: "lb_people",
     id: "1563865494522437662",
 };
+const EMOJI_PRO: Emoji = Emoji {
+    name: "lb_pro",
+    id: "1572272240416784535",
+};
 const EMOJI_PATRON: Emoji = Emoji {
     name: "lb_patron",
     id: "1563865493029257216",
@@ -1104,8 +1108,7 @@ fn date_label((year, month, day): (u32, u32, u32)) -> String {
 fn badge_icon(badge: &str) -> Option<String> {
     match badge.to_ascii_lowercase().as_str() {
         "patron" => Some(EMOJI_PATRON.tag()),
-        // shortcut: Pro logosu emoji olarak yüklenene dek metin rozeti; kimlik gelince EMOJI_PRO.
-        "pro" => Some("`PRO`".to_string()),
+        "pro" => Some(EMOJI_PRO.tag()),
         _ => None,
     }
 }
@@ -1498,13 +1501,11 @@ fn profile_card(profile: &Profile) -> CustomCard {
     let mut header = format!("### [{}]({})", escape_markdown(&profile.name), profile.url);
     let mut byline = format!("@{}", escape_markdown(&profile.user));
     if let Some(badge) = &profile.badge {
-        // Patron rozetine Letterboxd'un tacı eşlik eder; diğer rozetler (Pro, HQ) yalnızca yazı.
-        let crown = if badge.eq_ignore_ascii_case("patron") {
-            format!("{} ", EMOJI_PATRON.tag())
-        } else {
-            String::new()
-        };
-        byline.push_str(&format!(" · {crown}{}", escape_markdown(badge)));
+        // Patron ve Pro rozetine logoları eşlik eder; logosuz rozet (HQ) yalnızca yazı.
+        let icon = badge_icon(badge)
+            .map(|icon| format!("{icon} "))
+            .unwrap_or_default();
+        byline.push_str(&format!(" · {icon}{}", escape_markdown(badge)));
     }
     header.push_str(&format!("\n-# {byline}"));
 
@@ -1915,6 +1916,7 @@ mod tests {
             (EMOJI_LISTS, "▦"),
             (EMOJI_PEOPLE, "👤"),
             (EMOJI_PATRON, "👑"),
+            (EMOJI_PRO, "PRO"),
         ]
         .iter()
         .fold(text.to_string(), |acc, (emoji, mark)| {
@@ -2420,6 +2422,12 @@ mod tests {
             json!({ "name": "letterboxd", "id": "1563865506841362505" })
         );
         assert!(link_button("IMDb", LETTERBOXD, None).get("emoji").is_none());
+        assert_eq!(
+            badge_icon("Pro").as_deref(),
+            Some("<:lb_pro:1572272240416784535>")
+        );
+        assert_eq!(badge_icon("Patron"), Some(EMOJI_PATRON.tag()));
+        assert_eq!(badge_icon("HQ"), None);
     }
 
     #[test]
