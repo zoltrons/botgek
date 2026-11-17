@@ -255,6 +255,7 @@ fn clip_post(clip: &Clip) -> Result<BuiltinPost, String> {
     post.extra_label = clip.game.as_ref().map(|game| game.display_name.clone());
     if let Some(url) = video_url(clip) {
         post.media.push(Media {
+            alt: None,
             kind: MediaKind::Video,
             url,
             poster: https(clip.thumbnail_url.as_ref()).map(str::to_string),

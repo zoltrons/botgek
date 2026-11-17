@@ -88,7 +88,11 @@ async fn fetch_fxtumblr(parsed: &ParsedPost) -> Result<BuiltinPost, String> {
     if final_host != domain {
         return Err("fxtumblr redirected outside its configured host".into());
     }
-    preview::from_external_html(&parsed.original_url, Platform::Tumblr, &html)
+    let mut post = preview::from_external_html(&parsed.original_url, Platform::Tumblr, &html)?;
+    // Blog adı adresin kendisinden gelir; OG verisi yalnızca platform adını verirdi.
+    post.author = super::Author::new(blog.clone(), blog.clone());
+    post.author.profile_url = Some(format!("https://www.tumblr.com/{blog}"));
+    Ok(post)
 }
 
 pub async fn fetch(_client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {

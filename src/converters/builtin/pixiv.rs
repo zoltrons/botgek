@@ -212,6 +212,7 @@ fn tag_line(illust: &Illust) -> Option<String> {
 
 fn image(url: &Urls, width: Option<u32>, height: Option<u32>) -> Option<Media> {
     Some(Media {
+        alt: None,
         kind: MediaKind::Image,
         url: url
             .regular

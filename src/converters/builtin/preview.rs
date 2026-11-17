@@ -347,6 +347,7 @@ pub(super) fn from_html(
         && let Some(url) = video
     {
         post.media.push(Media {
+            alt: None,
             kind: MediaKind::Video,
             url,
             poster: poster.clone(),
@@ -368,6 +369,7 @@ pub(super) fn from_html(
         .take(count)
     {
         post.media.push(Media {
+            alt: None,
             kind: MediaKind::Image,
             url,
             poster: None,

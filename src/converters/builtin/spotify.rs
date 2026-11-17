@@ -387,6 +387,7 @@ fn preview_media(view: &EntityView) -> Option<Media> {
         .as_deref()
         .filter(|url| url.starts_with("https://"))?;
     Some(Media {
+        alt: None,
         kind: MediaKind::Video,
         url: preview.to_string(),
         poster: Some(cover.to_string()),

@@ -251,6 +251,7 @@ fn post_from_html(url: &str, html: &str, player: Option<&str>) -> Result<Builtin
     );
     match video {
         Some(video) => post.media.push(Media {
+            alt: None,
             kind: MediaKind::Video,
             url: video,
             poster: image,
@@ -259,6 +260,7 @@ fn post_from_html(url: &str, html: &str, player: Option<&str>) -> Result<Builtin
             duration: None,
         }),
         None => post.media.extend(image.map(|url| Media {
+            alt: None,
             kind: MediaKind::Image,
             url,
             poster: None,

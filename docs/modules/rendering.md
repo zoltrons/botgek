@@ -48,22 +48,36 @@ Kurallar:
 
 - Hassas içerik varsayılan olarak spoiler'dır, yalnızca NSFW kanalda ve ayar izin verirse açık gösterilir.
 - Kaynak spoiler'ı (`source_spoiler`) ve elle işaretlenen spoiler NSFW kanalda da gizli kalır.
-- Alıntıya da uygulanır, gizli alıntının medyası geri düşmez.
+- Alıntıya da uygulanır, gizli alıntının medyası geri düşmez. Spoiler'a katlanan alıntı `> ` öneklerini
+  kaybeder: Discord `||...||` içinde blok alıntı çizmez.
 
 ### Kart düzeni (`v2.rs`)
 
 Kullanıcının linkle yazdığı not kartın **dışında**, üstte düz metin olarak gider. Components V2 bayrağı
 `content` alanını yasakladığı için bu metin bir `Text Display` bileşenidir. Kartın içi sırayla:
 
-1. Kalın yazar satırı (ad, doğrulama emojisi, `@kullanıcı`). Reddit için `r/alt • flair • Posted by u/kullanıcı`.
-2. Gönderi metni.
-3. Ayraç (alıntı varsa), alıntı bloğu.
-4. Medya galerisi.
-5. Metrik satırı (`-#` küçük yazı): yanıt, repost, beğeni, görüntülenme.
-6. Alt bilgi: platform emojisi, göreli zaman, `[Link]`.
+0. (Yanıtsa) iplik bağlamı (`reply_context`): küçük gri `-#` satırlar ve ince ayraç. Kendi ipliğinin
+   devamında `🧵 İpliğin devamı · [önceki gönderi]`, başkasına yanıtta `↩️ **Ad** @kullanıcı gönderisine
+   [yanıt]`. Platform üst gönderinin metnini verdiyse (Bluesky) en çok 3 satır / 220 karakter altında
+   durur; gizli kartta metin gösterilmez. Veri `BuiltinPost::reply_to`'dan gelir, alıntı yuvasını kullanmaz.
+1. Yazar satırı: ad kalın, `@kullanıcı` normal ağırlıkta (`**Ad** ✓ [@kullanıcı](profil)`). Ad kullanıcı
+   adıyla aynıysa yalnızca bağlantılı ad yazılır; yazarı yalnızca platform adı olan (OG) gönderide satır
+   yoktur. Reddit'te üst satır küçük gridir: `-# **r/alt** • flair • Posted by u/kullanıcı`.
+2. Gönderi metni. Reddit başlığı `### Başlık` (gizliyken kalın), gövdesi `REDDIT_BODY_LIMIT` (700)
+   karakterde `… [Devamını oku]` ile kesilir. Düz metin kaynaklarında satır başındaki `>`, `#`, `-#`
+   kaçırılır (`escape_block_markers`); Reddit'in markdown'ı korunur.
+3. Gönderinin kendi medya galerisi (varsa) alıntının **üstünde** durur.
+4. Ayraç ve alıntı bloğu: `> ✎ [Quote](link) from **Ad** [@kullanıcı](profil)`, boş satırsız en çok
+   `QUOTE_LINES` (6) satır, fazlası `> …`. Gönderinin medyası yokken alıntının tek görseli alıntının
+   yanında küçük görsel (Section + Thumbnail) olur; video ve çoklu görsel galeride alıntının altında kalır.
+5. Platformun verdiği alt metin (`Media::alt`, X/Bluesky/Instagram) galeri öğesinin `description`'ı
+   olur (en çok 1024 karakter); gizli kartta eklenmez. Bağlantı önizlemesinin açıklaması 200 karakterdir.
+6. Metrik satırı (`-#` küçük yazı): yanıt, repost, beğeni, görüntülenme. Reddit'te `1 upvote` / `N upvotes`.
+7. Alt bilgi: platform emojisi, etiket, göreli zaman, `[Link]`.
 
-Sınırlar: `TEXT_DISPLAY_LIMIT` 4000, `CUMULATIVE_TEXT_LIMIT` 4000 (toplam), `MEDIA_GALLERY_LIMIT` 10,
-konteyner çocukları en fazla 10. Metin sığmazsa `truncate_chars` ile `…` eklenerek kısaltılır.
+Sınırlar: `TEXT_DISPLAY_LIMIT` 4000, `CUMULATIVE_TEXT_LIMIT` 4000 (toplam), `MEDIA_GALLERY_LIMIT` 10.
+Discord kapsayıcı başına çocuk sınırını Nisan 2025'te kaldırdı; mesaj başına toplam 40 bileşen geçerlidir,
+kart üst düzeyde en çok `MAX_CONTAINER_CHILDREN` (30) çocuk taşır. Metin sığmazsa `truncate_chars` ile `…` eklenerek kısaltılır.
 `custom_card` (Spotify, Twitch, Letterboxd) varsa genel düzen yerine bu bileşenler kullanılır.
 
 Özel emojiler `EmojiSettings`'ten gelir (bkz. [settings.md](settings.md)).

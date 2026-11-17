@@ -67,6 +67,8 @@ pub struct Media {
     pub height: Option<u32>,
     /// Saniye.
     pub duration: Option<u64>,
+    /// Platformun verdiği alt metin (erişilebilirlik); kartta galeri öğesinin `description`'ı olur.
+    pub alt: Option<String>,
 }
 impl Media {
     pub fn is_video(&self) -> bool {
@@ -125,6 +127,14 @@ pub struct BuiltinPost {
     pub media: Vec<Media>,
     /// Adapter tarafından sınırlandırılan alıntı zinciri.
     pub quote: Option<Box<BuiltinPost>>,
+    /// Yanıtlanan üst gönderi (iplik bağlamı). Alıntıdan ayrıdır: kartta gönderinin **üstünde**
+    /// küçük bağlam satırı olarak çizilir. Metni boş olabilir (yalnızca yazar ve bağlantı).
+    pub reply_to: Option<Box<BuiltinPost>>,
+    /// Yazarın kendi ipliğindeki yeri: (kaçıncı, toplam). Alt bilgide `🧵 2/4` olarak görünür.
+    pub thread_position: Option<(u32, u32)>,
+    /// İplik konumu henüz çözülmedi: kart gönderildikten sonra [`super::enrich`] çözer ve kartı
+    /// yerinde günceller (iplik istekleri kartı geciktirmesin diye).
+    pub thread_lookup: bool,
     pub community_note: Option<String>,
     /// Kaynağın açıkça spoiler olarak işaretlediği içerik (Reddit `spoiler`).
     /// NSFW kanalda bile hiçbir zaman otomatik olarak açılmaz.
@@ -149,6 +159,9 @@ impl BuiltinPost {
             stats: Stats::default(),
             media: Vec::new(),
             quote: None,
+            reply_to: None,
+            thread_position: None,
+            thread_lookup: false,
             community_note: None,
             source_spoiler: false,
             sensitive: false,

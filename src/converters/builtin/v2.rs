@@ -46,8 +46,10 @@ pub const TEXT_DISPLAY_LIMIT: usize = 4000;
 pub const CUMULATIVE_TEXT_LIMIT: usize = 4000;
 /// `Media Gallery` bileşeni en fazla 10 öğe alır.
 pub const MEDIA_GALLERY_LIMIT: usize = 10;
-/// Kart (Container) içindeki bileşen sayısı (Discord API sınırı 10).
-const MAX_CONTAINER_CHILDREN: usize = 10;
+/// Kart (Container) içindeki üst düzey bileşen sayısı. Discord kapsayıcı başına sınırı Nisan 2025'te
+/// kaldırdı; mesaj başına **toplam 40 bileşen** (iç içe olanlar dahil) sınırı geçerlidir. Kalan pay
+/// kapsayıcının kendisi, kullanıcı notu, bölüm içi metinler ve sayfalama butonları içindir.
+const MAX_CONTAINER_CHILDREN: usize = 30;
 
 // Bileşen türleri
 const TYPE_SECTION: u64 = 9;
@@ -282,18 +284,29 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
             (None, Some(title)) => escape_markdown(title),
             (None, None) => escape_markdown(&preview.url),
         };
-        let line = format!("**🔗 [{label}]({})**", preview.url);
+        let line = format!("**[{label}]({})**", preview.url);
         return Some(text(line));
     }
 
+    // Yalnızca OG verisi olan gönderide önizleme gönderinin kendisidir: başlık düz kalın yazılır,
+    // bağlantı ve site adı alt bilgide zaten var.
+    let own = preview.url == card.post.url;
     let mut lines: Vec<String> = Vec::new();
-    let label = preview.title.as_deref().unwrap_or(preview.url.as_str());
-    lines.push(format!(
-        "**🔗 [{}]({})**",
-        escape_markdown(label),
-        preview.url
-    ));
+    match preview.title.as_deref() {
+        // Başlık yalnızca yazar adını tekrarlıyorsa (ör. Tumblr blog adı) atlanır.
+        Some(title) if own && title.trim() != card.post.author.name.trim() => {
+            lines.push(format!("**{}**", escape_markdown(title)))
+        }
+        _ if own => {}
+        title => lines.push(format!(
+            "**[{}]({})**",
+            escape_markdown(title.unwrap_or(preview.url.as_str())),
+            preview.url
+        )),
+    }
     if let Some(description) = preview.description.as_deref() {
+        // Önizleme kartın gövdesini bastırmasın: açıklama kısa tutulur.
+        let description = truncate_chars(description.trim(), 200);
         for line in description
             .lines()
             .map(str::trim)
@@ -303,8 +316,11 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
             lines.push(format!("> {line}"));
         }
     }
-    if let Some(site_name) = preview.site_name.as_deref() {
+    if !own && let Some(site_name) = preview.site_name.as_deref() {
         lines.push(format!("-# {site_name}"));
+    }
+    if lines.is_empty() {
+        return None;
     }
 
     Some(text(lines.join("\n")))
@@ -316,6 +332,8 @@ fn link_preview_component(card: &V2Card<'_>) -> Option<Value> {
 /// bu yolu kullanır.
 fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     let mut children: Vec<Value> = Vec::new();
+    let hidden = hidden(card);
+    children.extend(reply_context(card.post, hidden));
     let header = header_line(card.post, card.emojis);
     if !header.is_empty() {
         children.push(text(header));
@@ -331,13 +349,24 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             .map(str::trim)
             .filter(|t| !t.is_empty())
     {
-        body.push(format!("**{}**", escape_markdown(title)));
+        // Başlık gövdeden büyük, üst satırdan (küçük gri) belirgin: Reddit'in kendi hiyerarşisi.
+        // Spoiler içinde başlık işareti çalışmaz; gizliyken kalın yazılır.
+        let title = escape_markdown(title);
+        body.push(if hidden {
+            format!("**{title}**")
+        } else {
+            format!("### {title}")
+        });
     }
-    if !card.post.text.trim().is_empty() {
-        body.push(card.post.text.trim().to_string());
+    let post_text = card.post.text.trim();
+    if !post_text.is_empty() {
+        body.push(if card.post.platform == Platform::Reddit {
+            clamp_body(post_text, REDDIT_BODY_LIMIT, &card.post.url)
+        } else {
+            escape_block_markers(post_text)
+        });
     }
     let body_pos = children.len();
-    let hidden = hidden(card);
     if card.options.show_community_note
         && let Some(note) = card
             .post
@@ -352,6 +381,8 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
         children.push(preview);
     }
     let mut nested_has_thumbnail = false;
+    // Gönderinin kendi medyası alıntının üstünde durur (X düzeni); alıntının medyası altında kalır.
+    let mut quote_start = children.len();
     if card.options.show_quote
         && let Some(quote) = card.post.quote.as_deref()
     {
@@ -364,14 +395,31 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             None
         };
 
+        // Alıntının tek görseli (gönderinin kendi medyası yokken) alıntı metninin yanında küçük
+        // görsel olur: büyük galeride ana gönderiye aitmiş gibi görünüyordu.
+        let quote_image = (!hidden
+            && card.post.media.is_empty()
+            && quote.media.len() == 1
+            && quote.media[0].kind == super::MediaKind::Image
+            && card.resolved.attached_video.is_none()
+            && card.resolved.video_link.is_none()
+            && card.resolved.images.len() == 1)
+            .then(|| card.resolved.images.first())
+            .flatten();
         if let Some(component) = quote_component(quote, card.emojis, false) {
             if hidden {
-                body.push(content_of(&component));
+                body.push(unquote(&content_of(&component)));
             } else {
                 // Hiyerarşi: alıntı bloğundan önce ince bir ayraç çizgisi ve büyük bir dikey
                 // boşluk bırakılır, böylece alıntı kartın gövdesinden ayrı okunur.
                 children.push(separator());
-                children.push(component);
+                match quote_image {
+                    Some(image_url) => {
+                        children.push(section(vec![component], thumbnail(image_url, false)));
+                        nested_has_thumbnail = true;
+                    }
+                    None => children.push(component),
+                }
             }
         }
         let is_nested_image = card.post.media.is_empty()
@@ -391,7 +439,7 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             )
         {
             if fold_nested {
-                body.push(content_of(&component));
+                body.push(unquote(&content_of(&component)));
             } else {
                 // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
                 // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
@@ -411,10 +459,23 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
         }
     }
     if !body.is_empty() {
-        children.insert(body_pos, text(spoiler_wrap(&body.join("\n\n"), hidden)));
+        // Reddit başlığı bir başlık satırıdır; altındaki metinle arasına boş satır gerekmez.
+        let joined = match body.split_first() {
+            Some((title, rest)) if title.starts_with("### ") && !rest.is_empty() => {
+                format!("{title}\n{}", rest.join("\n\n"))
+            }
+            _ => body.join("\n\n"),
+        };
+        children.insert(body_pos, text(spoiler_wrap(&joined, hidden)));
+        quote_start += 1;
     }
     if let Some(gallery) = media_gallery(card, nested_has_thumbnail) {
-        children.push(gallery);
+        let mut at = if card.post.media.is_empty() {
+            children.len()
+        } else {
+            quote_start
+        };
+        children.insert(at, gallery);
         // Yalnızca uzak URL'li görseller sayfalanır (indirilen `attachment://` dosyalar değil).
         if !nested_has_thumbnail
             && card
@@ -424,7 +485,8 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
                 .all(|url| url.starts_with("http"))
             && let Some(row) = pager::pager_row(card.post, 0)
         {
-            children.push(row);
+            at += 1;
+            children.insert(at, row);
         }
     }
     if let Some(metrics) = metrics_line(card.post, card.options, card.emojis) {
@@ -441,6 +503,119 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     }
 
     children
+}
+
+/// Reddit metin gönderisinin kartta gösterilen en uzun gövdesi; devamı bağlantıyla okunur.
+const REDDIT_BODY_LIMIT: usize = 700;
+/// Yanıt bağlamında üst gönderiden gösterilen en fazla satır ve karakter.
+const REPLY_CONTEXT_LINES: usize = 3;
+const REPLY_CONTEXT_CHARS: usize = 220;
+/// Alıntı bloğunda gösterilen en fazla dolu satır.
+const QUOTE_LINES: usize = 6;
+
+/// Yanıtlanan gönderinin bağlamı: kartın en üstünde küçük gri (`-#`) satırlar ve ince bir ayraç.
+///
+/// Başkasına yanıtsa `↩️ Ad @kullanıcı gönderisine yanıt` yazılır; bağlantı üst gönderiyi açar.
+/// Platform üst gönderinin metnini verdiyse (Bluesky) ilk birkaç satırı altında küçük yazıyla durur.
+/// Gizli kartta metin gösterilmez. Yazarın kendi ipliğinin devamında `↩️ Thread'in devamı` yazılır;
+/// konum ayrıca alt bilgide `🧵 2/4` olarak görünür (bkz. [`meta_line`]).
+fn reply_context(post: &BuiltinPost, hidden: bool) -> Vec<Value> {
+    let Some(parent) = post.reply_to.as_deref() else {
+        return Vec::new();
+    };
+    let url = parent.url.trim();
+    let handle = parent.author.handle.trim();
+    let same = !handle.is_empty() && handle.eq_ignore_ascii_case(post.author.handle.trim());
+    let mut lines = vec![if same {
+        format!("-# ↩️ Thread'in devamı · [önceki gönderi]({url})")
+    } else {
+        let name = parent.author.name.trim();
+        let who = match (
+            name.is_empty() || name.eq_ignore_ascii_case(handle),
+            handle.is_empty(),
+        ) {
+            (true, false) => format!("@{}", escape_markdown(handle)),
+            (_, true) => format!("**{}**", escape_markdown(name)),
+            (false, false) => format!("**{}** @{}", escape_markdown(name), escape_markdown(handle)),
+        };
+        format!("-# ↩️ {who} gönderisine [yanıt]({url})")
+    }];
+
+    if !hidden {
+        let source: Vec<&str> = parent
+            .text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let mut budget = REPLY_CONTEXT_CHARS;
+        let mut shown: Vec<String> = Vec::new();
+        for line in source.iter().take(REPLY_CONTEXT_LINES) {
+            if budget == 0 {
+                break;
+            }
+            let cut = truncate_chars(line, budget);
+            budget = budget.saturating_sub(cut.chars().count());
+            shown.push(escape_block_markers(&cut));
+        }
+        let truncated =
+            source.len() > shown.len() || shown.last().is_some_and(|line| line.ends_with('…'));
+        if truncated
+            && let Some(last) = shown.last_mut()
+            && !last.ends_with('…')
+        {
+            last.push_str(" …");
+        }
+        if !parent.media.is_empty() {
+            match shown.last_mut() {
+                Some(last) => last.push_str(" 🖼️"),
+                None => shown.push("🖼️".to_string()),
+            }
+        }
+        lines.extend(shown.into_iter().map(|line| format!("-# {line}")));
+    }
+
+    vec![
+        text(lines.join("\n")),
+        json!({ "type": TYPE_SEPARATOR, "divider": true, "spacing": 1 }),
+    ]
+}
+
+/// Düz metin kaynaklarında (X, Bluesky, Instagram, TikTok) satır başındaki `>`, `#` ve `-#`
+/// Discord'da alıntı/başlık/alt yazıya dönüşürdü; kaçırılarak yazıldığı gibi gösterilir. Reddit'in
+/// kendi markdown'ı bilinçli kullanıldığı için çağıran onu atlar.
+fn escape_block_markers(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            let marker = trimmed.starts_with('>')
+                || ["# ", "## ", "### ", "-# "]
+                    .iter()
+                    .any(|prefix| trimmed.starts_with(prefix));
+            if marker {
+                format!("{indent}\\{trimmed}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Uzun gövdeyi kısaltır ve sonuna `Devamını oku` bağlantısı ekler. Mümkünse paragraf sonunda kesilir.
+fn clamp_body(text: &str, max: usize, url: &str) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut = truncate_chars(text, max);
+    let cut = match cut.rfind("\n\n") {
+        Some(index) if index > cut.len() / 2 => cut[..index].trim_end().to_string(),
+        _ => cut,
+    };
+    let ellipsis = if cut.ends_with('…') { "" } else { "…" };
+    // Satır içi kalır: `-#` satırı spoiler (`||…||`) içinde çalışmazdı.
+    format!("{cut}{ellipsis} [Devamını oku]({url})")
 }
 
 /// X'in "Readers added context" bloğu (topluluk notu).
@@ -492,15 +667,22 @@ fn text(content: impl Into<String>) -> Value {
 /// Profil resmi (avatar) hiçbir platformda gösterilmez: Discord kartın sağ üstünde ayrı bir
 /// görsel yuvası açar ve bu alan istenmiyor.
 fn header_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
-    let body = if post.platform == Platform::Reddit {
-        reddit_header_body(post)
-    } else {
-        author_line(post, emojis)
-    };
-    if body.trim().is_empty() {
+    // Kimliği bilinmeyen (yalnızca OG) gönderide yazar platform adıdır; alt bilgi bunu zaten söyler.
+    if post.author.handle.trim().is_empty()
+        && post.author.name.trim() == post.platform.display_name()
+    {
         return String::new();
     }
-    format!("**{body}**")
+    if post.platform == Platform::Reddit {
+        // Topluluk ve yazar küçük gri satırdadır; başlık altta büyük durur.
+        let body = reddit_header_body(post);
+        return if body.trim().is_empty() {
+            body
+        } else {
+            format!("-# {body}")
+        };
+    }
+    author_line(post, emojis)
 }
 
 /// Reddit üst satırının gövdesi:
@@ -516,7 +698,12 @@ fn reddit_header_body(post: &BuiltinPost) -> String {
         .map(str::trim)
         .filter(|label| !label.is_empty())
     {
-        parts.push(label.to_string());
+        // İlk parça topluluktur (`r/alt`), kalın yazılır; flair gibi kalanlar düz kalır.
+        let mut segments = label.splitn(2, " • ");
+        if let Some(community) = segments.next() {
+            parts.push(format!("**{community}**"));
+        }
+        parts.extend(segments.map(str::to_string));
     }
     let name = post.author.name.trim();
     let author = if name.is_empty() {
@@ -546,33 +733,35 @@ fn reddit_header_body(post: &BuiltinPost) -> String {
 /// katmanda belirlenir).
 fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
     let name = post.author.name.trim();
-    let name = if name.is_empty() {
-        post.author.handle.trim()
-    } else {
-        name
-    };
-
-    let mut inner = escape_markdown(name);
-    if post.author.verified {
-        inner.push(' ');
-        inner.push_str(emojis.verified());
-    }
-
     let handle = post.author.handle.trim();
-    if handle.is_empty() {
-        return inner;
-    }
-    let handle = escape_markdown(handle);
-    match post
+    let name = if name.is_empty() { handle } else { name };
+    let profile = post
         .author
         .profile_url
         .as_deref()
         .map(str::trim)
-        .filter(|url| !url.is_empty())
-    {
-        Some(url) => format!("{inner} ([@{handle}]({url}))"),
-        None => format!("{inner} (@{handle})"),
+        .filter(|url| !url.is_empty());
+    let verified = if post.author.verified {
+        format!(" {}", emojis.verified())
+    } else {
+        String::new()
+    };
+
+    // Ad kalın, kullanıcı adı normal ağırlıkta: X/Bluesky arayüzündeki hiyerarşi. Ad kullanıcı
+    // adıyla aynıysa (ya da ad yoksa) tekrar yazılmaz, adın kendisi bağlantı olur.
+    if handle.is_empty() || name.eq_ignore_ascii_case(handle) {
+        let name = escape_markdown(name);
+        return match profile.filter(|_| !handle.is_empty()) {
+            Some(url) => format!("**[{name}]({url})**{verified}"),
+            None => format!("**{name}**{verified}"),
+        };
     }
+    let handle = escape_markdown(handle);
+    let handle = match profile {
+        Some(url) => format!("[@{handle}]({url})"),
+        None => format!("@{handle}"),
+    };
+    format!("**{}**{verified} {handle}", escape_markdown(name))
 }
 
 /// Alıntılanan gönderi: tek satırlık başlık
@@ -601,15 +790,19 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings, spoiler: bool) -
         .map(str::trim)
         .filter(|url| !url.is_empty());
     let handle = quote.author.handle.trim();
-    let from = match (handle.is_empty(), profile) {
+    // Ad kalın, kullanıcı adı normal: yazar satırıyla aynı hiyerarşi. Ad kullanıcı adıyla aynıysa
+    // tekrar yazılmaz.
+    let same = quote.author.name.trim().eq_ignore_ascii_case(handle);
+    let from = match (handle.is_empty() || same, profile) {
         (false, Some(profile)) => {
             format!(
-                "from **{author}** ([**@{}**]({profile}))",
+                "from **{author}** [@{}]({profile})",
                 escape_markdown(handle)
             )
         }
-        (false, None) => format!("from **{author}** (@{})", escape_markdown(handle)),
-        (true, _) => format!("from **{author}**"),
+        (false, None) => format!("from **{author}** @{}", escape_markdown(handle)),
+        (true, Some(profile)) => format!("from **[{author}]({profile})**"),
+        (true, None) => format!("from **{author}**"),
     };
 
     let url = quote.url.trim();
@@ -627,13 +820,23 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings, spoiler: bool) -
     // blok alıntı içindeki satırları yalnızca satır içi kurallarla işler (`-# ` işareti
     // alıntı içinde düz metin olarak görünürdü).
     let mut lines = vec![format!("> {} {quote_link} {from}", emojis.quote())];
-    if !body.is_empty() {
-        for line in body.lines().take(8) {
-            lines.push(format!("> {line}"));
-        }
+    // Boş satırlar atlanır (alıntı kısa ve tek blok kalır); uzun alıntı `…` ile kısaltılır.
+    let filled: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    for line in filled.iter().take(QUOTE_LINES) {
+        lines.push(format!("> {}", escape_block_markers(line)));
+    }
+    if filled.len() > QUOTE_LINES {
+        lines.push("> …".to_string());
     }
 
-    Some(text(spoiler_wrap(&lines.join("\n"), spoiler)))
+    let content = lines.join("\n");
+    // Discord `||...||` içinde blok alıntı çizmez; gizli alıntı öneksiz yazılır.
+    let content = if spoiler { unquote(&content) } else { content };
+    Some(text(spoiler_wrap(&content, spoiler)))
 }
 
 /// İnce ayraç çizgisi + büyük dikey boşluk: alıntı bloğu kartın gövdesinden ayrı bir bölüm
@@ -677,7 +880,38 @@ fn media_gallery(card: &V2Card<'_>, skip_images: bool) -> Option<Value> {
     }
 
     items.truncate(MEDIA_GALLERY_LIMIT);
+    // Gizli kartta alt metin içeriği açığa vereceği için eklenmez.
+    if !hidden {
+        for item in &mut items {
+            if let Some(alt) = item["media"]["url"]
+                .as_str()
+                .and_then(|url| alt_text(card.post, url))
+            {
+                item["description"] = json!(alt);
+            }
+        }
+    }
     Some(json!({"type": TYPE_MEDIA_GALLERY, "id": pager::GALLERY_COMPONENT_ID, "items": items}))
+}
+
+/// Platformun verdiği alt metin (gönderi ya da alıntı zincirindeki aynı adresli medya). Discord
+/// `description` alanını 1024 karakterle sınırlar.
+fn alt_text(post: &BuiltinPost, url: &str) -> Option<String> {
+    let mut current = Some(post);
+    while let Some(post) = current {
+        if let Some(alt) = post
+            .media
+            .iter()
+            .find(|media| media.url == url)
+            .and_then(|media| media.alt.as_deref())
+            .map(str::trim)
+            .filter(|alt| !alt.is_empty())
+        {
+            return Some(truncate_chars(alt, 1024));
+        }
+        current = post.quote.as_deref();
+    }
+    None
 }
 
 /// Bölüm bileşeni (Section): solunda metin, sağında aksesuar (küçük görsel/thumbnail).
@@ -720,17 +954,21 @@ fn metrics_line(
     if post.platform == Platform::Reddit {
         const REDDIT_UPVOTE: &str = "<:upvote:1558392173311823973>";
         const REDDIT_COMMENTS: &str = "<:redditcomments:1558393193018564718>";
+        let plural = |n: u64, word: &str| {
+            format!(
+                "{} {word}{}",
+                format_count(n),
+                if n == 1 { "" } else { "s" }
+            )
+        };
         let mut reddit_parts: Vec<String> = Vec::new();
         if stats.likes > 0 {
-            reddit_parts.push(format!(
-                "{REDDIT_UPVOTE} {} upvotes",
-                format_count(stats.likes)
-            ));
+            reddit_parts.push(format!("{REDDIT_UPVOTE} {}", plural(stats.likes, "upvote")));
         }
         if stats.replies > 0 {
             reddit_parts.push(format!(
-                "{REDDIT_COMMENTS} {} comments",
-                format_count(stats.replies)
+                "{REDDIT_COMMENTS} {}",
+                plural(stats.replies, "comment")
             ));
         }
         if reddit_parts.is_empty() {
@@ -804,6 +1042,11 @@ fn meta_line(card: &V2Card<'_>) -> String {
         _ => post.platform.display_name().to_string(),
     });
 
+    // İplik konumu platformun hemen yanında: `🧵 2/4`.
+    if let Some((index, total)) = post.thread_position.filter(|(_, total)| *total > 1) {
+        parts.push(format!("🧵 {index}/{total}"));
+    }
+
     // Topluluk etiketi (`extra_label`) Reddit'te **üst satırda** gösterilir (bkz.
     // `reddit_header_line`); alt bilgide tekrarlanmaz.
     if post.platform != Platform::Reddit
@@ -862,6 +1105,16 @@ fn truncate_display(content: &str, max: usize) -> String {
         }
         _ => truncate_chars(content, max),
     }
+}
+
+/// Spoiler'a katlanan alıntının `> ` öneklerini kaldırır: Discord `||...||` içinde blok alıntı
+/// çizmez, satırlar düz `>` işaretiyle görünürdü.
+fn unquote(content: &str) -> String {
+    content
+        .lines()
+        .map(|line| line.strip_prefix("> ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Metin bileşeninin `content` alanı.
@@ -979,6 +1232,7 @@ mod tests {
 
     fn image(url: &str) -> Media {
         Media {
+            alt: None,
             kind: MediaKind::Image,
             url: url.to_string(),
             poster: None,
@@ -990,6 +1244,7 @@ mod tests {
 
     fn video(url: &str, poster: &str) -> Media {
         Media {
+            alt: None,
             kind: MediaKind::Video,
             url: url.to_string(),
             poster: Some(poster.to_string()),
@@ -1243,10 +1498,10 @@ mod tests {
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
 
-        // Discord'un yerleşik X önizlemesi gibi üst satır **soluk/küçük** (`-# `) olur.
+        // Ad kalın, kullanıcı adı normal ağırlıkta (X arayüzündeki hiyerarşi).
         assert_eq!(
             texts(&payload)[0],
-            "**Culture Base <:verified:1553709836859084841> ([@Culture3ase](https://x.com/Culture3ase))**"
+            "**Culture Base** <:verified:1553709836859084841> [@Culture3ase](https://x.com/Culture3ase)"
         );
         // Avatar/görsel bileşeni (Section/Thumbnail) kullanılmaz
         assert!(
@@ -1290,7 +1545,7 @@ mod tests {
         let options = options();
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
-        assert_eq!(texts(&payload)[0], "**Culture Base (@Culture3ase)**");
+        assert_eq!(texts(&payload)[0], "**Culture Base** @Culture3ase");
     }
 
     #[test]
@@ -1363,7 +1618,7 @@ mod tests {
         let meta = texts.last().expect("son satır");
         assert_eq!(
             meta,
-            "-# <:twitter:1476642012072920355> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)"
+            "-# <:twitterx:1476614201207292035> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)"
         );
         assert!(
             !meta.contains("Botgek"),
@@ -1444,7 +1699,7 @@ mod tests {
         );
         assert_eq!(
             texts.last().unwrap(),
-            "-# <:twitter:1476642012072920355> • [Link](https://x.com/kullanici/status/1)"
+            "-# <:twitterx:1476614201207292035> • [Link](https://x.com/kullanici/status/1)"
         );
     }
 
@@ -1463,7 +1718,7 @@ mod tests {
         let lines = texts(&payload);
         assert_eq!(
             lines[1],
-            "**Kulaklık \\*\\*önerisi\\*\\* \\[link\\]**\n\nGövde metni"
+            "### Kulaklık \\*\\*önerisi\\*\\* \\[link\\]\nGövde metni"
         );
     }
 
@@ -1553,7 +1808,7 @@ mod tests {
         // Üst satır: `r/alt • flair • Posted by u/kullanici` (yerleşik Reddit önizlemesi düzeni).
         assert_eq!(
             texts(&payload)[0],
-            "**r/rust • 128 yorum • Posted by u/rustfan**"
+            "-# **r/rust** • 128 yorum • Posted by u/rustfan"
         );
         // Metrikler: oy önce, yorum sonra; aşağı oy gösterilmez (yerleşik düzen).
         assert!(texts(&payload).iter().any(|line| line
@@ -1584,7 +1839,7 @@ mod tests {
 
         assert!(
             lines.iter().any(|line| line
-                == "**🔗 [Counter-Strike.net | Steam event](https://blog.counter-strike.net/index.php/2024/03/steam-event/)**"),
+                == "**[Counter-Strike.net | Steam event](https://blog.counter-strike.net/index.php/2024/03/steam-event/)**"),
             "harici bağlantı tek satırda gösterilmeli: {lines:?}"
         );
         // Site adı ayrı satırda tekrarlanmaz ve link satırı görsel galerisi üretmez.
@@ -1610,7 +1865,7 @@ mod tests {
             Platform::Twitter,
             Platform::TikTok,
             Platform::Instagram,
-            Platform::Reddit,
+            // Reddit'in üst satırı bilinçli olarak küçüktür (bkz. `reddit_header_links_the_profile`).
             Platform::Bluesky,
             Platform::Spotify,
             Platform::Twitch,
@@ -1626,10 +1881,10 @@ mod tests {
             );
             let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
             let header = texts(&payload).first().cloned().unwrap_or_default();
-            // Yazar/kullanıcı adı satırı **kalın** olur (dolgu satırları `-# ` ile ayrı kalır).
+            // Yazar adı **kalın** başlar (dolgu satırları `-# ` ile ayrı kalır).
             assert!(
-                header.starts_with("**") && header.ends_with("**"),
-                "{platform:?} üst satırı kalın olmalı: {header}"
+                header.starts_with("**Ad**"),
+                "{platform:?} üst satırı kalın adla başlamalı: {header}"
             );
             assert!(
                 !header.starts_with("-# "),
@@ -1654,7 +1909,7 @@ mod tests {
 
         assert_eq!(
             texts(&payload)[0],
-            "**r/rust • Posted by [u/rustfan](https://www.reddit.com/user/rustfan)**"
+            "-# **r/rust** • Posted by [u/rustfan](https://www.reddit.com/user/rustfan)"
         );
     }
 
@@ -1685,6 +1940,14 @@ mod tests {
         assert_eq!(
             metrics_line(&post, &options, &emojis).as_deref(),
             Some("-# <:redditcomments:1558393193018564718> 128 comments")
+        );
+        post.stats.likes = 1;
+        post.stats.replies = 1;
+        assert_eq!(
+            metrics_line(&post, &options, &emojis).as_deref(),
+            Some(
+                "-# <:upvote:1558392173311823973> 1 upvote • <:redditcomments:1558393193018564718> 1 comment"
+            )
         );
         post.stats.likes = 42;
         options.show_metrics = false;
@@ -1749,7 +2012,7 @@ mod tests {
         // notu (`Portekizce'den çevrildi`). Blok alıntı kullanılmaz.
         assert!(
             meta.starts_with(
-                "-# <:twitter:1476642012072920355> • <t:1714998896:R> • `Portekizce'den çevrildi`"
+                "-# <:twitterx:1476614201207292035> • <t:1714998896:R> • `Portekizce'den çevrildi`"
             ),
             "çeviri notu satır içi kod olarak saatin yanında olmalı: {meta}"
         );
@@ -1784,7 +2047,7 @@ mod tests {
 
         assert_eq!(
             lines[0],
-            "**Culture Base ☑ ([@Culture3ase](https://x.com/Culture3ase))**"
+            "**Culture Base** ☑ [@Culture3ase](https://x.com/Culture3ase)"
         );
         assert!(
             lines.iter().any(|t| t.contains("💬 6")),
@@ -1863,6 +2126,280 @@ mod tests {
     }
 
     #[test]
+    fn reply_context_sits_above_the_author_line() {
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+
+        // Kendi ipliğinin devamı: üstte bağlam satırı, konum alt bilgide `🧵 2/4`.
+        let mut post = sample_post();
+        post.reply_to = Some(Box::new(BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/Culture3ase/status/0",
+            Author::new("Culture3ase", "Culture3ase"),
+        )));
+        post.thread_position = Some((2, 4));
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+        let all = texts(&payload);
+        assert_eq!(
+            all[0],
+            "-# ↩️ Thread'in devamı · [önceki gönderi](https://x.com/Culture3ase/status/0)"
+        );
+        assert!(all[1].starts_with("**Culture Base**"), "{all:?}");
+        let meta = all.last().unwrap();
+        assert!(
+            meta.starts_with("-# <:twitterx:1476614201207292035> • 🧵 2/4 • "),
+            "{meta}"
+        );
+        post.thread_position = Some((1, 1));
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+        assert!(!texts(&payload).last().unwrap().contains('🧵'));
+
+        // Başkasına yanıt: üst gönderinin metni küçük yazıyla, kısaltılmış.
+        let mut parent = BuiltinPost::new(
+            Platform::Bluesky,
+            "https://bsky.app/profile/ust.bsky.social/post/1",
+            Author::new("Üst", "ust.bsky.social"),
+        );
+        parent.text = "bir\n\n> iki\nüç\ndört".to_string();
+        parent.media = vec![image("https://cdn/p.jpg")];
+        post.reply_to = Some(Box::new(parent));
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+        assert_eq!(
+            components(&payload)[0]["content"],
+            "-# ↩️ **Üst** @ust.bsky.social gönderisine [yanıt](https://bsky.app/profile/ust.bsky.social/post/1)\n\
+             -# bir\n\
+             -# \\> iki\n\
+             -# üç … 🖼️"
+        );
+
+        // Gizli kartta üst gönderinin metni gösterilmez.
+        post.sensitive = true;
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+        let context = components(&payload)[0]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(context.lines().count(), 1, "{context}");
+    }
+
+    #[test]
+    fn plain_text_line_markers_are_escaped_but_reddit_markdown_is_kept() {
+        assert_eq!(
+            escape_block_markers("> alıntı\n# başlık\n#etiket\n-# küçük\nnormal"),
+            "\\> alıntı\n\\# başlık\n#etiket\n\\-# küçük\nnormal"
+        );
+
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/rust/comments/abc/x/",
+            Author::new("u/a", "a"),
+        );
+        post.text = format!("> alıntı\n\n{}", "uzun ".repeat(300));
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let body = texts(&payload)[1].clone();
+        assert!(body.starts_with("> alıntı"), "{body}");
+        assert!(
+            body.ends_with("… [Devamını oku](https://www.reddit.com/r/rust/comments/abc/x/)"),
+            "{body}"
+        );
+        assert!(body.chars().count() < REDDIT_BODY_LIMIT + 80);
+    }
+
+    #[test]
+    fn own_media_sits_above_the_quote() {
+        let mut post = sample_post();
+        post.media = vec![image("https://cdn/own.jpg")];
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.text = "alıntı".to_string();
+        post.quote = Some(Box::new(quote));
+        let resolved = ResolvedMedia {
+            images: vec!["https://cdn/own.jpg".to_string()],
+            ..ResolvedMedia::default()
+        };
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &resolved, &emojis));
+        let all = components(&payload);
+        let gallery = all
+            .iter()
+            .position(|c| c["type"] == TYPE_MEDIA_GALLERY)
+            .unwrap();
+        let quote = all
+            .iter()
+            .position(|c| c["content"].as_str().is_some_and(|t| t.contains("[Quote]")))
+            .unwrap();
+        assert!(gallery < quote, "gönderinin görseli alıntıdan önce gelmeli");
+        assert_eq!(all[gallery - 1]["content"], post.text.as_str());
+    }
+
+    #[test]
+    fn long_quotes_skip_blank_lines_and_end_with_an_ellipsis() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.text = (1..=9)
+            .map(|n| format!("satır {n}\n"))
+            .collect::<String>()
+            .replace('\n', "\n\n");
+        post.quote = Some(Box::new(quote));
+        let options = options();
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+        let quote_text = texts(&payload)
+            .into_iter()
+            .find(|text| text.contains("[Quote]"))
+            .unwrap();
+        let lines: Vec<&str> = quote_text.lines().collect();
+        assert_eq!(lines.len(), 1 + QUOTE_LINES + 1, "{quote_text}");
+        assert_eq!(lines[1], "> satır 1");
+        assert_eq!(*lines.last().unwrap(), "> …");
+    }
+
+    #[test]
+    fn hidden_quote_folds_into_spoiler_without_blockquote_markers() {
+        let mut post = sample_post();
+        post.sensitive = true;
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.text = "birinci\nikinci".to_string();
+        post.quote = Some(Box::new(quote));
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let all = texts(&build_payload(&card(&post, &options, &resolved, &emojis)));
+        let body = &all[1];
+
+        assert!(body.starts_with("||") && body.ends_with("||"), "{body}");
+        assert!(body.contains("\nbirinci\nikinci||"), "{body}");
+        assert!(!body.lines().any(|line| line.starts_with('>')), "{body}");
+
+        // Küçük görselli iç içe alıntı kendi spoiler'ındadır; o da öneksiz olmalı.
+        let mut inner = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/ucuncu/status/3",
+            Author::new("Üçüncü", "ucuncu"),
+        );
+        inner.text = "orijinal".to_string();
+        inner.media = vec![image("https://cdn/inner.jpg")];
+        post.quote.as_mut().unwrap().quote = Some(Box::new(inner));
+        let resolved = ResolvedMedia {
+            images: vec!["https://cdn/inner.jpg".to_string()],
+            ..ResolvedMedia::default()
+        };
+        let all = texts(&build_payload(&card(&post, &options, &resolved, &emojis)));
+        assert!(
+            all.iter().all(|text| !text
+                .lines()
+                .any(|line| line.starts_with("||>") || line.starts_with('>'))),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn metadata_only_post_does_not_repeat_platform_or_self_link() {
+        let mut post = BuiltinPost::new(
+            Platform::Tumblr,
+            "https://www.tumblr.com/blog/1",
+            Author::new("Tumblr", ""),
+        );
+        post.link_preview = Some(super::super::LinkPreview {
+            url: post.url.clone(),
+            title: Some("Başlık".into()),
+            description: Some("Açıklama".into()),
+            image: None,
+            site_name: Some("Tumblr".into()),
+        });
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let all = texts(&build_payload(&card(&post, &options, &resolved, &emojis)));
+
+        assert_eq!(all[0], "**Başlık**\n> Açıklama");
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert!(all[1].starts_with("-# Tumblr • "), "{all:?}");
+    }
+
+    #[test]
+    fn handle_only_author_is_not_repeated() {
+        let mut post = BuiltinPost::new(
+            Platform::Tumblr,
+            "https://www.tumblr.com/blog/1",
+            Author::new("blog", "blog"),
+        );
+        post.author.profile_url = Some("https://www.tumblr.com/blog".into());
+        post.link_preview = Some(super::super::LinkPreview {
+            url: post.url.clone(),
+            title: Some("blog".into()),
+            ..Default::default()
+        });
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let all = texts(&build_payload(&card(&post, &options, &resolved, &emojis)));
+
+        assert_eq!(all[0], "**[blog](https://www.tumblr.com/blog)**");
+        assert_eq!(all.len(), 2, "yazarla aynı başlık atlanmalı: {all:?}");
+    }
+
+    #[test]
+    fn gallery_items_carry_platform_alt_text_unless_hidden() {
+        let mut post = sample_post();
+        let mut quote = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/diger/status/2",
+            Author::new("Diğer", "diger"),
+        );
+        quote.media = vec![image("https://cdn/quote.jpg")];
+        quote.media[0].alt = Some("  Uyuyan kedi  ".to_string());
+        post.quote = Some(Box::new(quote));
+        post.media = vec![image("https://cdn/a.jpg")];
+        post.media[0].alt = Some("a".repeat(1100));
+        let resolved = ResolvedMedia {
+            images: vec![
+                "https://cdn/a.jpg".to_string(),
+                "https://cdn/quote.jpg".to_string(),
+                "https://cdn/none.jpg".to_string(),
+            ],
+            ..ResolvedMedia::default()
+        };
+        let options = options();
+        let emojis = emojis();
+        let descriptions = |payload: &Value| -> Vec<Value> {
+            components(payload)
+                .iter()
+                .find(|c| c["type"] == TYPE_MEDIA_GALLERY)
+                .unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["description"].clone())
+                .collect()
+        };
+
+        let shown = descriptions(&build_payload(&card(&post, &options, &resolved, &emojis)));
+        assert_eq!(shown[0].as_str().unwrap().chars().count(), 1024);
+        assert_eq!(shown[1], "Uyuyan kedi");
+        assert_eq!(shown[2], Value::Null);
+
+        post.sensitive = true;
+        let hidden = descriptions(&build_payload(&card(&post, &options, &resolved, &emojis)));
+        assert!(hidden.iter().all(Value::is_null), "{hidden:?}");
+    }
+
+    #[test]
     fn gallery_ignores_quote_media_when_post_has_media() {
         let mut post = sample_post();
         let mut quote = BuiltinPost::new(
@@ -1900,12 +2437,12 @@ mod tests {
             "alıntı blok alıntı olmalı: {quote_text}"
         );
         assert!(
-            quote_text.contains("[Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"),
+            quote_text.contains("[Quote](https://x.com/diger/status/2) from **Diğer** @diger"),
             "alıntı başlığı fxembed düzeninde olmalı: {quote_text}"
         );
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "> <:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** (@diger)"
+            "> <:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** @diger"
         );
     }
 
@@ -1927,10 +2464,21 @@ mod tests {
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &resolved, &emojis));
 
+        // Alıntılayan medya eklemediyse alıntının tek görseli alıntının yanında küçük görsel olur.
+        assert!(gallery_urls(&payload).is_empty());
+        let section = components(&payload)
+            .iter()
+            .find(|component| component["type"] == TYPE_SECTION)
+            .expect("alıntı bölümü");
         assert_eq!(
-            gallery_urls(&payload),
-            vec!["https://cdn/quote.jpg"],
-            "alıntılayan medya eklemediyse alıntının görseli galeride gösterilmeli"
+            section["accessory"]["media"]["url"],
+            "https://cdn/quote.jpg"
+        );
+        assert!(
+            section["components"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("> alıntı")
         );
     }
 
@@ -1958,7 +2506,7 @@ mod tests {
         assert_eq!(
             quote_text.lines().next().unwrap(),
             "> <:qutoe:1553728214998847569> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
-             from **Daykerpriest🐉** ([**@Daykerpriest**](https://x.com/daykerpriest))"
+             from **Daykerpriest🐉** [@Daykerpriest](https://x.com/daykerpriest)"
         );
         assert!(
             quote_text.contains("> alıntılanan metin"),
@@ -2083,7 +2631,7 @@ mod tests {
         assert_eq!(
             quote_text,
             "> <:qutoe:1553728214998847569> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
-             from **durusal** ([**@gerginimhelll**](https://x.com/gerginimhelll))\n\
+             from **durusal** [@gerginimhelll](https://x.com/gerginimhelll)\n\
              > Durusal neşesi gerçek değil\n\
              > O sırada durusal neşesi"
         );
@@ -2239,6 +2787,7 @@ mod tests {
     fn gif_in_direct_mode_plays_directly_in_media_gallery_without_video_button() {
         let mut post = sample_post();
         post.media = vec![crate::converters::builtin::Media {
+            alt: None,
             kind: crate::converters::builtin::MediaKind::Gif,
             url: "https://video.twimg.com/tweet_video/HTm_K6jaEAAMaNm.mp4".to_string(),
             poster: Some("https://pbs.twimg.com/tweet_video_thumb/HTm_K6jaEAAMaNm.jpg".to_string()),
@@ -2348,7 +2897,7 @@ mod tests {
         );
         // Platform emojisi ve tarih de aynı satırdadır.
         assert!(
-            meta.contains("<:twitter:1476642012072920355>"),
+            meta.contains("<:twitterx:1476614201207292035>"),
             "platform: {meta}"
         );
         assert!(meta.contains("<t:1714998896:R>"), "tarih: {meta}");
@@ -2408,7 +2957,7 @@ mod tests {
     }
 
     #[test]
-    fn container_children_never_exceeds_discord_limit_of_ten() {
+    fn container_children_stay_within_the_component_budget() {
         let mut post = sample_post();
         let mut inner = BuiltinPost::new(
             Platform::Twitter,
@@ -2432,7 +2981,7 @@ mod tests {
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let children = components(&payload);
         assert!(children.len() <= MAX_CONTAINER_CHILDREN);
-        assert_eq!(MAX_CONTAINER_CHILDREN, 10);
+        const { assert!(MAX_CONTAINER_CHILDREN < 40) };
     }
 
     #[test]
@@ -2476,11 +3025,11 @@ mod tests {
         let texts = texts(&payload);
         let preview = texts
             .iter()
-            .find(|text| text.starts_with("**🔗"))
+            .find(|text| text.starts_with("**[Haber"))
             .expect("link kartı bloğu kartta durmalı");
         assert_eq!(
             preview,
-            "**🔗 [Haber başlığı](https://example.com/haber)**\n> İlk satır\n> İkinci satır\n-# example.com",
+            "**[Haber başlığı](https://example.com/haber)**\n> İlk satır\n> İkinci satır\n-# example.com",
             "başlık bağlantılı, açıklama alıntı bloğunda, site adı alt bilgide"
         );
         assert!(

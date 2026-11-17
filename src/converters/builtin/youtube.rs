@@ -196,6 +196,7 @@ fn best_thumbnail(value: Option<&Value>) -> Option<String> {
 
 fn image(url: String) -> Media {
     Media {
+        alt: None,
         kind: MediaKind::Image,
         url,
         poster: None,

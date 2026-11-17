@@ -371,6 +371,7 @@ fn push_session_node(out: &mut Vec<Media>, node: &Value) {
 
     if let Some(video) = session_video_url(node) {
         out.push(Media {
+            alt: None,
             kind: MediaKind::Video,
             url: video,
             poster,
@@ -385,6 +386,10 @@ fn push_session_node(out: &mut Vec<Media>, node: &Value) {
         });
     } else if let Some(image) = poster {
         out.push(Media {
+            alt: node
+                .get("accessibility_caption")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             kind: MediaKind::Image,
             url: image,
             poster: None,
@@ -667,6 +672,7 @@ fn build_post(
     // Medya: embed görseli (video için kapak karesi) öncelikli; yoksa og görseli/videosu.
     if let Some(image) = embed.image.clone().or_else(|| graph.image.clone()) {
         post.media.push(Media {
+            alt: None,
             kind: MediaKind::Image,
             url: image,
             poster: None,
@@ -676,6 +682,7 @@ fn build_post(
         });
     } else if let Some(video) = graph.video.clone() {
         post.media.push(Media {
+            alt: None,
             kind: MediaKind::Video,
             url: video,
             poster: graph.image.clone(),

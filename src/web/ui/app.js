@@ -85,7 +85,7 @@ const ENGINE_DEFAULTS = {
         likes: '<:like:1553712395057365102>',
         views: '<:metric:1553712416242798712>',
         translation: '<:translation:1476614397249061056>',
-        twitter: '<:twitter:1476642012072920355>',
+        twitter: '<:twitterx:1476614201207292035>',
         instagram: '<:instagram:1558099674731122758>',
     reddit: '<:reddit:1558112156195495956>',
         quote: '<:qutoe:1553728214998847569>'

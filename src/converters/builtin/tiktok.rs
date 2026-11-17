@@ -143,6 +143,7 @@ async fn fetch_oembed(
 
 fn image(url: String) -> Media {
     Media {
+        alt: None,
         kind: MediaKind::Image,
         url,
         poster: None,
@@ -192,6 +193,36 @@ struct Item {
     stats_v2: Option<TikTokStats>,
     video: Option<ItemVideo>,
     image_post: Option<ImagePost>,
+    music: Option<ItemMusic>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ItemMusic {
+    title: Option<String>,
+    author_name: Option<String>,
+}
+
+impl ItemMusic {
+    /// Alt bilgi etiketi: `🎵 Ses adı · Sanatçı` (markdown kaçışlı, kısa).
+    fn label(&self) -> Option<String> {
+        let clean = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let title = clean(&self.title)?;
+        let text = match clean(&self.author_name) {
+            Some(author) if !title.contains(&author) => format!("{title} · {author}"),
+            _ => title,
+        };
+        Some(format!(
+            "🎵 {}",
+            super::render::escape_markdown(&crate::utils::truncate_chars(&text, 60))
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -347,7 +378,13 @@ fn item_post(item: &Item) -> Result<BuiltinPost, String> {
         quotes: 0,
         views: count(|s| s.play_count.as_ref()),
     };
-    post.extra_label = Some(if is_photo { "Fotoğraf" } else { "Video" }.into());
+    // Videonun video olduğu kartta zaten görünür; etiket yerine kullanılan ses yazılır.
+    let music = item.music.as_ref().and_then(ItemMusic::label);
+    post.extra_label = match (is_photo, music) {
+        (true, Some(music)) => Some(format!("Fotoğraf • {music}")),
+        (true, None) => Some("Fotoğraf".into()),
+        (false, music) => music,
+    };
 
     if let Some(photos) = &item.image_post {
         post.media.extend(
@@ -356,6 +393,7 @@ fn item_post(item: &Item) -> Result<BuiltinPost, String> {
                 .iter()
                 .filter_map(|photo| {
                     Some(Media {
+                        alt: None,
                         width: photo.image_width,
                         height: photo.image_height,
                         ..image(photo.image_url.as_ref()?.first_url()?)
@@ -367,6 +405,7 @@ fn item_post(item: &Item) -> Result<BuiltinPost, String> {
         let poster = video.cover.clone().filter(|url| allowed_tiktok_url(url));
         match best_video(video) {
             Some((url, width, height)) => post.media.push(Media {
+                alt: None,
                 kind: MediaKind::Video,
                 url,
                 poster,
@@ -536,6 +575,7 @@ impl TikTokOEmbed {
             .or_else(|| self.video.as_ref().and_then(|video| video.cover.clone()));
         if let Some(video_url) = self.video_url() {
             post.media.push(Media {
+                alt: None,
                 kind: MediaKind::Video,
                 url: video_url,
                 poster: thumbnail,
@@ -545,6 +585,7 @@ impl TikTokOEmbed {
             });
         } else if let Some(thumbnail) = thumbnail {
             post.media.push(Media {
+                alt: None,
                 kind: MediaKind::Image,
                 url: thumbnail,
                 poster: None,
@@ -677,6 +718,29 @@ fn allowed_tiktok_url(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn music_label_is_escaped_short_and_not_repetitive() {
+        let music = |title: &str, author: &str| ItemMusic {
+            title: Some(title.into()),
+            author_name: Some(author.into()),
+        };
+        assert_eq!(
+            music("Espresso", "Sabrina Carpenter").label().as_deref(),
+            Some("🎵 Espresso · Sabrina Carpenter")
+        );
+        assert_eq!(
+            music("original sound - scout2015", "scout2015")
+                .label()
+                .as_deref(),
+            Some("🎵 original sound - scout2015")
+        );
+        assert_eq!(
+            music("*yıldız*", "").label().as_deref(),
+            Some("🎵 \\*yıldız\\*")
+        );
+        assert_eq!(ItemMusic::default().label(), None);
+    }
 
     fn parsed() -> ParsedPost {
         ParsedPost {

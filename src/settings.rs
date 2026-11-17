@@ -123,7 +123,7 @@ const DEFAULT_REPOSTS_EMOJI: &str = "<:rt:1553712344939495424>";
 const DEFAULT_LIKES_EMOJI: &str = "<:like:1553712395057365102>";
 const DEFAULT_VIEWS_EMOJI: &str = "<:metric:1553712416242798712>";
 const DEFAULT_TRANSLATION_EMOJI: &str = "<:translation:1476614397249061056>";
-const DEFAULT_TWITTER_EMOJI: &str = "<:twitter:1476642012072920355>";
+const DEFAULT_TWITTER_EMOJI: &str = "<:twitterx:1476614201207292035>";
 const DEFAULT_INSTAGRAM_EMOJI: &str = "<:instagram:1558099674731122758>";
 const DEFAULT_REDDIT_EMOJI: &str = "<:reddit:1558112156195495956>";
 const DEFAULT_QUOTE_EMOJI: &str = "<:qutoe:1553728214998847569>";
@@ -136,7 +136,9 @@ const REPOSTS_NAMES: &[&str] = &["rt", "retweet", "retweets", "repost", "reposts
 const LIKES_NAMES: &[&str] = &["like", "likes", "heart", "favorite"];
 const VIEWS_NAMES: &[&str] = &["metric", "metrics", "view", "views", "analytics"];
 const TRANSLATION_NAMES: &[&str] = &["translation", "translate", "globe"];
-const TWITTER_NAMES: &[&str] = &["twitter", "x", "xlogo", "x_logo"];
+const TWITTER_NAMES: &[&str] = &["twitter", "twitterx", "x", "xlogo", "x_logo"];
+/// Discord'da silinen eski X emojisi; kayıtlı ayarlarda kaldıysa yenisine taşınır.
+const RETIRED_TWITTER_EMOJI: &str = "<:twitter:1476642012072920355>";
 const INSTAGRAM_NAMES: &[&str] = &["instagram", "ig", "insta"];
 const REDDIT_NAMES: &[&str] = &["reddit", "rdt", "snoo"];
 const QUOTE_NAMES: &[&str] = &["qutoe", "quote", "quotes"];
@@ -173,6 +175,9 @@ impl EmojiSettings {
             DEFAULT_TRANSLATION_EMOJI,
             TRANSLATION_NAMES,
         );
+        if self.twitter.trim() == RETIRED_TWITTER_EMOJI {
+            self.twitter = DEFAULT_TWITTER_EMOJI.to_string();
+        }
         self.twitter = normalize_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, TWITTER_NAMES);
         self.instagram = normalize_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, INSTAGRAM_NAMES);
         self.reddit = normalize_emoji(&self.reddit, DEFAULT_REDDIT_EMOJI, REDDIT_NAMES);
@@ -1588,7 +1593,7 @@ mod tests {
         let mut emojis = EmojiSettings::default();
         emojis.sanitize();
         assert_eq!(emojis.replies(), "<:comment:1553712370302451782>");
-        assert_eq!(emojis.twitter(), Some("<:twitter:1476642012072920355>"));
+        assert_eq!(emojis.twitter(), Some("<:twitterx:1476614201207292035>"));
 
         // Boş alanlar Unicode varsayılana düşer
         let mut empty = EmojiSettings {
@@ -1683,6 +1688,7 @@ mod tests {
             // fazla uzun Unicode (geçersiz)
             views: "bu bir emoji değil".to_string(),
             translation: "<:translation:1476614397249061056>".to_string(),
+            // silinen eski X emojisi yenisine taşınır
             twitter: " <:twitter:1476642012072920355> ".to_string(),
             instagram: "<:instagram:1558099674731122758>".to_string(),
             reddit: "<:reddit:1558112156195495956>".to_string(),
@@ -1697,8 +1703,8 @@ mod tests {
         assert_eq!(emojis.views(), "👁️");
         assert_eq!(
             emojis.twitter(),
-            Some("<:twitter:1476642012072920355>"),
-            "baştaki/sondaki boşluk temizlenir"
+            Some("<:twitterx:1476614201207292035>"),
+            "eski emoji boşluğuyla birlikte yenisine taşınır"
         );
     }
 

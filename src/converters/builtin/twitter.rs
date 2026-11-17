@@ -51,6 +51,12 @@ const TRANSLATION_BUDGET: Duration = Duration::from_millis(1_200);
 /// Harici link önizlemesi (X'in "link kartı") için tanınan süre: hedef sayfa bu süre
 /// içinde yanıt vermezse kart önizlemesiz gönderilir (kart asla bekletilmez).
 const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(500);
+/// Kart gönderildikten sonra çalışan ek isteklerin (iplik konumu, yanıtlanan gönderi) süresi. FxTwitter
+/// iplik ucu ~1 sn sürdüğü için kartın kritik yolunda değildir; gelmezse kart olduğu gibi kalır.
+const ENRICH_TIMEOUT: Duration = Duration::from_millis(4_000);
+/// İplik başlangıcı işaretleri: satır başında `1/`, `(1/4)` ya da 🧵.
+static THREAD_START_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s*1/|\(1/\d+\)|🧵").expect("geçerli iplik regex"));
 /// Önizleme metinlerinin kart bütçesini yormaması için üst sınırlar.
 const LINK_PREVIEW_TITLE_LIMIT: usize = 180;
 const LINK_PREVIEW_DESCRIPTION_LIMIT: usize = 400;
@@ -137,6 +143,8 @@ pub async fn fetch(
     // Gönderi yalnızca link içeriyorsa X'in kendi arayüzünde gösterdiği link kartı (hedef
     // sayfanın önizlemesi) da karta eklenir.
     attach_link_preview(&mut fetched.post).await;
+    // İplik konumu ve yanıtlanan gönderinin metni kart gönderildikten sonra çözülür (`enrich`).
+    fetched.post.thread_lookup = looks_like_thread(&fetched.post);
 
     debug!(
         "X veri fazları ({id}): veri {} ms, link önizleme {} ms, önbelleğe uygun: {}",
@@ -396,6 +404,128 @@ async fn attach_link_preview(post: &mut BuiltinPost) {
     post.link_preview = Some(preview);
 }
 
+/// Gönderi yazarın kendi ipliğinde mi? Kendi tweet'ine yanıtsa ya da metni iplik başlangıcına
+/// benziyorsa evet. Yalnızca bu durumda ek iplik isteği yapılır.
+fn looks_like_thread(post: &BuiltinPost) -> bool {
+    let own_reply = post.reply_to.as_deref().is_some_and(|parent| {
+        parent
+            .author
+            .handle
+            .eq_ignore_ascii_case(post.author.handle.trim())
+    });
+    own_reply || THREAD_START_REGEX.is_match(&post.text)
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FxThread {
+    thread: Vec<FxThreadItem>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FxThreadItem {
+    id: String,
+}
+
+/// FxTwitter'ın iplik ucu yazarın ipliğini sırayla verir; gönderinin konumu ve toplam sayı
+/// buradan çıkar. Tek gönderilik iplik ya da hata konum üretmez.
+async fn thread_position(client: &reqwest::Client, id: &str) -> Option<(u32, u32)> {
+    let url = format!("{FXTWITTER_URL}/2/thread/{id}");
+    let thread: FxThread =
+        match tokio::time::timeout(ENRICH_TIMEOUT, super::get_json(client, &url)).await {
+            Ok(Ok(thread)) => thread,
+            Ok(Err(err)) => {
+                debug!("X iplik konumu alınamadı ({id}): {err}");
+                return None;
+            }
+            Err(_) => {
+                debug!(
+                    "X iplik konumu {} ms içinde gelmedi: {id}",
+                    ENRICH_TIMEOUT.as_millis()
+                );
+                return None;
+            }
+        };
+    position_in(thread.thread.iter().map(|item| item.id.as_str()), id)
+}
+
+/// Kart gönderildikten sonra çözülen ek veri: iplik konumu ve yanıtlanan gönderinin metni (kaynak
+/// yalnızca kullanıcı adı ve kimliği verir). İkisi paralel çekilir; eklenecek bir şey yoksa `None`.
+pub async fn enrich(client: &reqwest::Client, post: &BuiltinPost) -> Option<BuiltinPost> {
+    if !needs_enrichment(post) {
+        return None;
+    }
+    let parent_id = post
+        .reply_to
+        .as_deref()
+        .filter(|parent| parent_missing(parent))
+        .and_then(|parent| extract_tweet_id(&parent.url));
+    let id = extract_tweet_id(&post.url)?;
+    let (parent, position) = tokio::join!(
+        async {
+            match &parent_id {
+                Some(parent_id) => parent_post(client, parent_id).await,
+                None => None,
+            }
+        },
+        async {
+            match post.thread_lookup {
+                true => thread_position(client, &id).await,
+                false => None,
+            }
+        }
+    );
+    let mut enriched = post.clone();
+    enriched.thread_lookup = false;
+    if let Some(parent) = parent {
+        enriched.reply_to = Some(Box::new(parent));
+    }
+    enriched.thread_position = position.or(post.thread_position);
+    Some(enriched)
+}
+
+/// Kart gönderildikten sonra tamamlanacak veri var mı (iplik konumu ya da yanıtlanan gönderinin metni)?
+pub fn needs_enrichment(post: &BuiltinPost) -> bool {
+    post.thread_lookup || post.reply_to.as_deref().is_some_and(parent_missing)
+}
+
+/// Kaynak yanıtlanan gönderinin yalnızca kimliğini verdi (metin ve medya yok).
+fn parent_missing(parent: &BuiltinPost) -> bool {
+    parent.text.trim().is_empty() && parent.media.is_empty()
+}
+
+/// Yanıtlanan gönderiyi FxTwitter'dan çeker; yalnızca bağlam satırında kullanılır (çeviri yok).
+async fn parent_post(client: &reqwest::Client, id: &str) -> Option<BuiltinPost> {
+    let url = format!("{FXTWITTER_URL}/i/status/{id}");
+    let response: FxResponse =
+        match tokio::time::timeout(ENRICH_TIMEOUT, super::get_json(client, &url)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                debug!("Yanıtlanan X gönderisi alınamadı ({id}): {err}");
+                return None;
+            }
+            Err(_) => {
+                debug!("Yanıtlanan X gönderisi zamanında gelmedi: {id}");
+                return None;
+            }
+        };
+    let tweet = response.tweet?;
+    let fallback = format!("https://x.com/i/status/{id}");
+    let mut parent = fx_to_post_with_target(&tweet, &fallback, u64::MAX, "", false).ok()?;
+    // Bağlam yalnızca bir seviye: üst gönderinin kendi bağlamı ve alıntısı taşınmaz.
+    parent.reply_to = None;
+    parent.quote = None;
+    Some(parent)
+}
+
+/// Kimlik listesinde gönderinin 1 tabanlı konumu ve toplam; liste tek öğeliyse `None`.
+fn position_in<'a>(ids: impl Iterator<Item = &'a str>, id: &str) -> Option<(u32, u32)> {
+    let ids: Vec<&str> = ids.collect();
+    let index = ids.iter().position(|item| *item == id)?;
+    (ids.len() > 1).then(|| (index as u32 + 1, ids.len() as u32))
+}
+
 /// Harici sayfanın link kartını [`LINK_PREVIEW_TIMEOUT`] içinde çözer; sayfa yanıt vermezse
 /// ya da gösterilecek etiket yoksa `None` (kart önizlemesiz gönderilir).
 async fn fetch_link_preview(url: &str) -> Option<LinkPreview> {
@@ -505,6 +635,17 @@ fn x_author(name: Option<&str>, handle: &str, avatar: Option<String>, verified: 
     author.verified = verified;
     author.profile_url = (!handle.is_empty()).then(|| format!("https://x.com/{handle}"));
     author
+}
+
+/// Yanıtlanan gönderinin bağlamı: kaynaklar yalnızca kullanıcı adı ve kimliği verir, metin yoktur.
+fn reply_parent(handle: Option<&str>, id: Option<&str>) -> Option<Box<BuiltinPost>> {
+    let handle = handle.map(str::trim).filter(|handle| !handle.is_empty())?;
+    let url = status_url(Some(handle), id?)?;
+    Some(Box::new(BuiltinPost::new(
+        Platform::Twitter,
+        url,
+        x_author(None, handle, None, false),
+    )))
 }
 
 /// Kimlik ve kullanıcı adından kanonik gönderi adresi. Kimlik sayısal olmalıdır; adres
@@ -812,6 +953,7 @@ fn vx_media(item: &VxMedia) -> Option<Media> {
     };
 
     Some(Media {
+        alt: None,
         kind,
         url,
         poster: item.thumbnail_url.clone(),
@@ -926,6 +1068,8 @@ struct SyndicationTweet {
     media_details: Option<Vec<SyndicationMediaDetail>>,
     quoted_tweet: Option<Box<SyndicationTweet>>,
     note_tweet: Option<SyndicationNoteTweet>,
+    in_reply_to_screen_name: Option<String>,
+    in_reply_to_status_id_str: Option<String>,
 }
 
 impl SyndicationTweet {
@@ -1000,6 +1144,7 @@ struct SyndicationMediaDetail {
     #[serde(rename = "type")]
     kind: Option<String>,
     media_url_https: Option<String>,
+    ext_alt_text: Option<String>,
     original_info: Option<SyndicationOriginalInfo>,
     video_info: Option<SyndicationVideoInfo>,
 }
@@ -1180,6 +1325,10 @@ fn syndication_to_post(
     };
     post.sensitive = tweet.possibly_sensitive.unwrap_or(false);
     post.media = syndication_media(tweet, max_video_bytes);
+    post.reply_to = reply_parent(
+        tweet.in_reply_to_screen_name.as_deref(),
+        tweet.in_reply_to_status_id_str.as_deref(),
+    );
 
     if let Some(quoted) = tweet.quoted_tweet.as_deref()
         && let Some(quoted_url) = quoted.id_str.as_deref().and_then(|quoted_id| {
@@ -1268,6 +1417,7 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
         for photo in photos {
             if let Some(url) = photo.url.as_deref() {
                 media.push(Media {
+                    alt: None,
                     kind: MediaKind::Image,
                     url: card_image_url(url),
                     poster: None,
@@ -1287,6 +1437,7 @@ fn syndication_media(tweet: &SyndicationTweet, max_video_bytes: u64) -> Vec<Medi
         )
     {
         media.push(Media {
+            alt: None,
             kind: MediaKind::Video,
             url,
             poster: video.poster.as_deref().map(card_image_url),
@@ -1306,6 +1457,7 @@ fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> O
 
     match kind {
         "photo" => Some(Media {
+            alt: detail.ext_alt_text.clone(),
             kind: MediaKind::Image,
             url: card_image_url(detail.media_url_https.as_deref()?),
             poster: None,
@@ -1323,6 +1475,7 @@ fn media_from_detail(detail: &SyndicationMediaDetail, max_video_bytes: u64) -> O
                 true,
             )?;
             Some(Media {
+                alt: None,
                 kind: if kind == "animated_gif" {
                     MediaKind::Gif
                 } else {
@@ -1371,6 +1524,9 @@ struct FxTweet {
     media: Option<FxMedia>,
     quote: Option<Box<FxTweet>>,
     translation: Option<FxTranslation>,
+    /// Yanıtlanan hesabın kullanıcı adı ve gönderi kimliği (iplik bağlamı).
+    replying_to: Option<String>,
+    replying_to_status: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1409,6 +1565,8 @@ struct FxMediaItem {
     kind: Option<String>,
     url: Option<String>,
     thumbnail_url: Option<String>,
+    #[serde(rename = "altText")]
+    alt_text: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
     duration: Option<f64>,
@@ -1516,6 +1674,10 @@ fn fx_to_post_with_target(
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty());
     post.media = fx_media(tweet.media.as_ref(), max_video_bytes);
+    post.reply_to = reply_parent(
+        tweet.replying_to.as_deref(),
+        tweet.replying_to_status.as_deref(),
+    );
 
     if let Some(quoted) = tweet.quote.as_deref()
         && let Some(quoted_url) = quoted
@@ -1668,6 +1830,7 @@ fn fx_media_item(item: &FxMediaItem, video_budget: u64) -> Option<Media> {
     };
 
     Some(Media {
+        alt: item.alt_text.clone(),
         kind,
         url: match kind {
             // Görsel kartta CDN'den geldiği için vx/fxTwitter gibi tam çözünürlüklü varyantı (name=orig) kullanılır.
@@ -2726,6 +2889,69 @@ mod tests {
         assert_eq!(link_preview_image(&page, &long), Some(long.clone()));
         let too_long = format!("https://cdn.example.com/{}.png", "a".repeat(2100));
         assert!(link_preview_image(&page, &too_long).is_none());
+    }
+
+    #[test]
+    fn thread_lookup_only_runs_for_own_threads() {
+        let mut post = post_from(&serde_json::json!({
+            "text": "Demo\n\n1/ Signal",
+            "author": { "name": "Calif", "screen_name": "calif_io" }
+        }));
+        assert!(looks_like_thread(&post), "1/ başlangıcı iplik sayılmalı");
+        post.text = "sıradan tweet 1/2 fiyat".into();
+        assert!(!looks_like_thread(&post));
+        post.reply_to = reply_parent(Some("CALIF_IO"), Some("1"));
+        assert!(
+            looks_like_thread(&post),
+            "kendi tweet'ine yanıt iplik sayılmalı"
+        );
+        post.reply_to = reply_parent(Some("baskasi"), Some("1"));
+        assert!(!looks_like_thread(&post));
+
+        // Ek istek yalnızca eksik veri varken: iplik konumu ya da yalnızca kimliği bilinen üst gönderi.
+        post.thread_lookup = false;
+        assert!(needs_enrichment(&post), "metinsiz üst gönderi tamamlanmalı");
+        post.reply_to.as_mut().unwrap().text = "üst".into();
+        assert!(!needs_enrichment(&post));
+        post.thread_lookup = true;
+        assert!(needs_enrichment(&post));
+
+        assert_eq!(
+            position_in(["1", "2", "3", "4"].into_iter(), "2"),
+            Some((2, 4))
+        );
+        assert_eq!(position_in(["1"].into_iter(), "1"), None);
+        assert_eq!(position_in(["1", "2"].into_iter(), "9"), None);
+    }
+
+    #[test]
+    fn replies_carry_the_parent_as_thread_context() {
+        let post = post_from(&serde_json::json!({
+            "text": "2/ devamı",
+            "author": { "name": "Calif", "screen_name": "calif_io" },
+            "replying_to": "calif_io",
+            "replying_to_status": "2111080240978223545"
+        }));
+        let parent = post.reply_to.expect("üst gönderi bağlamı");
+        assert_eq!(
+            parent.url,
+            "https://x.com/calif_io/status/2111080240978223545"
+        );
+        assert_eq!(parent.author.handle, "calif_io");
+
+        let tweet: SyndicationTweet = serde_json::from_value(serde_json::json!({
+            "text": "yanıt",
+            "user": { "name": "Ad", "screen_name": "ad" },
+            "in_reply_to_screen_name": "baska",
+            "in_reply_to_status_id_str": "42"
+        }))
+        .unwrap();
+        let post = syndication_to_post(&tweet, "https://x.com/ad/status/1", u64::MAX).unwrap();
+        assert_eq!(post.reply_to.unwrap().url, "https://x.com/baska/status/42");
+
+        // Kimliksiz yanıt bilgisi bağlam üretmez.
+        let post = post_from(&serde_json::json!({ "text": "x", "replying_to": "biri" }));
+        assert!(post.reply_to.is_none());
     }
 
     #[test]

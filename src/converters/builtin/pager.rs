@@ -127,6 +127,7 @@ mod tests {
         );
         post.media = (0..count)
             .map(|i| Media {
+                alt: None,
                 kind: MediaKind::Image,
                 url: format!("https://cdn/{i}.jpg"),
                 poster: None,

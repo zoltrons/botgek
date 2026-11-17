@@ -502,6 +502,7 @@ mod tests {
 
     fn image(url: &str) -> Media {
         Media {
+            alt: None,
             kind: MediaKind::Image,
             url: url.to_string(),
             poster: None,
@@ -513,6 +514,7 @@ mod tests {
 
     fn video(url: &str, poster: &str) -> Media {
         Media {
+            alt: None,
             kind: MediaKind::Video,
             url: url.to_string(),
             poster: Some(poster.to_string()),
@@ -524,6 +526,7 @@ mod tests {
 
     fn gif(url: &str) -> Media {
         Media {
+            alt: None,
             kind: MediaKind::Gif,
             url: url.to_string(),
             poster: Some("https://cdn/poster.jpg".to_string()),

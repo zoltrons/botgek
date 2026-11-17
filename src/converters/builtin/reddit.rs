@@ -673,6 +673,7 @@ fn single_media(post: &RedditPost) -> Option<Media> {
         && let Some(url) = video.fallback_url.as_deref()
     {
         return Some(Media {
+            alt: None,
             kind: MediaKind::Video,
             url: unescape_url(url),
             poster: preview_image(post),
@@ -685,6 +686,7 @@ fn single_media(post: &RedditPost) -> Option<Media> {
     let source = preview_source(post);
     if let Some(url) = direct_image_url(post) {
         return Some(Media {
+            alt: None,
             kind: MediaKind::Image,
             url,
             poster: None,
@@ -695,6 +697,7 @@ fn single_media(post: &RedditPost) -> Option<Media> {
     }
 
     preview_image(post).map(|url| Media {
+        alt: None,
         kind: MediaKind::Image,
         url,
         poster: None,
@@ -719,6 +722,7 @@ fn redgifs_media(post: &RedditPost) -> Option<Media> {
                 .or(embed.url.as_deref())
                 .or(embed.hls_url.as_deref())?;
             Some(Media {
+                alt: None,
                 kind: MediaKind::Video,
                 url: allowed_redgifs_asset(candidate)?,
                 poster: embed.thumbnail_url.clone(),
@@ -928,6 +932,7 @@ fn gallery_item_to_media(item: &MediaMeta) -> Option<Media> {
         && let Some(mp4) = source.mp4.as_deref()
     {
         return Some(Media {
+            alt: None,
             kind: MediaKind::Gif,
             url: unescape_url(mp4),
             poster: source.u.as_deref().map(unescape_url),
@@ -938,6 +943,7 @@ fn gallery_item_to_media(item: &MediaMeta) -> Option<Media> {
     }
 
     Some(Media {
+        alt: None,
         kind: MediaKind::Image,
         url: unescape_url(source.u.as_deref()?),
         poster: None,
@@ -1296,7 +1302,7 @@ mod tests {
         assert_eq!(children[1]["type"], 10);
         assert_eq!(
             children[1]["content"],
-            "**Samsung S26 ve pc için alınır mı? Ldac desteği olmaması kararsız bırakıyor.**"
+            "### Samsung S26 ve pc için alınır mı? Ldac desteği olmaması kararsız bırakıyor."
         );
         assert_eq!(children[2]["type"], 12);
         assert_eq!(children[2]["items"][0]["media"]["url"], post.media[0].url);

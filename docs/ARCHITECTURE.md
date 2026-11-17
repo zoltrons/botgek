@@ -52,6 +52,7 @@ modelini ve tasarım kararlarının nedenlerini açıklar.
 | Taklit webhook'unun hazır olmasını bekleme | en fazla **200 ms** |
 | Discord POST'una ayrılan pay | **250 ms** |
 | X bağlantı önizlemesi (toplam) | **500 ms** |
+| Kart gönderildikten sonra ek veri (iplik konumu, yanıtlanan X gönderisi; kart sonra düzenlenir) | 4 sn |
 | Reddit video birleştirme | **5 sn** (çağırandan iptal sinyali) |
 | Genel upstream isteği | 6 sn |
 | Medya indirme isteği | 12 sn |

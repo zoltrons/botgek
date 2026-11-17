@@ -17,7 +17,7 @@ korunur.
 
 1. Gönderi adresinden blog ve gönderi kimliği çıkarılır (`tumblr_post_parts`).
 2. fxtumblr uyumlu bir renderer'dan sayfa alınır. Alan adı `FXTUMBLR_DOMAIN`, varsayılan `tpmblr.com`
-   (`fxtumblr_domain`). İstek `safe_http::preview` ile gider ve renderer başka bir ana makineye yönlendirirse
+   (`fxtumblr_domain`). Yazar, adresteki blog adıdır. İstek `safe_http::preview` ile gider ve renderer başka bir ana makineye yönlendirirse
    reddedilir. Gelen HTML `preview::from_external_html` ile kartlaştırılır.
 3. Renderer erişilemezse ya da sonuç vermezse herkese açık OG önizlemesine düşülür (`preview::fetch`).
 

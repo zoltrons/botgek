@@ -282,6 +282,25 @@ pub async fn fetch(
     Ok(post)
 }
 
+/// Kart gönderildikten sonra çözülen ek veri: iplik konumu (`🧵 2/4`) ve yanıtlanan X gönderisinin
+/// metni. Bu istekler (~1 sn) kartın kritik yolunda değildir; eklenecek bir şey yoksa `None`.
+pub async fn enrich(client: &reqwest::Client, post: &BuiltinPost) -> Option<BuiltinPost> {
+    match post.platform {
+        Platform::Twitter => twitter::enrich(client, post).await,
+        Platform::Bluesky => bluesky::enrich(client, post).await,
+        _ => None,
+    }
+}
+
+/// Gönderinin kart gönderildikten sonra tamamlanacak verisi var mı?
+fn wants_enrichment(post: &BuiltinPost) -> bool {
+    match post.platform {
+        Platform::Twitter => twitter::needs_enrichment(post),
+        Platform::Bluesky => post.thread_lookup,
+        _ => false,
+    }
+}
+
 // =====================================================================================
 // ORTAK METİN / ZAMAN YARDIMCILARI
 // =====================================================================================
@@ -1389,7 +1408,7 @@ pub async fn handle(
         fetch(client, parsed, engine, config),
         resolve_channel_nsfw(ctx, msg)
     );
-    let post = match post {
+    let source = match post {
         Ok(post) => post,
         Err(err) => {
             crate::telemetry::record_phase(crate::telemetry::Phase::Fetch, fetch_started.elapsed());
@@ -1408,7 +1427,7 @@ pub async fn handle(
     // source post may be rendered in both NSFW and non-NSFW channels.
     let render_started = std::time::Instant::now();
     let post = render::apply_visibility(
-        &post,
+        &source,
         parsed.is_spoiler,
         engine.sensitive_mode,
         channel_nsfw,
@@ -1471,6 +1490,33 @@ pub async fn handle(
     .await
     {
         Ok((message_id, impersonated)) => {
+            // Ek veri (iplik konumu, yanıtlanan gönderi) kartı geciktirmeden sonradan eklenir. Dosya
+            // ekli kartlar düzenlenmez: düzenleme ekleri yeniden yüklemek zorunda kalırdı.
+            if wants_enrichment(&source) && resolved.attachments.is_empty() {
+                spawn_enrichment(Enrichment {
+                    ctx: ctx.clone(),
+                    client: client.clone(),
+                    config: config.clone(),
+                    msg: msg.clone(),
+                    parsed: parsed.clone(),
+                    cache_key: post_cache_key(parsed, engine),
+                    source: source.clone(),
+                    sensitive_mode: engine.sensitive_mode,
+                    channel_nsfw,
+                    options: options.clone(),
+                    resolved: resolved.clone(),
+                    emojis: engine.emojis.clone(),
+                    message_id,
+                    via: match (delivery, impersonated) {
+                        (Some(delivery), _) => SentVia::Interaction {
+                            application_id: delivery.application_id,
+                            token: delivery.token.clone(),
+                        },
+                        (None, true) => SentVia::Webhook,
+                        (None, false) => SentVia::Channel,
+                    },
+                });
+            }
             let total = started.elapsed();
             crate::telemetry::record(platform_key(parsed.platform), true, total);
             info!(
@@ -1566,6 +1612,151 @@ fn card_source(card: &serde_json::Value, stored: Option<&str>) -> Option<ParsedP
     Some(parsed)
 }
 
+/// Gönderilen kartın düzenleneceği yol.
+enum SentVia {
+    /// `/dönüştür` ya da mesaj komutu: etkileşim yanıtı (`@original`).
+    Interaction { application_id: u64, token: String },
+    /// Taklit webhook'u ile gönderildi.
+    Webhook,
+    /// Bot adına kanal mesajı.
+    Channel,
+}
+
+/// Kart gönderildikten sonra çalışan zenginleştirmenin girdileri (gönderimdeki kararların aynısı).
+struct Enrichment {
+    ctx: Context,
+    client: reqwest::Client,
+    config: Config,
+    msg: Message,
+    parsed: ParsedPost,
+    cache_key: String,
+    source: std::sync::Arc<BuiltinPost>,
+    sensitive_mode: crate::settings::SensitiveMode,
+    channel_nsfw: Option<bool>,
+    options: render::RenderOptions,
+    resolved: render::ResolvedMedia,
+    emojis: EmojiSettings,
+    message_id: MessageId,
+    via: SentVia,
+}
+
+/// Ek veriyi arka planda çözer, önbelleği günceller ve kartı yerinde düzenler. Başarısızlık kartı
+/// bozmaz: kart ilk gönderildiği hâliyle kalır.
+fn spawn_enrichment(job: Enrichment) {
+    tokio::spawn(async move {
+        let Some(enriched) = enrich(&job.client, &job.source).await else {
+            return;
+        };
+        let changed = enriched.reply_to != job.source.reply_to
+            || enriched.thread_position != job.source.thread_position;
+        let enriched = std::sync::Arc::new(enriched);
+        // Önbellekte hâlâ aynı gönderi duruyorsa tamamlanmış hâliyle değiştirilir: sonraki paylaşım
+        // kartı ilk seferde eksiksiz gönderir. Eksik (önbelleğe alınmamış) sonuç önbelleğe girmez.
+        if cache::get(&job.cache_key)
+            .await
+            .is_some_and(|cached| std::sync::Arc::ptr_eq(&cached, &job.source))
+        {
+            cache::put(job.cache_key.clone(), enriched.clone()).await;
+        }
+        if !changed {
+            return;
+        }
+        let post = render::apply_visibility(
+            &enriched,
+            job.parsed.is_spoiler,
+            job.sensitive_mode,
+            job.channel_nsfw,
+        );
+        let sender = match job.via {
+            SentVia::Webhook => None,
+            _ => Some(job.msg.author.id),
+        };
+        let mut payload = v2_payload(
+            &job.msg,
+            &job.parsed,
+            &post,
+            &job.options,
+            &job.resolved,
+            &job.emojis,
+            None,
+            sender,
+        );
+        // Düzenleme kimseyi yeniden etiketlemez; yine de ping olasılığı tamamen kapatılır.
+        payload["allowed_mentions"] = serde_json::json!({ "parse": [] });
+        let _card = coordination::lock(format!("refresh:{}", job.message_id)).await;
+        match edit_sent_card(&job, &payload).await {
+            Ok(()) => debug!(message = %job.message_id, "Kart ek veriyle güncellendi"),
+            Err(err) => debug!(message = %job.message_id, "Kart ek veriyle güncellenemedi: {err}"),
+        }
+    });
+}
+
+/// Gönderilmiş kartı geldiği yoldan yerinde düzenler.
+async fn edit_sent_card(
+    job: &Enrichment,
+    payload: &serde_json::Value,
+) -> Result<(), raw::DiscordError> {
+    match &job.via {
+        SentVia::Interaction {
+            application_id,
+            token,
+        } => raw::edit_interaction_response(&job.client, *application_id, token, payload, &[])
+            .await
+            .map(|_| ()),
+        SentVia::Webhook => {
+            let target = webhook_target(&job.ctx, &job.msg).await;
+            let hook =
+                channel_webhook(&job.ctx, &job.client, &job.config, target.channel_id, false)
+                    .await
+                    .ok_or(raw::DiscordError::Rejected(404))?;
+            raw::edit_message(
+                &job.client,
+                &webhook_message_url(&hook, job.message_id, target.thread_id),
+                None,
+                format!("hook_exec:{}", hook.id),
+                payload,
+                &[],
+            )
+            .await
+            .map(|_| ())
+        }
+        SentVia::Channel => raw::edit_message(
+            &job.client,
+            &format!(
+                "{}/channels/{}/messages/{}",
+                raw::API_BASE,
+                job.msg.channel_id.get(),
+                job.message_id.get()
+            ),
+            Some(&job.config.discord_token),
+            format!("channel:{}", job.msg.channel_id),
+            payload,
+            &[],
+        )
+        .await
+        .map(|_| ()),
+    }
+}
+
+/// Webhook mesajının düzenleme adresi (alt başlıkta `thread_id` ile).
+fn webhook_message_url(
+    hook: &NamedWebhook,
+    message_id: MessageId,
+    thread: Option<ChannelId>,
+) -> String {
+    let mut url = format!(
+        "{}/webhooks/{}/{}/messages/{}",
+        raw::API_BASE,
+        hook.id.get(),
+        hook.token,
+        message_id.get()
+    );
+    if let Some(thread) = thread {
+        url.push_str(&format!("?thread_id={}", thread.get()));
+    }
+    url
+}
+
 /// Var olan bir kartı güncel veriyle **yerinde** yeniden üretir (Apps → Yenile).
 ///
 /// Mesaj kimliği değişmez: gönderen (taklit adı/avatarı ya da `Gönderen:` etiketi), 🗑️
@@ -1616,6 +1807,11 @@ pub async fn regenerate(
         resolve_channel_nsfw(ctx, &msg)
     );
     let post = post.map_err(|err| format!("Gönderi verisi alınamadı: {err}"))?;
+    // Yenileme beklenerek yapılır: ek veri (iplik konumu, yanıtlanan gönderi) doğrudan karta girer.
+    let post = match enrich(client, &post).await {
+        Some(enriched) => std::sync::Arc::new(enriched),
+        None => post,
+    };
     let post = render::apply_visibility(
         &post,
         parsed.is_spoiler,
@@ -1653,16 +1849,7 @@ pub async fn regenerate(
                 .filter(|hook| hook.id == webhook_id);
             let edited = match hook {
                 Some(hook) => {
-                    let mut url = format!(
-                        "{}/webhooks/{}/{}/messages/{}",
-                        raw::API_BASE,
-                        webhook_id.get(),
-                        hook.token,
-                        message_id.get()
-                    );
-                    if let Some(thread) = target.thread_id {
-                        url.push_str(&format!("?thread_id={}", thread.get()));
-                    }
+                    let url = webhook_message_url(&hook, message_id, target.thread_id);
                     raw::edit_message(
                         client,
                         &url,

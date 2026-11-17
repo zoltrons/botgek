@@ -7,12 +7,16 @@ use regex::Regex;
 use serde::Deserialize;
 use std::sync::LazyLock;
 
-use super::{Author, BuiltinPost, Media, MediaKind, Stats, parse_timestamp};
+use super::{Author, BuiltinPost, LinkPreview, Media, MediaKind, Stats, parse_timestamp};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const API_BASE: &str = "https://public.api.bsky.app/xrpc";
 const THREAD_DEPTH: u8 = 2;
 const THREAD_PARENT_HEIGHT: u8 = 1;
+/// İplik konumu (`🧵 2/4`) için yazar ipliğinin aşağıda en çok kaç gönderisi okunur.
+const OP_THREAD_BELOW: u8 = 20;
+/// İplik konumu isteğinin süresi. Kart gönderildikten sonra çalışır; gelmezse kart konumsuz kalır.
+const OP_THREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(4_000);
 
 static BSKY_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"bsky\.app/profile/([^/\s]+)/post/([A-Za-z0-9]+)").expect("geçerli bluesky regex")
@@ -58,7 +62,93 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
         format!("Bluesky gönderisi bulunamadı ({rkey}); silinmiş veya engellenmiş olabilir")
     })?;
 
-    Ok(thread_view_to_post(&response.thread, &handle))
+    let mut post = thread_view_to_post(&response.thread, &handle);
+    // Konum kart gönderildikten sonra çözülür (`enrich`): iplik isteği kartı geciktirmesin.
+    post.thread_lookup = in_own_thread(&response.thread, &post);
+    Ok(post)
+}
+
+/// Kart gönderildikten sonra iplik konumunu çözer; gönderi iplikte değilse `None`.
+pub async fn enrich(client: &reqwest::Client, post: &BuiltinPost) -> Option<BuiltinPost> {
+    if !post.thread_lookup {
+        return None;
+    }
+    let captures = BSKY_URL_REGEX.captures(&post.url)?;
+    let uri = format!("at://{}/app.bsky.feed.post/{}", &captures[1], &captures[2]);
+    let mut enriched = post.clone();
+    enriched.thread_lookup = false;
+    enriched.thread_position = op_thread_position(client, &uri).await;
+    Some(enriched)
+}
+
+/// Gönderi yazarın kendi ipliğinde mi: üst gönderi ya da doğrudan bir yanıt aynı yazardan.
+fn in_own_thread(thread: &ThreadView, post: &BuiltinPost) -> bool {
+    let author = post.author.handle.trim();
+    let same = |handle: &str| !author.is_empty() && handle.eq_ignore_ascii_case(author);
+    post.reply_to
+        .as_deref()
+        .is_some_and(|parent| same(&parent.author.handle))
+        || thread.replies.iter().flatten().any(|reply| {
+            reply
+                .post
+                .as_ref()
+                .and_then(|post| post.author.as_ref())
+                .and_then(|author| author.handle.as_deref())
+                .is_some_and(same)
+        })
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ThreadV2 {
+    thread: Vec<ThreadV2Item>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ThreadV2Item {
+    depth: i32,
+    value: ThreadV2Value,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ThreadV2Value {
+    #[serde(rename = "opThread")]
+    op_thread: bool,
+}
+
+/// `getPostThreadV2` yazarın ipliğindeki gönderileri `opThread` ile işaretler: üsttekiler ve
+/// gönderinin kendisi konumu, hepsi toplamı verir.
+async fn op_thread_position(client: &reqwest::Client, uri: &str) -> Option<(u32, u32)> {
+    let url = format!(
+        "{API_BASE}/app.bsky.unspecced.getPostThreadV2?below={OP_THREAD_BELOW}&branchingFactor=1&anchor={}",
+        urlencoding::encode(uri)
+    );
+    match tokio::time::timeout(OP_THREAD_TIMEOUT, super::get_json::<ThreadV2>(client, &url)).await {
+        Ok(Ok(thread)) => op_position(&thread),
+        Ok(Err(err)) => {
+            tracing::debug!("Bluesky iplik konumu alınamadı: {err}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!("Bluesky iplik konumu zamanında gelmedi");
+            None
+        }
+    }
+}
+
+fn op_position(thread: &ThreadV2) -> Option<(u32, u32)> {
+    let op: Vec<&ThreadV2Item> = thread
+        .thread
+        .iter()
+        .filter(|item| item.value.op_thread)
+        .collect();
+    if !op.iter().any(|item| item.depth == 0) || op.len() < 2 {
+        return None;
+    }
+    let index = op.iter().filter(|item| item.depth <= 0).count();
+    Some((index as u32, op.len() as u32))
 }
 
 // =====================================================================================
@@ -107,28 +197,28 @@ fn post_view_to_post(post: &PostView, fallback_handle: &str) -> BuiltinPost {
         let parts = embed_to_parts(embed);
         built.media = parts.media;
 
-        if let Some(card) = parts.external.as_ref() {
-            if built.text.trim().is_empty()
-                && let Some(description) = card.description.as_deref()
-            {
-                built.text = description.trim().to_string();
-            }
-            if built.title.is_none() {
-                built.title = card.title.clone().filter(|title| !title.trim().is_empty());
-            }
-            // Bağlantı kartının küçük görseli kapak olarak kullanılır.
-            if built.media.is_empty()
-                && let Some(thumb) = card.thumb.as_deref()
-            {
-                built.media.push(Media {
-                    kind: MediaKind::Image,
-                    url: thumb.to_string(),
-                    poster: None,
-                    width: None,
-                    height: None,
-                    duration: None,
-                });
-            }
+        // Bağlantı kartı X'teki gibi başlık + açıklama + site adıyla çizilir; küçük görseli gönderinin
+        // kendi medyası yoksa galeriye girer (`plan_media`).
+        if let Some(card) = parts.external.as_ref()
+            && let Some(uri) = card.uri.as_deref().filter(|uri| uri.starts_with("http"))
+        {
+            let clean = |value: &Option<String>| {
+                value
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            built.link_preview = Some(LinkPreview {
+                url: uri.to_string(),
+                title: clean(&card.title),
+                description: clean(&card.description),
+                image: clean(&card.thumb),
+                site_name: url::Url::parse(uri).ok().and_then(|url| {
+                    url.host_str()
+                        .map(|host| host.trim_start_matches("www.").to_string())
+                }),
+            });
         }
 
         built.quote = parts.quote.map(Box::new);
@@ -150,20 +240,14 @@ fn thread_view_to_post(thread: &ThreadView, fallback_handle: &str) -> BuiltinPos
     };
     let mut built = post_view_to_post(post, fallback_handle);
 
+    // Yanıtlanan gönderi alıntı değildir: ayrı `reply_to` alanında taşınır, böylece gönderinin kendi
+    // alıntısı korunur ve kart üst gönderiyi bağlam olarak gösterir.
     if let Some(parent) = thread
         .parent
         .as_deref()
         .and_then(|parent| parent.post.as_ref())
     {
-        if let Some(parent_quote) = quote_from_post_view(parent) {
-            built.quote = Some(Box::new(parent_quote));
-        }
-        let handle = parent
-            .author
-            .as_ref()
-            .and_then(|author| author.handle.as_deref())
-            .unwrap_or("kullanıcı");
-        built.extra_label = Some(format!("Yanıt • @{handle}"));
+        built.reply_to = quote_from_post_view(parent).map(Box::new);
     } else if post
         .record
         .as_ref()
@@ -173,19 +257,13 @@ fn thread_view_to_post(thread: &ThreadView, fallback_handle: &str) -> BuiltinPos
         built.extra_label = Some("Yanıt".to_string());
     }
 
-    // Sınırlı derinlikte çekilen iplik yanıtların yalnızca bir kısmını döndürür; gerçek sayı `replyCount` alanındadır.
-    let reply_count = post.reply_count.unwrap_or_else(|| {
-        thread
+    // Sınırlı derinlikte çekilen iplik yanıtların yalnızca bir kısmını döndürür; gerçek sayı `replyCount`
+    // alanındadır. Sayı metrik satırında gösterilir; alt bilgide ayrıca `+N yanıt` yazılmaz.
+    if post.reply_count.is_none() {
+        built.stats.replies = thread
             .replies
             .as_ref()
-            .map_or(0, |replies| replies.len() as u64)
-    });
-    if reply_count > 0 {
-        let suffix = format!("+{reply_count} yanıt");
-        built.extra_label = Some(match built.extra_label.take() {
-            Some(label) => format!("{label} • {suffix}"),
-            None => suffix,
-        });
+            .map_or(0, |replies| replies.len() as u64);
     }
 
     if let Some(reason) = thread.reason.as_ref().or(post.reason.as_ref())
@@ -331,6 +409,9 @@ fn embed_to_parts(embed: &EmbedView) -> EmbedParts {
 
     if record_only {
         parts.quote = embed.record.as_ref().and_then(quote_from_embed_record);
+        if parts.quote.is_none() {
+            parts.external = embed.record.as_ref().and_then(graph_record_card);
+        }
         return parts;
     }
 
@@ -338,11 +419,15 @@ fn embed_to_parts(embed: &EmbedView) -> EmbedParts {
         parts.external = Some(external.clone());
     }
 
-    if let Some(images) = embed.images.as_deref() {
+    for images in [embed.images.as_deref(), embed.items.as_deref()]
+        .into_iter()
+        .flatten()
+    {
         for image in images {
             if let Some(url) = image.fullsize.as_deref() {
                 let (width, height) = aspect_dimensions(image.aspect_ratio.as_ref());
                 parts.media.push(Media {
+                    alt: image.alt.clone(),
                     kind: MediaKind::Image,
                     url: url.to_string(),
                     poster: None,
@@ -354,22 +439,39 @@ fn embed_to_parts(embed: &EmbedView) -> EmbedParts {
         }
     }
 
-    if let Some(video) = embed.video.as_ref() {
-        // Bluesky videoları HLS (m3u8) olarak sunulur: dosya eklenemez, kapak gösterilir.
-        if let Some(playlist) = video.playlist.as_deref() {
-            let (width, height) = aspect_dimensions(video.aspect_ratio.as_ref());
-            parts.media.push(Media {
-                kind: MediaKind::Video,
-                url: playlist.to_string(),
-                poster: video.thumbnail.clone(),
-                width,
-                height,
-                duration: None,
-            });
-        }
+    let video = &embed.video;
+    if let Some(url) = video.playlist.as_deref().and_then(video_blob_url) {
+        let (width, height) = aspect_dimensions(video.aspect_ratio.as_ref());
+        parts.media.push(Media {
+            alt: video.alt.clone(),
+            kind: MediaKind::Video,
+            url,
+            poster: video.thumbnail.clone(),
+            width,
+            height,
+            duration: None,
+        });
     }
 
     parts
+}
+
+/// Bluesky videoyu yalnızca HLS (`.m3u8`) olarak sunar; Discord bunu oynatamaz. Oynatma listesi
+/// adresindeki DID ve CID'den özgün MP4'ün blob adresi kurulur (FxBluesky/xsky.app yöntemi):
+/// `bsky.social` isteği kullanıcının PDS'ine yönlendirir ve `video/mp4` döner.
+fn video_blob_url(playlist: &str) -> Option<String> {
+    let path = playlist.split("/watch/").nth(1)?;
+    let mut parts = path.split('/');
+    let did = urlencoding::decode(parts.next()?).ok()?;
+    let cid = parts.next()?;
+    let valid = |value: &str| {
+        !value.is_empty()
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'_' | b'-')
+            })
+    };
+    (did.starts_with("did:") && valid(&did) && valid(cid))
+        .then(|| format!("https://bsky.social/xrpc/com.atproto.sync.getBlob?did={did}&cid={cid}"))
 }
 
 fn aspect_dimensions(ratio: Option<&AspectRatio>) -> (Option<u32>, Option<u32>) {
@@ -389,6 +491,60 @@ fn quote_from_embed_record(value: &serde_json::Value) -> Option<BuiltinPost> {
         .unwrap_or(value);
     let view = PostView::deserialize(view_record).ok()?;
     quote_from_post_view(&view)
+}
+
+/// Gönderi olmayan gömülü kayıt (başlangıç paketi, akış, liste) bağlantı kartı olarak gösterilir.
+fn graph_record_card(value: &serde_json::Value) -> Option<EmbedExternal> {
+    let text = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let uri = value.get("uri")?.as_str()?;
+    let mut segments = uri.strip_prefix("at://")?.split('/');
+    let (owner, collection, rkey) = (segments.next()?, segments.next()?, segments.next()?);
+    let creator = text(value.pointer("/creator/handle")).unwrap_or_else(|| owner.to_string());
+    let (path, label, name, description) = match collection {
+        "app.bsky.graph.starterpack" => (
+            format!("starter-pack/{creator}/{rkey}"),
+            "Başlangıç paketi",
+            text(value.pointer("/record/name")),
+            text(value.pointer("/record/description")),
+        ),
+        "app.bsky.feed.generator" => (
+            format!("profile/{creator}/feed/{rkey}"),
+            "Akış",
+            text(value.get("displayName")),
+            text(value.get("description")),
+        ),
+        "app.bsky.graph.list" => (
+            format!("profile/{creator}/lists/{rkey}"),
+            "Liste",
+            text(value.get("name")),
+            text(value.get("description")),
+        ),
+        _ => return None,
+    };
+    let safe = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':')
+            })
+    };
+    if !safe(&creator) || !safe(rkey) {
+        return None;
+    }
+    Some(EmbedExternal {
+        uri: Some(format!("https://bsky.app/{path}")),
+        title: Some(match name {
+            Some(name) => format!("{label}: {name}"),
+            None => label.to_string(),
+        }),
+        description,
+        thumb: text(value.get("avatar")),
+    })
 }
 
 /// Alıntılanan gönderiyi (embed kaydı) gönderi modeline çevirir.
@@ -431,6 +587,7 @@ fn quote_from_post_view(view: &PostView) -> Option<BuiltinPost> {
         .and_then(|verification| verification.verified_status.as_deref())
         == Some("valid");
 
+    author.profile_url = (!handle.is_empty()).then(|| format!("https://bsky.app/profile/{handle}"));
     let mut quote = BuiltinPost::new(Platform::Bluesky, web_url(view, &handle), author);
     quote.text = apply_link_facets(&text, record.facets.as_deref());
     quote.media = media;
@@ -570,7 +727,11 @@ struct EmbedView {
     #[serde(rename = "type", alias = "$type")]
     kind: Option<String>,
     images: Option<Vec<EmbedImage>>,
-    video: Option<EmbedVideo>,
+    /// `gallery#view` görselleri (`images` ile aynı biçim).
+    items: Option<Vec<EmbedImage>>,
+    /// `video#view` alanları gömmenin kendisinde durur (iç içe `video` nesnesi yoktur).
+    #[serde(flatten)]
+    video: EmbedVideo,
     external: Option<EmbedExternal>,
     /// Embed türüne göre `viewRecord` ya da `record#view` sarmalayıcısı olduğundan ham tutulur.
     record: Option<serde_json::Value>,
@@ -581,6 +742,7 @@ struct EmbedView {
 #[serde(default)]
 struct EmbedImage {
     fullsize: Option<String>,
+    alt: Option<String>,
     #[serde(rename = "aspectRatio")]
     aspect_ratio: Option<AspectRatio>,
 }
@@ -589,6 +751,7 @@ struct EmbedImage {
 #[serde(default)]
 struct EmbedVideo {
     playlist: Option<String>,
+    alt: Option<String>,
     thumbnail: Option<String>,
     #[serde(rename = "aspectRatio")]
     aspect_ratio: Option<AspectRatio>,
@@ -597,6 +760,7 @@ struct EmbedVideo {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct EmbedExternal {
+    uri: Option<String>,
     title: Option<String>,
     description: Option<String>,
     thumb: Option<String>,
@@ -698,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn external_card_fills_empty_text_and_cover() {
+    fn external_card_becomes_a_link_preview() {
         let json = r#"{
             "thread": { "post": {
                 "uri": "at://did:plc:abc/app.bsky.feed.post/rkey2",
@@ -714,9 +878,20 @@ mod tests {
         "#;
 
         let post = post_view_to_post(&thread_from(json), "haber.bsky.social");
-        assert_eq!(post.title.as_deref(), Some("Önemli haber"));
-        assert_eq!(post.text, "Haberin özeti");
-        assert_eq!(post.media[0].url, "https://cdn.bsky.app/thumb.jpg");
+        let preview = post
+            .link_preview
+            .expect("bağlantı kartı önizlemeye dönüşmeli");
+        assert_eq!(preview.url, "https://example.com/haber");
+        assert_eq!(preview.title.as_deref(), Some("Önemli haber"));
+        assert_eq!(preview.description.as_deref(), Some("Haberin özeti"));
+        assert_eq!(
+            preview.image.as_deref(),
+            Some("https://cdn.bsky.app/thumb.jpg")
+        );
+        assert_eq!(preview.site_name.as_deref(), Some("example.com"));
+        // Açıklama gövdeye kopyalanmaz, küçük görsel medya olmaz: ikisi de önizlemede bir kez görünür.
+        assert!(post.text.is_empty());
+        assert!(post.media.is_empty());
     }
 
     #[test]
@@ -745,17 +920,19 @@ mod tests {
     }
 
     #[test]
-    fn hls_video_keeps_poster_for_cover_image() {
+    fn video_plays_as_mp4_blob_with_poster() {
         let json = r#"{
             "thread": { "post": {
                 "uri": "at://did:plc:abc/app.bsky.feed.post/vid",
                 "author": { "handle": "video.bsky.social" },
                 "record": { "text": "video", "createdAt": "2024-05-06T12:34:56Z" },
-                "embed": { "type": "app.bsky.embed.video#view", "video": {
-                    "playlist": "https://video.bsky.app/watch/x/playlist.m3u8",
-                    "thumbnail": "https://video.bsky.app/watch/x/thumbnail.jpg",
+                "embed": {
+                    "$type": "app.bsky.embed.video#view",
+                    "cid": "bafkreivid",
+                    "playlist": "https://video.bsky.app/watch/did%3Aplc%3Aabc/bafkreivid/playlist.m3u8",
+                    "thumbnail": "https://video.bsky.app/watch/did%3Aplc%3Aabc/bafkreivid/thumbnail.jpg",
                     "aspectRatio": { "width": 720, "height": 1280 }
-                } }
+                }
             }}}
         "#;
 
@@ -763,10 +940,123 @@ mod tests {
         assert_eq!(post.media.len(), 1);
         assert_eq!(post.media[0].kind, MediaKind::Video);
         assert_eq!(
+            post.media[0].url,
+            "https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did:plc:abc&cid=bafkreivid"
+        );
+        assert_eq!(
             post.media[0].poster.as_deref(),
-            Some("https://video.bsky.app/watch/x/thumbnail.jpg")
+            Some("https://video.bsky.app/watch/did%3Aplc%3Aabc/bafkreivid/thumbnail.jpg")
         );
         assert_eq!(post.media[0].height, Some(1280));
+    }
+
+    #[test]
+    fn gallery_items_become_images_with_alt_text() {
+        let json = r#"{
+            "thread": { "post": {
+                "uri": "at://did:plc:abc/app.bsky.feed.post/gal",
+                "author": { "handle": "galeri.bsky.social" },
+                "record": { "text": "galeri" },
+                "embed": { "$type": "app.bsky.embed.gallery#view", "items": [
+                    { "fullsize": "https://cdn.bsky.app/img/1.jpg", "alt": "bir" },
+                    { "fullsize": "https://cdn.bsky.app/img/2.jpg", "alt": "" }
+                ] }
+            }}}
+        "#;
+
+        let post = post_view_to_post(&thread_from(json), "galeri.bsky.social");
+        assert_eq!(post.media.len(), 2);
+        assert_eq!(post.media[0].url, "https://cdn.bsky.app/img/1.jpg");
+        assert_eq!(post.media[0].alt.as_deref(), Some("bir"));
+    }
+
+    #[test]
+    fn reply_that_quotes_keeps_both_parent_and_quote() {
+        let json = r#"{
+            "thread": {
+                "parent": { "post": {
+                    "uri": "at://did:plc:p/app.bsky.feed.post/p1",
+                    "author": { "handle": "ust.bsky.social" },
+                    "record": { "text": "üst" }
+                }},
+                "post": {
+                    "uri": "at://did:plc:m/app.bsky.feed.post/m1",
+                    "author": { "handle": "ana.bsky.social" },
+                    "record": { "text": "yanıt ve alıntı", "reply": { "parent": { "uri": "at://did:plc:p/app.bsky.feed.post/p1" } } },
+                    "embed": { "$type": "app.bsky.embed.record#view", "record": {
+                        "uri": "at://did:plc:q/app.bsky.feed.post/q1",
+                        "author": { "handle": "alinti.bsky.social" },
+                        "value": { "text": "alıntı" }
+                    } }
+                }
+            }
+        }"#;
+        let response: ThreadResponse = serde_json::from_str(json).expect("geçerli");
+        let post = thread_view_to_post(&response.thread, "ana.bsky.social");
+        assert_eq!(post.reply_to.expect("üst gönderi").text, "üst");
+        assert_eq!(post.quote.expect("alıntı").text, "alıntı");
+    }
+
+    #[test]
+    fn op_thread_position_counts_the_authors_chain() {
+        let thread: ThreadV2 = serde_json::from_str(
+            r#"{ "thread": [
+                { "depth": -2, "value": { "opThread": true } },
+                { "depth": -1, "value": { "opThread": true } },
+                { "depth": 0, "value": { "opThread": true } },
+                { "depth": 1, "value": { "opThread": true } },
+                { "depth": 1, "value": { "opThread": false } },
+                { "depth": 2, "value": { "opThread": false } }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(op_position(&thread), Some((3, 4)));
+
+        // Başkasına yanıt (gönderi yazar ipliğinde değil) ve tek gönderilik iplik konum üretmez.
+        let other: ThreadV2 = serde_json::from_str(
+            r#"{ "thread": [
+                { "depth": -1, "value": { "opThread": true } },
+                { "depth": 0, "value": { "opThread": false } }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(op_position(&other), None);
+        let single: ThreadV2 = serde_json::from_str(
+            r#"{ "thread": [ { "depth": 0, "value": { "opThread": true } } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(op_position(&single), None);
+    }
+
+    #[test]
+    fn starter_pack_embed_becomes_a_link_card() {
+        let json = r#"{
+            "thread": { "post": {
+                "uri": "at://did:plc:abc/app.bsky.feed.post/sp",
+                "author": { "handle": "bsky.app" },
+                "record": { "text": "paket" },
+                "embed": { "$type": "app.bsky.embed.record#view", "record": {
+                    "uri": "at://did:plc:abc/app.bsky.graph.starterpack/3mzd",
+                    "creator": { "handle": "bsky.app" },
+                    "record": { "$type": "app.bsky.graph.starterpack", "name": "Seçim", "description": "Muhabirler" }
+                } }
+            }}}
+        "#;
+        let post = post_view_to_post(&thread_from(json), "bsky.app");
+        assert!(post.quote.is_none());
+        let preview = post.link_preview.expect("bağlantı kartı");
+        assert_eq!(preview.url, "https://bsky.app/starter-pack/bsky.app/3mzd");
+        assert_eq!(preview.title.as_deref(), Some("Başlangıç paketi: Seçim"));
+        assert_eq!(preview.description.as_deref(), Some("Muhabirler"));
+    }
+
+    #[test]
+    fn video_blob_url_rejects_unexpected_paths() {
+        assert_eq!(video_blob_url("https://video.bsky.app/other/x"), None);
+        assert_eq!(
+            video_blob_url("https://video.bsky.app/watch/did%3Aplc%3Aa/b&c=1/playlist.m3u8"),
+            None
+        );
     }
 
     #[test]
@@ -802,14 +1092,23 @@ mod tests {
         let response: ThreadResponse = serde_json::from_str(json).expect("thread fixture geçerli");
         let post = thread_view_to_post(&response.thread, "main.bsky.social");
         let parent = post
-            .quote
-            .expect("parent gönderi bounded quote olarak korunmalı");
+            .reply_to
+            .expect("üst gönderi yanıt bağlamı olarak korunmalı");
         assert_eq!(parent.text, "Üst gönderi");
-        assert!(
-            post.extra_label
-                .as_deref()
-                .is_some_and(|label| label.contains("Yanıt") && label.contains("+2 yanıt"))
+        assert_eq!(
+            parent.author.profile_url.as_deref(),
+            Some("https://bsky.app/profile/parent.bsky.social")
         );
+        assert!(
+            post.quote.is_none(),
+            "üst gönderi alıntı yuvasını işgal etmemeli"
+        );
+        // Yanıt ilişkisi kartta bağlam olarak çizilir; alt bilgide yalnızca repost kalır.
+        assert_eq!(
+            post.extra_label.as_deref(),
+            Some("Repost • @resharer.bsky.social")
+        );
+        assert_eq!(post.stats.replies, 2);
 
         let repost = RepostReason {
             kind: Some("app.bsky.feed.defs#reasonRepost".to_string()),
@@ -950,7 +1249,7 @@ mod tests {
     }
 
     #[test]
-    fn reply_label_uses_reply_count_over_returned_replies() {
+    fn reply_count_is_a_metric_not_a_footer_label() {
         let json = r#"{
             "thread": {
                 "post": {
@@ -966,6 +1265,7 @@ mod tests {
         }"#;
         let response: ThreadResponse = serde_json::from_str(json).expect("thread fixture geçerli");
         let post = thread_view_to_post(&response.thread, "main.bsky.social");
-        assert_eq!(post.extra_label.as_deref(), Some("+87 yanıt"));
+        assert_eq!(post.stats.replies, 87);
+        assert_eq!(post.extra_label, None);
     }
 }
