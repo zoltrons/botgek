@@ -86,10 +86,6 @@ const EMOJI_SPOILER: Emoji = Emoji {
     name: "lb_spoiler",
     id: "1563865500931330179",
 };
-const EMOJI_WATCHED: Emoji = Emoji {
-    name: "lb_watched",
-    id: "1563865505725685790",
-};
 const EMOJI_LIKES: Emoji = Emoji {
     name: "lb_likes",
     id: "1563865490441506826",
@@ -360,10 +356,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
             if let Some(html) = page.body.as_deref()
                 && let Some(mut review) = parse_review(html, &target)
             {
-                // İnceleme sahibinin seçtiği özel poster (Patron/Pro): varsayılanın yerine geçer.
-                if let Some(path) = custom_poster_path(html, slug)
-                    && let Some(poster) = resolve_poster(client, &path).await
-                {
+                if let Some(poster) = custom_poster(client, html, slug).await {
                     review.poster = Some(poster);
                 }
                 return Ok(review_post(&review));
@@ -443,6 +436,11 @@ async fn get_page(client: &reqwest::Client, url: &str) -> Result<Page, String> {
         status: status.as_u16(),
         body,
     })
+}
+
+/// İnceleme sahibinin seçtiği özel poster (Patron/Pro): varsayılanın yerine geçer.
+async fn custom_poster(client: &reqwest::Client, html: &str, slug: &str) -> Option<String> {
+    resolve_poster(client, &custom_poster_path(html, slug)?).await
 }
 
 /// Letterboxd'un poster çözücüsü (`…/poster/std/{id}/600/`) özel posterin CDN adresini döner;
@@ -1097,6 +1095,29 @@ fn date_label((year, month, day): (u32, u32, u32)) -> String {
     format!("{day} {month} {year}")
 }
 
+/// Bu yılın günü yılsız yazılır (`13 Kas`), eski kayıtlar yıllı (`9 Ağu 2019`).
+fn short_date_label(date: (u32, u32, u32)) -> String {
+    let full = date_label(date);
+    if date.0 == current_year() {
+        full.rsplit_once(' ')
+            .map_or(full.clone(), |(day_month, _)| day_month.to_string())
+    } else {
+        full
+    }
+}
+
+/// UTC'ye göre bu yıl (Hinnant'ın günden takvime dönüşümü; tarih kütüphanesi gerekmez).
+fn current_year() -> u32 {
+    let days = (crate::utils::unix_secs() / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month = (5 * doy + 2) / 153;
+    let year = yoe + era * 400 + i64::from(month >= 10);
+    year as u32
+}
+
 fn text(content: impl Into<String>) -> Value {
     json!({ "type": TYPE_TEXT_DISPLAY, "content": content.into() })
 }
@@ -1276,75 +1297,51 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
 }
 
 fn review_card(review: &Review) -> CustomCard {
-    let verdict = review.rating.map(stars).unwrap_or_default();
+    // Tek bölüm, tek görsel (poster): kim ne yaptı, film, gün + puan. Ayrıntı yok.
+    let verb = if review.body.is_some() {
+        "inceledi"
+    } else {
+        "izledi"
+    };
+    let who = format!(
+        "**[{}]({})** {verb}",
+        escape_markdown(&review.author),
+        review.profile_url
+    );
     let mut film = escape_markdown(&review.film_title);
     if let Some(year) = &review.film_year {
         film.push_str(&format!(" ({year})"));
     }
-    // Kartın öznesi incelemeyi yazan kişidir: en büyük başlık (`##`) onun. Tek görsel posterdir;
-    // film adı ve yıldızlar ondan küçük (`###`), izleme günü en küçük (`-#`).
-    let mut byline = format!(
-        "## [{}]({})",
-        escape_markdown(&review.author),
-        review.profile_url
-    );
-    let mut subline = Vec::new();
-    if let Some(badge) = &review.badge {
-        // Profil kartındaki gibi: Patron rozetine taç eşlik eder, diğerleri yalnızca yazı.
-        let crown = if badge.eq_ignore_ascii_case("patron") {
-            format!("{} ", EMOJI_PATRON.tag())
-        } else {
-            String::new()
-        };
-        subline.push(format!("{crown}{}", escape_markdown(badge)));
-    }
-    // İncelemesiz günlük kaydı (yalnızca izleme) inceleme diye etiketlenmez.
-    subline.push(
-        if review.body.is_some() {
-            "Letterboxd incelemesi"
-        } else {
-            "Letterboxd günlüğü"
-        }
-        .to_string(),
-    );
-    byline.push_str(&format!("\n-# {}", subline.join(" · ")));
-    let mut header = format!("### {film}");
-    if !verdict.is_empty() {
-        header.push_str(&format!("\n### {verdict}"));
-    }
+    let title = format!("### [{film}]({})", review.film_url);
 
-    let mut meta: Vec<String> = Vec::new();
-    match (review.watched, review.published) {
-        (Some(date), _) => meta.push(format!(
-            "{} {} izledi",
-            EMOJI_WATCHED.tag(),
-            date_label(date)
-        )),
-        (None, Some(date)) => meta.push(format!("{} yazdı", date_label(date))),
-        (None, None) => {}
+    let mut verdict: Vec<String> = Vec::new();
+    // Gün kaydın kendisine bağlanır: kart başka buton taşımaz.
+    if let Some(date) = review.watched.or(review.published) {
+        verdict.push(format!("**[{}]({})**", short_date_label(date), review.url));
     }
-    if review.liked {
-        meta.push(format!("{} Filmi beğendi", EMOJI_LIKE.tag()));
+    if let Some(rating) = review.rating {
+        verdict.push(stars(rating));
     }
     if review.rewatch {
-        meta.push(format!("{} Yeniden izleme", EMOJI_REWATCH.tag()));
+        verdict.push(EMOJI_REWATCH.tag());
+    }
+    if review.liked {
+        verdict.push(EMOJI_LIKE.tag());
+    }
+    let mut header = format!("{who}\n{title}");
+    if !verdict.is_empty() {
+        header.push_str(&format!("\n{}", verdict.join(" ")));
     }
 
-    let mut section_children = vec![text(header)];
-    if !meta.is_empty() {
-        section_children.push(text(format!("-# {}", meta.join(" · "))));
+    let mut components = vec![section(
+        vec![text(header)],
+        review.poster.as_deref(),
+        &review.url,
+        &format!("{} posteri", review.film_title),
+    )];
+    if review.body.is_some() {
+        components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
     }
-
-    let mut components = vec![
-        text(byline),
-        json!({ "type": TYPE_SEPARATOR, "spacing": 1 }),
-        section(
-            section_children,
-            review.poster.as_deref(),
-            &review.url,
-            &format!("{} posteri", review.film_title),
-        ),
-    ];
     match review.body.as_deref() {
         Some(body) if review.spoiler => {
             let (body, cut) = spoiler_body(body);
@@ -1376,19 +1373,6 @@ fn review_card(review: &Review) -> CustomCard {
             format_count(likes)
         )));
     }
-    components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
-    components.push(json!({
-        "type": TYPE_ACTION_ROW,
-        "components": [
-            // İncelemesiz günlük kaydı (yalnızca izleme) inceleme diye açılmaz.
-            link_button(
-                if review.body.is_some() { "İncelemeyi aç" } else { "Kaydı aç" },
-                &review.url,
-                Some(EMOJI_REVIEW),
-            ),
-            link_button("Filmi aç", &review.film_url, Some(EMOJI_LOGO)),
-        ],
-    }));
 
     CustomCard {
         components,
@@ -1624,7 +1608,33 @@ fn review_post(review: &Review) -> BuiltinPost {
 pub struct DiaryEntry {
     /// Letterboxd kayıt kimliği; yeni kayıtlar daha büyük kimlik alır.
     pub id: u64,
-    pub post: BuiltinPost,
+    review: Review,
+}
+
+impl DiaryEntry {
+    /// Kaydın kartı. RSS yalnızca varsayılan posteri verir; kullanıcının seçtiği özel poster
+    /// kayıt sayfasından okunur (yalnızca gönderilecek kayıt için, 1-2 ek istek). Sayfa
+    /// okunamazsa kart RSS posteriyle gider.
+    pub async fn post(&self, client: &reqwest::Client) -> BuiltinPost {
+        let mut review = self.review.clone();
+        if let Some(Target::Review { slug, .. }) = Target::from_url(&review.url)
+            && let Ok(Page {
+                body: Some(html), ..
+            }) = get_page(client, &review.url).await
+            && let Some(poster) = custom_poster(client, &html, &slug).await
+        {
+            review.poster = Some(poster);
+        }
+        review_post(&review)
+    }
+
+    #[cfg(test)]
+    pub fn stub(id: u64) -> Self {
+        Self {
+            id,
+            review: Review::default(),
+        }
+    }
 }
 
 /// Günlük akışı okunamadı.
@@ -1718,7 +1728,7 @@ fn diary_entry(item: &str) -> Option<DiaryEntry> {
     };
     Some(DiaryEntry {
         id: id.parse().ok()?,
-        post: review_post(&review),
+        review,
     })
 }
 
@@ -1865,7 +1875,6 @@ mod tests {
             (EMOJI_REWATCH, "🔁"),
             (EMOJI_REVIEW, "📝"),
             (EMOJI_SPOILER, "⚠️"),
-            (EMOJI_WATCHED, "👁"),
             (EMOJI_LIKES, "♡"),
             (EMOJI_PLAY, "▶"),
             (EMOJI_FILMS, "🎞"),
@@ -2263,14 +2272,17 @@ mod tests {
         let card = review_card(&review);
         assert_eq!(card.accent_color, Some(LETTERBOXD_ORANGE));
         let text = contents(&card);
-        assert!(text.contains("### ★★★★½\n"), "{text}");
         assert!(
-            text.contains("## [hollie amanda](https://letterboxd.com/hollieamanda/)\n-# 👑 Patron · Letterboxd incelemesi"),
+            text.starts_with(
+                "**[hollie amanda](https://letterboxd.com/hollieamanda/)** inceledi\n\
+                 ### [Parasite (2019)](https://letterboxd.com/film/parasite-2019/)\n\
+                 **[9 Ağu 2019](https://letterboxd.com/hollieamanda/film/parasite-2019/)** ★★★★½ ♥"
+            ),
             "{text}"
         );
-        assert!(
-            text.contains("👁 9 Ağu 2019 izledi · ♥ Filmi beğendi"),
-            "{text}"
+        assert_eq!(
+            card.components[0]["type"], TYPE_SECTION,
+            "tek bölüm, poster yanında"
         );
         assert!(
             text.contains("-# ♡ 43.6K kişi incelemeyi beğendi"),
@@ -2280,13 +2292,9 @@ mod tests {
             text.contains("⚠️ **Spoiler içerir**\n||call me by your name’s peach walked so parasite’s peach could run||"),
             "{text}"
         );
-        let urls: Vec<String> = buttons(&card).into_iter().map(|(_, url)| url).collect();
-        assert_eq!(
-            urls,
-            vec![
-                "https://letterboxd.com/hollieamanda/film/parasite-2019/",
-                "https://letterboxd.com/film/parasite-2019/"
-            ]
+        assert!(
+            buttons(&card).is_empty(),
+            "gün ve başlık bağlantı; buton yok"
         );
 
         let mut plain = review.clone();
@@ -2312,7 +2320,7 @@ mod tests {
         heart_only.rating = None;
         let heart_text = contents(&review_card(&heart_only));
         assert!(!heart_text.contains("### ★"), "{heart_text}");
-        assert!(heart_text.contains("♥ Filmi beğendi"), "{heart_text}");
+        assert!(heart_text.contains("parasite-2019/)** ♥"), "{heart_text}");
     }
 
     #[test]
@@ -2507,7 +2515,7 @@ mod tests {
             vec![1590626713, 1589250929]
         );
 
-        let review = &entries[0].post;
+        let review = &review_post(&entries[0].review);
         assert_eq!(review.url, "https://letterboxd.com/ana/film/hershey/");
         assert_eq!(review.author.name, "Ana B");
         assert_eq!(review.text, "First paragraph.\n\nSecond.");
@@ -2517,13 +2525,13 @@ mod tests {
         assert!(json.contains("Spoiler içerir"), "{json}");
         assert!(json.contains("1-hershey-0-600-0-900-crop.jpg"), "{json}");
 
-        let watch = &entries[1].post;
+        let watch = &review_post(&entries[1].review);
         assert!(watch.text.is_empty(), "izleme kaydında metin yok");
         let card = watch.custom_card.as_ref().expect("kart");
         let json = serde_json::to_string(&card.components).unwrap();
         assert!(!json.contains("Watched on"), "{json}");
-        assert!(json.contains("Letterboxd günlüğü"), "{json}");
-        assert_eq!(buttons(card)[0].0, "Kaydı aç");
+        assert!(json.contains("** izledi"), "{json}");
+        assert!(buttons(card).is_empty(), "{json}");
     }
 }
 

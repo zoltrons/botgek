@@ -84,9 +84,14 @@ async fn deliver(
     };
     let mut seen = sub.last_entry;
     for entry in new {
-        let result =
-            raw::send_channel_message(client, token, sub.channel_id, &payload(&entry.post), &[])
-                .await;
+        let result = raw::send_channel_message(
+            client,
+            token,
+            sub.channel_id,
+            &payload(&entry.post(client).await),
+            &[],
+        )
+        .await;
         if let Err(err) = &result {
             warn!(
                 channel = %sub.channel_id,
@@ -136,14 +141,9 @@ fn payload(post: &BuiltinPost) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converters::builtin::Author;
-    use crate::converters::parser::Platform;
 
     fn entry(id: u64) -> DiaryEntry {
-        DiaryEntry {
-            id,
-            post: BuiltinPost::new(Platform::Letterboxd, String::new(), Author::new("a", "")),
-        }
+        DiaryEntry::stub(id)
     }
 
     #[test]
