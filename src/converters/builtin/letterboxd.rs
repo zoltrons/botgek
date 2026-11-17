@@ -179,7 +179,7 @@ static TMDB_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli TMDB regex")
 });
 static TRAILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"data-track-category="Trailer" href="//www\.youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{6,20})"#)
+    Regex::new(r#"class="[^"]*js-video-zoom[^"]*"[^>]*?\bhref="//www\.youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{6,20})"#)
         .expect("geçerli fragman regex")
 });
 static TAG_REGEX: LazyLock<Regex> =
@@ -1515,7 +1515,7 @@ mod tests {
         <p class="text-link text-footer"> 133&nbsp;mins &nbsp; More at
         <a href="http://www.imdb.com/title/tt6751668/maindetails" class="micro-button track-event" data-track-action="IMDb">IMDb</a>
         <a href="https://www.themoviedb.org/movie/496243/" class="micro-button track-event" data-track-action="TMDB">TMDB</a></p>
-        <p class="trailer-link js-watch-panel-trailer"><a class="play track-event js-video-zoom" data-track-category="Trailer" href="//www.youtube-nocookie.com/embed/PhPROyE0OaM?rel=0&amp;wmode=transparent">Trailer</a></p>
+        <p class="trailer-link js-watch-panel-trailer"><a class="play js-video-zoom" href="//www.youtube-nocookie.com/embed/PhPROyE0OaM?rel=0&amp;wmode=transparent">Trailer</a></p>
         </body></html>"#;
 
     /// Canlı inceleme sayfasından kısaltılmış örnek (spoiler uyarılı, beğenili).
