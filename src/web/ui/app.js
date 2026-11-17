@@ -88,7 +88,7 @@ const ENGINE_DEFAULTS = {
         twitter: '<:twitterx:1476614201207292035>',
         instagram: '<:instagram:1558099674731122758>',
     reddit: '<:reddit:1558112156195495956>',
-        quote: '<:qutoe:1553728214998847569>'
+        quote: '<:quote:1572251429920309268>'
     }
 };
 

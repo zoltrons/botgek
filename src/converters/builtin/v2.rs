@@ -12,7 +12,7 @@
 //! │    (Reddit: `**r/alt • flair • Posted by [u/kullanici](profil)**`)   ← profil resmi yok
 //! │ gönderi metni
 //! │ ────────────────────── (varsa) ince ayraç çizgisi ─────────
-//! │ > <:qutoe:...> [Quote](link) from **Ad** ([**@kullanici**](profil))
+//! │ > <:quote:...> [Quote](link) from **Ad** ([**@kullanici**](profil))
 //! │ > alıntılanan metin            ← başlıkla aynı hizada (blok alıntı)
 //! │ -# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K
 //! │ -# <:twitter:...> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)
@@ -2430,7 +2430,7 @@ mod tests {
 
         let quote_text = texts(&payload)
             .into_iter()
-            .find(|text| text.contains("<:qutoe:"))
+            .find(|text| text.contains("<:quote:"))
             .expect("alıntı bileşeni");
         assert!(
             quote_text.contains("> alıntı"),
@@ -2442,7 +2442,7 @@ mod tests {
         );
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "> <:qutoe:1553728214998847569> [Quote](https://x.com/diger/status/2) from **Diğer** @diger"
+            "> <:quote:1572251429920309268> [Quote](https://x.com/diger/status/2) from **Diğer** @diger"
         );
     }
 
@@ -2500,12 +2500,12 @@ mod tests {
 
         let quote_text = texts(&payload)
             .into_iter()
-            .find(|text| text.contains("<:qutoe:"))
+            .find(|text| text.contains("<:quote:"))
             .expect("alıntı bileşeni");
 
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "> <:qutoe:1553728214998847569> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
+            "> <:quote:1572251429920309268> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
              from **Daykerpriest🐉** [@Daykerpriest](https://x.com/daykerpriest)"
         );
         assert!(
@@ -2540,7 +2540,7 @@ mod tests {
                     && component["content"]
                         .as_str()
                         .unwrap_or_default()
-                        .contains("<:qutoe:")
+                        .contains("<:quote:")
             })
             .expect("alıntı bileşeni");
 
@@ -2625,12 +2625,12 @@ mod tests {
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let quote_text = texts(&payload)
             .into_iter()
-            .find(|text| text.contains("<:qutoe:"))
+            .find(|text| text.contains("<:quote:"))
             .expect("alıntı bileşeni");
 
         assert_eq!(
             quote_text,
-            "> <:qutoe:1553728214998847569> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
+            "> <:quote:1572251429920309268> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
              from **durusal** [@gerginimhelll](https://x.com/gerginimhelll)\n\
              > Durusal neşesi gerçek değil\n\
              > O sırada durusal neşesi"
