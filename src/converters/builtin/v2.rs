@@ -519,7 +519,7 @@ const QUOTE_LINES: usize = 6;
 
 /// Yanıtlanan gönderinin bağlamı: kartın en üstünde küçük gri (`-#`) satırlar ve ince bir ayraç.
 ///
-/// Başkasına yanıtsa `↩️ Ad @kullanıcı gönderisine yanıt` yazılır; bağlantı üst gönderiyi açar.
+/// Başkasına yanıtsa `↩️ Yanıtlanan: Ad @kullanıcı` yazılır (altındaki metin üst gönderinindir); bağlantı üst gönderiyi açar.
 /// Platform üst gönderinin metnini verdiyse (Bluesky) ilk birkaç satırı altında küçük yazıyla durur.
 /// Gizli kartta metin gösterilmez. Yazarın kendi ipliğinin devamında `↩️ Thread'in devamı` yazılır;
 /// konum ayrıca alt bilgide `🧵 2/4` olarak görünür (bkz. [`meta_line`]).
@@ -542,7 +542,7 @@ fn reply_context(post: &BuiltinPost, hidden: bool) -> Vec<Value> {
             (_, true) => format!("**{}**", escape_markdown(name)),
             (false, false) => format!("**{}** @{}", escape_markdown(name), escape_markdown(handle)),
         };
-        format!("-# ↩️ {who} gönderisine [yanıt]({url})")
+        format!("-# ↩️ [Yanıtlanan]({url}): {who}")
     }];
 
     if !hidden {
@@ -2191,7 +2191,7 @@ mod tests {
         let payload = build_payload(&card(&post, &options, &resolved, &emojis));
         assert_eq!(
             components(&payload)[0]["content"],
-            "-# ↩️ **Üst** @ust.bsky.social gönderisine [yanıt](https://bsky.app/profile/ust.bsky.social/post/1)\n\
+            "-# ↩️ [Yanıtlanan](https://bsky.app/profile/ust.bsky.social/post/1): **Üst** @ust.bsky.social\n\
              -# bir\n\
              -# \\> iki\n\
              -# üç … 🖼️"
