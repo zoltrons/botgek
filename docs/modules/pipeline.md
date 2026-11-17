@@ -63,8 +63,9 @@ Sıra, gerçek kodda ayrıntılı yorumlanmıştır. Özet:
 6. Ertelenmiş zenginleştirme (`spawn_enrichment`): kartın kritik yolunda olmayan ek veri (iplik konumu
    `🧵 2/4`, yanıtlanan X gönderisinin metni) kart gönderildikten sonra `enrich` ile çekilir ve kart geldiği
    yoldan (`SentVia`: etkileşim, webhook, kanal) yerinde düzenlenir. Önbellekte aynı gönderi duruyorsa
-   tamamlanmış hâliyle değiştirilir, sonraki paylaşım beklemez. Dosya ekli kartlar düzenlenmez (düzenleme
-   ekleri yeniden yüklerdi). Hata kartı bozmaz. Apps → Yenile (`regenerate`) zenginleştirmeyi beklenerek yapar.
+   tamamlanmış hâliyle değiştirilir, sonraki paylaşım beklemez. Yalnızca yanıt kartları zenginleştirilir;
+   kart, kartta görünen bir şey değiştiyse düzenlenir (`card_changed`). Dosya ekli kartlar düzenlenmez
+   (düzenleme ekleri yeniden yüklerdi). Hata kartı bozmaz. Apps → Yenile (`regenerate`) zenginleştirmeyi beklenerek yapar.
 
 Orijinal mesaj gönderimden **önce** silinmez. Erken silme, göndericinin istemcisinde "hayalet mesaj"
 bırakıyordu.

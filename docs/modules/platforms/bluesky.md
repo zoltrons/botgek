@@ -29,9 +29,10 @@ Bluesky (AT Protocol) gönderilerini, bağlantı ve görsel/video gömmelerini, 
   (`video_blob_url`, xsky.app/FxBluesky yöntemi): `bsky.social/xrpc/com.atproto.sync.getBlob`, kullanıcının
   PDS'ine yönlendirir ve `video/mp4` döner.
 - Yanıtsa üst gönderi `reply_to`'ya konur (alıntı yuvasını işgal etmez); kart onu iplik bağlamı olarak çizer.
-- Yazarın kendi ipliğindeyse (üst gönderi ya da doğrudan bir yanıt aynı yazardan) `thread_lookup` işaretlenir;
-  kart gönderildikten sonra `enrich`, `app.bsky.unspecced.getPostThreadV2` yanıtındaki `opThread`
-  işaretlerinden konumu (`🧵 4/5`) çıkarır ve kart güncellenir.
+- Yalnızca yazarın kendi gönderisine yanıt (thread'in devamı) `thread_lookup` işaretlenir; yanıt olmayan
+  gönderi (thread'in ilki dahil) hiç düzenlenmez. Kart gönderildikten sonra `enrich`,
+  `app.bsky.unspecced.getPostThreadV2` yanıtındaki `opThread` işaretlerinden konumu (`🧵 4/5`) çıkarır ve
+  kart güncellenir. İstek başarısızsa işaret açık kalır, sonraki paylaşım yeniden dener.
 - Yetişkin içerik etiketi (`has_adult_label`) `sensitive` işaretler.
 - Repost edilmişse karta `Repost • {kullanıcı}` etiketi eklenir. Cevap ilişkisi iplikteki üst gönderiden
   okunur; üst gönderi gelmediyse alt bilgide `Yanıt` etiketi kalır.

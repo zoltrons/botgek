@@ -64,7 +64,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
 
     let mut post = thread_view_to_post(&response.thread, &handle);
     // Konum kart gönderildikten sonra çözülür (`enrich`): iplik isteği kartı geciktirmesin.
-    post.thread_lookup = in_own_thread(&response.thread, &post);
+    post.thread_lookup = in_own_thread(&post);
     Ok(post)
 }
 
@@ -76,26 +76,23 @@ pub async fn enrich(client: &reqwest::Client, post: &BuiltinPost) -> Option<Buil
     let captures = BSKY_URL_REGEX.captures(&post.url)?;
     let uri = format!("at://{}/app.bsky.feed.post/{}", &captures[1], &captures[2]);
     let mut enriched = post.clone();
-    enriched.thread_lookup = false;
-    enriched.thread_position = op_thread_position(client, &uri).await;
+    // Başarısız istek işareti açık bırakır: önbellekteki gönderi sonraki paylaşımda yeniden dener.
+    if let Ok(position) = op_thread_position(client, &uri).await {
+        enriched.thread_lookup = false;
+        enriched.thread_position = position;
+    }
     Some(enriched)
 }
 
-/// Gönderi yazarın kendi ipliğinde mi: üst gönderi ya da doğrudan bir yanıt aynı yazardan.
-fn in_own_thread(thread: &ThreadView, post: &BuiltinPost) -> bool {
+/// Gönderi yazarın kendi gönderisine yanıt mı (thread'in devamı)? Yalnızca bu durumda iplik konumu
+/// çekilir; yanıt olmayan gönderi (thread'in ilk gönderisi dahil) sonradan düzenlenmez.
+fn in_own_thread(post: &BuiltinPost) -> bool {
     let author = post.author.handle.trim();
-    let same = |handle: &str| !author.is_empty() && handle.eq_ignore_ascii_case(author);
-    post.reply_to
-        .as_deref()
-        .is_some_and(|parent| same(&parent.author.handle))
-        || thread.replies.iter().flatten().any(|reply| {
-            reply
-                .post
-                .as_ref()
-                .and_then(|post| post.author.as_ref())
-                .and_then(|author| author.handle.as_deref())
-                .is_some_and(same)
-        })
+    !author.is_empty()
+        && post
+            .reply_to
+            .as_deref()
+            .is_some_and(|parent| parent.author.handle.eq_ignore_ascii_case(author))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -119,21 +116,21 @@ struct ThreadV2Value {
 }
 
 /// `getPostThreadV2` yazarın ipliğindeki gönderileri `opThread` ile işaretler: üsttekiler ve
-/// gönderinin kendisi konumu, hepsi toplamı verir.
-async fn op_thread_position(client: &reqwest::Client, uri: &str) -> Option<(u32, u32)> {
+/// gönderinin kendisi konumu, hepsi toplamı verir. `Err`: istek başarısız.
+async fn op_thread_position(client: &reqwest::Client, uri: &str) -> Result<Option<(u32, u32)>, ()> {
     let url = format!(
         "{API_BASE}/app.bsky.unspecced.getPostThreadV2?below={OP_THREAD_BELOW}&branchingFactor=1&anchor={}",
         urlencoding::encode(uri)
     );
     match tokio::time::timeout(OP_THREAD_TIMEOUT, super::get_json::<ThreadV2>(client, &url)).await {
-        Ok(Ok(thread)) => op_position(&thread),
+        Ok(Ok(thread)) => Ok(op_position(&thread)),
         Ok(Err(err)) => {
             tracing::debug!("Bluesky iplik konumu alınamadı: {err}");
-            None
+            Err(())
         }
         Err(_) => {
             tracing::debug!("Bluesky iplik konumu zamanında gelmedi");
-            None
+            Err(())
         }
     }
 }
@@ -995,6 +992,36 @@ mod tests {
         let post = thread_view_to_post(&response.thread, "ana.bsky.social");
         assert_eq!(post.reply_to.expect("üst gönderi").text, "üst");
         assert_eq!(post.quote.expect("alıntı").text, "alıntı");
+    }
+
+    #[test]
+    fn only_a_reply_to_the_authors_own_post_looks_up_the_thread() {
+        let post = |author: &str, parent: Option<&str>| {
+            let mut post = BuiltinPost::new(
+                Platform::Bluesky,
+                "https://bsky.app/profile/a/post/1",
+                Author::new(author, author),
+            );
+            post.reply_to = parent.map(|handle| {
+                Box::new(BuiltinPost::new(
+                    Platform::Bluesky,
+                    "https://bsky.app/profile/b/post/0",
+                    Author::new(handle, handle),
+                ))
+            });
+            post
+        };
+        assert!(in_own_thread(&post(
+            "yazar.bsky.social",
+            Some("YAZAR.bsky.social")
+        )));
+        assert!(!in_own_thread(&post(
+            "yazar.bsky.social",
+            Some("baska.bsky.social")
+        )));
+        // Yanıt olmayan gönderi (thread'in ilk gönderisi dahil) sonradan düzenlenmez.
+        assert!(!in_own_thread(&post("yazar.bsky.social", None)));
+        assert!(!in_own_thread(&post("", Some(""))));
     }
 
     #[test]

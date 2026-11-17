@@ -1647,8 +1647,7 @@ fn spawn_enrichment(job: Enrichment) {
         let Some(enriched) = enrich(&job.client, &job.source).await else {
             return;
         };
-        let changed = enriched.reply_to != job.source.reply_to
-            || enriched.thread_position != job.source.thread_position;
+        let changed = card_changed(&job.source, &enriched);
         let enriched = std::sync::Arc::new(enriched);
         // Önbellekte hâlâ aynı gönderi duruyorsa tamamlanmış hâliyle değiştirilir: sonraki paylaşım
         // kartı ilk seferde eksiksiz gönderir. Eksik (önbelleğe alınmamış) sonuç önbelleğe girmez.
@@ -1691,6 +1690,12 @@ fn spawn_enrichment(job: Enrichment) {
     });
 }
 
+/// Zenginleştirme kartta görünen bir şeyi değiştirdi mi? Değiştirmediyse kart düzenlenmez (mesajda
+/// boş yere "(düzenlendi)" izi kalmasın). Yalnızca `enrich`'in doldurduğu alanlar karşılaştırılır.
+fn card_changed(before: &BuiltinPost, after: &BuiltinPost) -> bool {
+    after.reply_to != before.reply_to || after.thread_position != before.thread_position
+}
+
 /// Gönderilmiş kartı geldiği yoldan yerinde düzenler.
 async fn edit_sent_card(
     job: &Enrichment,
@@ -1722,12 +1727,7 @@ async fn edit_sent_card(
         }
         SentVia::Channel => raw::edit_message(
             &job.client,
-            &format!(
-                "{}/channels/{}/messages/{}",
-                raw::API_BASE,
-                job.msg.channel_id.get(),
-                job.message_id.get()
-            ),
+            &channel_message_url(job.msg.channel_id, job.message_id),
             Some(&job.config.discord_token),
             format!("channel:{}", job.msg.channel_id),
             payload,
@@ -1736,6 +1736,16 @@ async fn edit_sent_card(
         .await
         .map(|_| ()),
     }
+}
+
+/// Bot adına gönderilmiş kanal mesajının düzenleme adresi.
+fn channel_message_url(channel_id: ChannelId, message_id: MessageId) -> String {
+    format!(
+        "{}/channels/{}/messages/{}",
+        raw::API_BASE,
+        channel_id.get(),
+        message_id.get()
+    )
 }
 
 /// Webhook mesajının düzenleme adresi (alt başlıkta `thread_id` ile).
@@ -1876,15 +1886,9 @@ pub async fn regenerate(
             }
         }
         None => {
-            let url = format!(
-                "{}/channels/{}/messages/{}",
-                raw::API_BASE,
-                channel_id.get(),
-                message_id.get()
-            );
             raw::edit_message(
                 client,
-                &url,
+                &channel_message_url(channel_id, message_id),
                 Some(&config.discord_token),
                 format!("channel:{channel_id}"),
                 &payload,
@@ -2197,6 +2201,38 @@ async fn finish(
 #[cfg(test)]
 mod message_tests {
     use super::*;
+
+    #[test]
+    fn card_is_edited_only_when_enrichment_shows_something_new() {
+        let post = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/a/status/2",
+            Author::new("A", "a"),
+        );
+        let mut after = post.clone();
+        // Yalnızca işaret kapandı (ör. iplik tek gönderi): kart düzenlenmez.
+        after.thread_lookup = true;
+        assert!(!card_changed(&post, &after));
+
+        after.thread_position = Some((2, 4));
+        assert!(card_changed(&post, &after));
+
+        let mut after = post.clone();
+        let mut parent = BuiltinPost::new(
+            Platform::Twitter,
+            "https://x.com/b/status/1",
+            Author::new("b", "b"),
+        );
+        let before = {
+            let mut before = post.clone();
+            before.reply_to = Some(Box::new(parent.clone()));
+            before
+        };
+        parent.text = "üst gönderinin metni".into();
+        after.reply_to = Some(Box::new(parent));
+        assert!(card_changed(&before, &after));
+        assert!(!card_changed(&before, &before));
+    }
 
     #[test]
     fn card_source_recovers_link_comment_and_spoiler() {

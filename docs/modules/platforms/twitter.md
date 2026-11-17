@@ -43,9 +43,11 @@ Akış (`acquire`, `first_data`):
    ([preview.md](../preview.md)).
 
 7. Yanıtsa `replying_to` / `replying_to_status` (syndication: `in_reply_to_*`) `reply_to`'ya yalnızca
-   kullanıcı adı ve bağlantıyla girer. Kendi tweet'ine yanıt ya da iplik başlangıcı (`1/`, `(1/4)`, 🧵)
-   `thread_lookup` işaretlenir. Kart gönderildikten sonra `enrich` yanıtlanan tweet'i (`/i/status`) ve
-   iplik konumunu (`/2/thread`, ~1 sn) paralel çeker (`ENRICH_TIMEOUT` 4 sn); kart yerinde güncellenir.
+   kullanıcı adı ve bağlantıyla girer. Yalnızca kendi tweet'ine yanıt (thread'in devamı) `thread_lookup`
+   işaretlenir; yanıt olmayan tweet (thread'in ilki dahil) hiç düzenlenmez. Kart gönderildikten sonra
+   `enrich` yanıtlanan tweet'i (`/i/status`) ve iplik konumunu (`/2/thread`, ~1 sn) paralel çeker
+   (`ENRICH_TIMEOUT` 4 sn); kart yerinde güncellenir. İstek başarısızsa işaret açık kalır, önbellekteki
+   gönderi sonraki paylaşımda yeniden dener.
 
 Alıntı yalnızca ilk seviyedir, alıntının alıntısı çekilmez. Sondaki `t.co` / `pic.x.com` medya bağlantıları
 metinden temizlenir (`strip_trailing_media_links`).

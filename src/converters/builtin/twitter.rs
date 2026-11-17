@@ -54,9 +54,6 @@ const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(500);
 /// Kart gönderildikten sonra çalışan ek isteklerin (iplik konumu, yanıtlanan gönderi) süresi. FxTwitter
 /// iplik ucu ~1 sn sürdüğü için kartın kritik yolunda değildir; gelmezse kart olduğu gibi kalır.
 const ENRICH_TIMEOUT: Duration = Duration::from_millis(4_000);
-/// İplik başlangıcı işaretleri: satır başında `1/`, `(1/4)` ya da 🧵.
-static THREAD_START_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\s*1/|\(1/\d+\)|🧵").expect("geçerli iplik regex"));
 /// Önizleme metinlerinin kart bütçesini yormaması için üst sınırlar.
 const LINK_PREVIEW_TITLE_LIMIT: usize = 180;
 const LINK_PREVIEW_DESCRIPTION_LIMIT: usize = 400;
@@ -404,16 +401,15 @@ async fn attach_link_preview(post: &mut BuiltinPost) {
     post.link_preview = Some(preview);
 }
 
-/// Gönderi yazarın kendi ipliğinde mi? Kendi tweet'ine yanıtsa ya da metni iplik başlangıcına
-/// benziyorsa evet. Yalnızca bu durumda ek iplik isteği yapılır.
+/// Gönderi yazarın kendi tweet'ine yanıt mı (thread'in devamı)? Yalnızca bu durumda iplik konumu
+/// çekilir; yanıt olmayan gönderi (thread'in ilk tweet'i dahil) sonradan düzenlenmez.
 fn looks_like_thread(post: &BuiltinPost) -> bool {
-    let own_reply = post.reply_to.as_deref().is_some_and(|parent| {
+    post.reply_to.as_deref().is_some_and(|parent| {
         parent
             .author
             .handle
             .eq_ignore_ascii_case(post.author.handle.trim())
-    });
-    own_reply || THREAD_START_REGEX.is_match(&post.text)
+    })
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -429,25 +425,28 @@ struct FxThreadItem {
 }
 
 /// FxTwitter'ın iplik ucu yazarın ipliğini sırayla verir; gönderinin konumu ve toplam sayı
-/// buradan çıkar. Tek gönderilik iplik ya da hata konum üretmez.
-async fn thread_position(client: &reqwest::Client, id: &str) -> Option<(u32, u32)> {
+/// buradan çıkar. `Ok(None)`: iplik tek gönderi. `Err`: istek başarısız, sonraki paylaşım yeniden dener.
+async fn thread_position(client: &reqwest::Client, id: &str) -> Result<Option<(u32, u32)>, ()> {
     let url = format!("{FXTWITTER_URL}/2/thread/{id}");
     let thread: FxThread =
         match tokio::time::timeout(ENRICH_TIMEOUT, super::get_json(client, &url)).await {
             Ok(Ok(thread)) => thread,
             Ok(Err(err)) => {
                 debug!("X iplik konumu alınamadı ({id}): {err}");
-                return None;
+                return Err(());
             }
             Err(_) => {
                 debug!(
                     "X iplik konumu {} ms içinde gelmedi: {id}",
                     ENRICH_TIMEOUT.as_millis()
                 );
-                return None;
+                return Err(());
             }
         };
-    position_in(thread.thread.iter().map(|item| item.id.as_str()), id)
+    Ok(position_in(
+        thread.thread.iter().map(|item| item.id.as_str()),
+        id,
+    ))
 }
 
 /// Kart gönderildikten sonra çözülen ek veri: iplik konumu ve yanıtlanan gönderinin metni (kaynak
@@ -471,17 +470,20 @@ pub async fn enrich(client: &reqwest::Client, post: &BuiltinPost) -> Option<Buil
         },
         async {
             match post.thread_lookup {
-                true => thread_position(client, &id).await,
+                true => Some(thread_position(client, &id).await),
                 false => None,
             }
         }
     );
     let mut enriched = post.clone();
-    enriched.thread_lookup = false;
     if let Some(parent) = parent {
         enriched.reply_to = Some(Box::new(parent));
     }
-    enriched.thread_position = position.or(post.thread_position);
+    // Başarısız istek işareti açık bırakır: önbellekteki gönderi sonraki paylaşımda yeniden dener.
+    if let Some(Ok(position)) = position {
+        enriched.thread_lookup = false;
+        enriched.thread_position = position.or(post.thread_position);
+    }
     Some(enriched)
 }
 
@@ -2897,9 +2899,11 @@ mod tests {
             "text": "Demo\n\n1/ Signal",
             "author": { "name": "Calif", "screen_name": "calif_io" }
         }));
-        assert!(looks_like_thread(&post), "1/ başlangıcı iplik sayılmalı");
-        post.text = "sıradan tweet 1/2 fiyat".into();
-        assert!(!looks_like_thread(&post));
+        // Yanıt olmayan gönderi (thread'in ilk tweet'i dahil) sonradan düzenlenmez.
+        assert!(
+            !looks_like_thread(&post),
+            "yanıt olmayan gönderi iplik isteği yapmamalı"
+        );
         post.reply_to = reply_parent(Some("CALIF_IO"), Some("1"));
         assert!(
             looks_like_thread(&post),
