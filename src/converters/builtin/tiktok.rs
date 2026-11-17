@@ -20,7 +20,9 @@ const FXTIKTOK_VIDEO: &str = "https://tnktok.com/generate/video/";
 
 /// TikTok gönderisini çeker ve kart verisine dönüştürür.
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    match fetch_page(client, &parsed.original_url).await {
+    // Doğrudan `/photo/` bağlantısı boş sayfa döndürür: ilk istek `/video/` sayfasına atılır.
+    let url = photo_as_video(&parsed.original_url);
+    match fetch_page(client, url.as_deref().unwrap_or(&parsed.original_url)).await {
         Ok(post) => Ok(post),
         Err(reason) => {
             debug!("TikTok sayfası okunamadı, oEmbed'e düşülüyor: {reason}");

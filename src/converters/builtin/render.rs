@@ -317,7 +317,6 @@ async fn attach_video(
         .iter()
         .find(|media| media.url == video_url)
         .and_then(|media| media.poster.clone());
-    let fallback_poster = poster.clone();
     let file = if resolved.memory_slot.is_some() {
         let client = client.clone();
         let url = video_url.to_string();
@@ -339,12 +338,6 @@ async fn attach_video(
             resolved.attached_video = Some(format!("attachment://{name}"));
             // Video artık kartın içinde (ek olarak) oynar: uzak bağlantıya gerek yok.
             resolved.video_link = None;
-        }
-        // TikTok adresi çerez ve Referer ister, Discord'da uzaktan oynamaz: kapak gösterilir.
-        None if post.platform == crate::converters::parser::Platform::TikTok => {
-            debug!("TikTok videosu ek olarak indirilemedi, kapak gösteriliyor: {video_url}");
-            resolved.video_link = None;
-            resolved.images.extend(fallback_poster);
         }
         // İndirilemedi ya da bütçe doldu: video kartın içinde uzak bağlantıyla (sessiz) oynar.
         None => debug!(

@@ -27,8 +27,8 @@
 Gönderide medya yoksa alıntının medyası kullanılır. Medyasız gönderide link önizleme görseli planlanır.
 
 Varsayılan olarak hiçbir medya indirilmez. Görseller ve GIF'ler CDN bağlantısıyla kartta gösterilir
-(`direct_media`). İndirme yalnızca şunlar için zorunludur (`video_requires_download`): Reddit, Spotify,
-Twitch ve TikTok. Bunun yanında Pixiv görselleri `Referer` gerektirdiği için indirilip eklenir, indirilemezse
+(`direct_media`). İndirme yalnızca şunlar için zorunludur (`video_requires_download`): Reddit, Spotify
+ve Twitch (TikTok videosu fxTikTok adresiyle uzaktan oynar). Bunun yanında Pixiv görselleri `Referer` gerektirdiği için indirilip eklenir, indirilemezse
 aynadan gösterilir. Facebook'un imzalı MP4'ü de dosya olarak eklenir.
 
 `resolve_media` indirmeleri bütçeyle paralel yürütür. Kartlar bellekte toplam 100 MiB'lik bütçeyi paylaşır
