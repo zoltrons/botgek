@@ -1298,7 +1298,15 @@ fn review_card(review: &Review) -> CustomCard {
         };
         subline.push(format!("{crown}{}", escape_markdown(badge)));
     }
-    subline.push("Letterboxd incelemesi".to_string());
+    // İncelemesiz günlük kaydı (yalnızca izleme) inceleme diye etiketlenmez.
+    subline.push(
+        if review.body.is_some() {
+            "Letterboxd incelemesi"
+        } else {
+            "Letterboxd günlüğü"
+        }
+        .to_string(),
+    );
     byline.push_str(&format!("\n-# {}", subline.join(" · ")));
     let mut header = format!("### {film}");
     if !verdict.is_empty() {
@@ -2514,6 +2522,7 @@ mod tests {
         let card = watch.custom_card.as_ref().expect("kart");
         let json = serde_json::to_string(&card.components).unwrap();
         assert!(!json.contains("Watched on"), "{json}");
+        assert!(json.contains("Letterboxd günlüğü"), "{json}");
         assert_eq!(buttons(card)[0].0, "Kaydı aç");
     }
 }
