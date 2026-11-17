@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod converters;
 mod handler;
+mod letterboxd_feed;
 mod logs;
 mod mcp;
 mod policy;
@@ -244,6 +245,9 @@ async fn main() {
 
     // Işık hızı: ilk dönüşümde DNS + TLS el sıkışması beklemesin diye bağlantılar ısıtılır.
     prewarm_connections(&http_client);
+
+    // Letterboxd takip akışı: yalnızca REST kullanır, gateway bağlantısını beklemez.
+    letterboxd_feed::spawn(http_client.clone(), config.discord_token.clone());
 
     // Bot Gateway Intent'leri
     // NOT: Discord Developer Portal'dan "MESSAGE CONTENT INTENT" mutlaka aktif edilmelidir!

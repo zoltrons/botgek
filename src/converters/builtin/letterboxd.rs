@@ -263,6 +263,10 @@ static PROFILE_PARAGRAPH_BREAK_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)</p\s*>|</div\s*>").expect("geçerli paragraf kırma regex"));
 static PROFILE_BR_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)<br\s*/?>").expect("geçerli satır kırma regex"));
+static RSS_ITEM_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<item>(.*?)</item>").expect("geçerli RSS öğe regex"));
+static RSS_IMAGE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<img src="([^"]+)""#).expect("geçerli RSS görsel regex"));
 static OG_IMAGE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<meta\s+property="og:image"\s+content="([^"]+)""#)
         .expect("geçerli og:image regex")
@@ -335,6 +339,7 @@ fn film_page_url(slug: &str) -> String {
 /// Bir Letterboxd sayfası: varılan adres ve (yalnızca 2xx'te) gövde.
 struct Page {
     url: String,
+    status: u16,
     body: Option<String>,
 }
 
@@ -435,6 +440,7 @@ async fn get_page(client: &reqwest::Client, url: &str) -> Result<Page, String> {
     };
     Ok(Page {
         url: final_url.to_string(),
+        status: status.as_u16(),
         body,
     })
 }
@@ -1366,7 +1372,12 @@ fn review_card(review: &Review) -> CustomCard {
     components.push(json!({
         "type": TYPE_ACTION_ROW,
         "components": [
-            link_button("İncelemeyi aç", &review.url, Some(EMOJI_REVIEW)),
+            // İncelemesiz günlük kaydı (yalnızca izleme) inceleme diye açılmaz.
+            link_button(
+                if review.body.is_some() { "İncelemeyi aç" } else { "Kaydı aç" },
+                &review.url,
+                Some(EMOJI_REVIEW),
+            ),
             link_button("Filmi aç", &review.film_url, Some(EMOJI_LOGO)),
         ],
     }));
@@ -1597,6 +1608,110 @@ fn review_post(review: &Review) -> BuiltinPost {
     post.extra_label = Some("Letterboxd".to_string());
     post.custom_card = Some(review_card(review));
     post
+}
+
+// ─── Günlük akışı (RSS) ──────────────────────────────────────────────────────
+
+/// Kullanıcının RSS akışındaki bir günlük kaydı (izleme ya da inceleme), inceleme kartıyla.
+pub struct DiaryEntry {
+    /// Letterboxd kayıt kimliği; yeni kayıtlar daha büyük kimlik alır.
+    pub id: u64,
+    pub post: BuiltinPost,
+}
+
+/// Günlük akışı okunamadı.
+#[derive(Debug)]
+pub enum DiaryError {
+    /// Hesap yok (404).
+    NotFound,
+    /// Hız sınırı ya da Cloudflare engeli (429, 403, 503): çağıran yavaşlamalı.
+    Throttled,
+    Failed(String),
+}
+
+/// `/{kullanıcı}/rss/` akışındaki günlük kayıtları; liste paylaşımları atlanır. Akış kayıtların
+/// tüm alanlarını taşır, ek sayfa istenmez.
+pub async fn diary(client: &reqwest::Client, user: &str) -> Result<Vec<DiaryEntry>, DiaryError> {
+    let url = format!("{LETTERBOXD}/{user}/rss/");
+    let page = get_page(client, &url).await.map_err(DiaryError::Failed)?;
+    match (page.status, page.body) {
+        (_, Some(body)) => Ok(parse_diary(&body)),
+        (404, None) => Err(DiaryError::NotFound),
+        (403 | 429 | 503, None) => Err(DiaryError::Throttled),
+        (status, None) => Err(DiaryError::Failed(format!(
+            "Letterboxd akışı {status} döndü: {url}"
+        ))),
+    }
+}
+
+fn parse_diary(xml: &str) -> Vec<DiaryEntry> {
+    RSS_ITEM_REGEX
+        .captures_iter(xml)
+        .filter_map(|caps| diary_entry(&caps[1]))
+        .collect()
+}
+
+/// RSS öğesindeki ilk `<name ...>değer</name>` değeri (kırpılmış, XML kaçışlı).
+fn rss_tag<'a>(item: &'a str, name: &str) -> Option<&'a str> {
+    let rest = &item[item.find(&format!("<{name}"))?..];
+    let start = rest.find('>')? + 1;
+    let end = rest.find(&format!("</{name}>"))?;
+    Some(rest.get(start..end)?.trim())
+}
+
+fn diary_entry(item: &str) -> Option<DiaryEntry> {
+    let (kind, id) = rss_tag(item, "guid")?
+        .strip_prefix("letterboxd-")?
+        .split_once('-')?;
+    let reviewed = match kind {
+        "review" => true,
+        "watch" => false,
+        _ => return None,
+    };
+    let target = Target::from_url(&unescape_html(rss_tag(item, "link")?))?;
+    let Target::Review { user, .. } = &target else {
+        return None;
+    };
+    let description = rss_tag(item, "description")
+        .unwrap_or_default()
+        .trim_start_matches("<![CDATA[")
+        .trim_end_matches("]]>");
+    let spoiler_note = "This review may contain spoilers.";
+    let body = reviewed
+        .then(|| {
+            html_to_text(description)
+                .replacen(spoiler_note, "", 1)
+                .trim()
+                .to_string()
+        })
+        .filter(|body| !body.is_empty());
+    let flag = |name| rss_tag(item, name) == Some("Yes");
+
+    let review = Review {
+        url: target.url(),
+        author: rss_tag(item, "dc:creator")
+            .map(unescape_html)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| user.clone()),
+        profile_url: format!("{LETTERBOXD}/{user}/"),
+        rating: rss_tag(item, "letterboxd:memberRating")
+            .and_then(|rating| rating.parse().ok())
+            .filter(|rating| (0.5..=5.0).contains(rating)),
+        body,
+        spoiler: reviewed && description.contains(spoiler_note),
+        liked: flag("letterboxd:memberLike"),
+        rewatch: flag("letterboxd:rewatch"),
+        watched: rss_tag(item, "letterboxd:watchedDate").and_then(parse_date),
+        film_title: unescape_html(rss_tag(item, "letterboxd:filmTitle")?),
+        film_year: rss_tag(item, "letterboxd:filmYear").map(str::to_string),
+        film_url: target.film_url()?,
+        poster: https_image(first_capture(&RSS_IMAGE_REGEX, description)),
+        ..Review::default()
+    };
+    Some(DiaryEntry {
+        id: id.parse().ok()?,
+        post: review_post(&review),
+    })
 }
 
 #[cfg(test)]
@@ -2369,6 +2484,37 @@ mod tests {
             "{}",
             poster(&review)
         );
+    }
+
+    #[test]
+    fn diary_feed_yields_watch_and_review_entries_but_skips_lists() {
+        let xml = r#"<rss><channel><title>Letterboxd - ana</title>
+            <item> <title>Hershey, 2026 - ★</title> <link>https://letterboxd.com/ana/film/hershey/</link> <guid isPermaLink="false">letterboxd-review-1590626713</guid> <letterboxd:watchedDate>2026-11-16</letterboxd:watchedDate> <letterboxd:rewatch>Yes</letterboxd:rewatch> <letterboxd:filmTitle>Hershey &amp; Co</letterboxd:filmTitle> <letterboxd:filmYear>2026</letterboxd:filmYear> <letterboxd:memberRating>1.0</letterboxd:memberRating> <letterboxd:memberLike>No</letterboxd:memberLike> <description><![CDATA[ <p><img src="https://a.ltrbxd.com/resized/film-poster/1-hershey-0-600-0-900-crop.jpg?v=1"/></p> <p><em>This review may contain spoilers.</em></p> <p>First paragraph.</p><p>Second.</p> ]]></description> <dc:creator>Ana B</dc:creator> </item>
+            <item> <title>The Rivals, 2025</title> <link>https://letterboxd.com/ana/film/the-rivals/</link> <guid isPermaLink="false">letterboxd-watch-1589250929</guid> <letterboxd:watchedDate>2026-11-15</letterboxd:watchedDate> <letterboxd:rewatch>No</letterboxd:rewatch> <letterboxd:filmTitle>The Rivals</letterboxd:filmTitle> <letterboxd:filmYear>2025</letterboxd:filmYear> <letterboxd:memberLike>Yes</letterboxd:memberLike> <description><![CDATA[ <p><img src="https://a.ltrbxd.com/p.jpg"/></p> <p>Watched on Sunday November 15, 2026.</p> ]]></description> <dc:creator>Ana B</dc:creator> </item>
+            <item> <title>My list</title> <link>https://letterboxd.com/ana/list/my-list/</link> <guid isPermaLink="false">letterboxd-list-123</guid> </item>
+            </channel></rss>"#;
+        let entries = parse_diary(xml);
+        assert_eq!(
+            entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![1590626713, 1589250929]
+        );
+
+        let review = &entries[0].post;
+        assert_eq!(review.url, "https://letterboxd.com/ana/film/hershey/");
+        assert_eq!(review.author.name, "Ana B");
+        assert_eq!(review.text, "First paragraph.\n\nSecond.");
+        let card = review.custom_card.as_ref().expect("kart");
+        let json = serde_json::to_string(&card.components).unwrap();
+        assert!(json.contains("Hershey & Co"), "{json}");
+        assert!(json.contains("Spoiler içerir"), "{json}");
+        assert!(json.contains("1-hershey-0-600-0-900-crop.jpg"), "{json}");
+
+        let watch = &entries[1].post;
+        assert!(watch.text.is_empty(), "izleme kaydında metin yok");
+        let card = watch.custom_card.as_ref().expect("kart");
+        let json = serde_json::to_string(&card.components).unwrap();
+        assert!(!json.contains("Watched on"), "{json}");
+        assert_eq!(buttons(card)[0].0, "Kaydı aç");
     }
 }
 

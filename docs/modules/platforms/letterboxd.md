@@ -36,6 +36,24 @@ Veri anahtar gerektirmeyen herkese açık sayfalardan okunur:
   düşer.
 - Kart emojileri `Emoji` sabitleridir (yıldız, yarım yıldız, kalp, yeniden izleme, vb.).
 
+## Takip akışı
+
+`/letterboxd takip` ile bir kanal bir hesabı takip eder; yeni günlük kayıtları kanala inceleme kartı olarak
+gelir. Dosyalar: `src/letterboxd_feed.rs` (yoklama), `src/commands/letterboxd.rs` (komut), `store.rs`
+(`letterboxd_follows`).
+
+- Kaynak `/{kullanıcı}/rss/` akışıdır (`diary`). Öğeler `letterboxd-review-{id}` ve `letterboxd-watch-{id}`
+  guid'leriyle ayrılır; liste paylaşımları atlanır. Akış film adı, yıl, puan, beğeni, yeniden izleme, izleme
+  günü, poster ve inceleme metnini taşır; ek sayfa istenmez. Kart `review_card`'dır: metinsiz (yalnızca
+  izleme) kayıtta "Letterboxd günlüğü" ve "Kaydı aç" yazar.
+- Yeni kayıt: kimliği kanalın `last_entry` değerinden büyük olan. Tur başına kanal başına en fazla 5 kayıt
+  eskiden yeniye gönderilir.
+- Hız: istekler tek tek, aralarında en az 1 sn; her hesap en sık 30 sn'de bir yoklanır. RSS `no-store`'dur ve
+  hız sınırı başlığı yoktur; ölçümde ~2,3 istek/sn'de 429 görülmedi. 429/403/503'te aralık ikiye katlanır
+  (en fazla 60 sn), başarıda yarıya iner.
+- Gönderim: Discord reddederse (kanal silinmiş, yetki yok) bekleyen kayıtlar atlanır; geçici hatada kalanlar
+  sonraki turda denenir; belirsiz sonuç yeniden gönderilmez. Kart `allowed_mentions: {parse: []}` ile gider.
+
 ## Değişmezler
 
 - Kullanıcı User-Agent'ı ve bot adı birlikte gönderilir. Tanıtıcıyı değiştirirken 403 riskini göz önüne alın.

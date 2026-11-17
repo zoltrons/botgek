@@ -12,6 +12,7 @@ eğlence oyunları.
 | `src/commands/mod.rs` | Komut tanımları, kayıt, `/dönüştür` ve **Apps → Dönüştür**, Spotify sayfalama bileşeni. |
 | `src/commands/hooks.rs` | Ortak kancalar: `pre_command`/`post_command` günlükleri, panik yakalama, kullanıcıya sabit hata metni. |
 | `src/commands/gif.rs` | `/gif-yap` ve **Apps → GIF yap**. |
+| `src/commands/letterboxd.rs` | `/letterboxd` (takip, bırak, liste) (akış: `src/letterboxd_feed.rs`). |
 | `src/commands/fun.rs` | `/uyum`, **Apps → Uyumumuz**, `/düello`, `/sayı-tahmini`, `/8top`, `/bomba`, `/refleks`, `/fal`. |
 
 ## Girdi ve çıktı
@@ -70,6 +71,15 @@ X gönderisindeki videoyu ya da GIF'i FxEmbed GIF servisine (`gif.fxtwitter.com`
 gönderir (`media::fx_gif_url`). Hedef gönderi sırayla: verilen `link`, linksiz komutta kanaldaki son 25
 mesajda bulunan en yeni X bağlantısı ya da bot kartı, mesaj komutunda hedef mesaj. Bot kartında bağlantı
 Components V2 metninde durur ve serenity modelinde tutulmadığı için mesaj REST'ten ham JSON olarak okunur.
+
+### `/letterboxd`
+
+- Alt komutlar: `takip kullanıcı:`, `bırak kullanıcı:`, `liste`. Kullanıcı adı ya da profil bağlantısı kabul
+  edilir, küçük harfe çevrilir. Takip, komutun yazıldığı kanal içindir.
+- Yalnızca sunucu kanalında ve sunucu kurulumunda görünür (`contexts: [0]`, `integration_types: [0]`). Bot
+  kanalda değilse reddedilir. Varsayılan yetki Sunucuyu Yönet'tir.
+- `takip` hesabın akışını çeker: hesap yoksa reddedilir. Mevcut kayıtlar gönderilmez, en yenisinin kimliği
+  başlangıç noktası olur. Sunucu başına en fazla 50 takip (`MAX_FOLLOWS_PER_GUILD`).
 
 ### Eğlence oyunları (`fun.rs`)
 

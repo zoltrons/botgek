@@ -693,10 +693,12 @@ pub enum DbOp {
     Prune = 5,
     Query = 6,
     Healthy = 7,
+    /// Letterboxd takip tablosu (ekleme, silme, okuma, son kayıt).
+    Follow = 8,
 }
 
 impl DbOp {
-    pub const ALL: [DbOp; 8] = [
+    pub const ALL: [DbOp; 9] = [
         DbOp::Remember,
         DbOp::Forget,
         DbOp::Author,
@@ -705,6 +707,7 @@ impl DbOp {
         DbOp::Prune,
         DbOp::Query,
         DbOp::Healthy,
+        DbOp::Follow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -717,6 +720,7 @@ impl DbOp {
             DbOp::Prune => "prune",
             DbOp::Query => "query",
             DbOp::Healthy => "healthy",
+            DbOp::Follow => "follow",
         }
     }
 }
@@ -737,7 +741,7 @@ impl DbMetrics {
     }
 }
 
-static DB_OPS: LazyLock<[DbMetrics; 8]> =
+static DB_OPS: LazyLock<[DbMetrics; DbOp::ALL.len()]> =
     LazyLock::new(|| std::array::from_fn(|_| DbMetrics::new()));
 
 pub fn db_op(op: DbOp, elapsed: Duration, ok: bool) {

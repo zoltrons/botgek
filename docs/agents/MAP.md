@@ -37,6 +37,7 @@ komut işleyicisi ─► `converters::convert_now`.
 | Kaynak mesaj düzenlendi/silindi | `src/converters/tracking.rs`, `handler.rs` | handler.md | `message_update`, `message_delete` | `cargo test handler` (tracking'in testi yok) |
 | Slash/mesaj komutu ekle-değiştir | `src/commands/mod.rs` | commands.md | `register`, `everywhere` | `cargo test commands::` |
 | Komut kancası, panik koruması | `src/commands/hooks.rs` | commands.md | `pre_command`, `post_command` | `cargo test hooks` |
+| Letterboxd takip akışı (`/letterboxd`) | `src/letterboxd_feed.rs`, `src/commands/letterboxd.rs` | platforms/letterboxd.md | `diary`, `follow_letterboxd` | `cargo test letterboxd` |
 | Eğlence oyunları (`/düello`, `/bomba`...) | `src/commands/fun.rs` | commands.md | `fun:` önekli `custom_id` | `cargo test fun::` |
 | AI sohbeti | `handler.rs` (`reply_with_ai`), `src/ai/` | ai.md | `should_trigger_ai_chat` | `cargo test ai::` |
 | Ayar alanı ekle/değiştir | `settings.rs` ─► `settings.json` ─► `web/ui/app.js` + `index.html` ─► fixture | settings.md, CONFIGURATION.md | `SETTINGS_SCHEMA_VERSION`, `sanitize` | rust + `node --test` |
@@ -68,8 +69,9 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/version.rs` | Derleme künyesi, User-Agent dizeleri (`build.rs` ile paylaşılır). |
 | `src/handler.rs` | Gateway olayları: mesaj, düzenleme, silme, tepki, etkileşim, AI tetikleme, AI hız bütçesi. (~975) |
 | `src/policy.rs` | Rol filtresinin tek karar noktası. |
+| `src/letterboxd_feed.rs` | Letterboxd takip akışı: RSS yoklama, hız/geri çekilme, kanala kart gönderme. |
 | `src/settings.rs` | Ayar şeması, kapsam çözümleme (global ─► sunucu ─► kanal), doğrulama, atomik yazma, göç. (~2200) |
-| `src/store.rs` | SQLite: kart ─► paylaşan kullanıcı kaydı, salt okunur sorgu. (~900) |
+| `src/store.rs` | SQLite: kart ─► paylaşan kullanıcı kaydı, Letterboxd takipleri, salt okunur sorgu. (~1100) |
 | `src/telemetry.rs` | Süreç içi sayaçlar ve gecikme histogramı. (~1260) |
 | `src/benchmarks.rs` | Elle çalışan çevrimdışı ölçüm. |
 | `src/logs.rs` | MCP için 512 olaylık bellek içi log halkası. |
@@ -83,6 +85,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/commands/mod.rs` | Komut tanımları/kayıt, `/dönüştür`, Apps → Dönüştür, Spotify sayfalama. |
 | `src/commands/hooks.rs` | `pre_command`/`post_command`, panik yakalama, sabit hata metni. |
 | `src/commands/gif.rs` | `/gif-yap`, Apps → GIF yap. |
+| `src/commands/letterboxd.rs` | `/letterboxd` (takip, bırak, liste). |
 | `src/commands/fun.rs` | Mini oyunlar ve eğlence komutları. (~2400) |
 | `src/ai/mod.rs` | Groq/Gemini istemcisi, sağlayıcı sıralaması ve yedekleme, hata türleri. (~1020) |
 | `src/ai/discord.rs` | AI bağlamı: yanıt zinciri, yanıtlanan mesaj, görseller. |
@@ -135,7 +138,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/converters/builtin/tumblr.rs` | Tumblr (fxtumblr renderer + OG yedeği). |
 | `src/converters/builtin/facebook.rs` | Facebook gönderi/video/reel. |
 | `src/converters/builtin/youtube.rs` | YouTube topluluk gönderisi. |
-| `src/converters/builtin/letterboxd.rs` | Letterboxd film/inceleme/profil kartları. (~2200) |
+| `src/converters/builtin/letterboxd.rs` | Letterboxd film/inceleme/profil kartları, günlük RSS ayrıştırma. (~2400) |
 | `src/converters/builtin/pager.rs` | 10'dan fazla görselli gönderide ◀ ▶ galeri sayfalama (`custom_id` = sayfa + bağlantı). |
 | `src/converters/builtin/miniflux.rs` | Miniflux paylaşım kartı + "Devamını oku" butonu. (~330) |
 

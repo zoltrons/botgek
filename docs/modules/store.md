@@ -11,12 +11,17 @@ Her kart için hangi mesajın hangi kullanıcı tarafından paylaşıldığını
 
 ## Nasıl çalışır
 
-Tek tablo vardır:
+İki tablo vardır:
 
 ```sql
 cards (message_id INTEGER PRIMARY KEY, channel_id INTEGER, author_id INTEGER, created_at INTEGER,
        source_id INTEGER, source_url TEXT)   -- kaynak sütunları eski dosyalara açılışta eklenir
+letterboxd_follows (channel_id INTEGER, username TEXT, guild_id INTEGER, last_entry INTEGER,
+                    PRIMARY KEY (channel_id, username))
 ```
+
+- `letterboxd_follows`: kanalın takip ettiği Letterboxd hesabı ve kanala gönderilen son günlük kaydının
+  kimliği. `set_letterboxd_last_entry` kimliği yalnızca ileri götürür. Budanmaz.
 
 - `source_url` her kartta yazılır (Apps → Yenile bağlantıyı buradan okur). `source_id` yalnızca orijinal
   mesaj korunduğunda yazılır; düzenleme/silme takibi bu sütunla karta ulaşır.

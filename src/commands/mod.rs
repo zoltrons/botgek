@@ -15,10 +15,12 @@
 //!
 //! Eğlence komutları (`/uyum`, `/düello`, `/sayı-tahmini`, `/8top`) [`fun`] modülündedir.
 //! X videosunu GIF'e çeviren `/gif-yap` [`gif`] modülündedir.
+//! Letterboxd takibi (`/letterboxd`) [`letterboxd`] modülündedir.
 
 pub mod fun;
 pub mod gif;
 pub mod hooks;
+pub mod letterboxd;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,6 +78,7 @@ pub async fn register(http: impl AsRef<Http>, dev_guild: Option<GuildId>) {
             .into_iter()
             .chain(fun::definitions())
             .chain(gif::definitions())
+            .chain(letterboxd::definitions())
             .collect();
         let registered = match dev_guild {
             Some(guild) => guild.set_commands(http.as_ref(), commands).await,
@@ -222,6 +225,9 @@ async fn dispatch(
         }
         Interaction::Command(command) if gif::is_gif_command(command) => {
             return gif::handle(ctx, command, http_client, config).await;
+        }
+        Interaction::Command(command) if letterboxd::is_letterboxd_command(command) => {
+            return letterboxd::handle(ctx, command, http_client).await;
         }
         Interaction::Component(component)
             if component.data.custom_id.starts_with(fun::CUSTOM_ID_PREFIX) =>

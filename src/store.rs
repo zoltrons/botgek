@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serenity::all::{ChannelId, MessageId, UserId};
+use serenity::all::{ChannelId, GuildId, MessageId, UserId};
 use std::sync::LazyLock;
 use tracing::{error, info, warn};
 
@@ -192,6 +192,25 @@ pub struct SourceCard {
     pub source_url: String,
 }
 
+/// Bir kanalın takip ettiği Letterboxd hesabı ve kanala gönderilen son günlük kaydı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LetterboxdFollow {
+    pub channel_id: ChannelId,
+    pub username: String,
+    pub last_entry: u64,
+}
+
+/// Takip ekleme sonucu.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub enum FollowOutcome {
+    Added,
+    Exists,
+    /// Sunucunun takip sınırı dolu.
+    Full,
+    #[default]
+    Failed,
+}
+
 /// SQLite veritabanı sarmalayıcısı. Sorgular tek satır (birincil anahtar) üzerinde
 /// çalıştığı için çağrılar mikrosaniye düzeyindedir; bu yüzden API senkron tutulur.
 pub struct Db {
@@ -223,6 +242,13 @@ impl Db {
                  channel_id INTEGER NOT NULL,
                  author_id  INTEGER NOT NULL,
                  created_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS letterboxd_follows (
+                 channel_id INTEGER NOT NULL,
+                 username   TEXT    NOT NULL,
+                 guild_id   INTEGER NOT NULL,
+                 last_entry INTEGER NOT NULL,
+                 PRIMARY KEY (channel_id, username)
              );",
         )?;
         Self::migrate_source_columns(&connection)?;
@@ -464,6 +490,98 @@ impl Db {
         }
     }
 
+    /// Kanala Letterboxd takibi ekler. `last_entry`: şu ana kadarki en yeni kayıt (eskiler
+    /// gönderilmez). Sunucudaki takip sayısı `limit`e ulaştıysa eklenmez.
+    pub fn follow_letterboxd(
+        &self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+        username: &str,
+        last_entry: u64,
+        limit: i64,
+    ) -> FollowOutcome {
+        let channel = channel_id.get() as i64;
+        let guild = guild_id.get() as i64;
+        let result = self.with_connection(crate::telemetry::DbOp::Follow, |connection| {
+            let exists = connection
+                .prepare(
+                    "SELECT 1 FROM letterboxd_follows WHERE channel_id = ?1 AND username = ?2",
+                )?
+                .exists(params![channel, username])?;
+            if exists {
+                return Ok(FollowOutcome::Exists);
+            }
+            let count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM letterboxd_follows WHERE guild_id = ?1",
+                params![guild],
+                |row| row.get(0),
+            )?;
+            if count >= limit {
+                return Ok(FollowOutcome::Full);
+            }
+            connection.execute(
+                "INSERT INTO letterboxd_follows (channel_id, username, guild_id, last_entry)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![channel, username, guild, last_entry as i64],
+            )?;
+            Ok(FollowOutcome::Added)
+        });
+        result.unwrap_or_else(|err| {
+            warn!("Letterboxd takibi yazılamadı ({channel_id}, {username}): {err}");
+            FollowOutcome::Failed
+        })
+    }
+
+    /// Takibi kaldırır; kayıt yoksa `false`.
+    pub fn unfollow_letterboxd(&self, channel_id: ChannelId, username: &str) -> bool {
+        self.with_connection(crate::telemetry::DbOp::Follow, |connection| {
+            connection.execute(
+                "DELETE FROM letterboxd_follows WHERE channel_id = ?1 AND username = ?2",
+                params![channel_id.get() as i64, username],
+            )
+        })
+        .inspect_err(|err| warn!("Letterboxd takibi silinemedi ({channel_id}, {username}): {err}"))
+        .is_ok_and(|removed| removed > 0)
+    }
+
+    /// Tüm takipler (`channel_id` boşsa) ya da yalnızca bir kanalınkiler, kullanıcı adına göre.
+    pub fn letterboxd_follows(&self, channel_id: Option<ChannelId>) -> Vec<LetterboxdFollow> {
+        let channel = channel_id.map(|id| id.get() as i64);
+        self.with_connection(crate::telemetry::DbOp::Follow, |connection| {
+            connection
+                .prepare(
+                    "SELECT channel_id, username, last_entry FROM letterboxd_follows
+                     WHERE ?1 IS NULL OR channel_id = ?1 ORDER BY username, channel_id",
+                )?
+                .query_map(params![channel], |row| {
+                    Ok(LetterboxdFollow {
+                        channel_id: ChannelId::new(row.get::<_, i64>(0)? as u64),
+                        username: row.get(1)?,
+                        last_entry: row.get::<_, i64>(2)? as u64,
+                    })
+                })?
+                .collect()
+        })
+        .unwrap_or_else(|err| {
+            warn!("Letterboxd takipleri okunamadı: {err}");
+            Vec::new()
+        })
+    }
+
+    /// Kanala gönderilen son kaydı ilerletir (geri almaz; takip bu arada silindiyse etkisiz).
+    pub fn set_letterboxd_last_entry(&self, channel_id: ChannelId, username: &str, entry: u64) {
+        let result = self.with_connection(crate::telemetry::DbOp::Follow, |connection| {
+            connection.execute(
+                "UPDATE letterboxd_follows SET last_entry = ?3
+                 WHERE channel_id = ?1 AND username = ?2 AND last_entry < ?3",
+                params![channel_id.get() as i64, username, entry as i64],
+            )
+        });
+        if let Err(err) = result {
+            warn!("Letterboxd son kaydı yazılamadı ({channel_id}, {username}): {err}");
+        }
+    }
+
     /// Kilitli bağlantı üzerinde tek bir sorgu çalıştırır.
     fn with_connection<T>(
         &self,
@@ -584,6 +702,32 @@ pub fn move_card(from: MessageId, to: MessageId) {
 }
 
 /// Kartı paylaşan kullanıcı.
+pub fn follow_letterboxd(
+    guild_id: GuildId,
+    channel_id: ChannelId,
+    username: &str,
+    last_entry: u64,
+    limit: i64,
+) -> FollowOutcome {
+    database().map_or(FollowOutcome::Failed, |db| {
+        db.follow_letterboxd(guild_id, channel_id, username, last_entry, limit)
+    })
+}
+
+pub fn unfollow_letterboxd(channel_id: ChannelId, username: &str) -> bool {
+    database().is_some_and(|db| db.unfollow_letterboxd(channel_id, username))
+}
+
+pub fn letterboxd_follows(channel_id: Option<ChannelId>) -> Vec<LetterboxdFollow> {
+    database().map_or_else(Vec::new, |db| db.letterboxd_follows(channel_id))
+}
+
+pub fn set_letterboxd_last_entry(channel_id: ChannelId, username: &str, entry: u64) {
+    if let Some(db) = database() {
+        db.set_letterboxd_last_entry(channel_id, username, entry);
+    }
+}
+
 pub fn card_author(message_id: MessageId) -> Option<UserId> {
     database().and_then(|db| db.author(message_id))
 }
@@ -712,6 +856,36 @@ mod tests {
             .query_readonly("SELECT 1", 10)
             .expect("bağlantı kullanılabilir");
         assert_eq!(ok.rows, vec![vec![serde_json::json!(1)]]);
+    }
+
+    #[test]
+    fn letterboxd_follow_lifecycle_and_guild_limit() {
+        let db = open_test(":memory:");
+        let (guild, channel) = (GuildId::new(1), ChannelId::new(10));
+        assert_eq!(
+            db.follow_letterboxd(guild, channel, "ana", 5, 2),
+            FollowOutcome::Added
+        );
+        assert_eq!(
+            db.follow_letterboxd(guild, channel, "ana", 9, 2),
+            FollowOutcome::Exists
+        );
+        db.follow_letterboxd(guild, ChannelId::new(11), "ana", 0, 2);
+        assert_eq!(
+            db.follow_letterboxd(guild, channel, "bob", 0, 2),
+            FollowOutcome::Full
+        );
+
+        db.set_letterboxd_last_entry(channel, "ana", 7);
+        db.set_letterboxd_last_entry(channel, "ana", 6); // geri gitmez
+        let follows = db.letterboxd_follows(Some(channel));
+        assert_eq!(follows.len(), 1);
+        assert_eq!(follows[0].last_entry, 7);
+        assert_eq!(db.letterboxd_follows(None).len(), 2);
+
+        assert!(db.unfollow_letterboxd(channel, "ana"));
+        assert!(!db.unfollow_letterboxd(channel, "ana"));
+        assert!(db.letterboxd_follows(Some(channel)).is_empty());
     }
 
     #[test]
