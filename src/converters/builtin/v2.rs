@@ -519,9 +519,9 @@ const QUOTE_LINES: usize = 6;
 
 /// Yanıtlanan gönderinin bağlamı: kartın en üstünde küçük gri (`-#`) satırlar ve ince bir ayraç.
 ///
-/// Başkasına yanıtsa `↩️ Yanıtlanan: Ad @kullanıcı` yazılır (altındaki metin üst gönderinindir); bağlantı üst gönderiyi açar.
+/// Başkasına yanıtsa `╭ Yanıtlanan: Ad @kullanıcı` yazılır, üst gönderinin satırları `│` ile aşağıdaki yanıta bağlanır; bağlantı üst gönderiyi açar.
 /// Platform üst gönderinin metnini verdiyse (Bluesky) ilk birkaç satırı altında küçük yazıyla durur.
-/// Gizli kartta metin gösterilmez. Yazarın kendi ipliğinin devamında `↩️ Thread'in devamı` yazılır;
+/// Gizli kartta metin gösterilmez. Yazarın kendi ipliğinin devamında `╭ Thread'in devamı` yazılır;
 /// konum ayrıca alt bilgide `🧵 2/4` olarak görünür (bkz. [`meta_line`]).
 fn reply_context(post: &BuiltinPost, hidden: bool) -> Vec<Value> {
     let Some(parent) = post.reply_to.as_deref() else {
@@ -531,7 +531,7 @@ fn reply_context(post: &BuiltinPost, hidden: bool) -> Vec<Value> {
     let handle = parent.author.handle.trim();
     let same = !handle.is_empty() && handle.eq_ignore_ascii_case(post.author.handle.trim());
     let mut lines = vec![if same {
-        format!("-# ↩️ Thread'in devamı · [önceki gönderi]({url})")
+        format!("-# ╭ Thread'in devamı · [önceki gönderi]({url})")
     } else {
         let name = parent.author.name.trim();
         let who = match (
@@ -542,7 +542,7 @@ fn reply_context(post: &BuiltinPost, hidden: bool) -> Vec<Value> {
             (_, true) => format!("**{}**", escape_markdown(name)),
             (false, false) => format!("**{}** @{}", escape_markdown(name), escape_markdown(handle)),
         };
-        format!("-# ↩️ [Yanıtlanan]({url}): {who}")
+        format!("-# ╭ [Yanıtlanan]({url}): {who}")
     }];
 
     if !hidden {
@@ -576,7 +576,8 @@ fn reply_context(post: &BuiltinPost, hidden: bool) -> Vec<Value> {
                 None => shown.push("🖼️".to_string()),
             }
         }
-        lines.extend(shown.into_iter().map(|line| format!("-# {line}")));
+        // `╭`/`│` Discord'un yanıt önizlemesindeki gibi üst gönderiden aşağıdaki yanıta inen çizgiyi çizer.
+        lines.extend(shown.into_iter().map(|line| format!("-# │ {line}")));
     }
 
     vec![
@@ -2167,7 +2168,7 @@ mod tests {
         let all = texts(&payload);
         assert_eq!(
             all[0],
-            "-# ↩️ Thread'in devamı · [önceki gönderi](https://x.com/Culture3ase/status/0)"
+            "-# ╭ Thread'in devamı · [önceki gönderi](https://x.com/Culture3ase/status/0)"
         );
         assert!(all[1].starts_with("**Culture Base**"), "{all:?}");
         let meta = all.last().unwrap();
@@ -2191,10 +2192,10 @@ mod tests {
         let payload = build_payload(&card(&post, &options, &resolved, &emojis));
         assert_eq!(
             components(&payload)[0]["content"],
-            "-# ↩️ [Yanıtlanan](https://bsky.app/profile/ust.bsky.social/post/1): **Üst** @ust.bsky.social\n\
-             -# bir\n\
-             -# \\> iki\n\
-             -# üç … 🖼️"
+            "-# ╭ [Yanıtlanan](https://bsky.app/profile/ust.bsky.social/post/1): **Üst** @ust.bsky.social\n\
+             -# │ bir\n\
+             -# │ \\> iki\n\
+             -# │ üç … 🖼️"
         );
 
         // Gizli kartta üst gönderinin metni gösterilmez.
