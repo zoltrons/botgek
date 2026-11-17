@@ -2466,7 +2466,7 @@ mod tests {
         );
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "> <:quote:1572251429920309268> [Quote](https://x.com/diger/status/2) from **Diğer** @diger"
+            "> <:quote:1572273095950213192> [Quote](https://x.com/diger/status/2) from **Diğer** @diger"
         );
     }
 
@@ -2529,7 +2529,7 @@ mod tests {
 
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "> <:quote:1572251429920309268> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
+            "> <:quote:1572273095950213192> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
              from **Daykerpriest🐉** [@Daykerpriest](https://x.com/daykerpriest)"
         );
         assert!(
@@ -2654,7 +2654,7 @@ mod tests {
 
         assert_eq!(
             quote_text,
-            "> <:quote:1572251429920309268> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
+            "> <:quote:1572273095950213192> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
              from **durusal** [@gerginimhelll](https://x.com/gerginimhelll)\n\
              > Durusal neşesi gerçek değil\n\
              > O sırada durusal neşesi"

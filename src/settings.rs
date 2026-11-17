@@ -126,7 +126,7 @@ const DEFAULT_TRANSLATION_EMOJI: &str = "<:translation:1476614397249061056>";
 const DEFAULT_TWITTER_EMOJI: &str = "<:twitterx:1476614201207292035>";
 const DEFAULT_INSTAGRAM_EMOJI: &str = "<:instagram:1558099674731122758>";
 const DEFAULT_REDDIT_EMOJI: &str = "<:reddit:1558112156195495956>";
-const DEFAULT_QUOTE_EMOJI: &str = "<:quote:1572251429920309268>";
+const DEFAULT_QUOTE_EMOJI: &str = "<:quote:1572273095950213192>";
 
 // Alanların kabul ettiği emoji adları: `:twitter:` gibi **kimliksiz** yazılmış değerler
 // botun kendi emojisine bağlanır (kullanıcı ID'yi yazmayı unutsa bile kart bozulmaz).
@@ -142,8 +142,11 @@ const RETIRED_TWITTER_EMOJI: &str = "<:twitter:1476642012072920355>";
 const INSTAGRAM_NAMES: &[&str] = &["instagram", "ig", "insta"];
 const REDDIT_NAMES: &[&str] = &["reddit", "rdt", "snoo"];
 const QUOTE_NAMES: &[&str] = &["qutoe", "quote", "quotes"];
-/// Eski kalem biçimli alıntı emojisi; kayıtlı ayarlarda kaldıysa yenisine taşınır.
-const RETIRED_QUOTE_EMOJI: &str = "<:qutoe:1553728214998847569>";
+/// Eski alıntı emojileri (kalem, ilk tırnak); kayıtlı ayarlarda kaldıysa yenisine taşınır.
+const RETIRED_QUOTE_EMOJIS: &[&str] = &[
+    "<:qutoe:1553728214998847569>",
+    "<:quote:1572251429920309268>",
+];
 
 impl Default for EmojiSettings {
     /// Botgek'in kendi emoji seti.
@@ -183,7 +186,7 @@ impl EmojiSettings {
         self.twitter = normalize_emoji(&self.twitter, DEFAULT_TWITTER_EMOJI, TWITTER_NAMES);
         self.instagram = normalize_emoji(&self.instagram, DEFAULT_INSTAGRAM_EMOJI, INSTAGRAM_NAMES);
         self.reddit = normalize_emoji(&self.reddit, DEFAULT_REDDIT_EMOJI, REDDIT_NAMES);
-        if self.quote.trim() == RETIRED_QUOTE_EMOJI {
+        if RETIRED_QUOTE_EMOJIS.contains(&self.quote.trim()) {
             self.quote = DEFAULT_QUOTE_EMOJI.to_string();
         }
         self.quote = normalize_emoji(&self.quote, DEFAULT_QUOTE_EMOJI, QUOTE_NAMES);
@@ -1703,7 +1706,13 @@ mod tests {
         emojis.sanitize();
 
         assert_eq!(emojis.verified(), "☑", "geçersiz ID boşaltılmalı");
-        assert_eq!(emojis.quote(), "<:quote:1572251429920309268>");
+        assert_eq!(emojis.quote(), "<:quote:1572273095950213192>");
+        let mut first_quote = EmojiSettings {
+            quote: "<:quote:1572251429920309268>".to_string(),
+            ..EmojiSettings::default()
+        };
+        first_quote.sanitize();
+        assert_eq!(first_quote.quote(), "<:quote:1572273095950213192>");
         assert_eq!(emojis.replies(), "💬", "markdown kıran girdi reddedilmeli");
         assert_eq!(emojis.reposts(), "<a:rt:1553712344939495424>");
         assert_eq!(emojis.likes(), "💖");
