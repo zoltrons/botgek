@@ -1036,6 +1036,7 @@ fn meta_line(card: &V2Card<'_>) -> String {
             .map(str::to_string)
             .unwrap_or_else(|| post.platform.display_name().to_string()),
         Platform::Bluesky => "<:bluesky:1558392427729920100>".to_string(),
+        Platform::Xbox => "<:xbox:1572717280398282752>".to_string(),
         Platform::Twitch
         | Platform::Pixiv
         | Platform::Tumblr

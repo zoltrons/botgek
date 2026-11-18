@@ -97,12 +97,10 @@ fn clip_post(html: &str, id: &str, url: &str) -> Result<BuiltinPost, String> {
     author.avatar = https(info.gamerpic_url);
 
     let mut post = BuiltinPost::new(Platform::Xbox, url, author);
-    let game = clip
+    post.extra_label = clip
         .title
         .map(|game| game.name)
         .filter(|name| !name.is_empty());
-    post.text = game.clone().unwrap_or_default();
-    post.extra_label = game;
     post.created_at = clip.posted_date_in_ms.map(|ms| ms / 1000);
     post.stats.views = clip.view_count;
     post.stats.likes = clip.like_count.unwrap_or(0);
