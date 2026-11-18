@@ -58,7 +58,7 @@ Kullanıcının linkle yazdığı not kartın **dışında**, üstte düz metin 
 
 0. (Yanıtsa) iplik bağlamı (`reply_context`): küçük gri `-#` satırlar ve ince ayraç. Kendi ipliğinin
    devamında `╭ Thread'in devamı · [önceki gönderi]`, başkasına yanıtta `╭ [Yanıtlanan]: **Ad**
-   @kullanıcı`; üst gönderinin satırları `│` ile başlar (Discord yanıt önizlemesindeki çizgi). Platform üst gönderinin metnini verdiyse (X, Bluesky) en çok 3 satır / 220 karakter altında
+   @kullanıcı`. Platform üst gönderinin metnini verdiyse (X, Bluesky) en çok 3 satır / 220 karakter altında
    durur; gizli kartta metin gösterilmez. Veri `BuiltinPost::reply_to`'dan gelir, alıntı yuvasını kullanmaz.
 1. Yazar satırı: ad kalın, `@kullanıcı` normal ağırlıkta (`**Ad** ✓ [@kullanıcı](profil)`). Ad kullanıcı
    adıyla aynıysa yalnızca bağlantılı ad yazılır; yazarı yalnızca platform adı olan (OG) gönderide satır
