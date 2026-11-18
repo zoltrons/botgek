@@ -681,7 +681,7 @@ fn duration_secs(millis: u64) -> u64 {
 /// Metindeki tweet bağlantısını `https://x.com/<kullanıcı>/status/<id>` olarak bulur.
 ///
 /// Bot kartında gönderinin kendi linki `[Link](...)` satırındadır; alıntı başlığı
-/// (`[Quote](...)`) ondan önce geldiği için önce o satır aranır, yoksa ilk tweet linki
+/// (`[Alıntılanan](...)`) ondan önce geldiği için önce o satır aranır, yoksa ilk tweet linki
 /// alınır. fxtwitter/vxtwitter/fixupx gibi alan adları da eşleşir.
 pub fn find_tweet_url(text: &str) -> Option<String> {
     let canonical = |captures: regex::Captures<'_>| {

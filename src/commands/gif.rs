@@ -180,7 +180,7 @@ mod tests {
         let card = serde_json::json!({
             "content": "",
             "components": [{"type": 17, "components": [
-                {"type": 10, "content": "> [Quote](https://x.com/q/status/1) from **Q**"},
+                {"type": 10, "content": "> [Alıntılanan](https://x.com/q/status/1): **Q**"},
                 {"type": 10, "content": "[Link](https://x.com/main/status/2) · Gönderen: <@3>"}
             ]}]
         });

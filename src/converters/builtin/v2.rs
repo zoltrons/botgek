@@ -12,7 +12,7 @@
 //! │    (Reddit: `**r/alt • flair • Posted by [u/kullanici](profil)**`)   ← profil resmi yok
 //! │ gönderi metni
 //! │ ────────────────────── (varsa) ince ayraç çizgisi ─────────
-//! │ > <:quote:...> [Quote](link) from **Ad** ([**@kullanici**](profil))
+//! │ > <:quote:...> [Alıntılanan](link): **Ad** ([**@kullanici**](profil))
 //! │ > alıntılanan metin            ← başlıkla aynı hizada (blok alıntı)
 //! │ -# <:comment:...> 6  <:rt:...> 27  <:like:...> 386  <:metric:...> 12.3K
 //! │ -# <:twitter:...> • <t:1714998896:R> • [Link](https://x.com/kullanici/status/1)
@@ -446,7 +446,7 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
                 body.push(unquote(&content_of(&component)));
             } else {
                 // İç içe alıntı kendi ayracıyla ayrılır: iki farklı gönderi olduğu
-                // başlık satırından (`[Quote](link) from **Ad**`) anlaşılır.
+                // başlık satırından (`[Alıntılanan](link): **Ad**`) anlaşılır.
                 children.push(separator());
 
                 // 3'lü alıntıda medya en alttaki orijinal tweete ait tek bir görselse
@@ -770,7 +770,7 @@ fn author_line(post: &BuiltinPost, emojis: &EmojiSettings) -> String {
 }
 
 /// Alıntılanan gönderi: tek satırlık başlık
-/// `[Quote](link) from **Ad** ([**@kullanici**](profil))` ve alıntılanan metin, **aynı blok
+/// `[Alıntılanan](link): **Ad** ([**@kullanici**](profil))` ve alıntılanan metin, **aynı blok
 /// alıntının** içinde ve başlığın hemen ardından gelir (X/fxembed düzeni).
 fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings, spoiler: bool) -> Option<Value> {
     let body = quote.text.trim();
@@ -779,7 +779,7 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings, spoiler: bool) -
         return None;
     }
 
-    // Başlık: alıntı emojisi + `[Quote](alıntı linki) from **Ad** ([**@kullanici**](profil))`
+    // Başlık: alıntı emojisi + `[Alıntılanan](alıntı linki): **Ad** ([**@kullanici**](profil))`
     // (fxembed düzeni). Alıntılanan gönderide medya varsa galeride gösterilir.
     let author = quote.author.name.trim();
     let author = if author.is_empty() {
@@ -800,21 +800,18 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings, spoiler: bool) -
     let same = quote.author.name.trim().eq_ignore_ascii_case(handle);
     let from = match (handle.is_empty() || same, profile) {
         (false, Some(profile)) => {
-            format!(
-                "from **{author}** [@{}]({profile})",
-                escape_markdown(handle)
-            )
+            format!("**{author}** [@{}]({profile})", escape_markdown(handle))
         }
-        (false, None) => format!("from **{author}** @{}", escape_markdown(handle)),
-        (true, Some(profile)) => format!("from **[{author}]({profile})**"),
-        (true, None) => format!("from **{author}**"),
+        (false, None) => format!("**{author}** @{}", escape_markdown(handle)),
+        (true, Some(profile)) => format!("**[{author}]({profile})**"),
+        (true, None) => format!("**{author}**"),
     };
 
     let url = quote.url.trim();
     let quote_link = if url.is_empty() {
-        "Quote".to_string()
+        "Alıntılanan".to_string()
     } else {
-        format!("[Quote]({url})")
+        format!("[Alıntılanan]({url})")
     };
 
     // Başlık da alıntı bloğunun **içinde** durur: böylece başlık ile alıntılanan metin aynı
@@ -824,7 +821,8 @@ fn quote_component(quote: &BuiltinPost, emojis: &EmojiSettings, spoiler: bool) -
     // girinti/boşluk karakteri ve `-# ` alt metin işareti de kullanılmaz, çünkü Discord
     // blok alıntı içindeki satırları yalnızca satır içi kurallarla işler (`-# ` işareti
     // alıntı içinde düz metin olarak görünürdü).
-    let mut lines = vec![format!("> {} {quote_link} {from}", emojis.quote())];
+    // "Alıntılanan: Ad" yönü açık söyler; "Quote from Ad" alıntılayanın Ad olduğunu düşündürüyordu.
+    let mut lines = vec![format!("> {} {quote_link}: {from}", emojis.quote())];
     // Boş satırlar atlanır (alıntı kısa ve tek blok kalır); uzun alıntı `…` ile kısaltılır.
     let filled: Vec<&str> = body
         .lines()
@@ -2258,7 +2256,11 @@ mod tests {
             .unwrap();
         let quote = all
             .iter()
-            .position(|c| c["content"].as_str().is_some_and(|t| t.contains("[Quote]")))
+            .position(|c| {
+                c["content"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("[Alıntılanan]"))
+            })
             .unwrap();
         assert!(gallery < quote, "gönderinin görseli alıntıdan önce gelmeli");
         assert_eq!(all[gallery - 1]["content"], post.text.as_str());
@@ -2282,7 +2284,7 @@ mod tests {
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let quote_text = texts(&payload)
             .into_iter()
-            .find(|text| text.contains("[Quote]"))
+            .find(|text| text.contains("[Alıntılanan]"))
             .unwrap();
         let lines: Vec<&str> = quote_text.lines().collect();
         assert_eq!(lines.len(), 1 + QUOTE_LINES + 1, "{quote_text}");
@@ -2462,12 +2464,12 @@ mod tests {
             "alıntı blok alıntı olmalı: {quote_text}"
         );
         assert!(
-            quote_text.contains("[Quote](https://x.com/diger/status/2) from **Diğer** @diger"),
+            quote_text.contains("[Alıntılanan](https://x.com/diger/status/2): **Diğer** @diger"),
             "alıntı başlığı fxembed düzeninde olmalı: {quote_text}"
         );
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "> <:quote:1572273095950213192> [Quote](https://x.com/diger/status/2) from **Diğer** @diger"
+            "> <:quote:1572273095950213192> [Alıntılanan](https://x.com/diger/status/2): **Diğer** @diger"
         );
     }
 
@@ -2530,8 +2532,8 @@ mod tests {
 
         assert_eq!(
             quote_text.lines().next().unwrap(),
-            "> <:quote:1572273095950213192> [Quote](https://x.com/Daykerpriest/status/2103751786901144035) \
-             from **Daykerpriest🐉** [@Daykerpriest](https://x.com/daykerpriest)"
+            "> <:quote:1572273095950213192> [Alıntılanan](https://x.com/Daykerpriest/status/2103751786901144035): \
+             **Daykerpriest🐉** [@Daykerpriest](https://x.com/daykerpriest)"
         );
         assert!(
             quote_text.contains("> alıntılanan metin"),
@@ -2585,7 +2587,7 @@ mod tests {
             "başlık + iki alıntı satırı bekleniyordu (arada boş `>` satırı olmamalı): {quote_text}"
         );
         assert!(
-            lines[0].starts_with("> ") && lines[0].contains("[Quote]"),
+            lines[0].starts_with("> ") && lines[0].contains("[Alıntılanan]"),
             "başlık blok alıntının ilk satırı olmalı: {}",
             lines[0]
         );
@@ -2655,8 +2657,8 @@ mod tests {
 
         assert_eq!(
             quote_text,
-            "> <:quote:1572273095950213192> [Quote](https://x.com/gerginimhelll/status/2104000000000000000) \
-             from **durusal** [@gerginimhelll](https://x.com/gerginimhelll)\n\
+            "> <:quote:1572273095950213192> [Alıntılanan](https://x.com/gerginimhelll/status/2104000000000000000): \
+             **durusal** [@gerginimhelll](https://x.com/gerginimhelll)\n\
              > Durusal neşesi gerçek değil\n\
              > O sırada durusal neşesi"
         );

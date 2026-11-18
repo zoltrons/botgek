@@ -67,7 +67,7 @@ Kullanıcının linkle yazdığı not kartın **dışında**, üstte düz metin 
    karakterde `… [Devamını oku]` ile kesilir. Düz metin kaynaklarında satır başındaki `>`, `#`, `-#`
    kaçırılır (`escape_block_markers`); Reddit'in markdown'ı korunur.
 3. Gönderinin kendi medya galerisi (varsa) alıntının **üstünde** durur.
-4. Ayraç ve alıntı bloğu: `> ✎ [Quote](link) from **Ad** [@kullanıcı](profil)`, boş satırsız en çok
+4. Ayraç ve alıntı bloğu: `> ✎ [Alıntılanan](link): **Ad** [@kullanıcı](profil)`, boş satırsız en çok
    `QUOTE_LINES` (6) satır, fazlası `> …`. Gönderinin medyası yokken alıntının tek görseli alıntının
    yanında küçük görsel (Section + Thumbnail) olur; video ve çoklu görsel galeride alıntının altında kalır.
 5. Platformun verdiği alt metin (`Media::alt`, X/Bluesky/Instagram) galeri öğesinin `description`'ı
