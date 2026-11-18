@@ -10,6 +10,7 @@ pub enum Platform {
     Bluesky,
     Spotify,
     Twitch,
+    Xbox,
     Pixiv,
     Tumblr,
     Facebook,
@@ -28,6 +29,7 @@ impl Platform {
             Platform::Bluesky => "Bluesky",
             Platform::Spotify => "Spotify",
             Platform::Twitch => "Twitch",
+            Platform::Xbox => "Xbox",
             Platform::Pixiv => "Pixiv",
             Platform::Tumblr => "Tumblr",
             Platform::Facebook => "Facebook",
@@ -180,6 +182,14 @@ static TWITCH_CLIP_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static TWITCH_CLIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)https?://(?:www\.)?(?:clips\.twitch\.tv/[A-Za-z0-9_-]+|twitch\.tv/[^/\s]+/clip/[A-Za-z0-9_-]+)[^\s<>()]*")
         .expect("geçerli Twitch clip regex")
+});
+static XBOX_CLIP_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*https?://(?:www\.)?xbox\.com/(?:[a-z]{2}-[a-z]{2}/)?play/media/([A-Za-z0-9]+)[^\s|]*\s*\|\|")
+        .expect("geçerli Xbox klip spoiler regex")
+});
+static XBOX_CLIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.)?xbox\.com/(?:[a-z]{2}-[a-z]{2}/)?play/media/([A-Za-z0-9]+)[^\s<>()]*")
+        .expect("geçerli Xbox klip regex")
 });
 static PIXIV_ARTWORK_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -406,6 +416,9 @@ pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
     }
 
     if let Some(post) = parse_twitch(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_xbox(raw_content) {
         return Some(sanitize_urls(post));
     }
     if let Some(post) = parse_pixiv(raw_content) {
@@ -682,6 +695,22 @@ fn parse_twitch(raw_content: &str) -> Option<ParsedPost> {
         &TWITCH_CLIP_SPOILER_REGEX,
         &TWITCH_CLIP_REGEX,
         |caps| canonical_clip_url(whole_link(caps)?),
+    )
+}
+
+/// Xbox paylaşım bağlantısı; dil öneki (`/tr-TR/`) atılır, kimlik büyük/küçük harf korunur.
+fn parse_xbox(raw_content: &str) -> Option<ParsedPost> {
+    match_pair(
+        raw_content,
+        Platform::Xbox,
+        &XBOX_CLIP_SPOILER_REGEX,
+        &XBOX_CLIP_REGEX,
+        |caps| {
+            Some(format!(
+                "https://www.xbox.com/play/media/{}",
+                caps.get(1)?.as_str()
+            ))
+        },
     )
 }
 
@@ -1232,6 +1261,11 @@ mod tests {
                 "https://clips.twitch.tv/Ab_C-123",
             ),
             (
+                "klip https://www.xbox.com/tr-TR/play/media/esVuDv4Lyv?x=1",
+                Platform::Xbox,
+                "https://www.xbox.com/play/media/esVuDv4Lyv",
+            ),
+            (
                 "||https://www.pixiv.net/en/artworks/12345||",
                 Platform::Pixiv,
                 "https://www.pixiv.net/en/artworks/12345",
@@ -1278,6 +1312,7 @@ mod tests {
     fn non_canonical_new_platform_pages_are_ignored() {
         for input in [
             "https://www.twitch.tv/channel",
+            "https://www.xbox.com/tr-TR/play",
             "https://www.pixiv.net/users/123",
             "https://artist.tumblr.com/",
             "https://www.facebook.com/example",

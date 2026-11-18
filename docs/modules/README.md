@@ -45,6 +45,7 @@ handler ─► converters::enqueue_message ─► kuyruk (32) ─► builtin::ha
 | Bluesky | [bluesky.md](platforms/bluesky.md) | `bluesky.rs` |
 | Spotify | [spotify.md](platforms/spotify.md) | `spotify.rs`, `spotify_video.rs` |
 | Twitch | [twitch.md](platforms/twitch.md) | `twitch.rs` |
+| Xbox | [xbox.md](platforms/xbox.md) | `xbox.rs` |
 | Pixiv | [pixiv.md](platforms/pixiv.md) | `pixiv.rs` |
 | Tumblr | [tumblr.md](platforms/tumblr.md) | `tumblr.rs` |
 | Facebook | [facebook.md](platforms/facebook.md) | `facebook.rs` |

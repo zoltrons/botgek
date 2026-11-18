@@ -123,6 +123,7 @@ fn module_enabled(settings: &GuildSettings, platform: parser::Platform) -> bool 
         parser::Platform::Bluesky => settings.modules.bluesky,
         parser::Platform::Spotify => settings.modules.spotify,
         parser::Platform::Twitch => settings.modules.twitch,
+        parser::Platform::Xbox => settings.modules.xbox,
         parser::Platform::Pixiv => settings.modules.pixiv,
         parser::Platform::Tumblr => settings.modules.tumblr,
         parser::Platform::Facebook => settings.modules.facebook,

@@ -26,7 +26,7 @@ içindeyse doğrudur.
 ### Ayrıştırma
 
 Her platform için `LazyLock<Regex>` kalıpları vardır, spoiler biçimi için ayrı kalıp bulunur. `Platform`
-enum'u: Twitter, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Pixiv, Tumblr, Facebook, YouTube,
+enum'u: Twitter, TikTok, Instagram, Reddit, Bluesky, Spotify, Twitch, Xbox, Pixiv, Tumblr, Facebook, YouTube,
 Letterboxd. Çıktıdaki `original_url` tekil ve normalize olduğu için önbellek anahtarının kaynağıdır.
 Letterboxd profil kullanıcı adı için `letterboxd_profile_user` yardımcıdır.
 

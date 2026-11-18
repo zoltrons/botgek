@@ -14,6 +14,7 @@ pub struct PlatformModules {
     pub bluesky: bool,
     pub spotify: bool,
     pub twitch: bool,
+    pub xbox: bool,
     pub pixiv: bool,
     pub tumblr: bool,
     pub facebook: bool,
@@ -33,6 +34,7 @@ impl Default for PlatformModules {
             bluesky: true,
             spotify: true,
             twitch: true,
+            xbox: true,
             pixiv: true,
             tumblr: true,
             facebook: true,
@@ -487,6 +489,8 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub twitch: RoleFilterSettings,
     #[serde(default)]
+    pub xbox: RoleFilterSettings,
+    #[serde(default)]
     pub pixiv: RoleFilterSettings,
     #[serde(default)]
     pub tumblr: RoleFilterSettings,
@@ -524,6 +528,7 @@ impl ModuleRoleFilters {
             &mut self.bluesky,
             &mut self.spotify,
             &mut self.twitch,
+            &mut self.xbox,
             &mut self.pixiv,
             &mut self.tumblr,
             &mut self.facebook,
@@ -550,6 +555,7 @@ impl GuildSettings {
             "bluesky" => &self.role_filters.bluesky,
             "spotify" => &self.role_filters.spotify,
             "twitch" => &self.role_filters.twitch,
+            "xbox" => &self.role_filters.xbox,
             "pixiv" => &self.role_filters.pixiv,
             "tumblr" => &self.role_filters.tumblr,
             "facebook" => &self.role_filters.facebook,
@@ -919,6 +925,7 @@ impl AppSettings {
         self.role_filters.bluesky = legacy.clone();
         self.role_filters.spotify = legacy.clone();
         self.role_filters.twitch = legacy.clone();
+        self.role_filters.xbox = legacy.clone();
         self.role_filters.pixiv = legacy.clone();
         self.role_filters.tumblr = legacy.clone();
         self.role_filters.facebook = legacy.clone();

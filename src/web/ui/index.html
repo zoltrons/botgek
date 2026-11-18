@@ -196,6 +196,13 @@
             <label class="switch"><input type="checkbox" id="mod-twitch" data-module-key="twitch" role="switch" aria-label="Twitch modülü"><span class="switch-track" aria-hidden="true"></span></label>
         </div>
         <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">XB</span>
+            <div class="mod-body"><span class="mod-name">Xbox</span><span class="mod-host mono">native clip</span></div>
+            <span class="mod-state mono" id="status-xbox">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="xbox" aria-label="Xbox rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-xbox" data-module-key="xbox" role="switch" aria-label="Xbox modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
             <span class="mod-key mono" aria-hidden="true">PX</span>
             <div class="mod-body"><span class="mod-name">Pixiv</span><span class="mod-host mono">native artwork</span></div>
             <span class="mod-state mono" id="status-pixiv">Aktif</span>
@@ -297,6 +304,7 @@
                 <span class="studio-badge mono" id="badge-spotify">filtre yok</span>
             </button>
             <button class="studio-item" type="button" role="tab" id="modtab-twitch" aria-selected="false" aria-controls="studio-panel" data-studio-module="twitch" tabindex="-1"><span class="studio-name">Twitch</span><span class="studio-badge mono" id="badge-twitch">filtre yok</span></button>
+            <button class="studio-item" type="button" role="tab" id="modtab-xbox" aria-selected="false" aria-controls="studio-panel" data-studio-module="xbox" tabindex="-1"><span class="studio-name">Xbox</span><span class="studio-badge mono" id="badge-xbox">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-pixiv" aria-selected="false" aria-controls="studio-panel" data-studio-module="pixiv" tabindex="-1"><span class="studio-name">Pixiv</span><span class="studio-badge mono" id="badge-pixiv">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-tumblr" aria-selected="false" aria-controls="studio-panel" data-studio-module="tumblr" tabindex="-1"><span class="studio-name">Tumblr</span><span class="studio-badge mono" id="badge-tumblr">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-facebook" aria-selected="false" aria-controls="studio-panel" data-studio-module="facebook" tabindex="-1"><span class="studio-name">Facebook</span><span class="studio-badge mono" id="badge-facebook">filtre yok</span></button>
@@ -413,6 +421,7 @@
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Bluesky</span><span class="engine-note mono" id="engine-note-bluesky">—</span></div><p class="engine-fixed mono">native embed · gönderi, alıntı, video</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Spotify</span><span class="engine-note mono" id="engine-note-spotify">—</span></div><p class="engine-fixed mono">native embed · parça/albüm kartı + önizleme</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Twitch</span><span class="engine-note mono" id="engine-note-twitch">—</span></div><p class="engine-fixed mono">native embed · klip kartı + video</p></div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">Xbox</span><span class="engine-note mono" id="engine-note-xbox">—</span></div><p class="engine-fixed mono">native embed · klip + doğrudan video</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Pixiv</span><span class="engine-note mono" id="engine-note-pixiv">—</span></div><p class="engine-fixed mono">native embed · eser kartı + tüm sayfalar</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Tumblr</span><span class="engine-note mono" id="engine-note-tumblr">—</span></div><p class="engine-fixed mono">native embed · post preview</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Facebook</span><span class="engine-note mono" id="engine-note-facebook">—</span></div><p class="engine-fixed mono">native embed · gönderi kartı + video</p></div>

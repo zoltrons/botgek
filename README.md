@@ -18,6 +18,7 @@ Discord'da paylaşılan sosyal medya bağlantılarını Components V2 kartların
 | TikTok | Video, fotoğraf |
 | Spotify | Parça, albüm, çalma listesi, sanatçı |
 | Twitch | Klip |
+| Xbox | Oyun klibi |
 | Pixiv | Çizim |
 | Tumblr | Gönderi |
 | Facebook | Gönderi, video, reel |

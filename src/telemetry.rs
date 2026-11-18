@@ -54,7 +54,7 @@ pub static CONVERSION_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
 const LIMITS: [u64; 8] = [100, 250, 500, 1_000, 2_500, 5_000, 10_000, u64::MAX];
 /// `builtin::platform_key` değerlerinin tamamı. Eksik bir platformun dönüşümleri hiç sayılmaz
 /// ve metrikte 0 başarı / 0 hata olarak görünürdü (ör. loglarda başarısız Twitch klipleri).
-const PLATFORMS: [&str; 13] = [
+const PLATFORMS: [&str; 14] = [
     "twitter",
     "tiktok",
     "instagram",
@@ -62,6 +62,7 @@ const PLATFORMS: [&str; 13] = [
     "bluesky",
     "spotify",
     "twitch",
+    "xbox",
     "pixiv",
     "tumblr",
     "facebook",
@@ -1121,6 +1122,7 @@ mod tests {
             Platform::Bluesky,
             Platform::Spotify,
             Platform::Twitch,
+            Platform::Xbox,
             Platform::Pixiv,
             Platform::Tumblr,
             Platform::Facebook,

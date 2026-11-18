@@ -31,6 +31,7 @@ pub mod tumblr;
 pub mod twitch;
 pub mod twitter;
 pub mod v2;
+pub mod xbox;
 pub mod youtube;
 
 use std::collections::HashMap;
@@ -103,6 +104,7 @@ pub fn platform_key(platform: Platform) -> &'static str {
         Platform::Bluesky => "bluesky",
         Platform::Spotify => "spotify",
         Platform::Twitch => "twitch",
+        Platform::Xbox => "xbox",
         Platform::Pixiv => "pixiv",
         Platform::Tumblr => "tumblr",
         Platform::Facebook => "facebook",
@@ -260,6 +262,7 @@ pub async fn fetch(
         }
         Platform::Spotify => spotify::fetch(client, parsed).await,
         Platform::Twitch => twitch::fetch(client, parsed).await,
+        Platform::Xbox => xbox::fetch(client, parsed).await,
         Platform::Pixiv => pixiv::fetch(client, parsed).await,
         Platform::Tumblr => tumblr::fetch(client, parsed).await,
         Platform::Letterboxd => letterboxd::fetch(client, parsed).await,

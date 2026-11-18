@@ -134,6 +134,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/converters/builtin/spotify.rs` | Spotify önizleme ve kart. (~1080) |
 | `src/converters/builtin/spotify_video.rs` | Spotify 30 sn MP3 ─► kapaklı MP4. |
 | `src/converters/builtin/twitch.rs` | Twitch klibi (GraphQL). |
+| `src/converters/builtin/xbox.rs` | Xbox oyun klibi (sayfa durumu, doğrudan MP4). |
 | `src/converters/builtin/pixiv.rs` | Pixiv eseri. |
 | `src/converters/builtin/tumblr.rs` | Tumblr (fxtumblr renderer + OG yedeği). |
 | `src/converters/builtin/facebook.rs` | Facebook gönderi/video/reel. |
@@ -169,7 +170,7 @@ Bunlardan birine dokunan hepsine bakar:
 | Terim | Anlam |
 | --- | --- |
 | Kart | Botun gönderdiği Components V2 mesajı. Klasik embed yoktur. |
-| `Platform` | Desteklenen 12 kaynak (`parser.rs`). Anahtarı küçük harf dize: `platform_key`. |
+| `Platform` | Desteklenen 14 kaynak (`parser.rs`). Anahtarı küçük harf dize: `platform_key`. |
 | `ParsedPost` | Ayrıştırılmış bağlantı: platform, kanonik URL, spoiler, kullanıcı yorumu. |
 | `BuiltinPost` | Platformdan bağımsız çekilmiş gönderi verisi (`builtin/model.rs`). |
 | `EngineSettings` / `GuildSettings` | Bir mesaj için çözümlenmiş etkin ayar. |
