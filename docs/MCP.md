@@ -174,7 +174,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:3000/mcp" -Method Post -Headers $header
 | `bot_logs` | Bellekteki son tracing logları (`limit`, `min_level`; en fazla 512 olay). |
 | `settings_get` | Etkin ayarlar ve içerik revizyonu. |
 | `settings_patch` | JSON merge patch; aynı normalizasyonla diske yazar ve botu **anında** etkiler. |
-| `discord_overview` | Serenity cache'indeki sunucu/kanal/rol listesi (Discord'a istek atmaz). |
+| `discord_overview` | Serenity cache'indeki sunucu/kanal/rol listesi; sunucunun takviye seviyesi (`premium_tier`) ve buna göre yükleme sınırı (`file_limit_bytes`) dahil (Discord'a istek atmaz). |
 | `db_stats` | Kart veritabanı yolu, kayıt sayısı, dosya boyutu ve 200.000 kayıt sınırı. |
 | `db_query` | Tek bir **salt okunur** `SELECT`/`WITH`; en fazla 200 satır. |
 | `convert_preview` | Bağlantıyı çözer, verisini çeker ve render planını döner; **Discord'a mesaj göndermez**. |

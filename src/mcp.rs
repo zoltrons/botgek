@@ -653,6 +653,8 @@ fn discord_overview(state: &WebState) -> Value {
             "name": guild.name,
             "owner_id": guild.owner_id.to_string(),
             "member_count": guild.member_count,
+            "premium_tier": u8::from(guild.premium_tier),
+            "file_limit_bytes": builtin::media::guild_file_limit(guild.premium_tier),
             "cached_members": guild.members.len(),
             "channels": channels,
             "roles": roles
@@ -831,10 +833,17 @@ async fn discord_test_card(state: &WebState, args: &Value) -> Result<Value, Stri
     crate::telemetry::record_phase(crate::telemetry::Phase::Fetch, fetch_started.elapsed());
     let fetch_ms = fetch_started.elapsed().as_millis();
 
-    let options = builtin::render::RenderOptions::from_engine(
+    let mut options = builtin::render::RenderOptions::from_engine(
         &engine,
         builtin::platform_key(parsed.platform),
     );
+    // Gerçek dönüşümdeki gibi sunucunun takviye seviyesine göre yükleme sınırı.
+    options.file_limit = state
+        .cache
+        .guild(guild)
+        .map_or(builtin::media::DISCORD_FILE_LIMIT, |guild| {
+            builtin::media::guild_file_limit(guild.premium_tier)
+        });
     let visible = builtin::render::apply_visibility(&fetched, spoiler, engine.sensitive_mode, None);
     let plan = builtin::render::plan_media(&visible, &options);
     let media_started = Instant::now();
