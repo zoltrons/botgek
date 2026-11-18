@@ -46,7 +46,11 @@ bağlantılarını yanıt kartı olarak `BuiltinPost`'a çevirir. Videonun gör�
 Reddit video ve sesi ayrı akışta tutar (`CMAF_{h}` video, `CMAF_AUDIO_*` ses). Birleştirme yeniden kodlama
 olmadan, saf Rust `hls-transmux` ile yapılır:
 
-1. Master playlist çözülür, çözünürlük merdiveni çıkarılır (`variant_ladder`), boyut tahmini yapılır.
+1. Master playlist çözülür, çözünürlük merdiveni çıkarılır (`variant_ladder`; son basamak toplam bant
+   genişliği en düşük video+ses eşleşmesidir). Boyut, playlist'teki `BYTERANGE` toplamından **kesin**
+   hesaplanır (`playlist_bytes`); yoksa `BANDWIDTH` tahminine düşülür. Sığmayan basamak indirilmez.
+   Bayt aralıklı dosya (≤ 24 MiB) bir kez bütün indirilir ve parçalar bellekten dilimlenir
+   (`ReqwestSource::whole_file`).
 2. Video ve ses medya playlist'leri iki girdi olarak tek oturuma verilir, çıktı tek MP4 olur.
 3. Parça başına 16 MiB üst sınır, bağlantı zaman aşımı 2 sn. Ayrı bir işçi görevi ve eşzamanlılık sınırı (2)
    vardır. Çağıran taraftan iptal sinyali gelir (`cancellable_merge`).
@@ -65,7 +69,7 @@ bkz. [rendering.md](../rendering.md)).
 ## Değiştirirken
 
 - Yeni medya türü: `single_media` ve `reddit_media`.
-- Yeni video kalitesi kuralı: `variant_ladder` ve `estimated_bytes`.
+- Yeni video kalitesi kuralı: `variant_ladder`, `playlist_bytes` ve `estimated_bytes`.
 - Yorum isteği sınırı: `COMMENT_COUNT`, `MAX_DEPTH`.
 
 ## Testler

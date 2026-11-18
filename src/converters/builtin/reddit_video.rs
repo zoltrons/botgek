@@ -162,21 +162,22 @@ fn parse_master_playlist(text: &str) -> Vec<Variant> {
 /// Denenecek varyant sırası: en yüksek, orta ve en düşük kalite (yinelenen adresler atılır).
 ///
 /// Böylece yüksek kalite Discord ek limitini aşarsa doğrudan en düşüğe düşmek yerine ara
-/// çözünürlük denenir.
+/// çözünürlük denenir. Son basamak **toplam** bant genişliği en düşük eşleşmedir: Reddit aynı
+/// videoyu iki ses kalitesiyle listeler ve en düşük video 128 kbps sesle sınırı aşabilir
+/// (ölçülen: 5,5 dk'lık videoda 220p + 128k = 10,2 MB, 220p + 64k = 7,45 MB).
 fn variant_ladder(variants: &[Variant]) -> Vec<&Variant> {
     let mut sorted: Vec<&Variant> = variants.iter().collect();
     sorted.sort_by_key(|a| std::cmp::Reverse(a.bandwidth));
-    sorted.dedup_by(|a, b| a.video == b.video);
-    if sorted.is_empty() {
+    let Some(&lowest) = sorted.last() else {
         return sorted;
-    }
+    };
+    sorted.dedup_by(|a, b| a.video == b.video);
 
     let mut ladder: Vec<&Variant> = Vec::new();
-    for index in [0, sorted.len() / 2, sorted.len() - 1] {
-        let candidate = sorted[index];
+    for candidate in [sorted[0], sorted[sorted.len() / 2], lowest] {
         if !ladder
             .iter()
-            .any(|existing| existing.video == candidate.video)
+            .any(|existing| existing.video == candidate.video && existing.audio == candidate.audio)
         {
             ladder.push(candidate);
         }
@@ -191,6 +192,27 @@ fn playlist_duration_secs(text: &str) -> f64 {
         .filter_map(|rest| rest.split(',').next()?.trim().parse::<f64>().ok())
         .filter(|secs| secs.is_finite() && *secs > 0.0)
         .sum()
+}
+
+/// Playlist'in `BYTERANGE` uzunluklarının toplamı (init parçası dahil): indirilecek gerçek bayt.
+/// Parçalar ayrı dosyaysa (`BYTERANGE` yoksa) `None`.
+fn playlist_bytes(text: &str) -> Option<u64> {
+    let lengths: Vec<u64> = text
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let range = match line.strip_prefix("#EXT-X-BYTERANGE:") {
+                Some(range) => range,
+                None => {
+                    let map = line.strip_prefix("#EXT-X-MAP:")?;
+                    let (_, rest) = map.split_once("BYTERANGE=\"")?;
+                    rest.split('"').next()?
+                }
+            };
+            range.split('@').next()?.trim().parse().ok()
+        })
+        .collect();
+    (!lengths.is_empty()).then(|| lengths.iter().sum())
 }
 
 /// `BANDWIDTH` (bps) ve süreden tahmini çıktı boyutu (bayt).
@@ -220,10 +242,59 @@ fn location_url(location: &SourceLocation) -> Result<Url, HlsError> {
     }
 }
 
-/// Botun kendi `reqwest` istemcisini kullanan `Source` uygulaması.
-#[derive(Debug, Clone)]
+/// Bayt aralıklı playlist'te dosyanın bir kez bütün indirileceği en büyük boyut. Parçalar tek
+/// dosyanın ardışık aralıklarıdır; her biri ayrı istekle alınınca 83+83 parçalı 5,5 dk'lık video
+/// 5 sn'lik birleştirme bütçesini aşıyordu. Daha büyük dosya parça parça istenir (bellekte dosya
+/// ve çıktı birlikte durur).
+const WHOLE_FILE_MAX_BYTES: usize = 24 * 1024 * 1024;
+
+/// Bir dosyanın tek seferlik bütün indirmesi; `None` = indirilemedi ya da çok büyük.
+type WholeFile = Arc<tokio::sync::OnceCell<Option<Arc<Vec<u8>>>>>;
+
+/// Botun kendi `reqwest` istemcisini kullanan `Source` uygulaması. Bir birleştirme işi boyunca
+/// yaşar; bütün indirilen dosyalar işle birlikte bırakılır.
+#[derive(Debug)]
 struct ReqwestSource {
     client: reqwest::Client,
+    files: std::sync::Mutex<HashMap<Url, WholeFile>>,
+}
+
+impl ReqwestSource {
+    fn new(client: reqwest::Client) -> Self {
+        Self {
+            client,
+            files: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Dosyayı bir kez bütün indirir; eşzamanlı parça istekleri aynı indirmeyi bekler.
+    async fn whole_file(&self, url: &Url) -> Option<Arc<Vec<u8>>> {
+        let cell = self
+            .files
+            .lock()
+            .ok()?
+            .entry(url.clone())
+            .or_default()
+            .clone();
+        cell.get_or_init(|| async {
+            let response = self
+                .client
+                .get(url.clone())
+                .header("user-agent", USER_AGENT)
+                .header("accept", "*/*")
+                .timeout(REQUEST_TIMEOUT)
+                .send()
+                .await
+                .ok()
+                .filter(|response| response.status().is_success())?;
+            read_limited(response, WHOLE_FILE_MAX_BYTES)
+                .await
+                .ok()
+                .map(Arc::new)
+        })
+        .await
+        .clone()
+    }
 }
 
 impl fmt::Display for ReqwestSource {
@@ -256,6 +327,18 @@ impl Source for ReqwestSource {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, HlsError>> + Send + 'a>> {
         Box::pin(async move {
             let url = location_url(location)?;
+            if let Some(range) = range
+                && let Some(file) = self.whole_file(&url).await
+            {
+                let slice = usize::try_from(range.offset)
+                    .ok()
+                    .zip(usize::try_from(range.length).ok())
+                    .and_then(|(start, length)| file.get(start..start.checked_add(length)?));
+                if let Some(slice) = slice {
+                    let bytes = slice.to_vec();
+                    return Ok(neutralize_sample_group_boxes(&bytes).unwrap_or(bytes));
+                }
+            }
             let mut request = self
                 .client
                 .get(url.clone())
@@ -606,9 +689,7 @@ async fn merge_inner(
         return None;
     }
 
-    let source = Arc::new(ReqwestSource {
-        client: client.clone(),
-    });
+    let source = Arc::new(ReqwestSource::new(client.clone()));
 
     let last = ladder.len() - 1;
     for (index, variant) in ladder.into_iter().enumerate() {
@@ -688,15 +769,24 @@ async fn render_variant(
         }
     });
     let video_text = video_text?.content;
+    let audio_text = audio_text.transpose()?.map(|text| text.content);
 
-    if let Some(bandwidth) = size_guard {
-        let estimate = estimated_bytes(bandwidth, playlist_duration_secs(&video_text));
-        if estimate > max_bytes {
-            debug!(
-                "Reddit varyantı tahmini boyutu ek limitini aşıyor ({estimate} bayt > {max_bytes}), atlanıyor: {video_uri}"
-            );
-            return Ok(None);
-        }
+    // Gerçek boyut biliniyorsa her basamakta (sonuncu dahil) ona bakılır: sığmayacak video
+    // indirilmeden atlanır. Bilinmiyorsa son basamak dışında bant genişliği tahminine düşülür.
+    let exact = playlist_bytes(&video_text).and_then(|video| match &audio_text {
+        Some(audio) => playlist_bytes(audio).map(|audio| video + audio),
+        None => Some(video),
+    });
+    let estimate = exact.or_else(|| {
+        size_guard.map(|bandwidth| estimated_bytes(bandwidth, playlist_duration_secs(&video_text)))
+    });
+    if let Some(estimate) = estimate
+        && estimate > max_bytes
+    {
+        debug!(
+            "Reddit varyantı ek limitini aşıyor ({estimate} bayt > {max_bytes}), atlanıyor: {video_uri}"
+        );
+        return Ok(None);
     }
 
     let video_id_input = InputId::new("video").map_err(hls_err)?;
@@ -717,7 +807,6 @@ async fn render_variant(
     let mut audio_track = None;
 
     if let (Some(audio_url), Some(audio_text)) = (audio_url, audio_text) {
-        let audio_text = audio_text?.content;
         let audio_id_input = InputId::new("audio").map_err(hls_err)?;
         let audio_snapshot = parse_playlist_snapshot(
             &TextResource {
@@ -979,6 +1068,29 @@ CMAF_720.m3u8"#;
     }
 
     #[test]
+    fn playlist_bytes_sums_byteranges_including_the_init_segment() {
+        let playlist = "#EXTM3U\n#EXT-X-MAP:URI=\"CMAF_220.mp4\",BYTERANGE=\"915@0\"\n#EXTINF:4,\n#EXT-X-BYTERANGE:81286@1943\nCMAF_220.mp4\n#EXTINF:4,\n#EXT-X-BYTERANGE:68800\nCMAF_220.mp4\n";
+        assert_eq!(playlist_bytes(playlist), Some(915 + 81_286 + 68_800));
+        assert_eq!(playlist_bytes("#EXTM3U\n#EXTINF:4,\nseg0.ts\n"), None);
+    }
+
+    /// En düşük basamak, aynı videonun en düşük sesli eşleşmesidir.
+    #[test]
+    fn lowest_rung_uses_the_lowest_audio_for_the_smallest_video() {
+        let master = "#EXTM3U\n\
+#EXT-X-MEDIA:URI=\"CMAF_AUDIO_64.m3u8\",TYPE=AUDIO,GROUP-ID=\"5\"\n\
+#EXT-X-MEDIA:URI=\"CMAF_AUDIO_128.m3u8\",TYPE=AUDIO,GROUP-ID=\"6\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=1620788,AUDIO=\"6\"\nCMAF_720.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=302676,AUDIO=\"6\"\nCMAF_220.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=230509,AUDIO=\"5\"\nCMAF_220.m3u8\n";
+        let variants = parse_master_playlist(master);
+        let ladder = variant_ladder(&variants);
+        let last = ladder.last().unwrap();
+        assert_eq!(last.video, "CMAF_220.m3u8");
+        assert_eq!(last.audio.as_deref(), Some("CMAF_AUDIO_64.m3u8"));
+    }
+
+    #[test]
     fn playlist_duration_and_size_estimate() {
         let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.000,\nCMAF_720_0.m4s\n#EXTINF:2.5,\nCMAF_720_1.m4s\n#EXTINF:bozuk,\nx.m4s\n#EXT-X-ENDLIST";
         assert_eq!(playlist_duration_secs(playlist), 6.5);
@@ -1007,9 +1119,7 @@ CMAF_720.m3u8"#;
             )
             .unwrap()
         };
-        let source = Arc::new(ReqwestSource {
-            client: reqwest::Client::new(),
-        });
+        let source = Arc::new(ReqwestSource::new(reqwest::Client::new()));
         let (video, audio) = (
             InputId::new("video").unwrap(),
             InputId::new("audio").unwrap(),
