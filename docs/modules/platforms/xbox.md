@@ -16,7 +16,7 @@ tarihle karta çevirir; videoyu indirmeden doğrudan MP4 adresiyle kartın için
 
 ## Nasıl çalışır
 
-- Kanonik adres `https://www.xbox.com/play/media/{id}`; sayfa oturumsuz çekilir.
+- Kanonik adres `https://www.xbox.com/play/media/{id}`; sayfa oturumsuz çekilir. Sayfa doğrudan `/en-US/play/media/{id}` adresinden istenir: dil öneksiz adres 307 ile yönlenir ve bir gidiş-dönüş ekler.
 - `window.__PRELOADED_STATE__` nesnesi okunur. `xcloud.platform.xboxSocialClientReduxState` bir JSON
   **dizesidir**; içindeki `feed.linkPreviews[id].data.item` klibin kendisidir.
 - `originalContentUri` imzalı (yaklaşık 45 dakika geçerli) MP4 adresidir ve medya olarak doğrudan kullanılır.

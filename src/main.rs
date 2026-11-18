@@ -65,7 +65,7 @@ fn parse_cli_arg(arg: Option<&str>) -> CliAction {
 /// Kart gönderiminde/veri çekiminde kullanılan uçlar. Her biri için DNS + TCP + TLS
 /// el sıkışması bir kez ödenir; bağlantı havuzu atıl kalırsa **her dönüşüm** bu maliyeti
 /// yeniden öder (ölçülen: Discord POST'unda ~150-250 ms).
-const KEEPALIVE_TARGETS: [(&str, &str); 5] = [
+const KEEPALIVE_TARGETS: [(&str, &str); 9] = [
     // X verisi (FxTwitter API) — açıkça FxTwitter seçildiyse kullanılan yol
     (
         "https://api.fxtwitter.com/i/status/20",
@@ -89,6 +89,25 @@ const KEEPALIVE_TARGETS: [(&str, &str); 5] = [
     // Medya CDN'i — ışık hızı modunda kart bu bağlantıları taşır
     (
         "https://pbs.twimg.com/media/",
+        converters::builtin::USER_AGENT,
+    ),
+    // Aşağıdakiler veri fazının kritik yolundaki uçlar; robots.txt birkaç yüz bayttır.
+    // Ölçülen soğuk bağlantı bedeli: Reddit OAuth ~100 ms, Instagram ~160 ms,
+    // Instagram uygulama API'si ~500 ms, Xbox ~90 ms.
+    (
+        "https://oauth.reddit.com/robots.txt",
+        converters::builtin::USER_AGENT,
+    ),
+    (
+        "https://www.instagram.com/robots.txt",
+        converters::builtin::USER_AGENT,
+    ),
+    (
+        "https://i.instagram.com/robots.txt",
+        converters::builtin::USER_AGENT,
+    ),
+    (
+        "https://www.xbox.com/robots.txt",
         converters::builtin::USER_AGENT,
     ),
 ];
@@ -125,28 +144,35 @@ async fn warm(client: &reqwest::Client, url: &str, user_agent: &str) {
 
 /// Tüm uçları ısıtır; her istek kendi görevinde yürür, biri yavaşsa diğerlerini beklemez.
 /// Hatalar sessizce yutulur (ısıtma başarısız olsa da dönüşüm çalışır).
-fn warm_all(client: &reqwest::Client) {
+fn warm_all(client: &reqwest::Client, reddit_client_id: &str) {
     for (url, user_agent) in KEEPALIVE_TARGETS {
         let client = client.clone();
         tokio::spawn(async move {
             warm(&client, url, user_agent).await;
         });
     }
+    // Reddit token'ı dönüşümün kritik yolunda alınmasın (~230 ms): taze ise istek atılmaz,
+    // süresi dolmak üzereyse burada yenilenir.
+    let client = client.clone();
+    let reddit_client_id = reddit_client_id.to_string();
+    tokio::spawn(async move {
+        converters::builtin::reddit::oauth_token(&client, &reddit_client_id).await;
+    });
 }
 
 /// İlk dönüşümde DNS + TLS el sıkışması beklenmesin diye uçları **açılışta** ısıtır ve
 /// dönüşümler seyrek olduğu için bağlantı havuzunu düzenli aralıklarla sıcak tutar.
-fn prewarm_connections(client: &reqwest::Client) {
+fn prewarm_connections(client: &reqwest::Client, reddit_client_id: String) {
     let client = client.clone();
     tokio::spawn(async move {
-        warm_all(&client);
+        warm_all(&client, &reddit_client_id);
         let mut ticker = tokio::time::interval(KEEPALIVE_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // `interval` ilk tıkı hemen verir; açılış ısıtması zaten yapıldı.
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            warm_all(&client);
+            warm_all(&client, &reddit_client_id);
         }
     });
 }
@@ -244,7 +270,7 @@ async fn main() {
     };
 
     // Işık hızı: ilk dönüşümde DNS + TLS el sıkışması beklemesin diye bağlantılar ısıtılır.
-    prewarm_connections(&http_client);
+    prewarm_connections(&http_client, config.reddit_client_id.clone());
 
     // Letterboxd takip akışı: yalnızca REST kullanır, gateway bağlantısını beklemez.
     letterboxd_feed::spawn(http_client.clone(), config.discord_token.clone());
@@ -337,6 +363,8 @@ mod tests {
     #[test]
     fn keepalive_interval_is_shorter_than_the_idle_pool_timeout() {
         assert!(KEEPALIVE_INTERVAL < POOL_IDLE_TIMEOUT);
+        // Token, iki ısıtma turu arasında süresi dolmadan yenilenmeli.
+        assert!(KEEPALIVE_INTERVAL < converters::builtin::reddit::TOKEN_REFRESH_MARGIN);
         assert!(
             KEEPALIVE_TARGETS
                 .iter()

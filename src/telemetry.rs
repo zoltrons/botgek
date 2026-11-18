@@ -506,11 +506,14 @@ pub enum HttpHost {
     Instagram = 5,
     Reddit = 6,
     Spotify = 7,
-    Other = 8,
+    Xbox = 8,
+    Letterboxd = 9,
+    TikTok = 10,
+    Other = 11,
 }
 
 impl HttpHost {
-    pub const ALL: [HttpHost; 9] = [
+    pub const ALL: [HttpHost; 12] = [
         HttpHost::VxTwitter,
         HttpHost::FxTwitter,
         HttpHost::Syndication,
@@ -519,6 +522,9 @@ impl HttpHost {
         HttpHost::Instagram,
         HttpHost::Reddit,
         HttpHost::Spotify,
+        HttpHost::Xbox,
+        HttpHost::Letterboxd,
+        HttpHost::TikTok,
         HttpHost::Other,
     ];
 
@@ -546,6 +552,12 @@ impl HttpHost {
             HttpHost::Reddit
         } else if lower.contains("spotify.com") || lower.contains("scdn.co") {
             HttpHost::Spotify
+        } else if lower.contains("xbox.com") || lower.contains("xboxlive.com") {
+            HttpHost::Xbox
+        } else if lower.contains("letterboxd.com") || lower.contains("ltrbxd.com") {
+            HttpHost::Letterboxd
+        } else if lower.contains("tiktok") {
+            HttpHost::TikTok
         } else {
             HttpHost::Other
         }
@@ -561,6 +573,9 @@ impl HttpHost {
             HttpHost::Instagram => "instagram",
             HttpHost::Reddit => "reddit",
             HttpHost::Spotify => "spotify",
+            HttpHost::Xbox => "xbox",
+            HttpHost::Letterboxd => "letterboxd",
+            HttpHost::TikTok => "tiktok",
             HttpHost::Other => "other",
         }
     }
@@ -586,7 +601,7 @@ impl HostMetrics {
     }
 }
 
-static HOSTS: LazyLock<[HostMetrics; 9]> =
+static HOSTS: LazyLock<[HostMetrics; HttpHost::ALL.len()]> =
     LazyLock::new(|| std::array::from_fn(|_| HostMetrics::new()));
 
 pub fn http_request(host: HttpHost) {
@@ -598,12 +613,163 @@ pub fn http_success(host: HttpHost, elapsed: Duration, bytes: usize) {
     metrics.success.fetch_add(1, RELAXED);
     metrics.bytes.fetch_add(bytes as u64, RELAXED);
     metrics.latency.record(elapsed);
+    trace_span(host, elapsed, true, bytes);
 }
 
 pub fn http_error(host: HttpHost, elapsed: Duration) {
     let metrics = &HOSTS[host as usize];
     metrics.errors.fetch_add(1, RELAXED);
     metrics.latency.record(elapsed);
+    trace_span(host, elapsed, false, 0);
+}
+
+/// Süren bir upstream isteği. Sonucu `success`/`error` ile kaydedilir; sonuç kaydedilmeden
+/// düşürülürse (ör. yedek istek yarışını kaybedip iptal edildiyse) istek sayılmamış olur ve
+/// `unfinished` sayacında asılı kalmaz.
+pub struct InFlight {
+    host: HttpHost,
+    started: Instant,
+    done: bool,
+}
+
+impl InFlight {
+    pub fn start(host: HttpHost) -> Self {
+        http_request(host);
+        Self {
+            host,
+            started: Instant::now(),
+            done: false,
+        }
+    }
+
+    pub fn success(mut self, bytes: usize) {
+        self.done = true;
+        http_success(self.host, self.started.elapsed(), bytes);
+    }
+
+    pub fn error(mut self) {
+        self.done = true;
+        http_error(self.host, self.started.elapsed());
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if !self.done {
+            HOSTS[self.host as usize].requests.fetch_sub(1, RELAXED);
+        }
+    }
+}
+
+/// Gövdesi ayrıca sayılmayan bir isteği (ör. doğrudan JSON'a çözülen) sayar ve süresini ölçer.
+pub async fn track_http<T, E>(
+    host: HttpHost,
+    request: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let in_flight = InFlight::start(host);
+    let result = request.await;
+    match &result {
+        Ok(_) => in_flight.success(0),
+        Err(_) => in_flight.error(),
+    }
+    result
+}
+
+// =====================================================================================
+// DÖNÜŞÜM İZLERİ (veri fazının istek istek zaman çizelgesi)
+// =====================================================================================
+
+/// Saklanan en fazla iz; en eskisi atılır.
+const TRACE_CAPACITY: usize = 32;
+
+struct TraceSpan {
+    host: HttpHost,
+    start_ms: u64,
+    duration_ms: u64,
+    ok: bool,
+    bytes: usize,
+}
+
+struct TraceBuilder {
+    started: Instant,
+    spans: Vec<TraceSpan>,
+}
+
+tokio::task_local! {
+    static TRACE: std::cell::RefCell<TraceBuilder>;
+}
+
+static TRACES: LazyLock<std::sync::Mutex<std::collections::VecDeque<Value>>> =
+    LazyLock::new(|| std::sync::Mutex::new(std::collections::VecDeque::new()));
+
+/// `trace` kapsamındaysa biten isteği ize ekler. `tokio::spawn` ile başlatılan alt görevlerin
+/// istekleri kapsam dışındadır ve ize girmez.
+fn trace_span(host: HttpHost, elapsed: Duration, ok: bool, bytes: usize) {
+    let _ = TRACE.try_with(|trace| {
+        let mut trace = trace.borrow_mut();
+        let start = trace.started.elapsed().saturating_sub(elapsed);
+        trace.spans.push(TraceSpan {
+            host,
+            start_ms: start.as_millis() as u64,
+            duration_ms: elapsed.as_millis() as u64,
+            ok,
+            bytes,
+        });
+    });
+}
+
+/// `work` içindeki HTTP isteklerini başlangıç anına göre kaydeder ve izi saklar.
+pub async fn trace<T, E>(
+    label: &str,
+    work: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let builder = std::cell::RefCell::new(TraceBuilder {
+        started: Instant::now(),
+        spans: Vec::new(),
+    });
+    let (result, builder) = TRACE
+        .scope(builder, async {
+            let result = work.await;
+            let builder = TRACE.with(|trace| {
+                std::mem::replace(
+                    &mut *trace.borrow_mut(),
+                    TraceBuilder {
+                        started: Instant::now(),
+                        spans: Vec::new(),
+                    },
+                )
+            });
+            (result, builder)
+        })
+        .await;
+    let entry = json!({
+        "label": label,
+        "at_ms": crate::utils::unix_millis(),
+        "ok": result.is_ok(),
+        "total_ms": builder.started.elapsed().as_millis() as u64,
+        "spans": builder.spans.iter().map(|span| json!({
+            "host": span.host.name(),
+            "start_ms": span.start_ms,
+            "duration_ms": span.duration_ms,
+            "ok": span.ok,
+            "bytes": span.bytes,
+        })).collect::<Vec<_>>(),
+    });
+    if let Ok(mut traces) = TRACES.lock() {
+        if traces.len() >= TRACE_CAPACITY {
+            traces.pop_front();
+        }
+        traces.push_back(entry);
+    }
+    result
+}
+
+/// En yeni iz başta.
+fn traces_snapshot() -> Value {
+    TRACES
+        .lock()
+        .map(|traces| Value::Array(traces.iter().rev().cloned().collect()))
+        .unwrap_or(Value::Null)
 }
 
 // =====================================================================================
@@ -1098,7 +1264,8 @@ pub fn snapshot() -> Value {
         "caches": cache_snapshot(),
         "db": db_snapshot(),
         "gateway": gateway_snapshot(),
-        "process": process_snapshot()
+        "process": process_snapshot(),
+        "traces": traces_snapshot()
     })
 }
 
@@ -1110,6 +1277,50 @@ pub fn detailed_snapshot() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sonucu kaydedilmeden düşürülen (iptal edilen) istek `unfinished` sayacında asılı kalmaz.
+    #[test]
+    fn cancelled_request_does_not_stay_unfinished() {
+        let metrics = &HOSTS[HttpHost::TikTok as usize];
+        let unfinished = || {
+            metrics.requests.load(RELAXED)
+                - metrics.success.load(RELAXED)
+                - metrics.errors.load(RELAXED)
+        };
+        let before = unfinished();
+        drop(InFlight::start(HttpHost::TikTok));
+        assert_eq!(unfinished(), before);
+        InFlight::start(HttpHost::TikTok).success(3);
+        assert_eq!(unfinished(), before);
+    }
+
+    /// İz kapsamındaki istekler başlangıç anı ve süreleriyle kaydedilir; kapsam dışı istek girmez.
+    #[tokio::test]
+    async fn trace_records_requests_inside_its_scope() {
+        http_success(HttpHost::Other, Duration::from_millis(5), 1);
+        let label = "test-trace-records-requests";
+        let result: Result<(), ()> = trace(label, async {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            http_success(HttpHost::Xbox, Duration::from_millis(10), 42);
+            http_error(HttpHost::Reddit, Duration::from_millis(1));
+            Ok(())
+        })
+        .await;
+        assert!(result.is_ok());
+        let traces = traces_snapshot();
+        let entry = traces
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["label"] == label)
+            .expect("iz saklanmalı");
+        let spans = entry["spans"].as_array().unwrap();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0]["host"], "xbox");
+        assert_eq!(spans[0]["bytes"], 42);
+        assert!(spans[0]["start_ms"].as_u64().unwrap() >= 4);
+        assert_eq!(spans[1]["ok"], false);
+    }
 
     #[test]
     fn every_platform_has_conversion_counters() {

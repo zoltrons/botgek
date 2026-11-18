@@ -52,11 +52,11 @@ static COMMENT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli reddit yorum regex")
 });
 
-/// Harici bağlantı önizlemesi için toplam süre: kart **asla** bağlantı için bekletilmez.
+/// Harici bağlantı önizlemesi için toplam süre.
 ///
-/// Önizleme gönderi verisinden sonra çekilir (hedef adres o yanıttan gelir); X'in link kartıyla
-/// aynı sınır uygulanır. Süre dolarsa satır alan adıyla gösterilir, bağlantı kaybolmaz.
-const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_millis(500);
+/// Önizleme kart gönderildikten **sonra** çekilir ([`enrich`]) ve kart yerinde düzenlenir; kritik
+/// yolda olmadığı için yavaş siteye de zaman tanınır. Süre dolarsa satır alan adıyla kalır.
+const LINK_PREVIEW_TIMEOUT: Duration = Duration::from_secs(3);
 /// Harici bağlantı satırındaki başlık sınırı (Discord'un yerleşik önizlemesi gibi tek satır).
 const LINK_PREVIEW_TITLE_LIMIT: usize = 180;
 /// Alan adı etiketi sınırı.
@@ -78,7 +78,7 @@ const OAUTH_API_BASE: &str = "https://oauth.reddit.com";
 /// `installed_client` akışında `device_id` zorunludur; "izleme yok" değeri kabul edilir.
 const OAUTH_DEVICE_ID: &str = "DO_NOT_TRACK_THIS_DEVICE";
 /// Token süresi dolmadan bu kadar önce yenilenir.
-const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(120);
+pub(crate) const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(600);
 
 /// Bellekte tutulan OAuth token'ı (süre bitince yenilenir).
 #[derive(Debug, Clone)]
@@ -103,7 +103,7 @@ fn base64_ascii(input: &str) -> String {
 /// `installed_client` akışıyla bearer token döner (önbellekten tazeyse ağ isteği yapılmaz).
 ///
 /// Herhangi bir hata `None` döner; çağıran taraf kimliksiz yola düşer, akış bozulmaz.
-pub(super) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
+pub(crate) async fn oauth_token(client: &reqwest::Client, client_id: &str) -> Option<String> {
     // Taze token varken yenileme kilidi hiç beklenmez.
     if let Some(token) = cached_token().await {
         return Some(token);
@@ -219,7 +219,7 @@ pub async fn fetch(
                     if let Some(comment_id) = comment_id {
                         post = graph_reply_card(client, post, &token, &id, comment_id).await;
                     }
-                    fill_link_preview(&mut post).await;
+                    prefill_link_preview(&mut post);
                     return Ok(post);
                 }
                 Err(err) => debug!("Reddit OAuth yanıtı kullanılamadı ({id}): {err}"),
@@ -232,7 +232,7 @@ pub async fn fetch(
     let url = format!("https://www.reddit.com/comments/{id}.json?{query}");
     let listings = get_reddit_json(client, &url).await?;
     let mut post = listings_to_post(listings, comment_id)?;
-    fill_link_preview(&mut post).await;
+    prefill_link_preview(&mut post);
     Ok(post)
 }
 
@@ -451,23 +451,26 @@ async fn get_reddit_json<T: DeserializeOwned>(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<T, String> {
-    let response = client
-        .get(url)
-        .header("user-agent", REDDIT_USER_AGENT)
-        .header("accept", "application/json")
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("İstek başarısız ({url}): {e}"))?;
+    crate::telemetry::track_http(crate::telemetry::HttpHost::Reddit, async {
+        let response = client
+            .get(url)
+            .header("user-agent", REDDIT_USER_AGENT)
+            .header("accept", "application/json")
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("İstek başarısız ({url}): {e}"))?;
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "Beklenmeyen durum kodu ({url}): {}",
-            response.status()
-        ));
-    }
+        if !response.status().is_success() {
+            return Err(format!(
+                "Beklenmeyen durum kodu ({url}): {}",
+                response.status()
+            ));
+        }
 
-    read_json_response(response, url).await
+        read_json_response(response, url).await
+    })
+    .await
 }
 
 /// OAuth API isteği (`Authorization: bearer`).
@@ -476,28 +479,31 @@ pub(super) async fn get_json_with_bearer<T: DeserializeOwned>(
     url: &str,
     token: &str,
 ) -> Result<T, String> {
-    let response = client
-        .get(url)
-        .header("authorization", format!("bearer {token}"))
-        .header("user-agent", REDDIT_USER_AGENT)
-        .header("accept", "application/json")
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("OAuth isteği başarısız ({url}): {e}"))?;
+    crate::telemetry::track_http(crate::telemetry::HttpHost::Reddit, async {
+        let response = client
+            .get(url)
+            .header("authorization", format!("bearer {token}"))
+            .header("user-agent", REDDIT_USER_AGENT)
+            .header("accept", "application/json")
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("OAuth isteği başarısız ({url}): {e}"))?;
 
-    let status = response.status();
-    if matches!(
-        status,
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
-    ) {
-        invalidate_token(token).await;
-    }
-    if !status.is_success() {
-        return Err(format!("Beklenmeyen durum kodu ({url}): {status}"));
-    }
+        let status = response.status();
+        if matches!(
+            status,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) {
+            invalidate_token(token).await;
+        }
+        if !status.is_success() {
+            return Err(format!("Beklenmeyen durum kodu ({url}): {status}"));
+        }
 
-    read_json_response(response, url).await
+        read_json_response(response, url).await
+    })
+    .await
 }
 
 /// Reddit'in reddettiği token'ı önbellekten atar; aksi hâlde süresi dolana dek (≈1 saat) her istek aynı reddi alırdı.
@@ -804,9 +810,37 @@ fn host_label(raw: &str) -> Option<String> {
     (!host.is_empty()).then_some(host)
 }
 
+/// Kart ilk gönderilirken dış bağlantı satırı alan adıyla gösterilir; site adı boş kalır ve
+/// önizlemenin henüz çekilmediğini işaretler ([`needs_enrichment`]).
+fn prefill_link_preview(post: &mut BuiltinPost) {
+    if let Some(preview) = post.link_preview.as_mut()
+        && preview.title.is_none()
+        && preview.site_name.is_none()
+    {
+        preview.title = host_label(&preview.url);
+    }
+}
+
+/// Dış bağlantı satırının başlığı henüz çekilmedi mi? (Redgifs satırı site adıyla gelir.)
+pub fn needs_enrichment(post: &BuiltinPost) -> bool {
+    post.link_preview
+        .as_ref()
+        .is_some_and(|preview| preview.site_name.is_none() && !preview.url.is_empty())
+}
+
+/// Kart gönderildikten sonra dış bağlantının başlığını ve site adını çeker.
+pub async fn enrich(post: &BuiltinPost) -> Option<BuiltinPost> {
+    if !needs_enrichment(post) {
+        return None;
+    }
+    let mut enriched = post.clone();
+    fill_link_preview(&mut enriched).await;
+    Some(enriched)
+}
+
 /// Harici bağlantı satırının başlık/site alanlarını hedef sayfanın OG verisinden doldurur.
 ///
-/// Kart **bekletilmez** ([`LINK_PREVIEW_TIMEOUT`]) ve önizleme alınamazsa hata verilmez:
+/// Süre sınırlıdır ([`LINK_PREVIEW_TIMEOUT`]) ve önizleme alınamazsa hata verilmez:
 /// satır alan adına düşer (`v2::link_preview_component`), böylece bağlantı kartta görünür kalır.
 async fn fill_link_preview(post: &mut BuiltinPost) {
     let Some(url) = post
@@ -1114,6 +1148,30 @@ pub fn unescape_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dış bağlantı satırı ilk kartta alan adıyla gider ve gönderimden sonra zenginleştirilir;
+    /// site adı taşıyan (Redgifs) veya zenginleştirilmiş satır yeniden çekilmez.
+    #[test]
+    fn link_preview_is_prefilled_and_enriched_after_send() {
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/rust/comments/abc/x/",
+            super::super::Author::new("u", "u"),
+        );
+        post.link_preview = Some(LinkPreview {
+            url: "https://www.example.com/article".into(),
+            ..Default::default()
+        });
+        prefill_link_preview(&mut post);
+        let preview = post.link_preview.as_ref().unwrap();
+        assert_eq!(preview.title.as_deref(), Some("example.com"));
+        assert!(needs_enrichment(&post));
+
+        post.link_preview.as_mut().unwrap().site_name = Some("Example".into());
+        assert!(!needs_enrichment(&post));
+        post.link_preview = None;
+        assert!(!needs_enrichment(&post));
+    }
 
     fn parse(json: &str) -> BuiltinPost {
         let listings: Vec<RedditListing> =

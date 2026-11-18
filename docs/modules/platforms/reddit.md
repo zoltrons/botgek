@@ -9,7 +9,7 @@ bağlantılarını yanıt kartı olarak `BuiltinPost`'a çevirir. Videonun gör�
 
 | Dosya | İçerik |
 | --- | --- |
-| `builtin/reddit.rs` | OAuth belirteci, `by_id` çekimi, gönderi ve medya dönüşümü, RedGifs, bağlantı önizlemesi. |
+| `builtin/reddit.rs` | OAuth belirteci, `by_id` çekimi, gönderi ve medya dönüşümü, RedGifs, bağlantı önizlemesi. Dış bağlantı satırı ilk kartta alan adıyla gider; başlık/site `enrich` ile gönderimden sonra doldurulur ve kart düzenlenir. Token ısıtma turunda arka planda yenilenir. |
 | `builtin/reddit_gql.rs` | Android GraphQL `PostComments` işleminden yorum bağlamı. |
 | `builtin/reddit_video.rs` | `v.redd.it` video ve ses akışlarını saf Rust ile sesli MP4'e birleştirme. |
 

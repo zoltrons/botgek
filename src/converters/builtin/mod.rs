@@ -134,10 +134,9 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(
 
 /// Metin yanıtını çeker. `Content-Length` veya akış `MAX_BODY_BYTES`'ı aşarsa hata verir.
 pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    use crate::telemetry::{self, HttpHost};
+    use crate::telemetry::{HttpHost, InFlight};
     let host = HttpHost::classify(url);
-    telemetry::http_request(host);
-    let started = std::time::Instant::now();
+    let request = InFlight::start(host);
     let response = match client
         .get(url)
         .header("user-agent", USER_AGENT)
@@ -148,13 +147,13 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
     {
         Ok(response) => response,
         Err(error) => {
-            telemetry::http_error(host, started.elapsed());
+            request.error();
             return Err(format!("İstek başarısız ({url}): {error}"));
         }
     };
 
     if !response.status().is_success() {
-        telemetry::http_error(host, started.elapsed());
+        request.error();
         warn!(
             host = host.name(),
             status = response.status().as_u16(),
@@ -168,11 +167,11 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
     let body = match read_limited_text(response, url).await {
         Ok(body) => body,
         Err(err) => {
-            telemetry::http_error(host, started.elapsed());
+            request.error();
             return Err(err);
         }
     };
-    telemetry::http_success(host, started.elapsed(), body.len());
+    request.success(body.len());
     Ok(body)
 }
 
@@ -249,27 +248,31 @@ pub async fn fetch(
 
     // X, eksik sonucu (çeviri gelmedi / yedek veri) önbelleğe yazdırmaz.
     let mut cacheable = true;
-    let post = match parsed.platform {
-        Platform::Twitter => twitter::fetch(client, parsed, engine).await.map(|fetched| {
-            cacheable = fetched.cacheable;
-            fetched.post
-        }),
-        Platform::Bluesky => bluesky::fetch(client, parsed).await,
-        Platform::Reddit => reddit::fetch(client, parsed, &config.reddit_client_id).await,
-        Platform::TikTok => tiktok::fetch(client, parsed).await,
-        Platform::Instagram => {
-            instagram::fetch(client, parsed, config.instagram_sessionid.as_deref()).await
+    let label = format!("{} {}", platform_key(parsed.platform), parsed.original_url);
+    let post = crate::telemetry::trace(&label, async {
+        match parsed.platform {
+            Platform::Twitter => twitter::fetch(client, parsed, engine).await.map(|fetched| {
+                cacheable = fetched.cacheable;
+                fetched.post
+            }),
+            Platform::Bluesky => bluesky::fetch(client, parsed).await,
+            Platform::Reddit => reddit::fetch(client, parsed, &config.reddit_client_id).await,
+            Platform::TikTok => tiktok::fetch(client, parsed).await,
+            Platform::Instagram => {
+                instagram::fetch(client, parsed, config.instagram_sessionid.as_deref()).await
+            }
+            Platform::Spotify => spotify::fetch(client, parsed).await,
+            Platform::Twitch => twitch::fetch(client, parsed).await,
+            Platform::Xbox => xbox::fetch(client, parsed).await,
+            Platform::Pixiv => pixiv::fetch(client, parsed).await,
+            Platform::Tumblr => tumblr::fetch(client, parsed).await,
+            Platform::Letterboxd => letterboxd::fetch(client, parsed).await,
+            Platform::Miniflux => miniflux::fetch(parsed).await,
+            Platform::Facebook => facebook::fetch(client, parsed).await,
+            Platform::YouTube => youtube::fetch(client, parsed).await,
         }
-        Platform::Spotify => spotify::fetch(client, parsed).await,
-        Platform::Twitch => twitch::fetch(client, parsed).await,
-        Platform::Xbox => xbox::fetch(client, parsed).await,
-        Platform::Pixiv => pixiv::fetch(client, parsed).await,
-        Platform::Tumblr => tumblr::fetch(client, parsed).await,
-        Platform::Letterboxd => letterboxd::fetch(client, parsed).await,
-        Platform::Miniflux => miniflux::fetch(parsed).await,
-        Platform::Facebook => facebook::fetch(client, parsed).await,
-        Platform::YouTube => youtube::fetch(client, parsed).await,
-    };
+    })
+    .await;
     let post = match post {
         Ok(post) => post,
         Err(reason) => {
@@ -285,12 +288,13 @@ pub async fn fetch(
     Ok(post)
 }
 
-/// Kart gönderildikten sonra çözülen ek veri: iplik konumu (`🧵 2/4`) ve yanıtlanan X gönderisinin
-/// metni. Bu istekler (~1 sn) kartın kritik yolunda değildir; eklenecek bir şey yoksa `None`.
+/// Kart gönderildikten sonra çözülen ek veri: iplik konumu (`🧵 2/4`), yanıtlanan X gönderisinin
+/// metni ve Reddit dış bağlantısının başlığı. Bu istekler (~1 sn) kartın kritik yolunda değildir; eklenecek bir şey yoksa `None`.
 pub async fn enrich(client: &reqwest::Client, post: &BuiltinPost) -> Option<BuiltinPost> {
     match post.platform {
         Platform::Twitter => twitter::enrich(client, post).await,
         Platform::Bluesky => bluesky::enrich(client, post).await,
+        Platform::Reddit => reddit::enrich(post).await,
         _ => None,
     }
 }
@@ -300,6 +304,7 @@ fn wants_enrichment(post: &BuiltinPost) -> bool {
     match post.platform {
         Platform::Twitter => twitter::needs_enrichment(post),
         Platform::Bluesky => post.thread_lookup,
+        Platform::Reddit => reddit::needs_enrichment(post),
         _ => false,
     }
 }
@@ -1696,7 +1701,9 @@ fn spawn_enrichment(job: Enrichment) {
 /// Zenginleştirme kartta görünen bir şeyi değiştirdi mi? Değiştirmediyse kart düzenlenmez (mesajda
 /// boş yere "(düzenlendi)" izi kalmasın). Yalnızca `enrich`'in doldurduğu alanlar karşılaştırılır.
 fn card_changed(before: &BuiltinPost, after: &BuiltinPost) -> bool {
-    after.reply_to != before.reply_to || after.thread_position != before.thread_position
+    after.reply_to != before.reply_to
+        || after.thread_position != before.thread_position
+        || after.link_preview != before.link_preview
 }
 
 /// Gönderilmiş kartı geldiği yoldan yerinde düzenler.

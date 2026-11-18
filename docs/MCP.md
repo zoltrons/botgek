@@ -191,13 +191,16 @@ Varsayılanlar: `bot_logs.limit=120`, `bot_logs.min_level=info`, `db_query.limit
   toplam ve deneme gecikmesi, durum kodu dağılımı, yavaş çağrılar.
 - `pipeline`: kuyruk beklemesi, veri, render, medya, webhook çözümleme/bekleme/gönderim,
   kart gönderimi, silme, reaksiyon ve toplam süre histogramları.
-- `http`: VxTwitter, FxTwitter, syndication, Discord, Twitter CDN, Instagram, Reddit,
-  Spotify ve diğer hostlar için istek/başarı/hata/bayt/gecikme.
+- `http`: VxTwitter, FxTwitter, syndication, Discord, Twitter CDN, Instagram (oturum API'si dahil),
+  Reddit, Spotify, Xbox, Letterboxd, TikTok ve diğer hostlar için istek/başarı/hata/bayt/gecikme.
+  Doğrudan JSON'a çözülen yanıtların (Reddit, Instagram oturumu) baytı sayılmaz.
 - `cache`: post, source ve webhook önbellekleri için hit/miss/expired/put/evict/negative.
 - `db`: SQLite işlem türü başına çağrı/hata/gecikme; `db_stats` ayrıca WAL/SHM boyutu verir.
 - `gateway`: olay sayıları, son olay yaşı.
 - `process`: RSS/peak RSS, sanal bellek, thread, açık fd, I/O, CPU, cgroup bellek/CPU/pids.
 - `conversion`: mevcut platform başarı/hata ve kuyruk sayaçları.
+- `traces`: önbellekte olmayan son 32 veri çekiminin istek istek zaman çizelgesi (host, başlangıç,
+  süre, başarı, bayt). `tokio::spawn` ile başlatılan alt görevlerin istekleri ize girmez.
 
 429 ve 2 saniyeyi aşan Discord REST çağrıları `warn` seviyesinde loglanır; böylece
 `bot_logs` ile metrikler aynı olayı gösterebilir.

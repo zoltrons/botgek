@@ -41,7 +41,7 @@ Discord'a gönderir. Platformdan bağımsız ortak mantık burada durur.
 3. `cache::get` isabet ederse ağ isteği yapılmaz (`CACHE_HITS`).
 4. `cache::recent_failure` 30 sn içinde aynı anahtar başarısız olduysa aynı hatayı döner.
 5. Platform dağıtımı: `twitter::fetch`, `bluesky::fetch`, `reddit::fetch`, ... `Platform` varyantına göre.
-6. Başarısızlık hata önbelleğine yazılır. Başarı `cache::put` ile 600 sn / 512 girdi sınırıyla saklanır.
+6. Başarısızlık hata önbelleğine yazılır. Başarı `cache::put` ile 600 sn / 512 girdi sınırıyla saklanır; Letterboxd ve Spotify 3600 sn tutulur (`cache::ttl_for`).
    X, eksik sonucu (çeviri beklenip gelmediyse ya da yedek kaynak kullanıldıysa) önbelleğe yazdırmaz
    (`Fetched::cacheable`).
 

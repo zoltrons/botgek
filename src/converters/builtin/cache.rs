@@ -15,6 +15,18 @@ use super::BuiltinPost;
 
 /// Gönderi verisinin önbellekte kalma süresi (metrikler bu süre içinde güncellenmez).
 const TTL: Duration = Duration::from_secs(600);
+/// Neredeyse hiç değişmeyen ve medyası süreli imza taşımayan platformlar (film/parça sayfası)
+/// daha uzun tutulur: tekrar paylaşılan bağlantıda veri fazı 0 ms olur.
+const STABLE_TTL: Duration = Duration::from_secs(3600);
+
+/// Girdinin önbellekte kalma süresi.
+fn ttl_for(post: &BuiltinPost) -> Duration {
+    use crate::converters::parser::Platform;
+    match post.platform {
+        Platform::Letterboxd | Platform::Spotify => STABLE_TTL,
+        _ => TTL,
+    }
+}
 /// Önbellekte tutulacak en fazla gönderi sayısı.
 const MAX_ENTRIES: usize = 512;
 
@@ -26,7 +38,7 @@ static CACHE: LazyLock<CacheMap> = LazyLock::new(|| Mutex::new(HashMap::new()));
 pub async fn get(key: &str) -> Option<Arc<BuiltinPost>> {
     let mut cache = CACHE.lock().await;
     match cache.get(key) {
-        Some((stored_at, post)) if stored_at.elapsed() < TTL => {
+        Some((stored_at, post)) if stored_at.elapsed() < ttl_for(post) => {
             crate::telemetry::cache_hit(crate::telemetry::CacheKind::Post);
             Some(post.clone())
         }
@@ -47,7 +59,7 @@ pub async fn put(key: String, post: Arc<BuiltinPost>) {
     let mut cache = CACHE.lock().await;
 
     if cache.len() >= MAX_ENTRIES {
-        cache.retain(|_, (stored_at, _)| stored_at.elapsed() < TTL);
+        cache.retain(|_, (stored_at, post)| stored_at.elapsed() < ttl_for(post));
     }
     if cache.len() >= MAX_ENTRIES {
         // Hâlâ doluysa en eski girdi çıkarılır (tek giriş).

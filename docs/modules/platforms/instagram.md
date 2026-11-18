@@ -25,6 +25,10 @@ tanımlıysa video ve çoklu görseller de alınır.
 
 - Kısa kod, `shortcode_to_pk` ile sayısal kimliğe çevrilir (base64 benzeri alfabe).
 - Oturumlu istek iki tabana sırayla denenir (`SESSION_API_BASES`), toplam 8 sn, yanıt 1 MiB ile sınırlı.
+  Son çalışan (taban, çerez biçimi) birleşimi önce denenir. Çerez her yerde reddedilirse (401/403,
+  giriş sayfası, `login_required`) oturum yolu 10 dk atlanır ve `warn` loglanır. 404 ya da medyasız
+  yanıt o tabanın diğer çerez biçimini atlatır, sıradaki taban denenir; 5xx ve 429 geçici sayılır.
+  Hiçbiri geri çekilmeyi tetiklemez. Eşleme `classify_session_response` içinde ve tablo testlidir.
 - Üç kaynak da yararsızsa (ör. giriş duvarı) hata döner. OG verisi yalnızca görsel ya da açıklama taşıyorsa
   yararlı sayılır (`graph_is_useful`).
 - Çerez `%3A` ile kodlanmış olabilir, ham ve çözülmüş biçim sırayla denenir.

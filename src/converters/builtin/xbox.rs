@@ -13,6 +13,9 @@ use super::{Author, BuiltinPost, Media, MediaKind};
 use crate::converters::parser::{ParsedPost, Platform};
 
 const STATE_MARKER: &str = "window.__PRELOADED_STATE__ = ";
+/// Sayfa sunucuda çizilir ve ilk bayta kadar geçen süre oynaktır (ölçülen 0.4–1.5 sn). İlk istek
+/// bu süre içinde bitmezse aynı sayfa bir kez daha istenir; önce başarıyla biten kullanılır.
+const HEDGE_AFTER: std::time::Duration = std::time::Duration::from_millis(700);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,8 +50,38 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
         .strip_prefix("https://www.xbox.com/play/media/")
         .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
         .ok_or_else(|| format!("Xbox klip kimliği okunamadı: {}", parsed.original_url))?;
-    let html = super::get_text(client, &parsed.original_url).await?;
+    // Dil öneksiz adres IP'ye göre `/{dil}/...` adresine 307 ile yönlenir (+1 gidiş-dönüş,
+    // ~100 ms); klip verisi dilden bağımsızdır.
+    let page = format!("https://www.xbox.com/en-US/play/media/{id}");
+    let html = hedged(HEDGE_AFTER, || super::get_text(client, &page)).await?;
     clip_post(&html, id, &parsed.original_url)
+}
+
+/// `make` ile bir istek başlatır; `after` içinde bitmezse ikincisini başlatır ve önce başarıyla
+/// biteni döner. İkisi de başarısızsa son biten hatayı döner. `after` dolmadan gelen hata
+/// beklenmeden döner (yavaşlık değil, gerçek hata).
+async fn hedged<T, E, Fut>(after: std::time::Duration, make: impl Fn() -> Fut) -> Result<T, E>
+where
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let first = make();
+    tokio::pin!(first);
+    tokio::select! {
+        result = &mut first => return result,
+        () = tokio::time::sleep(after) => {}
+    }
+    let second = make();
+    tokio::pin!(second);
+    tokio::select! {
+        result = &mut first => match result {
+            Ok(value) => Ok(value),
+            Err(_) => second.await,
+        },
+        result = &mut second => match result {
+            Ok(value) => Ok(value),
+            Err(_) => first.await,
+        },
+    }
 }
 
 /// Sayfadaki durum nesnesinden klibi bulur.
@@ -120,6 +153,53 @@ fn clip_post(html: &str, id: &str, url: &str) -> Result<BuiltinPost, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// Yavaş ilk istek ikinciyle yarıştırılır; hızlı istekte ikinci istek hiç atılmaz.
+    #[tokio::test]
+    async fn slow_request_is_hedged_and_fast_one_is_not() {
+        let calls = AtomicUsize::new(0);
+        let slow_then_fast = || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                tokio::time::sleep(Duration::from_millis(if n == 0 { 2_000 } else { 10 })).await;
+                Ok::<_, ()>(n)
+            }
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            hedged(Duration::from_millis(30), slow_then_fast).await,
+            Ok(1)
+        );
+        assert!(started.elapsed() < Duration::from_millis(1_000));
+
+        let calls = AtomicUsize::new(0);
+        let fast = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<_, ()>(7) }
+        };
+        assert_eq!(hedged(Duration::from_millis(30), fast).await, Ok(7));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// İkinci istek hata verirse ilk isteğin sonucu beklenir.
+    #[tokio::test]
+    async fn hedge_falls_back_to_the_first_request_when_the_second_fails() {
+        let calls = AtomicUsize::new(0);
+        let make = || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    Ok(0)
+                } else {
+                    Err("ikinci")
+                }
+            }
+        };
+        assert_eq!(hedged(Duration::from_millis(20), make).await, Ok(0));
+    }
 
     /// Canlı sayfadan kısaltılmış örnek: iç durum JSON dizesi olarak gömülüdür.
     fn page(item: &str) -> String {

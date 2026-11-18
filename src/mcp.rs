@@ -372,7 +372,7 @@ fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "section": {
                         "type": "string",
-                        "enum": ["all", "rest", "pipeline", "http", "cache", "db", "process", "gateway", "conversion"],
+                        "enum": ["all", "rest", "pipeline", "http", "cache", "db", "process", "gateway", "conversion", "traces"],
                         "default": "all"
                     }
                 },
@@ -687,6 +687,7 @@ fn diagnostics_snapshot(section: &str) -> Result<Value, String> {
         "db" => json!({"db": full["db"]}),
         "process" => json!({"process": full["process"]}),
         "gateway" => json!({"gateway": full["gateway"]}),
+        "traces" => json!({"traces": full["traces"]}),
         "conversion" => json!({
             "cache_hits": full["cache_hits"],
             "overloads": full["overloads"],
@@ -695,7 +696,7 @@ fn diagnostics_snapshot(section: &str) -> Result<Value, String> {
         }),
         other => {
             return Err(format!(
-                "bilinmeyen bölüm: {other}; all/rest/pipeline/http/cache/db/process/gateway/conversion"
+                "bilinmeyen bölüm: {other}; all/rest/pipeline/http/cache/db/process/gateway/conversion/traces"
             ));
         }
     };

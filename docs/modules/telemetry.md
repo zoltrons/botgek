@@ -40,11 +40,16 @@ Parçalar:
 - Yeni platform eklenince `PLATFORMS` dizisinin uzunluğu ve ona bağlı sabit boyutlu diziler güncellenmeli.
 - Yeni `Phase` eklenirse `ALL`, `name` ve `PHASES` boyutu birlikte değişir.
 - Etiket olarak kullanıcıdan gelen ya da sınırsız bir değer kullanmayın.
+- Yeni `HttpHost` eklenince `ALL`, `name` ve `classify` birlikte değişir; `HOSTS` boyutu `ALL`'dan gelir.
+- Dönüşüm izi (`trace`) task-local'dır: `http_success`/`http_error` kapsam içinde çağrılırsa ize girer,
+  `tokio::spawn` edilen görevdeki istek girmez.
 
 ## Değiştirirken
 
 Yeni bir ölçüm noktası: `PhaseTimer` ya da `record_phase` kullanın, MCP `bot_metrics` ve `bot_diagnostics`
-çıktısına snapshot üzerinden otomatik girer.
+çıktısına snapshot üzerinden otomatik girer. `get_text` dışında yapılan upstream istekleri
+`track_http` ile sarın (ya da `InFlight` kullanın); aksi hâlde host sayaçlarında ve izlerde
+görünmezler. `InFlight` sonucu kaydedilmeden düşürülürse (iptal) istek sayılmaz.
 
 ## Testler
 

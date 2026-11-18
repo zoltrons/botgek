@@ -18,7 +18,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::opengraph::{self, OpenGraph};
 use super::{
@@ -127,6 +127,15 @@ const SESSION_MAX_BODY_BYTES: usize = 1024 * 1024;
 /// [`super::REQUEST_TIMEOUT`] alabildiğinden sınır olmadan yanıt vermeyen bir uç, herkese
 /// açık kaynaklar çoktan hazırken kartı dört kat bekletebiliyordu.
 const SESSION_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+/// Çerez her uçta ve biçimde reddedilince oturum yolu bu süre denenmez: ölü çerez her Instagram
+/// kartını sıralı denemelerle (~2 sn) bekletiyordu.
+const SESSION_REJECT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Son başarılı deneme: (uç sırası, çözülmüş çerez mi). Sonraki istek ilk olarak bunu dener.
+static SESSION_PREFERRED: std::sync::Mutex<Option<(usize, bool)>> = std::sync::Mutex::new(None);
+/// Çerez reddedildiyse oturum yolunun yeniden deneneceği an.
+static SESSION_RETRY_AFTER: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
 
 /// Oturum API'sinden çözülen medya ve kartı zenginleştiren alanlar.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -193,33 +202,91 @@ async fn fetch_session_media(
     }
 }
 
-/// Uç noktalarını sırayla, her birinde çerezin ham ve çözülmüş biçimini dener.
+/// Uç noktalarını sırayla, her birinde çerezin ham ve çözülmüş biçimini dener. Son çalışan
+/// birleşim önce denenir; çerez her yerde reddedilirse oturum yolu bir süre atlanır.
 async fn try_session_bases(client: &reqwest::Client, pk: u64, token: &str) -> Option<SessionMedia> {
+    if SESSION_RETRY_AFTER
+        .lock()
+        .ok()?
+        .is_some_and(|retry_after| std::time::Instant::now() < retry_after)
+    {
+        return None;
+    }
     // Tarayıcı çerezi `%3A` ile kodlanmış olabilir: ham değer ve çözülmüş biçim denenir.
     let decoded = token.replace("%3A", ":").replace("%3a", ":");
-    let mut cookies = vec![format!("sessionid={token}")];
-    if decoded != token {
-        cookies.push(format!("sessionid={decoded}"));
-    }
+    let preferred = *SESSION_PREFERRED.lock().ok()?;
+    let attempts = session_attempt_order(preferred, decoded != token);
 
-    for (base, app_id) in SESSION_API_BASES {
+    let mut rejected_everywhere = true;
+    let mut skipped_base = None;
+    for (base_index, use_decoded) in attempts {
+        if skipped_base == Some(base_index) {
+            continue;
+        }
+        let (base, app_id) = SESSION_API_BASES[base_index];
         let url = format!("{base}/{pk}/info/");
-        for cookie in cookies.clone() {
-            match session_attempt(client, &url, app_id, cookie).await {
-                SessionAttempt::Found(session) => return Some(session),
-                SessionAttempt::Rejected => continue,
-                // Uç erişilemiyorsa çerezin diğer biçimi de aynı sonuca varır: sıradaki uca geç.
-                SessionAttempt::Unreachable => break,
+        let cookie = format!("sessionid={}", if use_decoded { &decoded } else { token });
+        let request = crate::telemetry::InFlight::start(crate::telemetry::HttpHost::Instagram);
+        match session_attempt(client, &url, app_id, cookie).await {
+            SessionAttempt::Found(session) => {
+                request.success(0);
+                if let Ok(mut slot) = SESSION_PREFERRED.lock() {
+                    *slot = Some((base_index, use_decoded));
+                }
+                return Some(session);
+            }
+            SessionAttempt::Rejected => request.error(),
+            // Çerez geçerli ama gönderi bu uçtan gelmedi (silinmiş/gizli ya da `i.instagram`'ın
+            // sessiz boş yanıtı): çerezin diğer biçimi aynı sonuca varır, sıradaki uç denenir.
+            SessionAttempt::Missing => {
+                request.success(0);
+                rejected_everywhere = false;
+                skipped_base = Some(base_index);
+            }
+            // Uç erişilemiyorsa çerezin diğer biçimi de aynı sonuca varır: sıradaki uca geç.
+            SessionAttempt::Unreachable => {
+                request.error();
+                rejected_everywhere = false;
+                skipped_base = Some(base_index);
             }
         }
+    }
+    if rejected_everywhere {
+        if let Ok(mut slot) = SESSION_RETRY_AFTER.lock() {
+            *slot = Some(std::time::Instant::now() + SESSION_REJECT_BACKOFF);
+        }
+        warn!(
+            "Instagram oturum çerezi (INSTAGRAM_SESSIONID) reddedildi; {} dk denenmeyecek. \
+             Çerez süresi dolmuş olabilir: yenileyin.",
+            SESSION_REJECT_BACKOFF.as_secs() / 60
+        );
     }
     None
 }
 
+/// Denenecek (uç sırası, çözülmüş çerez) birleşimleri: önce son çalışan, sonra varsayılan sıra.
+fn session_attempt_order(
+    preferred: Option<(usize, bool)>,
+    has_decoded: bool,
+) -> Vec<(usize, bool)> {
+    let mut order: Vec<(usize, bool)> = preferred.into_iter().collect();
+    for base_index in 0..SESSION_API_BASES.len() {
+        for use_decoded in [false, true] {
+            if (use_decoded && !has_decoded) || order.contains(&(base_index, use_decoded)) {
+                continue;
+            }
+            order.push((base_index, use_decoded));
+        }
+    }
+    order
+}
+
 enum SessionAttempt {
     Found(SessionMedia),
-    /// Uç yanıt verdi ama bu çerezle gönderi gelmedi (giriş sayfası, 401, boş yanıt).
+    /// Uç çerezi kabul etmedi (giriş sayfası, 401/403, yönlendirme, okunamayan gövde).
     Rejected,
+    /// Çerez kabul edildi ama gönderi gelmedi (404 ya da medyasız JSON).
+    Missing,
     /// Bağlantı kurulamadı ya da zaman aşımı.
     Unreachable,
 }
@@ -250,35 +317,55 @@ async fn session_attempt(
             return SessionAttempt::Unreachable;
         }
     };
-    if !response.status().is_success() {
-        // Çerez geçersizse Instagram giriş sayfasına yönlendirir (3xx) ya da 401 döner.
-        debug!(
-            "Instagram oturum isteği reddedildi ({}): {url}",
-            response.status()
-        );
+    let status = response.status();
+    let body = if status.is_success() {
+        read_body_limited(response, SESSION_MAX_BODY_BYTES).await
+    } else {
+        None
+    };
+    let attempt = classify_session_response(status, body.as_deref());
+    match &attempt {
+        SessionAttempt::Found(session) => debug!(
+            "Instagram oturum verisi alındı ({url}): {} medya, video: {}",
+            session.media.len(),
+            session.has_video()
+        ),
+        _ => debug!("Instagram oturum yanıtı kullanılamadı ({status}): {url}"),
+    }
+    attempt
+}
+
+/// Oturum yanıtını sonuca çevirir. Yalnızca çerezin reddedildiğini gösteren yanıt `Rejected`
+/// olur; geri çekilme (`SESSION_REJECT_BACKOFF`) yalnızca ona bakar.
+fn classify_session_response(status: reqwest::StatusCode, body: Option<&str>) -> SessionAttempt {
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return SessionAttempt::Missing;
+    }
+    // Sunucu arızası ve hız sınırı geçicidir: çerezle ilgisi yoktur.
+    if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return SessionAttempt::Unreachable;
+    }
+    // Çerez geçersizse Instagram 401/403 döner (giriş sayfasına yönlendirme aşağıda yakalanır).
+    if !status.is_success() {
         return SessionAttempt::Rejected;
     }
-    let Some(body) = read_body_limited(response, SESSION_MAX_BODY_BYTES).await else {
-        return SessionAttempt::Rejected;
+    // Boş, 1 MiB'tan büyük ya da UTF-8 olmayan gövde çerezle ilgili değildir.
+    let Some(body) = body else {
+        return SessionAttempt::Missing;
     };
     // Geçersiz çerezde yönlendirilen giriş sayfası HTML'dir; JSON olarak çözülemez.
-    let json: Value = match serde_json::from_str(&body) {
-        Ok(json) => json,
-        Err(err) => {
-            debug!("Instagram oturum yanıtı çözümlenemedi ({url}): {err}");
-            return SessionAttempt::Rejected;
-        }
+    let Ok(json) = serde_json::from_str::<Value>(body) else {
+        return SessionAttempt::Rejected;
     };
     match parse_session_media(&json) {
-        Some(session) if !session.media.is_empty() => {
-            debug!(
-                "Instagram oturum verisi alındı ({url}): {} medya, video: {}",
-                session.media.len(),
-                session.has_video()
-            );
-            SessionAttempt::Found(session)
+        Some(session) if !session.media.is_empty() => SessionAttempt::Found(session),
+        // Geçersiz çerezle uygulama API'si 200 + `login_required` da dönebilir.
+        _ if json.get("require_login").and_then(Value::as_bool) == Some(true)
+            || json.get("message").and_then(Value::as_str) == Some("login_required") =>
+        {
+            SessionAttempt::Rejected
         }
-        _ => SessionAttempt::Rejected,
+        _ => SessionAttempt::Missing,
     }
 }
 
@@ -809,6 +896,50 @@ fn parse_ig_date(description: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Yalnızca çerezi reddeden yanıt geri çekilmeyi tetikler; geçici hata ve gönderiye özgü yanıt
+    /// tetiklemez.
+    #[test]
+    fn session_responses_are_classified_by_what_they_say_about_the_cookie() {
+        use reqwest::StatusCode;
+        let kind = |status: u16, body: Option<&str>| match classify_session_response(
+            StatusCode::from_u16(status).unwrap(),
+            body,
+        ) {
+            SessionAttempt::Found(_) => "found",
+            SessionAttempt::Rejected => "rejected",
+            SessionAttempt::Missing => "missing",
+            SessionAttempt::Unreachable => "unreachable",
+        };
+        let media = r#"{"items":[{"media_type":1,"image_versions2":{"candidates":[{"url":"https://scontent.cdninstagram.com/a.jpg","width":1080,"height":1080}]}}]}"#;
+        assert_eq!(kind(200, Some(media)), "found");
+        assert_eq!(kind(401, None), "rejected");
+        assert_eq!(kind(403, None), "rejected");
+        assert_eq!(kind(200, Some("<html>login</html>")), "rejected");
+        assert_eq!(
+            kind(200, Some(r#"{"message":"login_required","status":"fail"}"#)),
+            "rejected"
+        );
+        assert_eq!(kind(404, None), "missing");
+        assert_eq!(kind(200, Some(r#"{"items":[]}"#)), "missing");
+        assert_eq!(kind(200, None), "missing");
+        assert_eq!(kind(500, None), "unreachable");
+        assert_eq!(kind(503, None), "unreachable");
+        assert_eq!(kind(429, None), "unreachable");
+    }
+
+    /// Son çalışan birleşim önce denenir; çözülmüş biçim yalnızca ham değerden farklıysa denenir.
+    #[test]
+    fn session_attempts_start_with_the_last_working_combination() {
+        assert_eq!(
+            session_attempt_order(None, false),
+            vec![(0, false), (1, false)]
+        );
+        assert_eq!(
+            session_attempt_order(Some((1, true)), true),
+            vec![(1, true), (0, false), (0, true), (1, false)]
+        );
+    }
     use std::time::Duration;
 
     /// Gerçek SSR embed sayfasından alınan (kısaltılmış) örnek: fotoğraf gönderisi.
