@@ -21,6 +21,7 @@ pub struct PlatformModules {
     pub youtube: bool,
     pub letterboxd: bool,
     pub miniflux: bool,
+    pub amazon: bool,
     pub ai_chat: bool,
 }
 
@@ -41,6 +42,7 @@ impl Default for PlatformModules {
             youtube: true,
             letterboxd: true,
             miniflux: true,
+            amazon: true,
             ai_chat: true,
         }
     }
@@ -503,6 +505,8 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub miniflux: RoleFilterSettings,
     #[serde(default)]
+    pub amazon: RoleFilterSettings,
+    #[serde(default)]
     pub ai_chat: RoleFilterSettings,
 }
 
@@ -535,6 +539,7 @@ impl ModuleRoleFilters {
             &mut self.youtube,
             &mut self.letterboxd,
             &mut self.miniflux,
+            &mut self.amazon,
             &mut self.ai_chat,
         ] {
             filter.sanitize();
@@ -562,6 +567,7 @@ impl GuildSettings {
             "youtube" => &self.role_filters.youtube,
             "letterboxd" => &self.role_filters.letterboxd,
             "miniflux" => &self.role_filters.miniflux,
+            "amazon" => &self.role_filters.amazon,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
         }

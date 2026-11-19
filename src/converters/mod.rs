@@ -130,6 +130,7 @@ fn module_enabled(settings: &GuildSettings, platform: parser::Platform) -> bool 
         parser::Platform::YouTube => settings.modules.youtube,
         parser::Platform::Letterboxd => settings.modules.letterboxd,
         parser::Platform::Miniflux => settings.modules.miniflux,
+        parser::Platform::Amazon => settings.modules.amazon,
     }
 }
 

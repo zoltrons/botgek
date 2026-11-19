@@ -52,6 +52,7 @@ handler ─► converters::enqueue_message ─► kuyruk (32) ─► builtin::ha
 | YouTube | [youtube.md](platforms/youtube.md) | `youtube.rs` |
 | Letterboxd | [letterboxd.md](platforms/letterboxd.md) | `letterboxd.rs` |
 | Miniflux | [miniflux.md](platforms/miniflux.md) | `miniflux.rs` |
+| Amazon | [amazon.md](platforms/amazon.md) | `amazon.rs` |
 
 Platform dosyaları `src/converters/builtin/` altındadır.
 

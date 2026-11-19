@@ -25,6 +25,7 @@ Discord'da paylaşılan sosyal medya bağlantılarını Components V2 kartların
 | YouTube | Topluluk gönderisi |
 | Letterboxd | Film, inceleme, profil |
 | Miniflux | Paylaşım bağlantısı (`miniflux.*` alt alan adı), "Devamını oku" ile genişleyen makale |
+| Amazon | Ürün bağlantısı (`amazon.com.tr`, `amzn.eu`): fiyat, puan, künye kartı |
 
 ## Özellikler
 

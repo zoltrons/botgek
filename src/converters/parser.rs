@@ -17,6 +17,7 @@ pub enum Platform {
     YouTube,
     Letterboxd,
     Miniflux,
+    Amazon,
 }
 
 impl Platform {
@@ -36,6 +37,7 @@ impl Platform {
             Platform::YouTube => "YouTube",
             Platform::Letterboxd => "Letterboxd",
             Platform::Miniflux => "Miniflux",
+            Platform::Amazon => "Amazon",
         }
     }
 }
@@ -375,6 +377,53 @@ fn sanitize_urls(post: ParsedPost) -> ParsedPost {
     }
 }
 
+// ==================== AMAZON ====================
+
+static AMAZON_DP_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*https?://(?:www\.)?(amazon\.(?:com\.tr|com))/(?:[^\s|]*?/)?(?:dp|gp/product)/([A-Z0-9]{10})[^\s|]*\s*\|\|")
+        .expect("geçerli Amazon spoiler regex")
+});
+static AMAZON_DP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.)?(amazon\.(?:com\.tr|com))/(?:[^\s<>()]*?/)?(?:dp|gp/product)/([A-Z0-9]{10})[^\s<>()]*")
+        .expect("geçerli Amazon regex")
+});
+static AMAZON_SHORT_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*https?://(amzn\.eu/d|amzn\.to)/([A-Za-z0-9]+)[^\s|]*\s*\|\|")
+        .expect("geçerli Amazon kısa link spoiler regex")
+});
+static AMAZON_SHORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(amzn\.eu/d|amzn\.to)/([A-Za-z0-9]+)[^\s<>()]*")
+        .expect("geçerli Amazon kısa link regex")
+});
+
+/// Amazon ürün sayfası: `/dp/ASIN` izleme parametresiz kanonik adrese indirgenir; kısa link
+/// (`amzn.eu/d/…`) ASIN'i ancak yönlendirmeyle verir, olduğu gibi bırakılır.
+fn parse_amazon(raw_content: &str) -> Option<ParsedPost> {
+    match_pair(
+        raw_content,
+        Platform::Amazon,
+        &AMAZON_DP_SPOILER_REGEX,
+        &AMAZON_DP_REGEX,
+        |caps| {
+            let domain = caps.get(1)?.as_str().to_ascii_lowercase();
+            let asin = caps.get(2)?.as_str().to_ascii_uppercase();
+            Some(format!("https://www.{domain}/dp/{asin}"))
+        },
+    )
+    .or_else(|| {
+        match_pair(
+            raw_content,
+            Platform::Amazon,
+            &AMAZON_SHORT_SPOILER_REGEX,
+            &AMAZON_SHORT_REGEX,
+            |caps| {
+                let base = caps.get(1)?.as_str().to_ascii_lowercase();
+                Some(format!("https://{base}/{}", caps.get(2)?.as_str()))
+            },
+        )
+    })
+}
+
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
 pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
     // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
@@ -437,6 +486,9 @@ pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
         return Some(sanitize_urls(post));
     }
     if let Some(post) = parse_miniflux(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_amazon(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -925,6 +977,37 @@ fn parse_letterboxd_profile(raw_content: &str) -> Option<ParsedPost> {
         });
     }
     None
+}
+
+#[cfg(test)]
+mod amazon_tests {
+    use super::*;
+
+    #[test]
+    fn amazon_dp_link_is_canonicalized_without_tracking() {
+        let p = parse_message(
+            "bak https://www.amazon.com.tr/MSI-Cyborg-Dizustu/dp/B0GHR4L88D/ref=sr_1_1?tag=x&th=1",
+        )
+        .unwrap();
+        assert_eq!(p.platform, Platform::Amazon);
+        assert_eq!(p.original_url, "https://www.amazon.com.tr/dp/B0GHR4L88D");
+        assert!(!p.is_spoiler);
+    }
+
+    #[test]
+    fn amazon_short_link_and_spoiler() {
+        let p = parse_message("https://amzn.eu/d/04JNI9Sx").unwrap();
+        assert_eq!(p.platform, Platform::Amazon);
+        assert_eq!(p.original_url, "https://amzn.eu/d/04JNI9Sx");
+        let s = parse_message("|| https://www.amazon.com.tr/dp/B0GHR4L88D ||").unwrap();
+        assert!(s.is_spoiler);
+        assert_eq!(s.original_url, "https://www.amazon.com.tr/dp/B0GHR4L88D");
+    }
+
+    #[test]
+    fn non_product_amazon_link_is_ignored() {
+        assert!(parse_message("https://www.amazon.com.tr/gp/bestsellers/computers").is_none());
+    }
 }
 
 #[cfg(test)]

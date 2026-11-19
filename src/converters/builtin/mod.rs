@@ -4,6 +4,7 @@
 //! TikTok sayfası, Spotify, Pixiv, YouTube, Facebook ...) çekilir; başlık, metin, metrikler,
 //! alıntı ve medya Components V2 kartı olarak gönderilir.
 
+pub mod amazon;
 pub mod bluesky;
 pub mod cache;
 mod coordination;
@@ -112,6 +113,7 @@ pub fn platform_key(platform: Platform) -> &'static str {
         Platform::YouTube => "youtube",
         Platform::Letterboxd => "letterboxd",
         Platform::Miniflux => "miniflux",
+        Platform::Amazon => "amazon",
     }
 }
 
@@ -269,6 +271,7 @@ pub async fn fetch(
             Platform::Tumblr => tumblr::fetch(client, parsed).await,
             Platform::Letterboxd => letterboxd::fetch(client, parsed).await,
             Platform::Miniflux => miniflux::fetch(parsed).await,
+            Platform::Amazon => amazon::fetch(client, parsed).await,
             Platform::Facebook => facebook::fetch(client, parsed).await,
             Platform::YouTube => youtube::fetch(client, parsed).await,
         }
