@@ -1,6 +1,6 @@
 //! Amazon ürün bağlantısı (`amazon.com.tr/.../dp/{ASIN}` ve `amzn.eu/d/{token}` kısa linki).
 //!
-//! Ürün sayfası sunucuda çizilir; fiyat, puan, stok, teslimat ve teknik künye doğrudan HTML'den
+//! Ürün sayfası botun kendi kimliğiyle istenir ve sunucuda çizilir; fiyat, puan, stok, teslimat ve teknik künye doğrudan HTML'den
 //! okunur (ayrı bir API yok). Discord'un kendi önizlemesi başlığı kırpar, fiyat göstermez ve küçük
 //! görsel olarak Amazon'un reklam şeridini koyar; bunun yerine onaylı konseptteki kart üretilir:
 //!
@@ -31,12 +31,7 @@ use super::{Author, BuiltinPost, CustomCard, unescape_html};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
 
-/// Gerçek tarayıcı UA'sı: bot UA'sıyla Amazon sık sık içeriği boşaltılmış sayfa döndürür.
-const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-     (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-
 const AMAZON_ORANGE: u32 = 0xFF9900;
-const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 const MAX_TITLE_CHARS: usize = 150;
 /// Künye en çok 8 satır (iki sütunda 4 satır), konseptteki gibi.
 const MAX_SPECS: usize = 8;
@@ -212,7 +207,15 @@ struct Product {
 }
 
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let html = get_html(client, &parsed.original_url).await?;
+    // Botun kendi kimliğiyle (`get_text`) istenir. Tarayıcı taklidi (Chrome UA + rustls parmak
+    // izi) Amazon'da captcha'yı tetikliyordu; captcha atlatılmaya çalışılmaz, açık hata döner.
+    let html = super::get_text(client, &parsed.original_url).await?;
+    if is_captcha(&html) {
+        return Err(format!(
+            "Amazon robot doğrulaması istedi (captcha): {}",
+            parsed.original_url
+        ));
+    }
     let product = parse_product(&html, &parsed.original_url)
         .ok_or_else(|| format!("Amazon ürünü okunamadı: {}", parsed.original_url))?;
 
@@ -295,6 +298,11 @@ fn parse_product(html: &str, source_url: &str) -> Option<Product> {
             .map(|m| m.as_str().to_string()),
         specs: specs(tail, &rows),
     })
+}
+
+/// Amazon'un robot doğrulama sayfası (ürün yerine ~4 KB captcha formu).
+fn is_captcha(html: &str) -> bool {
+    html.contains("/errors/validateCaptcha")
 }
 
 /// Regex'in ilk grubunu düz metne çevirir.
@@ -546,29 +554,6 @@ fn text(content: String) -> Value {
     json!({ "type": 10, "content": content })
 }
 
-async fn get_html(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    let response = client
-        .get(url)
-        .header("user-agent", BROWSER_USER_AGENT)
-        .header(
-            "accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        )
-        .header("accept-language", "tr-TR,tr;q=0.9,en;q=0.8")
-        .timeout(TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("Amazon sayfası alınamadı ({url}): {e}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "Amazon sayfası {} döndü ({url})",
-            response.status()
-        ));
-    }
-    super::read_limited_text(response, url).await
-}
-
 /// HTML'den düz metin: etiketleri at, HTML varlıklarını çöz, boşlukları toparla.
 fn clean_text(raw: &str) -> String {
     let no_tags = TAG.replace_all(raw, " ");
@@ -803,6 +788,15 @@ mod tests {
                 "Platform: Android, Linux, Windows",
             ]
         );
+    }
+
+    #[test]
+    fn captcha_page_is_recognized_and_product_page_is_not() {
+        let captcha = r#"<html><head><title dir="ltr">Amazon.com.tr</title></head><body>
+<form method="get" action="/errors/validateCaptcha" name=""><input type=hidden name="amzn" value="x"></form></body></html>"#;
+        assert!(is_captcha(captcha));
+        assert!(parse_product(captcha, "https://www.amazon.com.tr/dp/B0GHR4L88D").is_none());
+        assert!(!is_captcha(SAMPLE));
     }
 
     #[test]

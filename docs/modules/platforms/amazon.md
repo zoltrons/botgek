@@ -18,8 +18,11 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
 
 - Parser `/dp/ASIN` bağlantısını izleme parametresiz `https://www.{alan}/dp/{ASIN}` adresine indirger. Kısa
   link olduğu gibi kalır; ASIN, yönlendirme sonrası sayfadan (`data-asin` / `"asin"`) okunur.
-- Sayfa tarayıcı UA'sıyla çekilir (bot UA'sına içeriği boşaltılmış sayfa dönebilir). Gövde
-  `MAX_BODY_BYTES` (2 MiB) ile sınırlıdır; tipik ürün sayfası ~1,5 MB.
+- Sayfa botun kendi kimliğiyle ve ortak `get_text` ile çekilir (`MAX_BODY_BYTES`, 2 MiB; tipik sayfa
+  ~1 MB). Tarayıcı taklidi yapılmaz: sahte Chrome UA + rustls parmak izi captcha'yı tetikliyordu.
+- Amazon robot engeli: botun kimliğiyle `amzn.eu` kısa link (paylaşım parametreli adrese yönlenir) tam sayfa
+  verir; doğrudan `/dp/ASIN` isteğine 503 ya da captcha sayfası döner. Captcha atlatılmaya çalışılmaz:
+  `is_captcha` açık hata döner, kart üretilmez ve özgün mesaj kalır.
 - Ödenecek fiyat `apex-pricetopay-accessibility-label` içinden okunur; indirimde etiket "Yüzde 2
   tasarruf ile 685,00 TL" olduğu için metindeki son tutar alınır. Sayfada daha önce geçen başka fiyatlar
   (taksit, benzer ürün) okunmaz. Üstü çizili eski fiyat `a-text-price…` + `data-a-strike="true"`
