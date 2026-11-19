@@ -115,6 +115,18 @@ impl EventHandler for Handler {
         info!("WebUI: http://localhost:{}", self.config.web_port);
         info!("Dönüştürme: tüm platformlar native kart (proxy yok)");
         info!(
+            "Video barındırma: {}",
+            match &self.config.zipline {
+                Some(zipline) => format!(
+                    "Zipline ({}), {} sonra silinir, en fazla {} MB",
+                    zipline.domain,
+                    crate::converters::builtin::zipline::RETENTION,
+                    crate::converters::builtin::zipline::MAX_BYTES / (1024 * 1024)
+                ),
+                None => "kapalı (videolar Discord'a ek olarak yüklenir)".to_string(),
+            }
+        );
+        info!(
             "Instagram Oturum Çerezi: {}",
             if self.config.instagram_sessionid.is_some() {
                 "tanımlı (reel/video kartta oynar)"

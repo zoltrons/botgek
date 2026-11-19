@@ -245,8 +245,9 @@ fn location_url(location: &SourceLocation) -> Result<Url, HlsError> {
 /// Bayt aralıklı playlist'te dosyanın bir kez bütün indirileceği en büyük boyut. Parçalar tek
 /// dosyanın ardışık aralıklarıdır; her biri ayrı istekle alınınca 83+83 parçalı 5,5 dk'lık video
 /// 5 sn'lik birleştirme bütçesini aşıyordu. Daha büyük dosya parça parça istenir (bellekte dosya
-/// ve çıktı birlikte durur).
-const WHOLE_FILE_MAX_BYTES: usize = 24 * 1024 * 1024;
+/// ve çıktı birlikte durur). Hedef boyutun en büyüğü (Zipline sınırı) kadardır: seçilen kalite
+/// her zaman tek seferde iner.
+const WHOLE_FILE_MAX_BYTES: usize = super::zipline::MAX_BYTES as usize;
 
 /// Bir dosyanın tek seferlik bütün indirmesi; `None` = indirilemedi ya da çok büyük.
 type WholeFile = Arc<tokio::sync::OnceCell<Option<Arc<Vec<u8>>>>>;

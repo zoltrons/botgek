@@ -32,6 +32,65 @@ pub struct Config {
     /// Bot sahibinin Discord kullanıcı kimliği (`OWNER_ID`). Sahip Apps → Yenile ile her kartı
     /// yenileyebilir; diğer kullanıcılar yalnızca kendi paylaştığı kartı.
     pub owner_id: Option<serenity::all::UserId>,
+    /// Video barındırma (`ZIPLINE=true` ile `ZIPLINE_URL`, `ZIPLINE_TOKEN`, `ZIPLINE_DOMAIN`). Açıksa botun
+    /// indirip ürettiği videolar (Reddit birleştirmesi, Spotify önizlemesi, Twitch klibi)
+    /// Discord'a ek olarak yüklenmek yerine Zipline'a yüklenir ve kart oradan oynar.
+    pub zipline: Option<ZiplineConfig>,
+}
+
+/// Zipline sunucusu: yükleme API'sinin adresi (yerel ağ olabilir), token ve dosya
+/// adreslerinde kullanılacak, internetten erişilen alan adı.
+#[derive(Clone)]
+pub struct ZiplineConfig {
+    pub url: url::Url,
+    pub token: String,
+    pub domain: String,
+}
+
+impl std::fmt::Debug for ZiplineConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZiplineConfig")
+            .field("url", &self.url.as_str())
+            .field("token", &"[REDACTED]")
+            .field("domain", &self.domain)
+            .finish()
+    }
+}
+
+/// `ZIPLINE=true` iken çağrılır: üç değer de geçerliyse Zipline yapılandırması, değilse uyarı ve `None`.
+fn parse_zipline(
+    url: Option<&str>,
+    token: Option<&str>,
+    domain: Option<&str>,
+) -> Option<ZiplineConfig> {
+    fn nonblank(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    let (url, token, domain) = (nonblank(url), nonblank(token), nonblank(domain));
+    let (Some(url), Some(token), Some(domain)) = (url, token, domain) else {
+        tracing::warn!(
+            "ZIPLINE=true için ZIPLINE_URL, ZIPLINE_TOKEN ve ZIPLINE_DOMAIN tanımlanmalı; video barındırma kapalı"
+        );
+        return None;
+    };
+    let url = url::Url::parse(url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
+    // Alan adı yalnızca ana makine adıdır (`z.ornek.com`); şema ya da yol kabul edilmez.
+    let domain_ok = domain
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    match url {
+        Some(url) if domain_ok => Some(ZiplineConfig {
+            url,
+            token: token.to_string(),
+            domain: domain.to_ascii_lowercase(),
+        }),
+        _ => {
+            tracing::warn!("ZIPLINE_URL ya da ZIPLINE_DOMAIN geçersiz; video barındırma kapalı");
+            None
+        }
+    }
 }
 
 impl std::fmt::Debug for Config {
@@ -55,6 +114,7 @@ impl std::fmt::Debug for Config {
             .field("web_port", &self.web_port)
             .field("dev_guild_id", &self.dev_guild_id)
             .field("owner_id", &self.owner_id)
+            .field("zipline", &self.zipline)
             .finish()
     }
 }
@@ -136,6 +196,17 @@ impl Config {
             _ => None,
         };
 
+        // `ZIPLINE=false` (varsayılan): Zipline'a hiç gidilmez, videolar Discord'a ek olarak yüklenir.
+        let zipline = env_bool("ZIPLINE", false)
+            .then(|| {
+                parse_zipline(
+                    env::var("ZIPLINE_URL").ok().as_deref(),
+                    env::var("ZIPLINE_TOKEN").ok().as_deref(),
+                    env::var("ZIPLINE_DOMAIN").ok().as_deref(),
+                )
+            })
+            .flatten();
+
         Ok(Self {
             discord_token,
             delete_original,
@@ -146,6 +217,7 @@ impl Config {
             web_port,
             dev_guild_id,
             owner_id,
+            zipline,
         })
     }
 }
@@ -153,6 +225,27 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Zipline yalnızca üç değer birlikte ve geçerliyken açılır; token Debug çıktısına girmez.
+    #[test]
+    fn zipline_needs_all_three_valid_values() {
+        let config = parse_zipline(
+            Some("http://192.168.50.2:3050"),
+            Some("gizli"),
+            Some("Z.Ornek.com"),
+        )
+        .unwrap();
+        assert_eq!(config.domain, "z.ornek.com");
+        assert!(!format!("{config:?}").contains("gizli"));
+        assert!(parse_zipline(None, None, None).is_none());
+        assert!(parse_zipline(Some("http://h:1"), Some("t"), None).is_none());
+        assert!(parse_zipline(Some("ftp://h"), Some("t"), Some("z.ornek.com")).is_none());
+        assert!(
+            parse_zipline(Some("http://h:1"), Some("t"), Some("https://z.ornek.com")).is_none()
+        );
+        // Dönen adresin ana makinesi portsuzdur; portlu alan adı hiçbir yüklemeyi kabul etmezdi.
+        assert!(parse_zipline(Some("http://h:1"), Some("t"), Some("z.ornek.com:443")).is_none());
+    }
 
     #[test]
     fn booleans_accept_common_spellings_and_reject_unknown() {

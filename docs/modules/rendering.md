@@ -41,6 +41,12 @@ Discord sınırı dosya başınadır: varsayılan `media::DISCORD_FILE_LIMIT` (2
 100 MiB (`guild_file_limit`). Etkileşim yanıtında Discord'un bildirdiği `attachment_size_limit` kullanılır.
 `max_video_mb` ayarı bu sınırı aşamaz. TikTok kalite seçimi önbelleğe girdiği için varsayılan sınıra göre yapılır.
 
+Zipline açıksa (`ZIPLINE=true` ve üç `ZIPLINE_*` değeri; `zipline::domain()`), indirilen video Discord'a ek olarak gönderilmez: `attach_video`
+onu Zipline'a yükler ve herkese açık adresini `attached_video`'ya yazar (kart onu `attachment://` referansı gibi
+galeride oynatır). Bu durumda sınır Discord'unki değil `zipline::MAX_BYTES` (50 MB) olur
+(`max_video_bytes`). Yükleme başarısızsa dosya `max_attachment_bytes`'a sığıyorsa eskisi gibi ek olur, sığmıyorsa
+uzak (sessiz) bağlantıya düşülür.
+
 ### Görünürlük
 
 `apply_visibility` hassas içerik, kaynak spoiler'ı, elle `||...||` ve NSFW kanal durumunu birleştirir.

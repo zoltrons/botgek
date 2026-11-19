@@ -33,6 +33,7 @@ pub mod twitter;
 pub mod v2;
 pub mod xbox;
 pub mod youtube;
+pub mod zipline;
 
 use std::collections::HashMap;
 use std::time::Duration;

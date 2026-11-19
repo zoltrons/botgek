@@ -49,7 +49,7 @@ olmadan, saf Rust `hls-transmux` ile yapılır:
 1. Master playlist çözülür, çözünürlük merdiveni çıkarılır (`variant_ladder`; son basamak toplam bant
    genişliği en düşük video+ses eşleşmesidir). Boyut, playlist'teki `BYTERANGE` toplamından **kesin**
    hesaplanır (`playlist_bytes`); yoksa `BANDWIDTH` tahminine düşülür. Sığmayan basamak indirilmez.
-   Bayt aralıklı dosya (≤ 24 MiB) bir kez bütün indirilir ve parçalar bellekten dilimlenir
+   Bayt aralıklı dosya (≤ 50 MiB, Zipline sınırı) bir kez bütün indirilir ve parçalar bellekten dilimlenir
    (`ReqwestSource::whole_file`).
 2. Video ve ses medya playlist'leri iki girdi olarak tek oturuma verilir, çıktı tek MP4 olur.
 3. Parça başına 16 MiB üst sınır, bağlantı zaman aşımı 2 sn. Ayrı bir işçi görevi ve eşzamanlılık sınırı (2)

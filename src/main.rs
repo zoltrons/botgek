@@ -271,6 +271,7 @@ async fn main() {
 
     // Işık hızı: ilk dönüşümde DNS + TLS el sıkışması beklemesin diye bağlantılar ısıtılır.
     prewarm_connections(&http_client, config.reddit_client_id.clone());
+    converters::builtin::zipline::init(config.zipline.clone());
 
     // Letterboxd takip akışı: yalnızca REST kullanır, gateway bağlantısını beklemez.
     letterboxd_feed::spawn(http_client.clone(), config.discord_token.clone());

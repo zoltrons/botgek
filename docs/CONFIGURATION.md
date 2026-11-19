@@ -23,6 +23,10 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `DELETE_ORIGINAL` | `true` | Başarılı dönüşümden sonra orijinal mesajı siler; eki veya çıkartması olan mesaj silinmez. **Manage Messages** yetkisi gerekir. |
 | `FXTUMBLR_DOMAIN` | `tpmblr.com` | fxtumblr uyumlu Tumblr render hizmeti. Boş bırakılırsa public OG fallback kullanılır. |
 | `INSTAGRAM_SESSIONID` | boş | Instagram oturum çerezi. Reels videolarının kart içinde oynaması için gerekir; gizlidir, `settings.json`'a ve panele yazılmaz. |
+| `ZIPLINE` | `false` | Video barındırmayı açar. `false` iken Zipline'a hiç gidilmez, videolar Discord'a ek olarak yüklenir. `true` iken aşağıdaki üç değer gerekir; biri eksik ya da geçersizse uyarı yazılır ve barındırma kapalı kalır. |
+| `ZIPLINE_URL` | boş | Zipline yükleme API'sinin adresi (yerel ağ olabilir, ör. `http://192.168.1.2:3050`). `ZIPLINE=true` iken botun indirip ürettiği videolar (Reddit, Spotify, Twitch) Discord'a ek olarak yüklenmek yerine Zipline'a yüklenir: kart çok daha hızlı gider ve Discord'un ek sınırı yerine 50 MB geçerlidir. Dosyalar 30 gün sonra silinir. Yükleme başarısızsa ek yoluna düşülür. |
+| `ZIPLINE_TOKEN` | boş | Zipline API token'ı. Gizlidir; loglara ve panele yazılmaz. |
+| `ZIPLINE_DOMAIN` | boş | Dosya adreslerinde kullanılacak, **internetten erişilen** alan adı (ör. `z.ornek.com`; şema ve port yazılmaz). Discord videoyu bu adresten çeker. |
 | `DEV_GUILD_ID` | yok | Tanımlıysa slash komutları global yerine yalnızca bu sunucuya kaydedilir ve anında görünür. Global kayda dokunmaz; user install/DM bağlamları sunucu komutlarında yoktur. Yalnızca geliştirme botunda kullanın. |
 | `OWNER_ID` | yok | Bot sahibinin Discord kullanıcı kimliği. Bu kullanıcı Apps → Yenile ile her kartı yenileyebilir; diğerleri yalnızca kendi paylaştığı kartı. |
 | `REDDIT_CLIENT_ID` | gömülü public kimlik | Reddit `installed_client` OAuth kimliği. Sır değildir; normalde değiştirmek gerekmez. |

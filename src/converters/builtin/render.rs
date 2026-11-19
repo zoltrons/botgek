@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serenity::all::CreateAttachment;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::media::{self, DISCORD_FILE_LIMIT};
 use super::{BuiltinPost, Media, MediaKind};
@@ -129,9 +129,27 @@ impl RenderOptions {
         }
     }
 
-    /// Video indirme üst sınırı: ayar ne olursa olsun hedefin Discord sınırını aşmaz.
+    /// Video indirme üst sınırı. Zipline açıksa video Discord'a yüklenmez: hedefin Discord
+    /// sınırı yerine barındırma sınırı ([`super::zipline::MAX_BYTES`]) geçerlidir.
     pub fn max_video_bytes(&self) -> u64 {
+        let limit = if super::zipline::domain().is_some() {
+            super::zipline::MAX_BYTES
+        } else {
+            self.file_limit
+        };
+        (self.max_video_mb as u64 * 1024 * 1024).min(limit)
+    }
+
+    /// Discord'a ek olarak gönderilebilecek video üst sınırı: ayar ne olursa olsun hedefin
+    /// Discord sınırını aşmaz.
+    pub fn max_attachment_bytes(&self) -> u64 {
         (self.max_video_mb as u64 * 1024 * 1024).min(self.file_limit)
+    }
+
+    /// Dosya Discord'a ek olarak gönderilebilir mi (Zipline başarısızsa daha büyük video inmiş
+    /// olabilir; sınırı aşan ek gönderimi tümden düşürürdü).
+    pub fn fits_attachment(&self, len: usize) -> bool {
+        len as u64 <= self.max_attachment_bytes()
     }
 }
 
@@ -153,7 +171,8 @@ pub struct ResolvedMedia {
     pub images: Vec<String>,
     /// Mesaja eklenecek dosyalar.
     pub attachments: Vec<CreateAttachment>,
-    /// Video dosya olarak eklenebildiyse `attachment://` referansı.
+    /// Botun ürettiği video: ek olarak gönderildiyse `attachment://` referansı, Zipline'a
+    /// yüklendiyse herkese açık adresi.
     pub attached_video: Option<String>,
     /// Video eklenemediyse doğrudan bağlantı (mesaj metnine yazılır).
     pub video_link: Option<String>,
@@ -329,22 +348,40 @@ async fn attach_video(
         None
     };
 
-    match file {
-        Some(file) => {
-            let name = attachment_name(&file.filename, post.sensitive);
-            resolved
-                .attachments
-                .push(media::to_attachment(file, post.sensitive));
-            resolved.attached_video = Some(format!("attachment://{name}"));
-            // Video artık kartın içinde (ek olarak) oynar: uzak bağlantıya gerek yok.
-            resolved.video_link = None;
-        }
+    let Some(file) = file else {
         // İndirilemedi ya da bütçe doldu: video kartın içinde uzak bağlantıyla (sessiz) oynar.
-        None => debug!(
+        debug!(
             "Video ek olarak indirilemedi (bütçe {} ms), uzak bağlantı kullanılıyor: {video_url}",
             VIDEO_MERGE_BUDGET.as_millis()
-        ),
+        );
+        return;
+    };
+    // Zipline açıksa video oraya yüklenir ve kart onun adresinden oynar (Discord'a ek
+    // yüklemekten çok daha hızlı); yükleme başarısızsa ek yoluna düşülür.
+    if super::zipline::domain().is_some() {
+        match super::zipline::upload(client, &file).await {
+            Ok(url) => {
+                resolved.attached_video = Some(url);
+                resolved.video_link = None;
+                return;
+            }
+            Err(err) => warn!("Video Zipline'a yüklenemedi, ek olarak denenecek: {err}"),
+        }
     }
+    if !options.fits_attachment(file.bytes.len()) {
+        debug!(
+            "Video Discord ek sınırını aşıyor ({} bayt), uzak bağlantı kullanılıyor: {video_url}",
+            file.bytes.len()
+        );
+        return;
+    }
+    let name = attachment_name(&file.filename, post.sensitive);
+    resolved
+        .attachments
+        .push(media::to_attachment(file, post.sensitive));
+    resolved.attached_video = Some(format!("attachment://{name}"));
+    // Video artık kartın içinde (ek olarak) oynar: uzak bağlantıya gerek yok.
+    resolved.video_link = None;
 }
 
 /// Medyayı **hiç indirmeden** karta bağlar (kartın tek modu).
@@ -682,6 +719,18 @@ mod tests {
         assert_eq!(options.max_video_bytes(), 100 * 1024 * 1024);
         options.max_video_mb = 8;
         assert_eq!(options.max_video_bytes(), 8 * 1024 * 1024);
+    }
+
+    /// Zipline başarısızken inen büyük video ek olarak gönderilmez.
+    #[test]
+    fn oversized_video_is_not_attached() {
+        let mut options = options();
+        options.max_video_mb = u8::MAX;
+        let limit = DISCORD_FILE_LIMIT as usize;
+        assert!(options.fits_attachment(limit));
+        assert!(!options.fits_attachment(limit + 1));
+        options.max_video_mb = 8;
+        assert!(!options.fits_attachment(8 * 1024 * 1024 + 1));
     }
 
     #[test]

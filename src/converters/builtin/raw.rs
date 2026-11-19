@@ -313,7 +313,7 @@ pub fn build_multipart(payload_json: &str, files: &[CreateAttachment]) -> (Strin
 }
 
 /// Her istek için benzersiz bir multipart sınırı üretir.
-fn boundary() -> String {
+pub(super) fn boundary() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
