@@ -20,18 +20,31 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
   link olduğu gibi kalır; ASIN, yönlendirme sonrası sayfadan (`data-asin` / `"asin"`) okunur.
 - Sayfa tarayıcı UA'sıyla çekilir (bot UA'sına içeriği boşaltılmış sayfa dönebilir). Gövde
   `MAX_BODY_BYTES` (2 MiB) ile sınırlıdır; tipik ürün sayfası ~1,5 MB.
-- Ödenecek fiyat `apex-pricetopay-accessibility-label` içinden okunur. Sayfada daha önce geçen başka
-  fiyatlar (taksit, benzer ürün) okunmaz. Üstü çizili eski fiyat yalnızca `a-text-price` +
-  `data-a-strike="true"` ile, indirim `savingsPercentage` ile; ikisi de fiyat bloğundan.
+- Ödenecek fiyat `apex-pricetopay-accessibility-label` içinden okunur; indirimde etiket "Yüzde 2
+  tasarruf ile 685,00 TL" olduğu için metindeki son tutar alınır. Sayfada daha önce geçen başka fiyatlar
+  (taksit, benzer ürün) okunmaz. Üstü çizili eski fiyat `a-text-price…` + `data-a-strike="true"`
+  ("Önceki Fiyat"), indirim `savingsPercentage`; ikisi de fiyat bloğundan.
 - Başlık ilk `, `'de bölünür: baş kısım ürün adı, kalan parçalar (en çok 4) künye satırı. Başlıkta künye
-  yoksa teknik tablodan (`prodDetSectionEntry`) ilk anlamlı satırlar alınır.
-- Kart: üst satırda mağaza (host'tan) · marka, kalın ürün adı, fiyat satırı, puan · değerlendirme ·
-  stok, ayraç, künye; kartın altında tek "Amazon'da aç" butonu (temiz `/dp/ASIN` linki).
+  yoksa teknik tablodan (`prodDetSectionEntry`) en çok 3 satır alınır; kesilmeden sığmayan satır atlanır.
+- Kart (onaylı konseptin düzeni, `amazon.rs` başındaki şema):
+  - Görselli bölüm: küçük mağaza · marka; `##` ürün adı (link değil, link butonda); 🏷️ fırsat rozeti;
+    `#` fiyat (kartın en büyük yazısı); varsa küçük satırda ~~eski fiyat~~ −%indirim;
+    ⭐ puan · değerlendirme; Ücretsiz teslimat · tarih · **Son N adet**.
+  - Ayraç, iki sütunlu `Etiket: değer` künye (en çok 8: işlemci, ekran kartı, bellek, ekran, depolama
+    başlıktan; ağırlık, klavye, garanti, bağlantı vb. tablodan), küçük alt satır: fiyatın alındığı an ·
+    satıcı · iade.
+  - Kartın altında tek "Amazon'da aç" butonu (temiz `/dp/ASIN`).
+  - Kategori sırası, aylık satış ve 5 yıldız oranı bilerek gösterilmez (kullanıcı kararı).
+- Discord sınırı: metin renklendirilemez (kırmızı rozet, yeşil teslimat, turuncu stok), künye gerçek
+  sütun değildir (her satırda iki hücre `·` ile).
 
 ## Değişmezler
 
 - Section (tip 9) aksesuarsız gönderilmez: Discord reddeder. Görsel yoksa metin bölümsüz konur.
-- Sıradan "Stokta var" gösterilmez; yalnız az stok / tükendi.
+- Kalın beyaz yalnız başlık, fiyat ve aciliyette ("Son N adet"); künye, rozet, teslimat düz yazı
+  (okunabilirlik; testle korunur).
+- Sıradan "Stokta var" gösterilmez; yalnız az stok / tükendi. Stok yalnızca ürünün kendi
+  `#availability` alanından okunur (sayfadaki öneri kartlarında başka ürünlerin stoğu yazar).
 - Eski fiyat ve indirim yalnızca Amazon sayfada gösterdiğinde çıkar; bot fiyat geçmişi tutmaz.
 - Fiyat bloğu bayt sınırında değil, harf sınırında kesilir (Türkçe harf ortasında panik).
 
