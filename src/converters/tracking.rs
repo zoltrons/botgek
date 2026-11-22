@@ -47,7 +47,7 @@ async fn delete_card(ctx: &Context, card: &crate::store::SourceCard) {
         .await
     {
         Ok(()) => info!(card = %card.card_id, "Kaynak mesaj değişti; kart silindi"),
-        // Kart zaten yok (🗑️ ile silinmiş olabilir): kayıt yine temizlenir.
+        // Kart zaten yok (Apps → Sil ile silinmiş olabilir): kayıt yine temizlenir.
         Err(err) if is_not_found(&err) => {}
         Err(err) => {
             warn!(card = %card.card_id, "Kart silinemedi: {err:?}");

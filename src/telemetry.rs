@@ -257,13 +257,12 @@ pub enum Phase {
     WebhookSend = 6,
     Send = 7,
     Delete = 8,
-    Reaction = 9,
-    Total = 10,
-    Preview = 11,
+    Total = 9,
+    Preview = 10,
 }
 
 impl Phase {
-    pub const ALL: [Phase; 12] = [
+    pub const ALL: [Phase; 11] = [
         Phase::QueueWait,
         Phase::Fetch,
         Phase::Media,
@@ -273,7 +272,6 @@ impl Phase {
         Phase::WebhookSend,
         Phase::Send,
         Phase::Delete,
-        Phase::Reaction,
         Phase::Total,
         Phase::Preview,
     ];
@@ -289,14 +287,13 @@ impl Phase {
             Phase::WebhookSend => "webhook_send",
             Phase::Send => "send",
             Phase::Delete => "delete",
-            Phase::Reaction => "reaction",
             Phase::Total => "total",
             Phase::Preview => "preview_total",
         }
     }
 }
 
-static PHASES: LazyLock<[Histogram; 12]> =
+static PHASES: LazyLock<[Histogram; 11]> =
     LazyLock::new(|| std::array::from_fn(|_| Histogram::new()));
 
 pub fn record_phase(phase: Phase, elapsed: Duration) {
@@ -930,19 +927,17 @@ pub fn db_op(op: DbOp, elapsed: Duration, ok: bool) {
 pub enum GatewayEvent {
     Ready = 0,
     Message = 1,
-    Reaction = 2,
-    Interaction = 3,
-    ShardStage = 4,
-    MessageUpdate = 5,
-    MessageDelete = 6,
-    Other = 7,
+    Interaction = 2,
+    ShardStage = 3,
+    MessageUpdate = 4,
+    MessageDelete = 5,
+    Other = 6,
 }
 
 impl GatewayEvent {
-    pub const ALL: [GatewayEvent; 8] = [
+    pub const ALL: [GatewayEvent; 7] = [
         GatewayEvent::Ready,
         GatewayEvent::Message,
-        GatewayEvent::Reaction,
         GatewayEvent::Interaction,
         GatewayEvent::ShardStage,
         GatewayEvent::MessageUpdate,
@@ -954,7 +949,6 @@ impl GatewayEvent {
         match self {
             GatewayEvent::Ready => "ready",
             GatewayEvent::Message => "message",
-            GatewayEvent::Reaction => "reaction",
             GatewayEvent::Interaction => "interaction",
             GatewayEvent::ShardStage => "shard_stage",
             GatewayEvent::MessageUpdate => "message_update",
@@ -964,7 +958,7 @@ impl GatewayEvent {
     }
 }
 
-static GATEWAY_EVENTS: LazyLock<[AtomicU64; 8]> =
+static GATEWAY_EVENTS: LazyLock<[AtomicU64; 7]> =
     LazyLock::new(|| std::array::from_fn(|_| AtomicU64::new(0)));
 static LAST_GATEWAY_EVENT_MS: AtomicU64 = AtomicU64::new(0);
 

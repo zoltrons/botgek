@@ -238,7 +238,7 @@ async fn main() {
     };
     let settings = Arc::new(RwLock::new(loaded));
 
-    // Kalıcı kayıt deposu (SQLite): kart kayıtları, 🗑️ silme izni ve AI koruması.
+    // Kalıcı kayıt deposu (SQLite): kart kayıtları, Apps → Sil izni ve AI koruması.
     // Bot yeniden başladığında/güncellendiğinde hiçbir kayıt kaybolmaz.
     if let Err(reason) = store::init() {
         error!("Kalıcı kayıt deposu hazır değil: {reason}");
@@ -281,11 +281,9 @@ async fn main() {
     let intents = GatewayIntents::GUILDS
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT
-        | GatewayIntents::GUILD_MESSAGE_REACTIONS
         // AI yanıtlarında sunucu emojileri: sonradan eklenen/silinen emojiler önbelleğe yansısın.
         | GatewayIntents::GUILD_EMOJIS_AND_STICKERS
-        | GatewayIntents::DIRECT_MESSAGES
-        | GatewayIntents::DIRECT_MESSAGE_REACTIONS;
+        | GatewayIntents::DIRECT_MESSAGES;
 
     // MCP `convert_preview` WebUI ile aynı HTTP istemcisini kullanır (ayrı TLS yığını yok).
     let web_client = http_client.clone();

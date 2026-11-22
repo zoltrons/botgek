@@ -3,7 +3,7 @@
 ## Görev
 
 Discord gateway olaylarını karşılar: mesajlar, etkileşimler, tepkiler. Link dönüştürmeyi kuyruğa verir, AI
-sohbetini tetikler, 🗑️ tepkisiyle kart silmeyi yönetir.
+sohbetini tetikler. Kart silme yetki kararı (`may_delete_card`, `can_manage_messages`) burada; Apps → Sil komutu kullanır.
 
 ## Dosyalar
 
@@ -11,7 +11,7 @@ sohbetini tetikler, 🗑️ tepkisiyle kart silmeyi yönetir.
 
 ## Girdi ve çıktı
 
-- Girdi: serenity olayları (`ready`, `message`, `interaction_create`, `reaction_add`, `shard_stage_update`).
+- Girdi: serenity olayları (`ready`, `message`, `interaction_create`, `shard_stage_update`).
 - Çıktı: `converters::enqueue_message` çağrısı, AI yanıtı mesajı, silinen kart mesajı.
 
 `Handler` şunları taşır: paylaşılan `AppSettings` (`Arc<RwLock<_>>`), `Config`, paylaşılan `reqwest::Client`
@@ -53,11 +53,11 @@ Model çıktısı gönderilmeden önce `sanitize_mentions` ile `@everyone`, `@he
 genişlikli boşlukla etkisizleştirilir. Sağlayıcı hataları `ai_error_notice` ile sır içermeyen sabit
 metinlere çevrilir.
 
-### `reaction_add`
+### Kart silme yetkisi
 
-🗑️ tepkisi kartı siler. Yetkili olanlar: kartı paylaşan kullanıcı (`store` kaydından) ya da kanalda
-mesaj yönetme izni olan üye. Thread izinleri üst kanaldan gelir; `can_manage_messages` thread'leri
-`guild.threads` içinde de arar.
+Kartlar Apps → Sil mesaj komutuyla silinir (`commands::delete_card`); tepki dinlenmez, tepki intent'leri
+istenmez. Yetkili olanlar: kartı paylaşan kullanıcı (`store` kaydından) ya da kanalda mesaj yönetme izni
+olan üye. Thread izinleri üst kanaldan gelir; `can_manage_messages` thread'leri `guild.threads` içinde de arar.
 
 ### `message_update` ve `message_delete`
 

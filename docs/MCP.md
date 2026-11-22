@@ -190,7 +190,7 @@ Varsayılanlar: `bot_logs.limit=120`, `bot_logs.min_level=info`, `db_query.limit
 - `rest`: rota sınıfı başına istek/deneme, 2xx/4xx/5xx, 429, retry, rate-limit beklemesi,
   toplam ve deneme gecikmesi, durum kodu dağılımı, yavaş çağrılar.
 - `pipeline`: kuyruk beklemesi, veri, render, medya, webhook çözümleme/bekleme/gönderim,
-  kart gönderimi, silme, reaksiyon ve toplam süre histogramları.
+  kart gönderimi, silme ve toplam süre histogramları.
 - `http`: VxTwitter, FxTwitter, syndication, Discord, Twitter CDN, Instagram (oturum API'si dahil),
   Reddit, Spotify, Xbox, Letterboxd, TikTok ve diğer hostlar için istek/başarı/hata/bayt/gecikme.
   Doğrudan JSON'a çözülen yanıtların (Reddit, Instagram oturumu) baytı sayılmaz.

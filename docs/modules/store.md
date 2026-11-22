@@ -3,7 +3,7 @@
 ## Görev
 
 Her kart için hangi mesajın hangi kullanıcı tarafından paylaşıldığını kalıcı tutar. İki işe yarar:
-🗑️ tepkisiyle silme izni ve kartlara verilen yanıtlarda AI sohbetinin tetiklenmemesi.
+Apps → Sil ile silme izni ve kartlara verilen yanıtlarda AI sohbetinin tetiklenmemesi.
 
 ## Dosyalar
 

@@ -49,18 +49,25 @@ Bileşen/modal etiketleri `custom_id`nin ilk parçasıdır (oyun durumu loga sı
   sunucu kanalında gizli ertelenir ve kart ayrı mesaj olarak gönderilir, DM'de kart etkileşim yanıtı olur.
 - Etkileşim dönüşümleri 4 eşzamanlı işle sınırlıdır; dolunca anında "meşgul" döner.
 
+### Apps → Sil
+
+- Karta sağ tık → **Apps → Sil**. Kartı paylaşan kişi (`store` kaydı) ya da kanalda Mesajları Yönet izni
+  olan üye silebilir; kaydı olmayan bot mesajını (AI yanıtı) yalnızca moderatör siler, botun olmayan
+  mesajlar reddedilir. Karar `handler::may_delete_card` / `can_manage_messages` ile verilir.
+- Silme başarılıysa kayıt (`forget_author`) temizlenir. Yanıtlar ephemeral'dır. Kartlara 🗑️ tepkisi eklenmez.
+
 ### Apps → Yenile
 
-- Karta sağ tık → **Apps → Yenile**. Kartı paylaşan kişi (🗑️ yetkisiyle aynı kayıt) kendi kartını,
+- Karta sağ tık → **Apps → Yenile**. Kartı paylaşan kişi (Sil yetkisiyle aynı kayıt) kendi kartını,
   `OWNER_ID` ile eşleşen bot sahibi her kartı yenileyebilir. Komut menüde herkese görünür.
 - `builtin::regenerate` gönderi bağlantısını kayıttaki `source_url`'den alır (özel kartlar — Spotify,
   Twitch, Letterboxd, Miniflux — `[Link](...)` satırı taşımaz; bağlantısı kaydedilmemiş eski kartlarda alt
   bilgideki `[Link](...)` okunur). Kart üstündeki kullanıcı notu ve spoiler durumu kartın ham JSON'undan okunur;
   komut gönderi önbelleğini atlayıp veriyi yeniden çeker ve kartı **aynı mesajda**
-  `PATCH` ile düzenler. Mesaj kimliği değişmediği için gönderen, 🗑️ ve silme yetkisi kaydı aynen kalır.
+  `PATCH` ile düzenler. Mesaj kimliği değişmediği için gönderen ve silme yetkisi kaydı aynen kalır.
 - Taklit kartı kanalın güncel Botgek webhook'uyla düzenlenir. Kartı gönderen webhook silinmiş ya da
   değişmişse (düzenleme 401/404) kart eski adı ve avatarıyla güncel webhook'tan yeniden gönderilir, kayıt
-  (`store::move_card`) yeni mesaja taşınır, 🗑️ eklenir ve eski kart silinir (Mesajları Yönet gerekir).
+  (`store::move_card`) yeni mesaja taşınır ve eski kart silinir (Mesajları Yönet gerekir).
 - Kanal ayarları otomatik akıştaki gibi çözülür (`/dönüştür`'deki zorunlu X çevirisi uygulanmaz).
 - Yenileme `/dönüştür` ile aynı eşzamanlılık yuvalarını (`INTERACTION_SLOTS`, 4) kullanır; dolunca "meşgul"
   yanıtı verir. Aynı kartın yenilemeleri `refresh:<mesaj>` kilidiyle sırayla yürür.

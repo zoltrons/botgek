@@ -1,7 +1,7 @@
 use serenity::all::{
     Channel, ChannelId, Context, CreateAllowedMentions, CreateMessage, EventHandler, GuildId,
     Interaction, Message, MessageId, MessageReference, MessageType, MessageUpdateEvent,
-    Permissions, Reaction, ReactionType, Ready, UserId, async_trait,
+    Permissions, Ready, UserId, async_trait,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -283,84 +283,6 @@ impl EventHandler for Handler {
         )
         .await;
     }
-
-    /// Reaksiyon ekleme dinleyicisi: 🗑️ ile kartı silme (orijinal yazar veya yönetici/moderatör).
-    async fn reaction_add(&self, ctx: Context, reaction: Reaction) {
-        crate::telemetry::gateway_event(crate::telemetry::GatewayEvent::Reaction);
-        let current_user_id = ctx.cache.current_user().id;
-
-        // Botun kendi eklediği reaksiyonları yok say
-        let user_id = match reaction.user_id {
-            Some(id) if id != current_user_id => id,
-            _ => return,
-        };
-
-        // Silme İşlemi (🗑️)
-        if reaction.emoji == ReactionType::Unicode("🗑️".to_string()) {
-            // Kartı paylaşan kullanıcı kalıcı kayıttan okunur (taklit webhook mesajlarında
-            // mesajın yazarı bot/kullanıcı olmadığı için).
-            let recorded_author =
-                crate::converters::builtin::original_author(reaction.message_id).await;
-            if recorded_author.is_none() {
-                let target_msg = match reaction.message(&ctx.http).await {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("Silme reaksiyon mesajı alınamadı: {:?}", e);
-                        return;
-                    }
-                };
-
-                // Mesaj bu bot tarafından atılmamışsa işlem yapma
-                if target_msg.author.id != current_user_id {
-                    return;
-                }
-            }
-            let original_author_id = recorded_author;
-            let is_author = original_author_id == Some(user_id);
-
-            // Yazar zaten yetkili: üye/izin sorgusu yapılmaz.
-            let is_admin_or_mod = match reaction.guild_id {
-                Some(guild_id) if !is_author => {
-                    let member = match reaction.member.clone() {
-                        Some(member) => Ok(member),
-                        None => guild_id.member(&ctx.http, user_id).await,
-                    };
-                    member.is_ok_and(|member| {
-                        can_manage_messages(&ctx, guild_id, reaction.channel_id, &member)
-                    })
-                }
-                _ => false,
-            };
-
-            if may_delete_card(original_author_id, user_id, is_admin_or_mod) {
-                info!(
-                    "Reaksiyon ile mesaj silme onaylandı. Silen: {} (Orijinal Yazar: {:?})",
-                    user_id, original_author_id
-                );
-                let delete_started = std::time::Instant::now();
-                let deleted = reaction
-                    .channel_id
-                    .delete_message(&ctx.http, reaction.message_id)
-                    .await;
-                crate::telemetry::record_phase(
-                    crate::telemetry::Phase::Delete,
-                    delete_started.elapsed(),
-                );
-                match deleted {
-                    Err(e) => {
-                        error!("Mesaj silinirken hata oluştu: {:?}", e);
-                    }
-                    _ => {
-                        // Kart artık yok: kaydı da bırakma (veritabanı temiz kalır).
-                        crate::converters::builtin::forget_author(reaction.message_id).await;
-                    }
-                }
-            } else {
-                warn!("Yetkisiz silme reaksiyonu! Tıklayan: {}", user_id);
-                let _ = reaction.delete(&ctx.http).await;
-            }
-        }
-    }
 }
 
 impl Handler {
@@ -592,16 +514,16 @@ pub(crate) async fn discord_thread_parent(
     }
 }
 
-/// 🗑️ ile silme kararı: kaydedilmiş paylaşan ya da mesaj yönetme izni olan kişi silebilir.
+/// Apps → Sil kararı: kaydedilmiş paylaşan ya da mesaj yönetme izni olan kişi silebilir.
 /// Kaydı olmayan bot mesajını (AI yanıtı) yalnızca moderatör siler.
-fn may_delete_card(author: Option<UserId>, user: UserId, moderator: bool) -> bool {
+pub(crate) fn may_delete_card(author: Option<UserId>, user: UserId, moderator: bool) -> bool {
     author == Some(user) || moderator
 }
 
 /// Üyenin bu kanalda mesaj yönetme (veya yönetici) izni var mı?
 ///
 /// Thread'ler önbellekte `guild.threads` içindedir ve izinlerini üst kanaldan alır; yalnızca `guild.channels`'a bakmak thread'lerde kanal ezmelerini yok sayıp sunucu geneli izne düşüyordu.
-fn can_manage_messages(
+pub(crate) fn can_manage_messages(
     ctx: &Context,
     guild_id: GuildId,
     channel_id: ChannelId,
@@ -744,7 +666,7 @@ mod tests {
         assert!(!should_trigger_ai_chat(false, Some(user_id), false, bot_id));
     }
 
-    /// 🗑️: paylaşan ve moderatör siler; başkası, kaydı olmayan mesajı dahil, silemez.
+    /// Sil: paylaşan ve moderatör siler; başkası, kaydı olmayan mesajı dahil, silemez.
     #[test]
     fn only_the_author_or_a_moderator_may_delete_a_card() {
         let author = UserId::new(1);

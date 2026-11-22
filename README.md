@@ -79,7 +79,7 @@ Ortam değişkenleri ve ayrıntılar: [docs/CONFIGURATION.md](docs/CONFIGURATION
 | `/refleks` | Reaksiyon hızı oyunu. |
 | `/fal` | Kahve falı. |
 
-Kartın altına 🗑️ tepkisi bırakarak kartı paylaşan kişi ya da Manage Messages yetkisi olan biri kartı silebilir.
+Karta sağ tık → **Apps → Sil** ile kartı paylaşan kişi ya da Manage Messages yetkisi olan biri kartı silebilir.
 
 ## Teşekkürler
 

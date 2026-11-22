@@ -54,6 +54,9 @@ const SOURCE_VX: &str = "vx";
 /// Bot sahibinin karta sağ tıklayıp kartı yeniden ürettiği mesaj komutu.
 pub const REFRESH_COMMAND: &str = "Yenile";
 
+/// Kartı paylaşan kişinin ya da moderatörün karta sağ tıklayıp kartı sildiği mesaj komutu.
+pub const DELETE_COMMAND: &str = "Sil";
+
 /// Komut yokken gösterilen kısa kullanım metni.
 pub const USAGE: &str = "Bir bağlantı ver: `/dönüştür https://x.com/kullanici/status/123`\n\
 Bir mesajı dönüştürmek için: sağ tık → **Apps → Dönüştür**. \
@@ -161,6 +164,10 @@ fn definitions() -> Vec<CreateCommand> {
         everywhere(CreateCommand::new(REFRESH_COMMAND))
             .kind(CommandType::Message)
             .description(""),
+        // Herkese görünür; kartı paylaşan ya da Mesajları Yönet izni olan siler (bkz. `delete_card`).
+        everywhere(CreateCommand::new(DELETE_COMMAND))
+            .kind(CommandType::Message)
+            .description(""),
     ]
 }
 
@@ -258,6 +265,11 @@ async fn dispatch(
                 && command.data.name == REFRESH_COMMAND =>
         {
             return refresh_card(ctx, command, http_client, config, app_settings).await;
+        }
+        Interaction::Command(command)
+            if command.data.kind == CommandType::Message && command.data.name == DELETE_COMMAND =>
+        {
+            return delete_card(ctx, command).await;
         }
         Interaction::Command(command) => command,
         _ => return,
@@ -503,7 +515,7 @@ async fn refresh_card(
     let Some(message_id) = command.data.target_id.map(|id| MessageId::new(id.get())) else {
         return;
     };
-    // Sahip her kartı, diğerleri yalnızca kendi paylaştığı kartı yeniler (🗑️ ile aynı kayıt).
+    // Sahip her kartı, diğerleri yalnızca kendi paylaştığı kartı yeniler (Sil ile aynı kayıt).
     if config.owner_id != Some(command.user.id)
         && converters::builtin::original_author(message_id).await != Some(command.user.id)
     {
@@ -569,6 +581,74 @@ async fn refresh_card(
     }
 }
 
+/// Apps → Sil: kartı paylaşan kişi (kalıcı kayıttan) ya da kanalda Mesajları Yönet izni olan
+/// üye kartı siler. Kaydı olmayan bot mesajını (AI yanıtı) yalnızca moderatör siler; botun
+/// olmayan mesajlara dokunulmaz.
+async fn delete_card(ctx: &Context, command: &CommandInteraction) {
+    let Some(message_id) = command.data.target_id.map(|id| MessageId::new(id.get())) else {
+        return;
+    };
+    let user_id = command.user.id;
+    // Taklit webhook kartlarında mesajın yazarı paylaşan değildir: paylaşan kayıttan okunur.
+    let recorded_author = converters::builtin::original_author(message_id).await;
+    let bot_id = ctx.cache.current_user().id;
+    let is_bot_message = command
+        .data
+        .resolved
+        .messages
+        .get(&message_id)
+        .is_some_and(|msg| msg.author.id == bot_id);
+    if recorded_author.is_none() && !is_bot_message {
+        reply_ephemeral(ctx, command, "Yalnızca botun kartları silinebilir.").await;
+        return;
+    }
+
+    let is_author = recorded_author == Some(user_id);
+    // Yazar zaten yetkili: üye/izin sorgusu yapılmaz.
+    let is_moderator = match command.guild_id {
+        Some(guild_id) if !is_author => {
+            let member = match command.member.as_deref() {
+                Some(member) => Ok(member.clone()),
+                None => guild_id.member(&ctx.http, user_id).await,
+            };
+            member.is_ok_and(|member| {
+                crate::handler::can_manage_messages(ctx, guild_id, command.channel_id, &member)
+            })
+        }
+        _ => false,
+    };
+    if !crate::handler::may_delete_card(recorded_author, user_id, is_moderator) {
+        warn!(user = %user_id, message = %message_id, "Yetkisiz kart silme denemesi");
+        reply_ephemeral(
+            ctx,
+            command,
+            "Bu kartı yalnızca paylaşan kişi ya da Mesajları Yönet izni olan biri silebilir.",
+        )
+        .await;
+        return;
+    }
+
+    info!(user = %user_id, author = ?recorded_author, message = %message_id, "Kart silme onaylandı");
+    let started = std::time::Instant::now();
+    let deleted = command
+        .channel_id
+        .delete_message(&ctx.http, message_id)
+        .await;
+    crate::telemetry::record_phase(crate::telemetry::Phase::Delete, started.elapsed());
+    let content = match deleted {
+        Ok(()) => {
+            // Kart artık yok: kaydı da bırakma (veritabanı temiz kalır).
+            converters::builtin::forget_author(message_id).await;
+            "🗑️ Kart silindi."
+        }
+        Err(err) => {
+            error!(message = %message_id, "Kart silinemedi: {err:?}");
+            "❌ Kart silinemedi (bot bu kanalda mı, Mesajları Yönet izni var mı?)."
+        }
+    };
+    reply_ephemeral(ctx, command, content).await;
+}
+
 async fn reply_ephemeral(ctx: &Context, command: &CommandInteraction, content: &str) {
     let builder = CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
@@ -592,8 +672,9 @@ mod tests {
         assert!(CONVERT_MESSAGE_COMMAND.len() <= 32);
 
         let definitions = definitions();
-        assert_eq!(definitions.len(), 3);
+        assert_eq!(definitions.len(), 4);
         assert!(REFRESH_COMMAND.len() <= 32);
+        assert!(DELETE_COMMAND.len() <= 32);
     }
 
     #[test]

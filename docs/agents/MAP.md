@@ -67,7 +67,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/main.rs` | Başlangıç sırası, CLI bayrakları, loglama, HTTP istemcisi, gateway, panel, kapanış. |
 | `src/config.rs` | `Config`: ortam değişkenleri. `env_bool`. |
 | `src/version.rs` | Derleme künyesi, User-Agent dizeleri (`build.rs` ile paylaşılır). |
-| `src/handler.rs` | Gateway olayları: mesaj, düzenleme, silme, tepki, etkileşim, AI tetikleme, AI hız bütçesi. (~975) |
+| `src/handler.rs` | Gateway olayları: mesaj, düzenleme, silme, etkileşim, kart silme yetkisi, AI tetikleme, AI hız bütçesi. (~900) |
 | `src/policy.rs` | Rol filtresinin tek karar noktası. |
 | `src/letterboxd_feed.rs` | Letterboxd takip akışı: RSS yoklama, hız/geri çekilme, kanala kart gönderme. |
 | `src/settings.rs` | Ayar şeması, kapsam çözümleme (global ─► sunucu ─► kanal), doğrulama, atomik yazma, göç. (~2200) |
@@ -82,7 +82,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 
 | Dosya | Görev |
 | --- | --- |
-| `src/commands/mod.rs` | Komut tanımları/kayıt, `/dönüştür`, Apps → Dönüştür, Spotify sayfalama. |
+| `src/commands/mod.rs` | Komut tanımları/kayıt, `/dönüştür`, Apps → Dönüştür / Yenile / Sil, Spotify sayfalama. |
 | `src/commands/hooks.rs` | `pre_command`/`post_command`, panik yakalama, sabit hata metni. |
 | `src/commands/gif.rs` | `/gif-yap`, Apps → GIF yap. |
 | `src/commands/letterboxd.rs` | `/letterboxd` (takip, bırak, liste). |

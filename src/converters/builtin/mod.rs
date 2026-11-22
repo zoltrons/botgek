@@ -40,8 +40,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use serenity::all::{
-    Channel, ChannelId, ChannelType, Context, Embed, Message, MessageId, ReactionType, UserId,
-    WebhookId,
+    Channel, ChannelId, ChannelType, Context, Embed, Message, MessageId, UserId, WebhookId,
 };
 use std::sync::LazyLock;
 use tokio::sync::Mutex;
@@ -913,7 +912,7 @@ fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> 
 
 /// Taklit edilen mesajın orijinal yazarını **kalıcı** olarak kaydeder (SQLite).
 ///
-/// Bu kayıt 🗑️ silme izni, "kartlara verilen yanıt AI'yı tetiklemesin" kuralı ve bayrak
+/// Bu kayıt Apps → Sil izni, "kartlara verilen yanıt AI'yı tetiklemesin" kuralı ve bayrak
 /// emojisiyle çeviri ayrımı için kullanılır. Bot yeniden başlasa, çökse veya güncellense
 /// de kayıt kaybolmaz (eskiden bellekteki bir `HashMap` içindeydi ve yeniden başlatmada
 /// siliniyordu).
@@ -955,7 +954,7 @@ pub async fn forget_author(message_id: MessageId) {
     crate::store::blocking(move || crate::store::forget_card(message_id)).await;
 }
 
-/// Taklit edilen mesajın orijinal yazarı (🗑️ silme izni bu bilgiyle verilir).
+/// Taklit edilen mesajın orijinal yazarı (Apps → Sil izni bu bilgiyle verilir).
 pub async fn original_author(message_id: MessageId) -> Option<UserId> {
     crate::store::blocking(move || crate::store::card_author(message_id)).await
 }
@@ -1284,8 +1283,7 @@ fn reply_reference(msg: &Message) -> Option<serde_json::Value> {
 /// discord-api-docs #850). Silme bu yüzden mesaj en az bu yaşa gelene kadar ertelenir.
 const DELETE_MIN_AGE: Duration = Duration::from_millis(1200);
 
-/// Orijinal mesajı siler; zaten silinmişse sessizce geçer (🗑️ reaksiyonu
-/// yeni mesaja eklenir, bu yüzden mükerrer silme denemesi hata üretmez).
+/// Orijinal mesajı siler; zaten silinmişse sessizce geçer (mükerrer silme denemesi hata üretmez).
 ///
 /// Silmeden **önce** mesajın en az [`DELETE_MIN_AGE`] yaşında olması beklenir; bu,
 /// gönderenin istemcisinin optimistic (nonce'lu) mesajını sunucu kopyasıyla
@@ -1783,8 +1781,8 @@ fn webhook_message_url(
 
 /// Var olan bir kartı güncel veriyle **yerinde** yeniden üretir (Apps → Yenile).
 ///
-/// Mesaj kimliği değişmez: gönderen (taklit adı/avatarı ya da `Gönderen:` etiketi), 🗑️
-/// reaksiyonu ve silme yetkisi kaydı olduğu gibi kalır. Önbellek atlanır ki veri tazelensin.
+/// Mesaj kimliği değişmez: gönderen (taklit adı/avatarı ya da `Gönderen:` etiketi) ve
+/// silme yetkisi kaydı olduğu gibi kalır. Önbellek atlanır ki veri tazelensin.
 /// Taklit kartının webhook'u artık yoksa kart aynı kimlikle yeniden gönderilir ve eskisi silinir
 /// (dönüşteki `bool`). `card` mesajın ham JSON'udur; hata metni yalnızca bot sahibine gösterilir.
 pub async fn regenerate(
@@ -1937,7 +1935,7 @@ fn impersonate_like(
 }
 
 /// Düzenlenemeyen webhook kartını kanalın güncel webhook'uyla aynı kimlikte yeniden gönderir:
-/// kayıt (paylaşan, kaynak) yeni mesaja taşınır, 🗑️ eklenir ve eski kart silinir.
+/// kayıt (paylaşan, kaynak) yeni mesaja taşınır ve eski kart silinir.
 async fn resend_card(
     ctx: &Context,
     client: &reqwest::Client,
@@ -1963,14 +1961,9 @@ async fn resend_card(
     .ok_or("Kart yeniden gönderildi ama kimliği okunamadı.")?;
     crate::store::blocking(move || crate::store::move_card(old_id, new_id)).await;
 
-    let channel = target.thread_id.unwrap_or(target.channel_id);
-    if let Err(err) = channel
-        .create_reaction(&ctx.http, new_id, ReactionType::Unicode("🗑️".to_string()))
-        .await
-    {
-        warn!("Yenilenen karta silme reaksiyonu eklenemedi: {err:?}");
-    }
-    channel
+    target
+        .thread_id
+        .unwrap_or(target.channel_id)
         .delete_message(&ctx.http, old_id)
         .await
         .map_err(|err| format!("Yeni kart gönderildi ama eskisi silinemedi: {err}"))
@@ -2137,11 +2130,10 @@ fn carries_files(msg: &Message) -> bool {
     !msg.attachments.is_empty() || !msg.sticker_items.is_empty()
 }
 
-/// 🗑️ silme izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
+/// Apps → Sil izni ve "AI tetiklenmesin" kuralı mesaj metninden bağımsız çalışır.
 ///
-/// Reaksiyon ve silme **arka planda ve birbirine paralel** yapılır: kart kullanıcıya çoktan
-/// görünmüştür, bu iki REST çağrısı dönüşüm süresine eklenmez (ve mesaj işleme döngüsü serbest
-/// kalır); orijinal mesaj da reaksiyonu beklemeden kaybolur. Silme,
+/// Silme **arka planda** yapılır: kart kullanıcıya çoktan görünmüştür, bu REST çağrısı dönüşüm
+/// süresine eklenmez (ve mesaj işleme döngüsü serbest kalır). Silme,
 /// kart gönderildikten **sonra** ve [`DELETE_MIN_AGE`] kadar gecikmeyle yapılır (hayalet
 /// mesaj önlemi).
 async fn finish(
@@ -2172,43 +2164,17 @@ async fn finish(
         .await;
     }
 
+    if !delete_original {
+        return;
+    }
+    // Kart gönderildi; orijinal mesaj arka planda silinir. Silme yine en az DELETE_MIN_AGE
+    // yaşına gelene kadar bekler: gönderenin istemcisi optimistic mesajını eşleştirebilsin.
     let ctx = ctx.clone();
     let msg = msg.clone();
     tokio::spawn(async move {
-        let reaction = async {
-            let reaction_started = std::time::Instant::now();
-            let reaction = msg
-                .channel_id
-                .create_reaction(
-                    &ctx.http,
-                    message_id,
-                    ReactionType::Unicode("🗑️".to_string()),
-                )
-                .await;
-            crate::telemetry::record_phase(
-                crate::telemetry::Phase::Reaction,
-                reaction_started.elapsed(),
-            );
-            if let Err(e) = reaction {
-                error!("Silme reaksiyonu eklenemedi: {:?}", e);
-            }
-        };
-
-        // Kart gönderildi; orijinal mesaj reaksiyonu beklemeden silinir (ikisi ayrı mesaj ve
-        // ayrı rate-limit kovası). Silme yine en az DELETE_MIN_AGE yaşına gelene kadar bekler:
-        // gönderenin istemcisi optimistic mesajını eşleştirebilsin.
-        let delete = async {
-            if delete_original {
-                let delete_started = std::time::Instant::now();
-                delete_user_message(&ctx, &msg).await;
-                crate::telemetry::record_phase(
-                    crate::telemetry::Phase::Delete,
-                    delete_started.elapsed(),
-                );
-            }
-        };
-
-        tokio::join!(reaction, delete);
+        let delete_started = std::time::Instant::now();
+        delete_user_message(&ctx, &msg).await;
+        crate::telemetry::record_phase(crate::telemetry::Phase::Delete, delete_started.elapsed());
     });
 }
 
@@ -2646,7 +2612,7 @@ mod message_tests {
         assert_eq!(original_author(message_id).await, Some(UserId::new(42)));
         assert!(is_native_message(message_id).await);
 
-        // Kayıt silinince kart tanıma da düşer (🗑️ ile kart silindiğinde kullanılır).
+        // Kayıt silinince kart tanıma da düşer (Apps → Sil ile kart silindiğinde kullanılır).
         forget_author(message_id).await;
         assert_eq!(original_author(message_id).await, None);
         assert!(!is_native_message(message_id).await);
