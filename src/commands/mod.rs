@@ -629,6 +629,11 @@ async fn delete_card(ctx: &Context, command: &CommandInteraction) {
     }
 
     info!(user = %user_id, author = ?recorded_author, message = %message_id, "Kart silme onaylandı");
+    // Silme rate-limit'e takılıp 3 sn yanıt penceresini aşabilir: önce ertelenir.
+    if let Err(err) = command.defer_ephemeral(&ctx.http).await {
+        warn!(interaction = %command.id, "Etkileşim ertelenemedi: {err:?}");
+        return;
+    }
     let started = std::time::Instant::now();
     let deleted = command
         .channel_id
@@ -646,7 +651,12 @@ async fn delete_card(ctx: &Context, command: &CommandInteraction) {
             "❌ Kart silinemedi (bot bu kanalda mı, Mesajları Yönet izni var mı?)."
         }
     };
-    reply_ephemeral(ctx, command, content).await;
+    if let Err(err) = command
+        .edit_response(&ctx.http, EditInteractionResponse::new().content(content))
+        .await
+    {
+        error!(interaction = %command.id, "Etkileşim yanıtı güncellenemedi: {err:?}");
+    }
 }
 
 async fn reply_ephemeral(ctx: &Context, command: &CommandInteraction, content: &str) {
