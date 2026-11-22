@@ -30,7 +30,7 @@ Veri anahtar gerektirmeyen herkese açık sayfalardan okunur:
   Adın yanında rozet logosu (Patron tacı `lb_patron`, Pro `lb_pro`; profil kartında da). "İncelemeyi/Kaydı aç" ve "Filmi aç" butonları kartın dışında,
   hemen altında (`CustomCard::buttons`).
 - Kullanıcının seçtiği özel poster (`preferredAlternativePosterId`) kayıt sayfasından çözülür. Takip akışında RSS
-  yalnızca varsayılan posteri verdiği için `DiaryEntry::post` gönderilecek kaydın sayfasını ayrıca okur.
+  yalnızca varsayılan posteri verdiği için `DiaryEntry::message` gönderilecek kaydın sayfasını ayrıca okur.
 - Film kartında künye tek blokta: özgün ad, yönetmen, oyuncular (`MAX_CAST` = 3), ardından tür/süre/ülke satırı.
 - Açıklama (`SYNOPSIS_LIMIT`) 600 karakterle sınırlıdır.
 - `boxd.it` kısa bağlantıları hedefe çözülür. Yanıt engellenmiş olsa bile varılan adres hedefi belirler.
@@ -43,14 +43,17 @@ Veri anahtar gerektirmeyen herkese açık sayfalardan okunur:
 
 ## Takip akışı
 
-`/letterboxd takip` ile bir kanal bir hesabı takip eder; yeni günlük kayıtları kanala inceleme kartı olarak
-gelir. Dosyalar: `src/letterboxd_feed.rs` (yoklama), `src/commands/letterboxd.rs` (komut), `store.rs`
+`/letterboxd takip` ile bir kanal bir hesabı takip eder (`takip`/`bırak` virgülle ayrılmış en fazla 10 hesap alır, sonuç hesap başına bir satır); yeni günlük kayıtları kanala klasik (v1) embed olarak
+gelir (`review_embed_message`): yazar satırında `Ad izledi|inceledi` + profil görseli, bağlantılı film başlığı,
+açıklamada gün + yıldız + işaretler ve metin, sağda poster `thumbnail` olarak kendi (uzun) oranında. V2
+kartının kare aksesuarı posteri kırptığı için akış V2 kullanmaz. Buton yoktur: gün kayda, başlık filme bağlıdır. Dosyalar: `src/letterboxd_feed.rs` (yoklama), `src/commands/letterboxd.rs` (komut), `store.rs`
 (`letterboxd_follows`).
 
 - Kaynak `/{kullanıcı}/rss/` akışıdır (`diary`). Öğeler `letterboxd-review-{id}` ve `letterboxd-watch-{id}`
   guid'leriyle ayrılır; liste paylaşımları atlanır. Akış film adı, yıl, puan, beğeni, yeniden izleme, izleme
-  günü, poster ve inceleme metnini taşır; ek sayfa istenmez. Kart `review_card`'dır: metinsiz (yalnızca
-  izleme) kayıtta "Letterboxd günlüğü" ve "Kaydı aç" yazar.
+  günü, poster ve inceleme metnini taşır. Avatar ve özel poster için gönderilecek kaydın sayfası ayrıca okunur
+  (`DiaryEntry::message`); okunamazsa embed avatarsız, RSS posteriyle gider. Metinsiz (yalnızca izleme)
+  kayıtta "izledi" yazar. Embed yazar adında emoji gösteremediği için rozet yoktur.
 - Yeni kayıt: kimliği kanalın `last_entry` değerinden büyük olan. Tur başına kanal başına en fazla 5 kayıt
   eskiden yeniye gönderilir.
 - Hız: istekler tek tek, aralarında en az 1 sn; her hesap en sık 30 sn'de bir yoklanır. RSS `no-store`'dur ve

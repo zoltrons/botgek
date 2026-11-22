@@ -685,6 +685,15 @@ fn reaction_strip(html: &str) -> &str {
     &rest[..end]
 }
 
+/// Kayıt sahibinin avatarı (sayfada başka kullanıcıların avatarları da bulunur).
+fn reviewer_avatar(html: &str, user: &str) -> Option<String> {
+    AVATAR_REGEX
+        .captures_iter(html)
+        .find(|caps| &caps[1] == user)
+        // Gravatar adresi HTML kaçışlı ve 48 piksel gelir; kartta keskin görünsün.
+        .map(|caps| unescape_html(&caps[2]).replace("size=48", "size=256"))
+}
+
 /// Kayıt sayfasının başlığındaki yazar rozeti (`Patron`, `Pro`, `HQ`).
 fn review_badge(html: &str) -> Option<String> {
     REVIEW_HEADER_REGEX
@@ -721,11 +730,7 @@ fn parse_review(html: &str, target: &Target) -> Option<Review> {
         url: target.url(),
         author,
         profile_url: format!("{LETTERBOXD}/{user}/"),
-        avatar: AVATAR_REGEX
-            .captures_iter(html)
-            .find(|caps| &caps[1] == user.as_str())
-            // Gravatar adresi HTML kaçışlı ve 48 piksel gelir; kartta keskin görünsün.
-            .map(|caps| unescape_html(&caps[2]).replace("size=48", "size=256")),
+        avatar: reviewer_avatar(html, user),
         badge: review_badge(html),
         rating: review
             .get("reviewRating")
@@ -1165,6 +1170,7 @@ fn section(children: Vec<Value>, poster: Option<&str>, fallback_url: &str, alt: 
 }
 
 /// Paragraflar korunarak kısaltılır; kısaldıysa sonuna Letterboxd'a yönlendiren not eklenir.
+/// Metin kaçışlanır, eklenen not kaçışlanmaz: not Discord'da eğik görünür.
 fn bounded(body: &str, limit: usize) -> String {
     let normalized = body.replace("\r\n", "\n");
     let mut lines: Vec<&str> = Vec::new();
@@ -1182,9 +1188,12 @@ fn bounded(body: &str, limit: usize) -> String {
     }
     let text = lines.join("\n").trim().to_string();
     if text.chars().count() > limit {
-        format!("{} *(devamı Letterboxd'da)*", truncate_chars(&text, limit))
+        format!(
+            "{} *(devamı Letterboxd'da)*",
+            escape_markdown(&truncate_chars(&text, limit))
+        )
     } else {
-        text
+        escape_markdown(&text)
     }
 }
 
@@ -1283,7 +1292,7 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
         &format!("{} posteri", film.title),
     ));
     if let Some(synopsis) = &film.synopsis {
-        components.push(text(escape_markdown(&bounded(synopsis, SYNOPSIS_LIMIT))));
+        components.push(text(bounded(synopsis, SYNOPSIS_LIMIT)));
     }
 
     let mut buttons = Vec::new();
@@ -1334,7 +1343,37 @@ fn review_card(review: &Review) -> CustomCard {
         film.push_str(&format!(" ({year})"));
     }
     let title = format!("### [{film}]({})", review.film_url);
+    let mut header = format!("{who}\n{title}");
+    if let Some(verdict) = verdict_line(review) {
+        header.push_str(&format!("\n{verdict}"));
+    }
 
+    let mut components = vec![section(
+        vec![text(header)],
+        review.poster.as_deref(),
+        &review.url,
+        &format!("{} posteri", review.film_title),
+    )];
+    if review.body.is_some() {
+        components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
+    }
+    if let Some(body) = review_body(review) {
+        components.push(text(body));
+    }
+    if let Some(likes) = likes_line(review) {
+        components.push(text(likes));
+    }
+
+    CustomCard {
+        components,
+        accent_color: Some(LETTERBOXD_ORANGE),
+        video_components: None,
+        buttons: vec![review_buttons(review)],
+    }
+}
+
+/// Kaydın gün + puan + yeniden izleme + kalp satırı; hiçbiri yoksa `None`.
+fn verdict_line(review: &Review) -> Option<String> {
     let mut verdict: Vec<String> = Vec::new();
     // Gün kaydın kendisine bağlanır: kart başka buton taşımaz.
     if let Some(date) = review.watched.or(review.published) {
@@ -1349,20 +1388,11 @@ fn review_card(review: &Review) -> CustomCard {
     if review.liked {
         verdict.push(EMOJI_LIKE.tag());
     }
-    let mut header = format!("{who}\n{title}");
-    if !verdict.is_empty() {
-        header.push_str(&format!("\n{}", verdict.join(" ")));
-    }
+    (!verdict.is_empty()).then(|| verdict.join(" "))
+}
 
-    let mut components = vec![section(
-        vec![text(header)],
-        review.poster.as_deref(),
-        &review.url,
-        &format!("{} posteri", review.film_title),
-    )];
-    if review.body.is_some() {
-        components.push(json!({ "type": TYPE_SEPARATOR, "spacing": 1 }));
-    }
+/// İnceleme metni: spoiler gizli ve kısa, değilse paragraflar korunarak sınırlı.
+fn review_body(review: &Review) -> Option<String> {
     match review.body.as_deref() {
         Some(body) if review.spoiler => {
             let (body, cut) = spoiler_body(body);
@@ -1375,43 +1405,85 @@ fn review_card(review: &Review) -> CustomCard {
                 if cut {
                     content.push_str(&format!(" [Devamını oku]({})", review.url));
                 }
-                components.push(text(content));
+                Some(content)
+            } else {
+                None
             }
         }
         Some(body) => {
             let body = bounded(body, REVIEW_LIMIT);
-            if !body.is_empty() {
-                components.push(text(escape_markdown(&body)));
-            }
+            (!body.is_empty()).then_some(body)
         }
-        None => {}
+        None => None,
     }
-    // Letterboxd'da beğeni sayısı inceleme metninin altında durur.
-    if let Some(likes) = review.likes {
-        components.push(text(format!(
+}
+
+/// Letterboxd'da beğeni sayısı inceleme metninin altında durur.
+fn likes_line(review: &Review) -> Option<String> {
+    review.likes.map(|likes| {
+        format!(
             "-# {} {} kişi incelemeyi beğendi",
             EMOJI_LIKES.tag(),
             format_count(likes)
-        )));
-    }
+        )
+    })
+}
 
-    CustomCard {
-        components,
-        accent_color: Some(LETTERBOXD_ORANGE),
-        video_components: None,
-        buttons: vec![json!({
-            "type": TYPE_ACTION_ROW,
-            "components": [
-                // İncelemesiz günlük kaydı (yalnızca izleme) inceleme diye açılmaz.
-                link_button(
-                    if review.body.is_some() { "İncelemeyi aç" } else { "Kaydı aç" },
-                    &review.url,
-                    Some(EMOJI_REVIEW),
-                ),
-                link_button("Filmi aç", &review.film_url, Some(EMOJI_LOGO)),
-            ],
-        })],
+fn review_buttons(review: &Review) -> Value {
+    json!({
+        "type": TYPE_ACTION_ROW,
+        "components": [
+            // İncelemesiz günlük kaydı (yalnızca izleme) inceleme diye açılmaz.
+            link_button(
+                if review.body.is_some() { "İncelemeyi aç" } else { "Kaydı aç" },
+                &review.url,
+                Some(EMOJI_REVIEW),
+            ),
+            link_button("Filmi aç", &review.film_url, Some(EMOJI_LOGO)),
+        ],
+    })
+}
+
+/// Takip akışının klasik (v1) embed mesajı: yazar satırında profil görseli, sağda poster
+/// küçük resim olarak kendi oranında (uzun) durur. Components V2'nin kare aksesuarı posteri kırpar.
+fn review_embed_message(review: &Review) -> Value {
+    let verb = if review.body.is_some() {
+        "inceledi"
+    } else {
+        "izledi"
+    };
+    let mut author =
+        json!({ "name": format!("{} {verb}", review.author), "url": review.profile_url });
+    if let Some(avatar) = &review.avatar {
+        author["icon_url"] = json!(avatar);
     }
+    // Embed başlığı da kalın/eğik işler: `M*A*S*H` bozulmasın.
+    let mut title = escape_markdown(&review.film_title);
+    if let Some(year) = &review.film_year {
+        title.push_str(&format!(" ({year})"));
+    }
+    let description = [verdict_line(review), review_body(review)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut embed = json!({
+        "author": author,
+        "title": truncate_chars(&title, 256),
+        "url": review.film_url,
+        "color": LETTERBOXD_ORANGE,
+    });
+    if !description.is_empty() {
+        embed["description"] = json!(description);
+    }
+    if let Some(poster) = &review.poster {
+        embed["thumbnail"] = json!({ "url": poster });
+    }
+    json!({
+        "embeds": [embed],
+        // İnceleme metnindeki @everyone ya da rol etiketi kimseyi uyarmasın.
+        "allowed_mentions": { "parse": [] },
+    })
 }
 
 /// Son etkinlik satırı: filmin bağlantısı, yıldızlar ve varsa kalp/yeniden izleme işaretleri.
@@ -1537,7 +1609,7 @@ fn profile_card(profile: &Profile) -> CustomCard {
     )];
 
     if let Some(bio) = &profile.bio {
-        components.push(text(escape_markdown(&bounded(bio, BIO_LIMIT))));
+        components.push(text(bounded(bio, BIO_LIMIT)));
     }
     if !profile.favorites.is_empty() {
         let favorites = profile
@@ -1644,22 +1716,22 @@ pub struct DiaryEntry {
 }
 
 impl DiaryEntry {
-    /// Kaydın kartı. RSS yalnızca varsayılan posteri verir; kullanıcının seçtiği özel poster
-    /// kayıt sayfasından okunur (yalnızca gönderilecek kayıt için, 1-2 ek istek). Sayfa
-    /// okunamazsa kart RSS posteriyle gider.
-    pub async fn post(&self, client: &reqwest::Client) -> BuiltinPost {
+    /// Kaydın klasik embed mesajı. RSS avatar vermez ve yalnızca varsayılan posteri verir;
+    /// avatar ve kullanıcının seçtiği özel poster kayıt sayfasından okunur (yalnızca gönderilecek
+    /// kayıt için, 1-2 ek istek). Sayfa okunamazsa mesaj avatarsız, RSS posteriyle gider.
+    pub async fn message(&self, client: &reqwest::Client) -> Value {
         let mut review = self.review.clone();
-        if let Some(Target::Review { slug, .. }) = Target::from_url(&review.url)
+        if let Some(Target::Review { slug, user, .. }) = Target::from_url(&review.url)
             && let Ok(Page {
                 body: Some(html), ..
             }) = get_page(client, &review.url).await
         {
-            review.badge = review_badge(&html);
+            review.avatar = reviewer_avatar(&html, &user);
             if let Some(poster) = custom_poster(client, &html, &slug).await {
                 review.poster = Some(poster);
             }
         }
-        review_post(&review)
+        review_embed_message(&review)
     }
 
     #[cfg(test)]
@@ -2445,7 +2517,8 @@ mod tests {
         assert_eq!(runtime_label(120), "2 sa");
         assert_eq!(date_label((2019, 8, 9)), "9 Ağu 2019");
         assert_eq!(bounded("a\r\n\r\n\r\nb", 100), "a\n\nb");
-        assert!(bounded(&"x".repeat(50), 10).ends_with("*(devamı Letterboxd'da)*"));
+        assert!(bounded(&"x".repeat(50), 10).ends_with(" *(devamı Letterboxd'da)*"));
+        assert_eq!(bounded("*a*", 100), r"\*a\*");
     }
 
     #[test]
@@ -2583,6 +2656,36 @@ mod tests {
         assert!(!json.contains("Watched on"), "{json}");
         assert!(json.contains("** izledi"), "{json}");
         assert_eq!(buttons(card)[0].0, "Kaydı aç");
+
+        let message = review_embed_message(&entries[0].review);
+        let embed = &message["embeds"][0];
+        assert_eq!(embed["author"]["name"], "Ana B inceledi");
+        assert_eq!(embed["title"], "Hershey & Co (2026)");
+        let mut mash = entries[1].review.clone();
+        mash.film_title = "M*A*S*H".to_string();
+        assert_eq!(
+            review_embed_message(&mash)["embeds"][0]["title"],
+            r"M\*A\*S\*H (2025)"
+        );
+        assert!(
+            embed["thumbnail"]["url"]
+                .as_str()
+                .unwrap()
+                .contains("1-hershey")
+        );
+        assert!(
+            embed["description"]
+                .as_str()
+                .unwrap()
+                .contains("Spoiler içerir")
+        );
+        assert!(
+            message.get("flags").is_none(),
+            "klasik embed: V2 bayrağı yok"
+        );
+        let watch = review_embed_message(&entries[1].review);
+        assert_eq!(watch["embeds"][0]["author"]["name"], "Ana B izledi");
+        assert!(watch.get("components").is_none(), "akış kartında buton yok");
     }
 }
 

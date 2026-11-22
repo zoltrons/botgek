@@ -6,8 +6,8 @@
 //! ayarından bunu değiştirebilir.
 
 use serenity::all::{
-    CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType, Context,
-    CreateCommand, CreateCommandOption, EditInteractionResponse, InstallationContext,
+    ChannelId, CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType, Context,
+    CreateCommand, CreateCommandOption, EditInteractionResponse, GuildId, InstallationContext,
     InteractionContext, Permissions,
 };
 use tracing::{debug, error, warn};
@@ -22,6 +22,8 @@ const FOLLOW: &str = "takip";
 const UNFOLLOW: &str = "bırak";
 const LIST: &str = "liste";
 const USER_OPTION: &str = "kullanıcı";
+/// Tek komutta virgülle verilebilecek en fazla hesap: takip her hesabın akışını çeker.
+const MAX_USERS_PER_COMMAND: usize = 10;
 /// Sunucu başına takip sınırı: yoklama turunun uzunluğunu sınırlar.
 const MAX_FOLLOWS_PER_GUILD: i64 = 50;
 
@@ -30,7 +32,7 @@ pub fn definitions() -> Vec<CreateCommand> {
         CreateCommandOption::new(
             CommandOptionType::String,
             USER_OPTION,
-            "Letterboxd kullanıcı adı ya da profil bağlantısı",
+            "Letterboxd kullanıcı adı ya da profil bağlantısı; birden çoksa virgülle ayır",
         )
         .required(true)
         .max_length(200)
@@ -96,7 +98,7 @@ pub async fn handle(ctx: &Context, command: &CommandInteraction, http_client: &r
     }
     let channel_id = command.channel_id;
 
-    let content = match (sub.name.as_str(), raw_user.map(username)) {
+    let content = match (sub.name.as_str(), raw_user) {
         (LIST, _) => {
             let follows =
                 store::blocking(move || store::letterboxd_follows(Some(channel_id))).await;
@@ -110,51 +112,24 @@ pub async fn handle(ctx: &Context, command: &CommandInteraction, http_client: &r
                 format!("Bu kanalda takip edilenler: {}", names.join(", "))
             }
         }
-        (_, Some(None)) => {
-            "Geçerli bir Letterboxd kullanıcı adı ya da profil bağlantısı ver.".to_string()
-        }
-        (FOLLOW, Some(Some(user))) => match letterboxd::diary(http_client, &user).await {
-            Ok(entries) => {
-                // Var olan kayıtlar gönderilmez; yalnızca bundan sonrakiler gelir.
-                let last = entries.iter().map(|entry| entry.id).max().unwrap_or(0);
-                let name = user.clone();
-                let outcome = store::blocking(move || {
-                    store::follow_letterboxd(
-                        guild_id,
-                        channel_id,
-                        &name,
-                        last,
-                        MAX_FOLLOWS_PER_GUILD,
-                    )
-                })
-                .await;
-                match outcome {
-                    FollowOutcome::Added => {
-                        format!("✅ `{user}` takip ediliyor. Yeni izledikleri bu kanala gelecek.")
-                    }
-                    FollowOutcome::Exists => {
-                        format!("Bu kanal `{user}` hesabını zaten takip ediyor.")
-                    }
-                    FollowOutcome::Full => format!(
-                        "Bu sunucu en fazla {MAX_FOLLOWS_PER_GUILD} Letterboxd hesabı takip edebilir."
-                    ),
-                    FollowOutcome::Failed => {
-                        "Takip kaydedilemedi, biraz sonra yeniden dene.".to_string()
-                    }
-                }
-            }
-            Err(DiaryError::NotFound) => format!("`{user}` adlı bir Letterboxd hesabı bulunamadı."),
-            Err(err) => {
-                debug!("Letterboxd akışı doğrulanamadı ({user}): {err:?}");
-                "Letterboxd şu an yanıt vermiyor, biraz sonra yeniden dene.".to_string()
-            }
-        },
-        (UNFOLLOW, Some(Some(user))) => {
-            let name = user.clone();
-            if store::blocking(move || store::unfollow_letterboxd(channel_id, &name)).await {
-                format!("`{user}` artık bu kanalda takip edilmiyor.")
+        (FOLLOW | UNFOLLOW, Some(raw)) => {
+            let users = usernames(raw);
+            if users.is_empty() {
+                "Geçerli bir Letterboxd kullanıcı adı ya da profil bağlantısı ver.".to_string()
+            } else if users.len() > MAX_USERS_PER_COMMAND {
+                format!("Tek seferde en fazla {MAX_USERS_PER_COMMAND} hesap verebilirsin.")
             } else {
-                format!("Bu kanal `{user}` hesabını takip etmiyor.")
+                let mut lines = Vec::with_capacity(users.len());
+                for user in users {
+                    lines.push(match user {
+                        Err(raw) => format!("`{raw}` geçerli bir Letterboxd hesabı değil."),
+                        Ok(user) if sub.name == FOLLOW => {
+                            follow(http_client, guild_id, channel_id, user).await
+                        }
+                        Ok(user) => unfollow(channel_id, user).await,
+                    });
+                }
+                lines.join("\n")
             }
         }
         _ => return,
@@ -166,6 +141,70 @@ pub async fn handle(ctx: &Context, command: &CommandInteraction, http_client: &r
     {
         error!(interaction = %command.id, "Etkileşim yanıtı güncellenemedi: {err:?}");
     }
+}
+
+async fn follow(
+    http_client: &reqwest::Client,
+    guild_id: GuildId,
+    channel_id: ChannelId,
+    user: String,
+) -> String {
+    match letterboxd::diary(http_client, &user).await {
+        Ok(entries) => {
+            // Var olan kayıtlar gönderilmez; yalnızca bundan sonrakiler gelir.
+            let last = entries.iter().map(|entry| entry.id).max().unwrap_or(0);
+            let name = user.clone();
+            let outcome = store::blocking(move || {
+                store::follow_letterboxd(guild_id, channel_id, &name, last, MAX_FOLLOWS_PER_GUILD)
+            })
+            .await;
+            match outcome {
+                FollowOutcome::Added => {
+                    format!("✅ `{user}` takip ediliyor. Yeni izledikleri bu kanala gelecek.")
+                }
+                FollowOutcome::Exists => format!("Bu kanal `{user}` hesabını zaten takip ediyor."),
+                FollowOutcome::Full => format!(
+                    "`{user}` eklenemedi: bu sunucu en fazla {MAX_FOLLOWS_PER_GUILD} Letterboxd hesabı takip edebilir."
+                ),
+                FollowOutcome::Failed => {
+                    format!("`{user}` takibi kaydedilemedi, biraz sonra yeniden dene.")
+                }
+            }
+        }
+        Err(DiaryError::NotFound) => format!("`{user}` adlı bir Letterboxd hesabı bulunamadı."),
+        Err(err) => {
+            debug!("Letterboxd akışı doğrulanamadı ({user}): {err:?}");
+            format!(
+                "`{user}` doğrulanamadı: Letterboxd şu an yanıt vermiyor, biraz sonra yeniden dene."
+            )
+        }
+    }
+}
+
+async fn unfollow(channel_id: ChannelId, user: String) -> String {
+    let name = user.clone();
+    if store::blocking(move || store::unfollow_letterboxd(channel_id, &name)).await {
+        format!("`{user}` artık bu kanalda takip edilmiyor.")
+    } else {
+        format!("Bu kanal `{user}` hesabını takip etmiyor.")
+    }
+}
+
+/// Virgülle ayrılmış girdi → sırası korunmuş, tekrarsız kullanıcı adları; geçersiz parça
+/// `Err` olarak (kırpılmış hâliyle) döner. Boş parçalar atlanır.
+fn usernames(raw: &str) -> Vec<Result<String, String>> {
+    let mut out: Vec<Result<String, String>> = Vec::new();
+    for part in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let user = username(part).ok_or_else(|| part.replace('`', ""));
+        if !out.contains(&user) {
+            out.push(user);
+        }
+    }
+    out
 }
 
 /// Kullanıcı adı ya da profil bağlantısı → küçük harfli Letterboxd kullanıcı adı.
@@ -199,6 +238,19 @@ mod tests {
         assert_eq!(username("film/parasite"), None);
         assert_eq!(username("films"), None);
         assert_eq!(username("a b"), None);
+    }
+
+    #[test]
+    fn comma_separated_users_are_deduplicated_in_order() {
+        assert_eq!(
+            usernames(" ana, @Bob ,, letterboxd.com/ana/, film/x "),
+            vec![
+                Ok("ana".to_string()),
+                Ok("bob".to_string()),
+                Err("film/x".to_string())
+            ]
+        );
+        assert!(usernames(" , ").is_empty());
     }
 
     #[test]

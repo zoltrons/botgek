@@ -1,5 +1,5 @@
 //! Letterboxd takip akışı: takip edilen hesapların RSS akışını yoklar, yeni günlük kayıtlarını
-//! (izleme/inceleme) takip eden kanallara inceleme kartı olarak gönderir.
+//! (izleme/inceleme) takip eden kanallara klasik embed kartı olarak gönderir.
 //!
 //! Hız: akışlar tek tek, istekler arasında en az [`REQUEST_GAP`] beklenerek çekilir; böylece
 //! takip sayısı ne olursa olsun Letterboxd'a giden hız sabit kalır. Her hesap en sık
@@ -10,13 +10,10 @@
 
 use std::time::Duration;
 
-use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
 use crate::converters::builtin::letterboxd::{self, DiaryEntry, DiaryError};
 use crate::converters::builtin::raw::{self, DiscordError};
-use crate::converters::builtin::{BuiltinPost, render, v2};
-use crate::settings::{EmojiSettings, EngineSettings};
 use crate::store::{self, LetterboxdFollow};
 
 /// Ardışık iki RSS isteği arasındaki en kısa süre (ölçülen güvenli hızın yarısından azı).
@@ -88,7 +85,7 @@ async fn deliver(
             client,
             token,
             sub.channel_id,
-            &payload(&entry.post(client).await),
+            &entry.message(client).await,
             &[],
         )
         .await;
@@ -121,21 +118,6 @@ fn after_send(err: Option<&DiscordError>, seen: u64, id: u64, newest: u64) -> (u
         // Geçici (hız sınırı, Discord erişilemez): kalanlar sonraki turda denenir.
         Some(_) => (seen, true),
     }
-}
-
-fn payload(post: &BuiltinPost) -> Value {
-    v2::build_payload(&v2::V2Card {
-        post,
-        options: &render::RenderOptions::from_engine(&EngineSettings::default(), "letterboxd"),
-        resolved: &render::ResolvedMedia::default(),
-        emojis: &EmojiSettings::default(),
-        spoiler: false,
-        sender: None,
-        user_comment: None,
-        impersonation: None,
-        // İnceleme metnindeki @everyone ya da rol etiketi kimseyi uyarmasın.
-        allowed_mentions: Some(json!({ "parse": [] })),
-    })
 }
 
 #[cfg(test)]
