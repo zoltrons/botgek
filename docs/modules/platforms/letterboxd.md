@@ -25,7 +25,7 @@ Veri anahtar gerektirmeyen herkese açık sayfalardan okunur:
 
 - Spoiler uyarılı incelemelerde metin `||...||` arkasındadır; tek paragrafa toplanır ve `SPOILER_LIMIT` (280)
   karakterde kesilip "Devamını oku" bağlantısı alır.
-- İnceleme/günlük kartı tek bölümdür (Filmlinkd düzeni): `**Ad** izledi|inceledi`, bağlantılı film adı (kalın; `###` üstte boşluk bırakır),
+- İnceleme/günlük kartı tek bölümdür (Filmlinkd düzeni): `**Ad** izledi|inceledi`, bağlantılı film adı (`###`),
   kayda bağlı gün (bu yılsa yılsız) + yıldız + yeniden izleme + kalp; yanında poster. Metin ayraçla altta.
   Adın yanında rozet logosu (Patron tacı `lb_patron`, Pro `lb_pro`; profil kartında da). "İncelemeyi/Kaydı aç" ve "Filmi aç" butonları kartın dışında,
   hemen altında (`CustomCard::buttons`).

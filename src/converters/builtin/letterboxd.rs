@@ -1342,8 +1342,7 @@ fn review_card(review: &Review) -> CustomCard {
     if let Some(year) = &review.film_year {
         film.push_str(&format!(" ({year})"));
     }
-    // Başlık (`###`) Discord'da üstte boşluk bırakır: ad ile film arasına boşluk girmesin.
-    let title = format!("**[{film}]({})**", review.film_url);
+    let title = format!("### [{film}]({})", review.film_url);
     let mut header = format!("{who}\n{title}");
     if let Some(verdict) = verdict_line(review) {
         header.push_str(&format!("\n{verdict}"));
@@ -2385,7 +2384,7 @@ mod tests {
         assert!(
             text.starts_with(
                 "**[hollie amanda](https://letterboxd.com/hollieamanda/)** 👑 inceledi\n\
-                 **[Parasite (2019)](https://letterboxd.com/film/parasite-2019/)**\n\
+                 ### [Parasite (2019)](https://letterboxd.com/film/parasite-2019/)\n\
                  **[9 Ağu 2019](https://letterboxd.com/hollieamanda/film/parasite-2019/)** ★★★★½ ♥"
             ),
             "{text}"
