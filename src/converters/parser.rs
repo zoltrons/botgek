@@ -18,6 +18,7 @@ pub enum Platform {
     Letterboxd,
     Miniflux,
     Amazon,
+    Trendyol,
 }
 
 impl Platform {
@@ -38,6 +39,7 @@ impl Platform {
             Platform::Letterboxd => "Letterboxd",
             Platform::Miniflux => "Miniflux",
             Platform::Amazon => "Amazon",
+            Platform::Trendyol => "Trendyol",
         }
     }
 }
@@ -432,6 +434,33 @@ fn parse_amazon(raw_content: &str) -> Option<ParsedPost> {
     })
 }
 
+// ==================== TRENDYOL ====================
+
+static TRENDYOL_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*https?://(?:www\.|m\.)?trendyol\.com/([a-z0-9-]+/[a-z0-9-]+-p-[0-9]+)[^\s|]*\s*\|\|")
+        .expect("geçerli Trendyol spoiler regex")
+});
+static TRENDYOL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)https?://(?:www\.|m\.)?trendyol\.com/([a-z0-9-]+/[a-z0-9-]+-p-[0-9]+)[^\s<>()]*",
+    )
+    .expect("geçerli Trendyol regex")
+});
+
+/// Trendyol ürün sayfası (`/{marka}/{ad}-p-{id}`): sorgu parametreleri (`boutiqueId`, izleme) atılır.
+fn parse_trendyol(raw_content: &str) -> Option<ParsedPost> {
+    match_pair(
+        raw_content,
+        Platform::Trendyol,
+        &TRENDYOL_SPOILER_REGEX,
+        &TRENDYOL_REGEX,
+        |caps| {
+            let path = caps.get(1)?.as_str().to_ascii_lowercase();
+            Some(format!("https://www.trendyol.com/{path}"))
+        },
+    )
+}
+
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
 pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
     // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
@@ -497,6 +526,9 @@ pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
         return Some(sanitize_urls(post));
     }
     if let Some(post) = parse_amazon(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_trendyol(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -987,6 +1019,37 @@ fn parse_letterboxd_profile(raw_content: &str) -> Option<ParsedPost> {
         });
     }
     None
+}
+
+#[cfg(test)]
+mod trendyol_tests {
+    use super::*;
+
+    #[test]
+    fn trendyol_product_link_drops_query_and_keeps_spoiler() {
+        let p = parse_message(
+            "bak https://www.trendyol.com/apple/iphone-16-pro-max-p-857296077?boutiqueId=61&merchantId=451060",
+        )
+        .unwrap();
+        assert_eq!(p.platform, Platform::Trendyol);
+        assert_eq!(
+            p.original_url,
+            "https://www.trendyol.com/apple/iphone-16-pro-max-p-857296077"
+        );
+        let s = parse_message("|| https://m.trendyol.com/ahir-zaman/dil-belasi-p-939327587 ||")
+            .unwrap();
+        assert!(s.is_spoiler);
+        assert_eq!(
+            s.original_url,
+            "https://www.trendyol.com/ahir-zaman/dil-belasi-p-939327587"
+        );
+    }
+
+    #[test]
+    fn non_product_trendyol_link_is_ignored() {
+        assert!(parse_message("https://www.trendyol.com/sr?q=kitap").is_none());
+        assert!(parse_message("https://www.trendyol.com/apple-x-b101470").is_none());
+    }
 }
 
 #[cfg(test)]

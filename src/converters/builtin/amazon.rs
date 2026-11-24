@@ -183,27 +183,31 @@ const SPEC_SKIP: &[&str] = &[
     "lityum",
 ];
 
+/// Mağazadan bağımsız ürün kartı verisi; Trendyol da aynı kartı kullanır (`trendyol.rs`).
 #[derive(Debug, Default)]
-struct Product {
-    title: String,
-    clean_url: String,
+pub(super) struct Product {
+    pub(super) title: String,
+    pub(super) clean_url: String,
     /// Kartın üst satırındaki mağaza adı, bağlantının host'undan ("Amazon.com.tr").
-    store: String,
-    brand: Option<String>,
-    deal: Option<String>,
-    price_now: Option<String>,
-    price_was: Option<String>,
-    savings: Option<String>,
-    rating: Option<String>,
-    reviews: Option<String>,
-    /// Ana teslimat: (ücret, tarih); ücret "ÜCRETSİZ" ya da tutar.
-    delivery: Option<(String, String)>,
-    availability: Option<String>,
-    seller: Option<String>,
-    return_days: Option<String>,
-    image: Option<String>,
+    pub(super) store: String,
+    pub(super) brand: Option<String>,
+    pub(super) deal: Option<String>,
+    pub(super) price_now: Option<String>,
+    pub(super) price_was: Option<String>,
+    pub(super) savings: Option<String>,
+    pub(super) rating: Option<String>,
+    pub(super) reviews: Option<String>,
+    /// Ana teslimat: (ücret, tarih); ücret "ÜCRETSİZ", tutar ya da boş (yalnız tarih).
+    pub(super) delivery: Option<(String, String)>,
+    pub(super) availability: Option<String>,
+    pub(super) seller: Option<String>,
+    pub(super) return_days: Option<String>,
+    pub(super) image: Option<String>,
     /// Etiketli künye: (etiket, değer).
-    specs: Vec<(String, String)>,
+    pub(super) specs: Vec<(String, String)>,
+    pub(super) accent: u32,
+    /// Kartın altındaki tek buton ("Amazon'da aç").
+    pub(super) button_label: &'static str,
 }
 
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
@@ -297,6 +301,8 @@ fn parse_product(html: &str, source_url: &str) -> Option<Product> {
             .and_then(|c| c.get(1).or_else(|| c.get(2)).or_else(|| c.get(3)))
             .map(|m| m.as_str().to_string()),
         specs: specs(tail, &rows),
+        accent: AMAZON_ORANGE,
+        button_label: "Amazon'da aç",
     })
 }
 
@@ -437,7 +443,7 @@ fn brand(html: &str) -> Option<String> {
     (!brand.is_empty() && brand.chars().any(char::is_alphabetic)).then(|| truncate_chars(brand, 30))
 }
 
-fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
+pub(super) fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
     // 1) Mağaza · marka (küçük) ve ürün adı (başlık; link butonda).
     let mut head = format!("-# {}", p.store);
     if let Some(brand) = &p.brand {
@@ -475,7 +481,9 @@ fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
     }
     let mut ship = Vec::new();
     if let Some((fee, date)) = &p.delivery {
-        if fee.eq_ignore_ascii_case("ÜCRETSİZ") || fee.eq_ignore_ascii_case("FREE") {
+        if fee.is_empty() {
+            ship.push(escape(date));
+        } else if fee.eq_ignore_ascii_case("ÜCRETSİZ") || fee.eq_ignore_ascii_case("FREE") {
             ship.push(format!("Ücretsiz teslimat · {}", escape(date)));
         } else {
             ship.push(format!("Teslimat {} · {}", escape(fee), escape(date)));
@@ -540,12 +548,12 @@ fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
 
     CustomCard {
         components,
-        accent_color: Some(AMAZON_ORANGE),
+        accent_color: Some(p.accent),
         video_components: None,
         // Kartın altında tek bağlantı butonu (izleme parametresiz temiz link).
         buttons: vec![json!({
             "type": 1,
-            "components": [{ "type": 2, "style": 5, "label": "Amazon'da aç", "url": p.clean_url }],
+            "components": [{ "type": 2, "style": 5, "label": p.button_label, "url": p.clean_url }],
         })],
     }
 }

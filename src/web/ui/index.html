@@ -252,6 +252,13 @@
             <label class="switch"><input type="checkbox" id="mod-amazon" data-module-key="amazon" role="switch" aria-label="Amazon modülü"><span class="switch-track" aria-hidden="true"></span></label>
         </div>
         <div class="mod-row">
+            <span class="mod-key mono" aria-hidden="true">TY</span>
+            <div class="mod-body"><span class="mod-name">Trendyol</span><span class="mod-host mono">trendyol.com</span></div>
+            <span class="mod-state mono" id="status-trendyol">Aktif</span>
+            <button class="btn btn-quiet btn-xs mod-jump" type="button" data-jump-module="trendyol" aria-label="Trendyol rol filtresine git">filtreye git</button>
+            <label class="switch"><input type="checkbox" id="mod-trendyol" data-module-key="trendyol" role="switch" aria-label="Trendyol modülü"><span class="switch-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="mod-row">
             <span class="mod-key mono" aria-hidden="true">AI</span>
             <div class="mod-body">
                 <span class="mod-name">AI sohbet</span>
@@ -319,6 +326,7 @@
             <button class="studio-item" type="button" role="tab" id="modtab-letterboxd" aria-selected="false" aria-controls="studio-panel" data-studio-module="letterboxd" tabindex="-1"><span class="studio-name">Letterboxd</span><span class="studio-badge mono" id="badge-letterboxd">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-miniflux" aria-selected="false" aria-controls="studio-panel" data-studio-module="miniflux" tabindex="-1"><span class="studio-name">Miniflux</span><span class="studio-badge mono" id="badge-miniflux">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-amazon" aria-selected="false" aria-controls="studio-panel" data-studio-module="amazon" tabindex="-1"><span class="studio-name">Amazon</span><span class="studio-badge mono" id="badge-amazon">filtre yok</span></button>
+            <button class="studio-item" type="button" role="tab" id="modtab-trendyol" aria-selected="false" aria-controls="studio-panel" data-studio-module="trendyol" tabindex="-1"><span class="studio-name">Trendyol</span><span class="studio-badge mono" id="badge-trendyol">filtre yok</span></button>
             <button class="studio-item" type="button" role="tab" id="modtab-ai_chat" aria-selected="false" aria-controls="studio-panel" data-studio-module="ai_chat" tabindex="-1">
                 <span class="studio-name">AI sohbet</span>
                 <span class="studio-badge mono" id="badge-ai_chat">filtre yok</span>
@@ -437,6 +445,7 @@
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Letterboxd</span><span class="engine-note mono" id="engine-note-letterboxd">—</span></div><p class="engine-fixed mono">native embed · film/inceleme/profil kartı</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Miniflux</span><span class="engine-note mono" id="engine-note-miniflux">—</span></div><p class="engine-fixed mono">native embed · makale kartı + devamını oku</p></div>
         <div class="engine-row"><div class="engine-meta"><span class="engine-name">Amazon</span><span class="engine-note mono" id="engine-note-amazon">—</span></div><p class="engine-fixed mono">native embed · ürün kartı (fiyat, puan, künye)</p></div>
+        <div class="engine-row"><div class="engine-meta"><span class="engine-name">Trendyol</span><span class="engine-note mono" id="engine-note-trendyol">—</span></div><p class="engine-fixed mono">native embed · ürün kartı (datacat vekili)</p></div>
     </div>
 
     <p class="micro">kart içeriği</p>

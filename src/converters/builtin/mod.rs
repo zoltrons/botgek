@@ -28,6 +28,7 @@ pub mod spotify_video;
 pub mod tiktok;
 pub mod translate;
 mod transport;
+pub mod trendyol;
 pub mod tumblr;
 pub mod twitch;
 pub mod twitter;
@@ -113,6 +114,7 @@ pub fn platform_key(platform: Platform) -> &'static str {
         Platform::Letterboxd => "letterboxd",
         Platform::Miniflux => "miniflux",
         Platform::Amazon => "amazon",
+        Platform::Trendyol => "trendyol",
     }
 }
 
@@ -271,6 +273,7 @@ pub async fn fetch(
             Platform::Letterboxd => letterboxd::fetch(client, parsed).await,
             Platform::Miniflux => miniflux::fetch(parsed).await,
             Platform::Amazon => amazon::fetch(client, parsed).await,
+            Platform::Trendyol => trendyol::fetch(client, parsed).await,
             Platform::Facebook => facebook::fetch(client, parsed).await,
             Platform::YouTube => youtube::fetch(client, parsed).await,
         }

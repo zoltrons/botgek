@@ -53,6 +53,7 @@ handler ─► converters::enqueue_message ─► kuyruk (32) ─► builtin::ha
 | Letterboxd | [letterboxd.md](platforms/letterboxd.md) | `letterboxd.rs` |
 | Miniflux | [miniflux.md](platforms/miniflux.md) | `miniflux.rs` |
 | Amazon | [amazon.md](platforms/amazon.md) | `amazon.rs` |
+| Trendyol | [trendyol.md](platforms/trendyol.md) | `trendyol.rs` |
 
 Platform dosyaları `src/converters/builtin/` altındadır.
 

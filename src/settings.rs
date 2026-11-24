@@ -22,6 +22,7 @@ pub struct PlatformModules {
     pub letterboxd: bool,
     pub miniflux: bool,
     pub amazon: bool,
+    pub trendyol: bool,
     pub ai_chat: bool,
 }
 
@@ -43,6 +44,7 @@ impl Default for PlatformModules {
             letterboxd: true,
             miniflux: true,
             amazon: true,
+            trendyol: true,
             ai_chat: true,
         }
     }
@@ -507,6 +509,8 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub amazon: RoleFilterSettings,
     #[serde(default)]
+    pub trendyol: RoleFilterSettings,
+    #[serde(default)]
     pub ai_chat: RoleFilterSettings,
 }
 
@@ -540,6 +544,7 @@ impl ModuleRoleFilters {
             &mut self.letterboxd,
             &mut self.miniflux,
             &mut self.amazon,
+            &mut self.trendyol,
             &mut self.ai_chat,
         ] {
             filter.sanitize();
@@ -568,6 +573,7 @@ impl GuildSettings {
             "letterboxd" => &self.role_filters.letterboxd,
             "miniflux" => &self.role_filters.miniflux,
             "amazon" => &self.role_filters.amazon,
+            "trendyol" => &self.role_filters.trendyol,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
         }

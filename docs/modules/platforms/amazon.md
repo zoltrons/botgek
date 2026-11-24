@@ -41,6 +41,9 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
 - Discord sınırı: metin renklendirilemez (kırmızı rozet, yeşil teslimat, turuncu stok), künye gerçek
   sütun değildir (her satırda iki hücre `·` ile).
 
+- Kart (`Product` + `build_card`) mağazadan bağımsızdır; Trendyol aynı kartı kullanır
+  ([trendyol.md](trendyol.md)). Kartı değiştirmek iki mağazayı birden değiştirir.
+
 ## Değişmezler
 
 - Section (tip 9) aksesuarsız gönderilmez: Discord reddeder. Görsel yoksa metin bölümsüz konur.
