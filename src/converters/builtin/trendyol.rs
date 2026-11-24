@@ -1,6 +1,6 @@
 //! Trendyol ürün bağlantısı (`trendyol.com/{marka}/{ad}-p-{id}`).
 //!
-//! Trendyol botun isteğine 403 döner; sayfa datacat vekilinden (`DATACAT`) Markdown olarak okunur.
+//! Trendyol botun isteğine 403 döner; sayfa datacat vekilinden (`get_markdown`) Markdown olarak okunur.
 //! Fiyat, puan, stok, teslimat, satıcı ve künye bu metinden çıkarılır ve Amazon'un onaylı ürün
 //! kartı (`amazon::build_card`, Components V2) aynen kullanılır; yalnız renk ve buton değişir.
 //!
@@ -16,8 +16,6 @@ use super::{Author, BuiltinPost};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
 
-/// Sayfayı Markdown'a çeviren vekil: `GET {DATACAT}{url}`.
-const DATACAT: &str = "https://datacat.2g8nbyrb.workers.dev/";
 const TRENDYOL_ORANGE: u32 = 0xF27A1A;
 const MAX_TITLE_CHARS: usize = 150;
 const MAX_SPECS: usize = 8;
@@ -58,7 +56,7 @@ static CANONICAL: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let markdown = super::get_text(client, &format!("{DATACAT}{}", parsed.original_url)).await?;
+    let markdown = super::get_markdown(client, &parsed.original_url).await?;
     let product = parse_product(&markdown, &parsed.original_url)
         .ok_or_else(|| format!("Trendyol ürünü okunamadı: {}", parsed.original_url))?;
 

@@ -135,7 +135,7 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/converters/builtin/spotify_video.rs` | Spotify 30 sn MP3 ─► kapaklı MP4. |
 | `src/converters/builtin/twitch.rs` | Twitch klibi (GraphQL). |
 | `src/converters/builtin/xbox.rs` | Xbox oyun klibi (sayfa durumu, doğrudan MP4). |
-| `src/converters/builtin/amazon.rs` | Amazon ürün kartı: sayfa HTML'inden fiyat (varsa üstü çizili + indirim), puan, stok, künye; tek temiz link butonu. (~480) |
+| `src/converters/builtin/amazon.rs` | Amazon ürün kartı: datacat vekilinin Markdown çıktısından fiyat (varsa üstü çizili + indirim), puan, stok, künye; tek temiz link butonu. Kart Trendyol ile ortak. (~830) |
 | `src/converters/builtin/trendyol.rs` | Trendyol ürün kartı: datacat vekilinin Markdown çıktısından alanlar, Amazon kartı (`amazon::build_card`) ile çizilir. (~330) |
 | `src/converters/builtin/zipline.rs` | Botun ürettiği videoları Zipline'a yükler (Discord eki yerine). |
 | `src/converters/builtin/pixiv.rs` | Pixiv eseri. |

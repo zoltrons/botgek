@@ -17,18 +17,22 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
 ## Nasıl çalışır
 
 - Parser `/dp/ASIN` bağlantısını izleme parametresiz `https://www.{alan}/dp/{ASIN}` adresine indirger. Kısa
-  link olduğu gibi kalır; ASIN, yönlendirme sonrası sayfadan (`data-asin` / `"asin"`) okunur.
-- Sayfa botun kendi kimliğiyle ve ortak `get_text` ile çekilir (`MAX_BODY_BYTES`, 2 MiB; tipik sayfa
-  ~1 MB). Tarayıcı taklidi yapılmaz: sahte Chrome UA + rustls parmak izi captcha'yı tetikliyordu.
-- Amazon robot engeli: botun kimliğiyle `amzn.eu` kısa link (paylaşım parametreli adrese yönlenir) tam sayfa
-  verir; doğrudan `/dp/ASIN` isteğine 503 ya da captcha sayfası döner. Captcha atlatılmaya çalışılmaz:
-  `is_captcha` açık hata döner, kart üretilmez ve özgün mesaj kalır.
-- Ödenecek fiyat `apex-pricetopay-accessibility-label` içinden okunur; indirimde etiket "Yüzde 2
-  tasarruf ile 685,00 TL" olduğu için metindeki son tutar alınır. Sayfada daha önce geçen başka fiyatlar
-  (taksit, benzer ürün) okunmaz. Üstü çizili eski fiyat `a-text-price…` + `data-a-strike="true"`
-  ("Önceki Fiyat"), indirim `savingsPercentage`; ikisi de fiyat bloğundan.
+  link olduğu gibi kalır; ASIN, yönlendirme sonrası sayfadan (künye tablosundaki `ASIN` satırı ya da marka
+  linkindeki `lp_asin`) okunur.
+- Amazon botun doğrudan isteğine 503 ya da captcha döner. Sayfa ortak `get_markdown` ile datacat vekilinden
+  Markdown olarak çekilir (~100–450 KB; HTML seçeneği yok). Captcha atlatılmaya çalışılmaz: `is_captcha`
+  açık hata döner, kart üretilmez ve özgün mesaj kalır.
+- Datacat iki biçim üretebilir (temiz Markdown ya da HTML artıklı); kalıplar satır başı boşluklarına ve
+  `*`/`_` farkına dayanıklıdır. Ürün başlığı sayfadaki ilk tek `# ` başlığıdır. Satın alma kutusu (teslimat,
+  stok, satıcı, ürün görseli) başlıktan önce, fiyat bloğu başlıktan sonra "Taksitler"e kadar gelir.
+- Ödenecek fiyat başlıktan sonraki ilk tutar satırıdır; indirimde satır "Yüzde 3 tasarruf ile 38.999,00 TL
+  \-%3 38.999,00TL" olur, son tutar alınır, indirim `-%N`'den. Eski fiyat "Önceki Fiyat:" satırı. Taksit
+  tablosu (dört sütunlu) ve öneri kartlarının fiyatları okunmaz.
+- Fırsat rozeti geri sayım şablonundan önceki metin ("Gülümseten Kasım fırsatı NO\_OF\_HOURS…").
+- Görsel: alt metni ürün adıyla başlayan ilk görsel; boyut eki atılır (`71l4M2y8zwL._AC_SX679_.jpg` →
+  `71l4M2y8zwL.jpg`, özgün tam boy).
 - Başlık ilk `, `'de bölünür: baş kısım ürün adı, kalan parçalar (en çok 4) künye satırı. Başlıkta künye
-  yoksa teknik tablodan (`prodDetSectionEntry`) en çok 3 satır alınır; kesilmeden sığmayan satır atlanır.
+  yoksa iki sütunlu künye tablolarından en çok 3 satır alınır; kesilmeden sığmayan satır atlanır.
 - Kart (onaylı konseptin düzeni, `amazon.rs` başındaki şema):
   - Görselli bölüm: küçük mağaza · marka; `##` ürün adı (link değil, link butonda); 🏷️ fırsat rozeti;
     `#` fiyat (kartın en büyük yazısı); varsa küçük satırda ~~eski fiyat~~ −%indirim;
@@ -49,15 +53,15 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
 - Section (tip 9) aksesuarsız gönderilmez: Discord reddeder. Görsel yoksa metin bölümsüz konur.
 - Kalın beyaz yalnız başlık, fiyat ve aciliyette ("Son N adet"); künye, rozet, teslimat düz yazı
   (okunabilirlik; testle korunur).
-- Sıradan "Stokta var" gösterilmez; yalnız az stok / tükendi. Stok yalnızca ürünün kendi
-  `#availability` alanından okunur (sayfadaki öneri kartlarında başka ürünlerin stoğu yazar).
+- Sıradan "Stokta var" gösterilmez; yalnız az stok / tükendi. Stok yalnızca başlıktan önceki
+  satın alma kutusundan okunur (başlıktan sonraki öneri kartlarında başka ürünlerin stoğu yazar).
 - Eski fiyat ve indirim yalnızca Amazon sayfada gösterdiğinde çıkar; bot fiyat geçmişi tutmaz.
-- Fiyat bloğu bayt sınırında değil, harf sınırında kesilir (Türkçe harf ortasında panik).
 
 ## Değiştirirken
 
-Seçiciler Amazon'un HTML düzenine bağlıdır; düzen değişirse ilgili alan sessizce boş kalır, kart yine
-çıkar. Yeni seçiciyi önce gerçek bir sayfaya karşı deneyip testteki `SAMPLE`'ı güncelleyin.
+Kalıplar datacat'in Markdown çıktısına ve Amazon'un düzenine bağlıdır; düzen değişirse ilgili alan sessizce
+boş kalır, kart yine çıkar. Yeni kalıbı önce gerçek bir sayfanın datacat çıktısında deneyip testteki
+`SAMPLE`'ı güncelleyin (iki biçimi de deneyin).
 
 ## Testler
 

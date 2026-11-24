@@ -16,8 +16,8 @@ Trendyol ürün bağlantılarını (`trendyol.com` / `m.trendyol.com` `/{marka}/
 ## Nasıl çalışır
 
 - Parser sorgu parametrelerini (`boutiqueId`, `merchantId`, izleme) atar.
-- Trendyol botun isteğine 403 döner. Sayfa `https://datacat.2g8nbyrb.workers.dev/{url}` vekilinden Markdown
-  olarak alınır; alanlar satır düzeninden okunur:
+- Trendyol botun isteğine 403 döner. Sayfa ortak `get_markdown` ile datacat vekilinden
+  (`https://datacat.2g8nbyrb.workers.dev/{url}`, Amazon da kullanır) Markdown olarak alınır; alanlar satır düzeninden okunur:
   - Başlık `# [**Marka**](…) Ürün adı`; başlık yoksa (silinmiş ürün, "Sayfa Bulunamadı") kart çıkmaz.
   - Puan başlıktan sonraki ilk satır, değerlendirme `**N** Değerlendirme`.
   - Fiyat: başlıktan "Ek Hizmetler" / "Şimdi Al"a kadar yalnız tutardan oluşan satırlar. İlk tutar ödenecek

@@ -137,6 +137,14 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(
 }
 
 /// Metin yanıtını çeker. `Content-Length` veya akış `MAX_BODY_BYTES`'ı aşarsa hata verir.
+/// Botu engelleyen mağaza sayfalarını (Amazon, Trendyol) Markdown'a çeviren vekil.
+const DATACAT: &str = "https://datacat.2g8nbyrb.workers.dev/";
+
+/// Sayfayı datacat vekilinden Markdown olarak çeker: `GET {DATACAT}{url}`.
+pub(super) async fn get_markdown(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    get_text(client, &format!("{DATACAT}{url}")).await
+}
+
 pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
     use crate::telemetry::{HttpHost, InFlight};
     let host = HttpHost::classify(url);

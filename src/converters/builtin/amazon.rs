@@ -1,7 +1,7 @@
 //! Amazon ürün bağlantısı (`amazon.com.tr/.../dp/{ASIN}` ve `amzn.eu/d/{token}` kısa linki).
 //!
-//! Ürün sayfası botun kendi kimliğiyle istenir ve sunucuda çizilir; fiyat, puan, stok, teslimat ve teknik künye doğrudan HTML'den
-//! okunur (ayrı bir API yok). Discord'un kendi önizlemesi başlığı kırpar, fiyat göstermez ve küçük
+//! Amazon botun isteğini engeller (503 / captcha); ürün sayfası datacat vekilinden Markdown olarak
+//! alınır (`get_markdown`). Fiyat, puan, stok, teslimat ve teknik künye bu metinden okunur (ayrı API yok). Discord'un kendi önizlemesi başlığı kırpar, fiyat göstermez ve küçük
 //! görsel olarak Amazon'un reklam şeridini koyar; bunun yerine onaylı konseptteki kart üretilir:
 //!
 //! ```text
@@ -18,8 +18,8 @@
 //! [Amazon'da aç]                      (kartın altında tek, izleme parametresiz link)
 //! ```
 //!
-//! shortcut: HTML sınıf/kimlik seçicileri Amazon'un düzenine bağlı; düzen değişirse ilgili alan
-//! sessizce boş kalır (kart yine çıkar). Seçiciler kırılırsa buradaki regex'ler güncellenir.
+//! shortcut: satır kalıpları datacat'in Markdown çıktısına ve Amazon'un sayfa düzenine bağlı; düzen
+//! değişirse ilgili alan sessizce boş kalır (kart yine çıkar). Kırılırsa buradaki regex'ler güncellenir.
 
 use std::sync::LazyLock;
 
@@ -47,78 +47,54 @@ static ASIN_IN_URL: LazyLock<Regex> = LazyLock::new(|| {
 static AMAZON_HOST: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^https?://([^/]*amazon\.[^/]+)/").expect("geçerli host regex")
 });
-static ASIN_IN_HTML: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:"asin"\s*:\s*"|data-asin=")([A-Z0-9]{10})""#)
-        .expect("geçerli ASIN HTML regex")
+/// Kısa linkte ASIN sayfadan: künye tablosu ya da marka linkindeki `lp_asin`.
+static ASIN_IN_PAGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:\|\s*ASIN\s*\||lp(?:_|%5F)asin=)\s*([A-Z0-9]{10})")
+        .expect("geçerli ASIN sayfa regex")
 });
-static CANONICAL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)rel="canonical"\s+href="([^"]+)""#).expect("geçerli canonical regex")
-});
-static TITLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)id="productTitle"[^>]*>(.*?)</span>"#).expect("geçerli başlık regex")
-});
-/// Ödenecek fiyatın erişilebilirlik etiketi: görünen fiyat parçalı span'larda, düz metin burada.
-static PRICE_TO_PAY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)id="apex-pricetopay-accessibility-label"[^>]*>\s*([^<]+?)\s*<"#)
-        .expect("geçerli fiyat regex")
-});
-/// Üstü çizili ("Önceki Fiyat") fiyat: `a-text-price…` + `data-a-strike="true"`.
-static STRIKE_PRICE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)class="a-price a-text-price[^"]*"[^>]*data-a-strike="true"[^>]*>\s*<span class="a-offscreen">\s*([^<]+?)\s*</span>"#)
-        .expect("geçerli eski fiyat regex")
-});
-/// Fiyat metnindeki tutar: etiket indirimde "Yüzde 2 tasarruf ile 685,00 TL" olur.
+/// Ürün başlığı sayfadaki tek `# ` başlığıdır (alt bölümler `## `/`### `).
+static TITLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^#\s+(\S.*)$").expect("geçerli başlık regex"));
+/// Başlığın altındaki marka linki: "[MSI Store’u ziyaret edin](…)".
+static BYLINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[\s*([^\]]+?)\s*\]\(").expect("geçerli marka regex"));
+/// Fiyat metnindeki tutar: "Yüzde 3 tasarruf ile 38.999,00 TL \-%3 38.999,00TL".
 static AMOUNT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"([0-9][0-9.]*(?:,[0-9]+)?)\s*(?:TL|₺)").expect("geçerli tutar regex")
 });
-static SAVINGS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)savingsPercentage[^>]*>\s*([^<]+?)\s*<"#).expect("geçerli indirim regex")
-});
-static DEAL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)id="dealBadgeSupportingText"[^>]*>(.*?)</span>"#)
-        .expect("geçerli fırsat regex")
-});
+static SAVINGS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\\?-%\s*([0-9]+)").expect("geçerli indirim regex"));
+/// Fırsat rozeti, geri sayım şablonundan önceki metin: "Gülümseten Kasım fırsatı NO\_OF\_HOURS…".
+static DEAL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+?)\s+NO\\_OF\\_").expect("geçerli fırsat regex"));
 static RATING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)id="acrPopover"[^>]*title="[^"]*?([0-9]+[.,][0-9])\s*""#)
-        .expect("geçerli puan regex")
+    Regex::new(r"5 yıldız üzerinden ([0-9][.,][0-9])").expect("geçerli puan regex")
 });
 static REVIEWS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)id="acrCustomerReviewText"[^>]*>\s*\(?\s*([0-9][0-9.]*)"#)
+    Regex::new(r"\(\s*([0-9][0-9.]*)\s*\)\s*\]\(#averageCustomerReviewsAnchor")
         .expect("geçerli yorum sayısı regex")
 });
-/// Ana teslimat seçeneği (`DEXUnifiedCXPDM`): ücret ve tarih.
+/// Satın alma kutusunun ana teslimat satırı: "ÜCRETSİZ teslimat 27 Kasım Cuma. 7 saat … verirseniz".
 static DELIVERY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)data-csa-c-content-id="DEXUnifiedCXPDM"[^>]*data-csa-c-delivery-price="([^"]*)"[^>]*data-csa-c-delivery-time="([^"]*)""#)
+    Regex::new(r"^(ÜCRETSİZ|FREE|[0-9][0-9.,]*\s*TL) (?:teslimat|delivery) ([^.]+)")
         .expect("geçerli teslimat regex")
 });
 static RETURNS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([0-9]+) gün içinde iade").expect("geçerli iade regex"));
-/// "Satıcı" alanı (`desktop-merchant-info`); "Gönderici" ayrı bir alandır.
-static SELLER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?s)offer-display-feature-name="desktop-merchant-info".{0,3000}?offer-display-feature-text-message">\s*([^<]+?)\s*<"#)
-        .expect("geçerli satıcı regex")
-});
-/// Ürün görseli: ana görselin büyük sürümü, yoksa galerinin ilk `hiRes`'i, yoksa og:image.
+/// Ürün görseli (alt metni ürün adı olan büyük görsel); boyut eki (`._AC_SX679_`) atılınca özgün dosya kalır.
 static IMAGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)data-old-hires="(https://[^"]+)"|"hiRes":"(https://[^"]+)"|property="og:image"\s+content="(https://[^"]+)""#)
+    Regex::new(r"!\[([^\]]+)\]\((https://m\.media-amazon\.com/images/I/[^)\s]+)\)")
         .expect("geçerli görsel regex")
 });
-static BYLINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)id="bylineInfo"[^>]*>(.*?)</a>"#).expect("geçerli marka regex")
-});
+static IMAGE_SIZE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\._[^/]*_\.(jpg|png)$").expect("geçerli görsel boyutu regex"));
+/// İki sütunlu künye tablosu satırı; taksit tabloları dört sütunludur, eşleşmez.
 static DETAIL_ROW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)prodDetSectionEntry">(.*?)</th>\s*<td[^>]*>(.*?)</td>"#)
-        .expect("geçerli künye satırı regex")
-});
-static AVAILABILITY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)id="availability"[^>]*>\s*<span[^>]*>(.*?)</span>"#)
-        .expect("geçerli stok regex")
+    Regex::new(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$").expect("geçerli künye satırı regex")
 });
 static LOW_STOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)stokta sadece ([0-9]+) adet").expect("geçerli az stok regex")
 });
-static TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<[^>]+>").expect("geçerli etiket regex"));
 
 /// Başlığın virgülle ayrılmış parçasını künye etiketine eşler (sıra önemli: "RTX… GDDR6"
 /// ekran kartıdır, belleğe düşmemeli; "512GB SSD" depolamadır).
@@ -211,16 +187,15 @@ pub(super) struct Product {
 }
 
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    // Botun kendi kimliğiyle (`get_text`) istenir. Tarayıcı taklidi (Chrome UA + rustls parmak
-    // izi) Amazon'da captcha'yı tetikliyordu; captcha atlatılmaya çalışılmaz, açık hata döner.
-    let html = super::get_text(client, &parsed.original_url).await?;
-    if is_captcha(&html) {
+    // Captcha atlatılmaya çalışılmaz: vekil de captcha sayfası getirirse açık hata döner.
+    let markdown = super::get_markdown(client, &parsed.original_url).await?;
+    if is_captcha(&markdown) {
         return Err(format!(
             "Amazon robot doğrulaması istedi (captcha): {}",
             parsed.original_url
         ));
     }
-    let product = parse_product(&html, &parsed.original_url)
+    let product = parse_product(&markdown, &parsed.original_url)
         .ok_or_else(|| format!("Amazon ürünü okunamadı: {}", parsed.original_url))?;
 
     let mut post = BuiltinPost::new(
@@ -234,31 +209,37 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     Ok(post)
 }
 
-fn parse_product(html: &str, source_url: &str) -> Option<Product> {
+fn parse_product(markdown: &str, source_url: &str) -> Option<Product> {
+    let lines: Vec<&str> = markdown
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let title_at = title_line(markdown, &lines)?;
+    let full_title = clean_text(&TITLE.captures(lines[title_at])?[1]);
+    // Satın alma kutusu (teslimat, stok, satıcı) başlıktan önce, fiyat bloğu başlıktan sonra gelir.
+    let (buy_box, after) = (&lines[..title_at], &lines[title_at + 1..]);
+    let price_block = &after[..after
+        .iter()
+        .position(|l| l.contains("Taksitler") || l.contains("Bu ürün hakkında"))
+        .unwrap_or(after.len())
+        .min(40)];
+
     let asin = ASIN_IN_URL
         .captures(source_url)
-        .or_else(|| ASIN_IN_HTML.captures(html))
+        .or_else(|| ASIN_IN_PAGE.captures(markdown))
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())?;
     let host = AMAZON_HOST
         .captures(source_url)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
-        .or_else(|| {
-            CANONICAL
-                .captures(html)
-                .and_then(|c| c.get(1))
-                .and_then(|m| AMAZON_HOST.captures(m.as_str()))
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_string())
-        })
         .unwrap_or_else(|| "www.amazon.com.tr".to_string());
     let clean_url = format!("https://{host}/dp/{asin}");
     let store = host
         .trim_start_matches("www.")
         .replacen("amazon", "Amazon", 1);
 
-    let full_title = first(&TITLE, html).filter(|t| !t.is_empty())?;
     // Satıcılar teknik özellikleri başlığa virgülle dizer: ilk virgüle kadarı ürün adı,
     // kalanı künye. Baş kısım çok kısaysa (ör. "Krem, 80 ml") başlık bölünmez.
     let (head, tail) = match full_title.split_once(", ") {
@@ -266,87 +247,112 @@ fn parse_product(html: &str, source_url: &str) -> Option<Product> {
         _ => (full_title.clone(), None),
     };
 
-    // Fiyatlar yalnızca ödenecek fiyat bloğundan okunur; taksit, "benzer ürün" vb. fiyatlar
-    // kartı yanıltmasın.
-    let price_region = price_region(html);
-    let price_now = first(&PRICE_TO_PAY, price_region).and_then(|t| amount(&t));
-    let price_was = first(&STRIKE_PRICE, price_region)
-        .and_then(|t| amount(&t))
+    // Ödenecek fiyat, başlıktan sonraki ilk tutar satırı; taksit tablosu ve "benzer ürün"
+    // fiyatları bloğun dışında kalır.
+    let price_line = price_block
+        .iter()
+        .find(|l| !l.starts_with("Önceki") && AMOUNT.is_match(l));
+    let price_now = price_line.and_then(|l| amount(l));
+    let price_was = price_block
+        .iter()
+        .find(|l| l.starts_with("Önceki Fiyat"))
+        .and_then(|l| amount(l))
         .filter(|p| Some(p) != price_now.as_ref());
 
-    let rows = detail_rows(html);
+    let rows: Vec<(String, String)> = lines
+        .iter()
+        .filter_map(|l| DETAIL_ROW.captures(l))
+        .map(|c| (clean_text(&c[1]), clean_text(&c[2])))
+        .filter(|(k, v)| !k.is_empty() && !v.is_empty() && !v.starts_with("---"))
+        .collect();
 
     Some(Product {
         title: truncate_chars(&head, MAX_TITLE_CHARS),
         clean_url,
         store,
-        brand: brand(html),
-        deal: first(&DEAL, html).filter(|d| !d.is_empty()),
+        brand: after
+            .first()
+            .and_then(|l| BYLINE.captures(l))
+            .and_then(|c| brand(&c[1])),
+        deal: price_block
+            .iter()
+            .find_map(|l| DEAL.captures(l))
+            .map(|c| clean_text(&c[1])),
+        savings: price_line
+            .and_then(|l| SAVINGS.captures(l))
+            .map(|c| format!("−%{}", &c[1])),
         price_now,
         price_was,
-        savings: first(&SAVINGS, price_region)
-            .map(|s| normalize_savings(&s))
+        rating: after
+            .iter()
+            .take(3)
+            .find_map(|l| RATING.captures(l))
+            .map(|c| c[1].replace('.', ",")),
+        reviews: after
+            .iter()
+            .take(3)
+            .find_map(|l| REVIEWS.captures(l))
+            .map(|c| c[1].to_string()),
+        delivery: buy_box
+            .iter()
+            .find_map(|l| DELIVERY.captures(l))
+            .map(|c| (c[1].to_string(), c[2].trim().to_string())),
+        availability: buy_box
+            .iter()
+            .find(|l| {
+                l.starts_with("Stokta")
+                    || l.starts_with("Şu anda mevcut değil")
+                    || l.starts_with("Geçici olarak")
+            })
+            .and_then(|l| availability(l)),
+        seller: buy_box
+            .iter()
+            .position(|l| *l == "Gönderici / Satıcı" || *l == "Satıcı")
+            .and_then(|i| buy_box.get(i + 1))
+            .map(|l| clean_text(l.trim_start_matches('[').split("](").next().unwrap_or(l)))
             .filter(|s| !s.is_empty()),
-        rating: first(&RATING, html),
-        reviews: first(&REVIEWS, html),
-        delivery: DELIVERY
-            .captures(html)
-            .map(|c| (clean_text(&c[1]), clean_text(&c[2])))
-            .filter(|(_, date)| !date.is_empty()),
-        availability: availability(html),
-        seller: first(&SELLER, html).filter(|s| !s.is_empty()),
-        return_days: RETURNS.captures(html).map(|c| c[1].to_string()),
-        image: IMAGE
-            .captures(html)
-            .and_then(|c| c.get(1).or_else(|| c.get(2)).or_else(|| c.get(3)))
-            .map(|m| m.as_str().to_string()),
+        return_days: RETURNS.captures(markdown).map(|c| c[1].to_string()),
+        image: image(buy_box, &full_title),
         specs: specs(tail, &rows),
         accent: AMAZON_ORANGE,
         button_label: "Amazon'da aç",
     })
 }
 
-/// Amazon'un robot doğrulama sayfası (ürün yerine ~4 KB captcha formu).
-fn is_captcha(html: &str) -> bool {
-    html.contains("/errors/validateCaptcha")
+/// Ürün başlığı satırı: sayfanın meta başlığıyla ("Ürün adı : Amazon.com.tr: Moda") başlayan ilk `# `
+/// satırı. Başlıktan önce başka `# ` satırı olabilir ("# Ürün özeti, temel ürün bilgilerini sunar").
+fn title_line(markdown: &str, lines: &[&str]) -> Option<usize> {
+    let meta = markdown
+        .lines()
+        .take(20)
+        .find_map(|l| l.strip_prefix("title:"))
+        .map(|t| clean_text(t.trim().trim_matches('"')));
+    let heading = |l: &&str| TITLE.captures(l).map(|c| clean_text(&c[1]));
+    let matches_meta = |l: &&str| {
+        heading(l).is_some_and(|h| {
+            let prefix: String = h.chars().take(20).collect();
+            meta.as_deref().is_some_and(|m| m.starts_with(&prefix))
+        })
+    };
+    lines
+        .iter()
+        .position(matches_meta)
+        .or_else(|| lines.iter().position(|l| heading(l).is_some()))
 }
 
-/// Regex'in ilk grubunu düz metne çevirir.
-fn first(re: &Regex, html: &str) -> Option<String> {
-    re.captures(html)
-        .and_then(|c| c.get(1))
-        .map(|m| clean_text(m.as_str()))
+/// Amazon'un robot doğrulama sayfası (ürün yerine captcha formu).
+fn is_captcha(markdown: &str) -> bool {
+    markdown.contains("/errors/validateCaptcha")
 }
 
-/// `i`'yi aşmayan en yakın harf sınırı: Türkçe harfin ortasından dilimleme panikler.
-fn floor_boundary(html: &str, i: usize) -> usize {
-    let mut end = i.min(html.len());
-    while !html.is_char_boundary(end) {
-        end -= 1;
-    }
-    end
-}
-
-/// Çekirdek fiyat bloğundan başlayan dilim (yoksa tüm HTML).
-fn price_region(html: &str) -> &str {
-    for marker in [
-        "apex-pricetopay-accessibility-label",
-        "corePriceDisplay_desktop_feature_div",
-    ] {
-        if let Some(i) = html.find(marker) {
-            let start = html[..i].rfind('<').unwrap_or(i);
-            return &html[start..floor_boundary(html, i + 8000)];
-        }
-    }
-    html
-}
-
-fn detail_rows(html: &str) -> Vec<(String, String)> {
-    DETAIL_ROW
-        .captures_iter(html)
-        .map(|c| (clean_text(&c[1]), clean_text(&c[2])))
-        .filter(|(k, v)| !k.is_empty() && !v.is_empty())
-        .collect()
+/// Alt metni ürün adıyla başlayan ilk görsel (galeri küçükleri alt metinsiz, bannerlar başka adlı).
+fn image(buy_box: &[&str], title: &str) -> Option<String> {
+    let prefix: String = title.chars().take(20).collect();
+    buy_box
+        .iter()
+        .flat_map(|l| IMAGE.captures_iter(l))
+        .find(|c| clean_text(&c[1]).starts_with(&prefix))
+        .map(|c| IMAGE_SIZE.replace(&c[2], ".$1").into_owned())
 }
 
 /// Etiketli künye: önce başlığın sınıflandırılabilen parçaları, sonra tablodan eşlenen ve
@@ -372,7 +378,8 @@ fn specs(title_tail: Option<&str>, rows: &[(String, String)]) -> Vec<(String, St
         }
     }
     for (key, value) in rows {
-        let lower = key.to_lowercase();
+        // "İ".to_lowercase() "i̇" (noktalı) olur; atlama listesi düz "i" ile yazılı.
+        let lower = key.replace('İ', "i").to_lowercase();
         let mapped = TABLE_LABELS.iter().any(|(k, _)| k == key);
         if !mapped
             && key.chars().count() <= MAX_SPEC_KEY
@@ -406,9 +413,8 @@ fn pretty_value(label: &str, value: &str) -> String {
     }
 }
 
-fn availability(html: &str) -> Option<String> {
-    // Bloğun ilk span'ı stok cümlesidir; içindeki <script> vb. gürültü sonraki span'lardadır.
-    let value = first(&AVAILABILITY, html)?;
+fn availability(line: &str) -> Option<String> {
+    let value = clean_text(line);
     if let Some(n) = LOW_STOCK.captures(&value) {
         return Some(format!("Son {} adet", &n[1]));
     }
@@ -428,8 +434,8 @@ fn amount(text: &str) -> Option<String> {
         .map(|c| format!("{} TL", &c[1]))
 }
 
-fn brand(html: &str) -> Option<String> {
-    let raw = first(&BYLINE, html)?;
+fn brand(raw: &str) -> Option<String> {
+    let raw = clean_text(raw);
     let mut brand = raw.as_str();
     for prefix in ["Marka:", "Ziyaret edin:", "Mağaza:", "Brand:"] {
         brand = brand.trim_start_matches(prefix).trim();
@@ -562,66 +568,82 @@ fn text(content: String) -> Value {
     json!({ "type": 10, "content": content })
 }
 
-/// HTML'den düz metin: etiketleri at, HTML varlıklarını çöz, boşlukları toparla.
+/// Markdown hücresinden düz metin: HTML varlıklarını ve kaçışları çöz, boşlukları toparla.
 fn clean_text(raw: &str) -> String {
-    let no_tags = TAG.replace_all(raw, " ");
-    unescape_html(&no_tags)
+    unescape_html(&raw.replace('\\', ""))
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// "-%12", "%12 (₺6.000 tasarruf)" → "−%12".
-fn normalize_savings(raw: &str) -> String {
-    // Yalnız ilk sayı: tutar rakamları yüzdeye karışmasın.
-    let digits: String = raw
-        .chars()
-        .skip_while(|c| !c.is_ascii_digit())
-        .take_while(char::is_ascii_digit)
-        .collect();
-    if digits.is_empty() {
-        return String::new();
-    }
-    format!("−%{digits}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Gerçek amazon.com.tr ürün sayfasının işaretlemesinden kısaltılmış örnek.
-    const SAMPLE: &str = r##"<html><head>
-<link rel="canonical" href="https://www.amazon.com.tr/MSI-Cyborg/dp/B0GHR4L88D"></head><body>
-<div data-asin="B0GHR4L88D"></div>
-<a id="bylineInfo" class="a-link-normal" href="/stores/MSI">MSI Store&rsquo;u ziyaret edin</a>
-<span id="productTitle" class="a-size-large">  MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar, Intel Core I5-13420H, 15.6 FHD 144Hz, 16GB RAM DDR5, RTX4050 GDDR6 6GB, 512GB SSD, DOS  </span>
-<span id="acrPopover" class="reviewCountTextLinkedHistogram noUnderline" title="5 yıldız üzerinden 4,3">
-<span id="acrCustomerReviewText" aria-label="19 Yorumlar" class="a-size-small">(19)</span>
-<img data-a-image-name="landingImage" id="landingImage" data-old-hires="https://m.media-amazon.com/images/I/71l4M2y8zwL._AC_SL1500_.jpg">
-<span class="a-offscreen">1.234,00TL</span>
-<span id="dealBadgeSupportingText" class="a-size-small dealBadgeTextColor a-text-bold"> Gülümseten Kasım fırsatı </span>
-<div id="corePriceDisplay_desktop_feature_div">
-  <span id="apex-pricetopay-accessibility-label" data-pricetopay-label="{priceToPay}" data-pricetopay-savings-label="Yüzde {savings} tasarruf ile {priceToPay}" class="aok-offscreen"> Yüzde 12 tasarruf ile 49.911,94&nbsp;TL </span>
-  <span class="a-price priceToPay"><span class="a-offscreen"> </span></span>
-  <span class="a-size-large a-color-price savingPriceOverride aok-align-center reinventPriceSavingsPercentageMargin savingsPercentage apex-savings-percentage">-%12</span>
-  <span class="basisPrice"><span class="apex-basisprice-label">Önceki Fiyat:</span> <span class="a-price a-text-price apex-basisprice-value" data-a-size="s" data-a-strike="true" data-a-color="secondary"><span class="a-offscreen">56.999,00TL</span><span aria-hidden="true">56.999,00TL</span></span></span>
-</div>
-<span data-csa-c-type="element" data-csa-c-content-id="DEXUnifiedCXPDM" data-csa-c-delivery-price="ÜCRETSİZ" data-csa-c-value-proposition="" data-csa-c-delivery-type="teslimat" data-csa-c-delivery-time="24 Kasım Salı" data-csa-c-delivery-destination="">
-<div id="availability" class="a-section"> <span class="a-size-medium a-color-price"> Stokta sadece 1 adet kaldı. </span><script>noise()</script></div>
-<div offer-display-feature-name="desktop-merchant-info" class="x"><span class="a-size-small offer-display-feature-text-message">Amazon.com.tr</span></div>
-<span>Teslimat tarihinden sonraki 14 gün içinde iade edilebilir</span>
-<table>
-<tr><th class="prodDetSectionEntry"> Sabit Disk Boyutu </th><td> 512 GB </td></tr>
-<tr><th class="prodDetSectionEntry"> İşletim Sistemi </th><td> DOS </td></tr>
-<tr><th class="prodDetSectionEntry"> Grafik Açıklaması </th><td> Özel </td></tr>
-<tr><th class="prodDetSectionEntry"> Ürünün Ağırlığı </th><td> 1.98 Kilogram </td></tr>
-<tr><th class="prodDetSectionEntry"> Klavye Açıklaması </th><td> Arkadan Aydınlatmalı </td></tr>
-<tr><th class="prodDetSectionEntry"> Garanti Bilgileri </th><td> 2 </td></tr>
-<tr><th class="prodDetSectionEntry"> Model Numarası </th><td> A13VE-2269XTRNN </td></tr>
-<tr><th class="prodDetSectionEntry"> En Çok Satanlar Sıralaması </th><td> Bilgisayar Şu kategoride 264. sırada: (<a href="/x">Bilgisayar Şu kategorideki En Popüler 100 Ürünü göster</a>) <span>Geleneksel Dizüstü Bilgisayarlar Şu kategoride 3. sırada:</span> </td></tr>
-<tr><th class="prodDetSectionEntry"> ASIN </th><td> B0GHR4L88D </td></tr>
-</table>
-</body></html>"##;
+    /// Gerçek amazon.com.tr ürün sayfasının datacat çıktısından kısaltılmış örnek.
+    const SAMPLE: &str = r#"URL Source: https://www.amazon.com.tr/dp/B0GHR4L88D
+Markdown Content:
+---
+title: "MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar, Intel Core I5-13420H : Amazon.com.tr: Bilgisayar"
+---
+#### Çerez ve tanıtım seçenekleri
+# Ürün özeti, temel ürün bilgilerini sunar ---Klavye kısayolu  Shift + alt + opt + D
+[![Yaşam ve Hobi](https://m.media-amazon.com/images/I/41YoKYnoxdL.jpg)](https://www.amazon.com.tr/b/?node=29761388031)
+
+Prime ile ÜCRETSİZ teslimat, özel fırsatlar, ödüllü film ve dizilerin keyfini çıkar.
+
+1.234,00TL
+
+ÜCRETSİZ teslimat 24 Kasım Salı. 7 saat 54 dakika içinde sipariş verirseniz
+
+veya en hızlı teslimat Yarın, 22 Kasım
+
+ Stokta sadece 1 adet kaldı.  
+
+Gönderici / Satıcı
+
+Amazon.com.tr
+
+[Amazon.com.tr](<javascript:void(0)>)
+
+[Teslimat tarihinden sonraki 14 gün içinde iade edilebilir](<javascript:void(0)>)
+
+- ![](https://m.media-amazon.com/images/I/41Ra744t9ML._AC_US40_.jpg)
+- ![MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar, Intel Core I5-13420H, 15.6 FHD 144Hz, 16GB RAM DDR5, RTX4050 GDDR6 6GB, 512GB SSD, DOS](https://m.media-amazon.com/images/I/71l4M2y8zwL._AC_SX679_.jpg)
+
+# MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar, Intel Core I5-13420H, 15.6 FHD 144Hz, 16GB RAM DDR5, RTX4050 GDDR6 6GB, 512GB SSD, DOS
+
+[MSI Store’u ziyaret edin](https://www.amazon.com.tr/stores/MSI/page/D40D?lp_asin=B0GHR4L88D&ref_=ast_bln)
+
+[4,3 *5 yıldız üzerinden 4,3*](<javascript:void(0)>) [(19)](#averageCustomerReviewsAnchor)
+
+Geçen ay 200 adetten fazla satın alındı
+
+Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülümseten Kasım fırsatı
+
+ Yüzde 12 tasarruf ile 49.911,94 TL \-%12 49.911,94TL 
+
+Önceki Fiyat: 56.999,00 TLÖnceki Fiyat: 56.999,00TL56.999,00TL [ ![](https://m.media-amazon.com/images/S/sash//GN8m.svg) ](#) 
+
+12 aya varan taksit seçenekleri [Taksitler](<javascript:void(0)>)
+
+| Dönem | Aylık Tutar | Vade Farkı | Toplam Tutar |
+| --- | --- | --- | --- |
+| 2x ay | 24.955,97 TL | ücretsiz | 49.911,94 TL |
+
+[Lenovo LOQ](https://www.amazon.com.tr/dp/B0X) 28.929,00TL Stokta sadece 13 adet kaldı.
+
+| Sabit Disk Boyutu | 512 GB |
+| --- | --- |
+| İşletim Sistemi | DOS |
+| Grafik Açıklaması | Özel |
+| Ürünün Ağırlığı | 1.98 Kilogram |
+| Klavye Açıklaması | Arkadan Aydınlatmalı |
+| Garanti Bilgileri | 2 |
+| Model Numarası | A13VE-2269XTRNN |
+| En Çok Satanlar Sıralaması | Bilgisayar Şu kategoride 264. sırada: ([Bilgisayar Şu kategorideki En Popüler 100 Ürünü göster](/x)) |
+| ASIN | B0GHR4L88D |
+"#;
 
     fn sample() -> Product {
         parse_product(SAMPLE, "https://www.amazon.com.tr/dp/B0GHR4L88D?ref=spam").unwrap()
@@ -662,7 +684,7 @@ mod tests {
         assert_eq!(p.return_days.as_deref(), Some("14"));
         assert_eq!(
             p.image.as_deref(),
-            Some("https://m.media-amazon.com/images/I/71l4M2y8zwL._AC_SL1500_.jpg")
+            Some("https://m.media-amazon.com/images/I/71l4M2y8zwL.jpg")
         );
     }
 
@@ -729,11 +751,11 @@ mod tests {
     #[test]
     fn missing_fields_drop_their_lines_only() {
         let html = SAMPLE
-            .replace(r#"data-a-strike="true""#, "")
-            .replace("-%12", "")
+            .replace("Önceki Fiyat: ", "")
+            .replace("\\-%12", "")
             .replace("Yüzde 12 tasarruf ile ", "")
-            .replace("dealBadgeSupportingText", "x")
-            .replace("Stokta sadece 1 adet kaldı.", "Stokta var");
+            .replace("NO\\_OF\\_", "")
+            .replace(" Stokta sadece 1 adet kaldı.", "Stokta var");
         let p = parse_product(&html, "https://www.amazon.com.tr/dp/B0GHR4L88D").unwrap();
         let text = card_text(&build_card(&p, 1));
         assert!(text.contains("\n# 49.911,94 TL"));
@@ -743,7 +765,12 @@ mod tests {
 
     #[test]
     fn missing_price_drops_price_lines_and_fetch_time() {
-        let html = SAMPLE.replace("apex-pricetopay-accessibility-label", "x");
+        let html = SAMPLE
+            .replace(" Yüzde 12 tasarruf ile 49.911,94 TL \\-%12 49.911,94TL", "")
+            .replace(
+                "Önceki Fiyat: 56.999,00 TLÖnceki Fiyat: 56.999,00TL56.999,00TL",
+                "",
+            );
         let p = parse_product(&html, "https://www.amazon.com.tr/dp/B0GHR4L88D").unwrap();
         assert_eq!(p.price_now, None);
         let card = build_card(&p, 1);
@@ -758,7 +785,7 @@ mod tests {
 
     #[test]
     fn card_without_image_has_no_accessoryless_section() {
-        let html = SAMPLE.replace("data-old-hires", "data-x");
+        let html = SAMPLE.replace("- ![MSI CYBORG", "- ![Başka ürün");
         let p = parse_product(&html, "https://www.amazon.com.tr/dp/B0GHR4L88D").unwrap();
         assert_eq!(p.image, None);
         let card = build_card(&p, 1);
@@ -778,6 +805,7 @@ mod tests {
             ("Ürünün Ağırlığı", "0.5 Kilogram"),
             ("Marka Adı", "VegGieg"),
             ("Garanti Bilgileri", "2 yıl"),
+            ("İşletim Sistemi", "Freedos"),
         ]
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .to_vec();
@@ -800,32 +828,14 @@ mod tests {
 
     #[test]
     fn captcha_page_is_recognized_and_product_page_is_not() {
-        let captcha = r#"<html><head><title dir="ltr">Amazon.com.tr</title></head><body>
-<form method="get" action="/errors/validateCaptcha" name=""><input type=hidden name="amzn" value="x"></form></body></html>"#;
+        let captcha = "Markdown Content:\nKarakterleri girin\n[Devam](https://www.amazon.com.tr/errors/validateCaptcha?amzn=x)";
         assert!(is_captcha(captcha));
         assert!(parse_product(captcha, "https://www.amazon.com.tr/dp/B0GHR4L88D").is_none());
         assert!(!is_captcha(SAMPLE));
     }
 
     #[test]
-    fn price_region_cut_never_splits_a_turkish_letter() {
-        // Kesim noktası (işaret + 8000 bayt) iki baytlık "ş"nin ortasına denk gelsin.
-        let marker = "apex-pricetopay-accessibility-label";
-        for pad in 0..4 {
-            let html = format!(
-                "<span id=\"{marker}\">{}{}",
-                "a".repeat(8000 - marker.len() - 10 + pad),
-                "ş".repeat(50)
-            );
-            let _ = price_region(&html);
-        }
-    }
-
-    #[test]
-    fn savings_takes_only_the_percentage_and_store_follows_host() {
-        assert_eq!(normalize_savings("%12 (₺6.000 tasarruf)"), "−%12");
-        assert_eq!(normalize_savings("-%12"), "−%12");
-        assert_eq!(normalize_savings("tasarruf"), "");
+    fn store_follows_host() {
         let p = parse_product(SAMPLE, "https://www.amazon.com/dp/B0GHR4L88D").unwrap();
         assert_eq!(p.store, "Amazon.com");
         assert_eq!(p.clean_url, "https://www.amazon.com/dp/B0GHR4L88D");
