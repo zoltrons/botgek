@@ -11,7 +11,7 @@ use axum::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::settings::AppSettings;
@@ -123,6 +123,23 @@ pub struct DiscordGuildChannelsDto {
     pub channels: Vec<DiscordChannelDto>,
 }
 
+/// `WEB_TRUSTED_PROXIES=172.17.0.1, ::1` → adres listesi. Geçersiz girdi uyarıyla atlanır; liste
+/// boş kalırsa hiçbir proxy'ye güvenilmez (başlık yok sayılır).
+fn parse_trusted_proxies(raw: &str) -> Vec<std::net::IpAddr> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            entry
+                .parse()
+                .inspect_err(|_| {
+                    warn!("WEB_TRUSTED_PROXIES içinde geçersiz adres atlandı: {entry:?}")
+                })
+                .ok()
+        })
+        .collect()
+}
+
 pub async fn start_web_server(
     settings: SharedSettings,
     config: &Config,
@@ -132,7 +149,14 @@ pub async fn start_web_server(
 ) {
     let port = config.web_port;
     let secure = crate::config::env_bool("WEB_SECURE_COOKIE", false);
-    let auth = match auth::Auth::new(std::env::var("ADMIN_TOKEN").unwrap_or_default(), secure) {
+    let trusted_proxies = std::env::var("WEB_TRUSTED_PROXIES")
+        .ok()
+        .map(|raw| parse_trusted_proxies(&raw));
+    let auth = match auth::Auth::new(
+        std::env::var("ADMIN_TOKEN").unwrap_or_default(),
+        secure,
+        trusted_proxies,
+    ) {
         Ok(auth) => auth,
         Err(reason) => {
             error!("WebUI disabled: {reason}");
@@ -948,7 +972,8 @@ mod tests {
             http: Arc::new(serenity::all::Http::new("test-token")),
             cache: Arc::new(serenity::all::Cache::new()),
             info: WebInfo::from_config(&config()),
-            auth: auth::Auth::new("test-administrator-token-32-characters".into(), false).unwrap(),
+            auth: auth::Auth::new("test-administrator-token-32-characters".into(), false, None)
+                .unwrap(),
             save_lock: Arc::new(tokio::sync::Mutex::new(())),
             settings_path: Arc::new(settings_path.clone()),
             roles_cache: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1406,7 +1431,8 @@ mod tests {
             http: Arc::new(serenity::all::Http::new("test-token")),
             cache: Arc::new(serenity::all::Cache::new()),
             info: WebInfo::from_config(&config()),
-            auth: auth::Auth::new("test-administrator-token-32-characters".into(), false).unwrap(),
+            auth: auth::Auth::new("test-administrator-token-32-characters".into(), false, None)
+                .unwrap(),
             save_lock: Arc::new(tokio::sync::Mutex::new(())),
             settings_path: Arc::new(settings_path),
             roles_cache: Arc::new(tokio::sync::Mutex::new(None)),

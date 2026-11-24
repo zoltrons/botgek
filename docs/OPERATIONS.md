@@ -23,7 +23,8 @@ ssh -L 3000:127.0.0.1:3000 kullanici@sunucu
 
 Üretimde HTTPS için bir ters proxy (Caddy, Nginx, Traefik) koyun ve `WEB_SECURE_COOKIE=true` ayarlayın.
 Proxy `X-Forwarded-For` başlığını eklemelidir: giriş hız sınırı istemci adresini oradan okur; başlık yoksa
-tüm ziyaretçiler tek adres sayılır.
+tüm ziyaretçiler tek adres sayılır. Panel yerel ağa da açıksa proxy adresini `WEB_TRUSTED_PROXIES`'e yazın;
+yoksa ağdaki bir istemci başlığı sahteleyip sınırı aşabilir.
 
 ### Güncelleme
 

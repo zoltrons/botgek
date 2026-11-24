@@ -17,11 +17,13 @@ Gerçek `.env` dosyasını ve gizli değerleri asla Git'e eklemeyin. Depodaki `.
 | `MCP_TOKEN` | boş | `/mcp` MCP sunucusu için Bearer token. **32–512 karakter**, `ADMIN_TOKEN`'dan farklı olmalı. Boş veya geçersizse endpoint kapalıdır (503); panel ve bot çalışır. |
 | `WEB_PORT` | `3000` | Panel HTTP portu. Geçersiz değer uyarıyla `3000`'e döner. |
 | `WEB_BIND` | `127.0.0.1` | Panelin bağlanacağı adres. Docker'da container içinde `0.0.0.0` kullanılır, port host tarafında yalnızca loopback'e yayınlanır. |
+| `WEB_TRUSTED_PROXIES` | tanımsız | Virgülle ayrılmış ters proxy adresleri (ör. Docker'da `172.17.0.1`). Tanımlıysa giriş deneme sınırı `X-Forwarded-For`'u yalnızca bu adreslerden gelen bağlantılarda kullanır. Tanımsızken her yerel/özel bağlantının başlığına güvenilir; panel yerel ağa açıksa ağdaki bir istemci başlığı sahteleyip sınırı aşabilir. |
 | `WEB_SECURE_COOKIE` | `false` | HTTPS ters proxy arkasında `true` yapın; oturum çerezine `Secure` ekler. |
 | `GROQ_API_KEY` | boş | Metin sohbeti ve web araması (Groq). `GEMINI_API_KEY` ile birlikte boşsa AI kapalıdır; dolu her değer gerçek anahtar sayılır (yer tutucu metin 401 üretir). |
 | `GEMINI_API_KEY` | boş | Görsel okuma ve Groq hata verdiğinde yedek (Gemini). Tek başına da AI'ı açar, ama web araması olmaz. |
 | `DELETE_ORIGINAL` | `true` | Başarılı dönüşümden sonra orijinal mesajı siler; eki veya çıkartması olan mesaj silinmez. **Manage Messages** yetkisi gerekir. |
 | `FXTUMBLR_DOMAIN` | `tpmblr.com` | fxtumblr uyumlu Tumblr render hizmeti. Boş bırakılırsa public OG fallback kullanılır. |
+| `MINIFLUX_UTC_OFFSET` | `+03:00` | Miniflux hesabının saat dilimi (`+03:00`, `-05:30`, `3`). Paylaşım sayfasındaki zaman damgası saat dilimsiz geldiği için kart tarihi bu ofsetle UTC'ye çevrilir. Geçersiz değer uyarıyla varsayılana döner. |
 | `INSTAGRAM_SESSIONID` | boş | Instagram oturum çerezi. Reels videolarının kart içinde oynaması için gerekir; gizlidir, `settings.json`'a ve panele yazılmaz. |
 | `ZIPLINE` | `false` | Video barındırmayı açar. `false` iken Zipline'a hiç gidilmez, videolar Discord'a ek olarak yüklenir. `true` iken aşağıdaki üç değer gerekir; biri eksik ya da geçersizse uyarı yazılır ve barındırma kapalı kalır. |
 | `ZIPLINE_URL` | boş | Zipline yükleme API'sinin adresi (yerel ağ olabilir, ör. `http://192.168.1.2:3050`). `ZIPLINE=true` iken botun indirip ürettiği videolar (Reddit, Spotify, Twitch) Discord'a ek olarak yüklenmek yerine Zipline'a yüklenir: kart çok daha hızlı gider ve Discord'un ek sınırı yerine 50 MB geçerlidir. Dosyalar 30 gün sonra silinir. Yükleme başarısızsa ek yoluna düşülür. |

@@ -202,15 +202,14 @@ pub async fn public_get_with(
     Err("too many preview redirects".into())
 }
 
-/// Host'un son iki etiketi (`v16-webapp.tiktok.com` → `tiktok.com`).
-/// shortcut: `co.uk` gibi iki parçalı soneklerde site fazla geniş sayılır; şu an çerez yalnızca
-/// TikTok indirmesinde gönderildiği için yeterli.
+/// Host'un kayıtlı alan adı, Public Suffix List'e göre (`v16-webapp.tiktok.com` → `tiktok.com`,
+/// `a.example.co.uk` → `example.co.uk`). IP adresi ve sonek dışı ad olduğu gibi döner.
 fn site(host: &str) -> &str {
     let host = host.trim_end_matches('.');
-    match host.rmatch_indices('.').nth(1) {
-        Some((dot, _)) => &host[dot + 1..],
-        None => host,
+    if host.parse::<std::net::IpAddr>().is_ok() || host.starts_with('[') {
+        return host;
     }
+    psl::domain_str(host).unwrap_or(host)
 }
 
 #[cfg(test)]
@@ -223,6 +222,9 @@ mod tests {
         assert_eq!(site("tiktok.com"), "tiktok.com");
         assert_eq!(site("localhost"), "localhost");
         assert_ne!(site("cdn.tiktokcdn.com"), site("www.tiktok.com"));
+        assert_eq!(site("a.example.co.uk"), "example.co.uk");
+        assert_ne!(site("a.example.co.uk"), site("b.other.co.uk"));
+        assert_eq!(site("1.2.3.4"), "1.2.3.4");
     }
 
     #[test]

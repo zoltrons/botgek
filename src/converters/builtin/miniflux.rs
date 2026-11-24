@@ -1,4 +1,4 @@
-//! Miniflux herkese açık paylaşım sayfaları (`https://{sunucu}/share/{kod}`).
+//! Miniflux herkese açık paylaşım sayfaları (`{http|https}://{sunucu}[/alt/dizin]/share/{kod}`).
 //!
 //! Sayfada OpenGraph etiketi yoktur (Discord önizlemesi boş kalır); makale `entry-content`
 //! bölümünden okunur. Uzun makale kısaltılır, "Devamını oku" 3500 karakterlik sayfaları açar; butonlar
@@ -23,7 +23,7 @@ const TYPE_SEPARATOR: u64 = 14;
 /// Yerinde güncellenen bileşenlerin `id`'leri (bkz. `spotify::TRACK_LIST_COMPONENT_ID`).
 const BODY_COMPONENT_ID: u64 = 7401;
 const ROW_COMPONENT_ID: u64 = 7402;
-/// `miniflux:{more|less}:{kod}:{sunucu}`; Discord `custom_id` sınırı 100 karakterdir.
+/// `miniflux:{more|less|pN}:{kod}:{taban}` (bkz. [`split_share_url`]); Discord `custom_id` sınırı 100 karakterdir.
 pub const CUSTOM_ID_PREFIX: &str = "miniflux:";
 const CUSTOM_ID_LIMIT: usize = 100;
 
@@ -32,9 +32,31 @@ const CUSTOM_ID_LIMIT: usize = 100;
 const PAGE_CHARS: usize = 3500;
 /// Bu uzunluğa kadar makale tam gösterilir; fazlası bu kadarına kısaltılır ve "Devamını oku" konur.
 const PREVIEW_CHARS: usize = 1000;
-/// Sayfadaki saat dilimsiz `datetime` değeri Türkiye saatindedir.
-/// shortcut: UTC+3 sabit; Miniflux hesabı başka saat dilimindeyse zaman kayar.
-const PAGE_UTC_OFFSET_SECS: i64 = 3 * 3600;
+/// Sayfadaki `datetime` saat dilimsizdir; Miniflux hesabının saat dilimindedir. Ofset
+/// `MINIFLUX_UTC_OFFSET` (`+03:00`, `-05:30`, `3`) ile verilir; varsayılan Türkiye saati (UTC+3).
+static PAGE_UTC_OFFSET_SECS: LazyLock<i64> = LazyLock::new(|| {
+    let Ok(raw) = std::env::var("MINIFLUX_UTC_OFFSET") else {
+        return DEFAULT_UTC_OFFSET_SECS;
+    };
+    parse_utc_offset(&raw).unwrap_or_else(|| {
+        tracing::warn!("MINIFLUX_UTC_OFFSET={raw:?} geçersiz; +03:00 kullanılıyor");
+        DEFAULT_UTC_OFFSET_SECS
+    })
+});
+const DEFAULT_UTC_OFFSET_SECS: i64 = 3 * 3600;
+
+/// `+03:00` / `-05:30` / `3` → saniye; ±14 saat dışı reddedilir.
+fn parse_utc_offset(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    let (sign, rest) = match raw.strip_prefix('-') {
+        Some(rest) => (-1, rest),
+        None => (1, raw.strip_prefix('+').unwrap_or(raw)),
+    };
+    let (hours, minutes) = rest.split_once(':').unwrap_or((rest, "0"));
+    let (hours, minutes) = (hours.parse::<i64>().ok()?, minutes.parse::<i64>().ok()?);
+    (hours <= 14 && (0..60).contains(&minutes) && !rest.starts_with(['+', '-']))
+        .then(|| sign * (hours * 3600 + minutes * 60))
+}
 
 static TITLE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<h1 id="page-header-title"[^>]*>\s*<a href="([^"]*)"[^>]*>(.*?)</a>"#)
@@ -82,20 +104,49 @@ struct Article {
     text: String,
 }
 
-/// `https://{sunucu}/share/{kod}` → (sunucu, kod).
+/// Paylaşım adresi → (taban, kod). Taban https için `sunucu[:port][/alt/dizin]`, http için başında
+/// `http://` taşır; böylece eski butonlardaki yalın sunucu adı geçerli kalır. Parser ile aynı
+/// kural: sunucu `miniflux.{alan}.{uzantı}` ya da yolda `miniflux` adlı bir dizin.
 fn split_share_url(raw: &str) -> Option<(String, String)> {
     let url = Url::parse(raw).ok()?;
-    let code = url.path().strip_prefix("/share/")?;
-    let valid =
-        url.scheme() == "https" && code.len() == 40 && code.bytes().all(|b| b.is_ascii_hexdigit());
-    let host = match url.port() {
-        Some(port) => format!("{}:{port}", url.host_str()?),
-        None => url.host_str()?.to_string(),
-    };
-    // Parser ile aynı kural: `miniflux.{alan}.{uzantı}`, kök alan adı değil.
+    let (prefix, code) = url.path().rsplit_once("/share/")?;
     let hostname = url.host_str()?;
-    let valid = valid && hostname.starts_with("miniflux.") && hostname.split('.').count() >= 3;
-    valid.then(|| (host, code.to_string()))
+    let segments_ok = prefix.split('/').skip(1).all(|segment| {
+        !segment.is_empty()
+            && segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._~-".contains(&b))
+    });
+    let miniflux = (hostname.starts_with("miniflux.") && hostname.split('.').count() >= 3)
+        || prefix
+            .split('/')
+            .any(|segment| segment.eq_ignore_ascii_case("miniflux"));
+    let valid = matches!(url.scheme(), "http" | "https")
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && code.len() == 40
+        && code.bytes().all(|b| b.is_ascii_hexdigit())
+        && (prefix.is_empty() || prefix.starts_with('/'))
+        && segments_ok
+        && miniflux;
+    let host = match url.port() {
+        Some(port) => format!("{hostname}:{port}"),
+        None => hostname.to_string(),
+    };
+    let base = match url.scheme() {
+        "http" => format!("http://{host}{prefix}"),
+        _ => format!("{host}{prefix}"),
+    };
+    valid.then(|| (base, code.to_string()))
+}
+
+/// [`split_share_url`]'in tersi.
+fn share_url(base: &str, code: &str) -> String {
+    if base.starts_with("http://") {
+        format!("{base}/share/{code}")
+    } else {
+        format!("https://{base}/share/{code}")
+    }
 }
 
 pub async fn fetch(parsed: &ParsedPost) -> Result<BuiltinPost, String> {
@@ -132,7 +183,7 @@ fn page_timestamp(html: &str) -> Option<i64> {
     let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
-    Some(days * 86400 + n(4)? * 3600 + n(5)? * 60 + n(6)? - PAGE_UTC_OFFSET_SECS)
+    Some(days * 86400 + n(4)? * 3600 + n(5)? * 60 + n(6)? - *PAGE_UTC_OFFSET_SECS)
 }
 
 fn parse_article(html: &str) -> Option<Article> {
@@ -553,7 +604,9 @@ fn body_components(article: &Article, host: &str, code: &str, view: View) -> (Va
             pages[page].clone()
         }
     };
-    buttons.push(json!({ "type": 2, "style": 5, "label": "Makaleyi aç", "url": format!("https://{host}/share/{code}") }));
+    buttons.push(
+        json!({ "type": 2, "style": 5, "label": "Makaleyi aç", "url": share_url(host, code) }),
+    );
     (
         text_display(Some(BODY_COMPONENT_ID), body),
         json!({ "type": TYPE_ACTION_ROW, "id": ROW_COMPONENT_ID, "components": buttons }),
@@ -619,12 +672,12 @@ pub async fn toggle(custom_id: &str, components: &mut Value) -> Result<(), Strin
                 .ok_or("geçersiz sayfa")?,
         ),
     };
-    let share_url = format!("https://{host}/share/{code}");
-    // Kimlik doğrulaması: sunucu adı ve kod, adres ayrıştırıcısından aynen geri dönmeli.
-    if split_share_url(&share_url) != Some((host.to_string(), code.to_string())) {
+    let url = share_url(host, code);
+    // Kimlik doğrulaması: taban ve kod, adres ayrıştırıcısından aynen geri dönmeli.
+    if split_share_url(&url) != Some((host.to_string(), code.to_string())) {
         return Err("geçersiz Miniflux adresi".into());
     }
-    let article = fetch_article(&share_url).await?;
+    let article = fetch_article(&url).await?;
     let (body, row) = body_components(&article, host, code, view);
     if replace_by_id(components, &body, Some(&row)) {
         Ok(())
@@ -681,6 +734,17 @@ mod tests {
             </span></div></header></section>
 <main id="main"><article class="entry-content gesture-nav-" dir="auto" >{content}</article></main>"#
         )
+    }
+
+    #[test]
+    fn utc_offsets_are_parsed() {
+        assert_eq!(parse_utc_offset("+03:00"), Some(3 * 3600));
+        assert_eq!(parse_utc_offset(" 3 "), Some(3 * 3600));
+        assert_eq!(parse_utc_offset("-05:30"), Some(-(5 * 3600 + 30 * 60)));
+        assert_eq!(parse_utc_offset("0"), Some(0));
+        for bad in ["", "abc", "+15", "3:60", "3:-5", "--3", "+-3"] {
+            assert_eq!(parse_utc_offset(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -793,10 +857,36 @@ c</pre><script>x()</script><p><a href="javascript:x()">tehlikeli</a></p>"#,
             split_share_url(&ok),
             Some(("miniflux.example.com:8443".into(), CODE.into()))
         );
+        for (url, base) in [
+            (
+                format!("http://miniflux.example.com/share/{CODE}"),
+                "http://miniflux.example.com",
+            ),
+            (
+                format!("https://site.com/apps/miniflux/share/{CODE}"),
+                "site.com/apps/miniflux",
+            ),
+            (
+                format!("http://site.com/miniflux/share/{CODE}"),
+                "http://site.com/miniflux",
+            ),
+        ] {
+            let split = split_share_url(&url);
+            assert_eq!(split, Some((base.to_string(), CODE.to_string())), "{url}");
+            assert_eq!(share_url(base, CODE), url);
+        }
+        // Eski butonların yalın sunucu adlı kimliği aynı adrese döner.
         assert_eq!(
-            split_share_url(&format!("http://miniflux.example.com/share/{CODE}")),
-            None
+            share_url("miniflux.example.com", CODE),
+            format!("https://miniflux.example.com/share/{CODE}")
         );
+        for bad in [
+            format!("https://site.com/feeds/share/{CODE}"),
+            format!("https://miniflux.example.com/share/{CODE}?x=1"),
+            format!("ftp://miniflux.example.com/share/{CODE}"),
+        ] {
+            assert_eq!(split_share_url(&bad), None, "{bad}");
+        }
         assert_eq!(
             split_share_url("https://miniflux.example.com/share/zz"),
             None

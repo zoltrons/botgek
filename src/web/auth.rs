@@ -30,10 +30,17 @@ pub struct Auth {
     sessions: Mutex<HashMap<String, Instant>>,
     /// Failed logins per client address: only failures count, so neither successful logins nor another address can lock the administrator out.
     failures: Mutex<HashMap<IpAddr, (Instant, u32)>>,
+    /// `WEB_TRUSTED_PROXIES`: `X-Forwarded-For`'a yalnızca bu adreslerden güvenilir. `None`
+    /// (tanımsız) eski davranıştır: her yerel/özel bağlantının başlığına güvenilir.
+    trusted_proxies: Option<Vec<IpAddr>>,
 }
 
 impl Auth {
-    pub fn new(token: String, secure: bool) -> Result<Arc<Self>, &'static str> {
+    pub fn new(
+        token: String,
+        secure: bool,
+        trusted_proxies: Option<Vec<IpAddr>>,
+    ) -> Result<Arc<Self>, &'static str> {
         if !(32..=MAX_TOKEN_LEN).contains(&token.len()) || token.trim() != token {
             return Err(
                 "ADMIN_TOKEN must contain 32–512 characters without surrounding whitespace",
@@ -44,6 +51,7 @@ impl Auth {
             secure,
             sessions: Mutex::new(HashMap::new()),
             failures: Mutex::new(HashMap::new()),
+            trusted_proxies,
         }))
     }
 
@@ -104,14 +112,19 @@ fn rate_key(ip: IpAddr) -> IpAddr {
 /// Başarısız girişin sayılacağı adres. Ters proxy arkasında tüm ziyaretçiler proxy'nin adresiyle
 /// gelir ve tek saldırgan yöneticiyi kilitleyebilirdi. Yerel/özel bir bağlantıda bu yüzden
 /// `X-Forwarded-For`'un son girdisi (proxy'nin gördüğü adres) esas alınır; dışarıdan gelen
-/// bağlantının başlığına güvenilmez.
-/// shortcut: yerel ağdaki istemci başlığı sahteleyip sınırı aşabilir; token 32+ karakter olduğu için kabul edildi.
-fn client_ip(peer: IpAddr, headers: &HeaderMap) -> IpAddr {
-    let local = match peer.to_canonical() {
-        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
-        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
+/// bağlantının başlığına güvenilmez. `WEB_TRUSTED_PROXIES` tanımlıysa yalnızca listedeki
+/// proxy'lerin başlığına güvenilir; tanımsızken yerel ağdaki bir istemci başlığı sahteleyip sınırı
+/// aşabilir (geriye uyumluluk için böyle bırakıldı).
+fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: Option<&[IpAddr]>) -> IpAddr {
+    let peer_canonical = peer.to_canonical();
+    let trusted = match trusted {
+        Some(list) => list.iter().any(|ip| ip.to_canonical() == peer_canonical),
+        None => match peer_canonical {
+            IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
+            IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
+        },
     };
-    if !local {
+    if !trusted {
         return peer;
     }
     headers
@@ -180,7 +193,7 @@ pub async fn login(
         IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         |Extension(ConnectInfo(addr))| addr.ip(),
     );
-    let ip = client_ip(peer, &headers);
+    let ip = client_ip(peer, &headers, auth.trusted_proxies.as_deref());
     if auth.locked_out(ip).await {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
@@ -246,8 +259,8 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn sessions_expire_and_missing_credentials_fail_closed() {
-        assert!(Auth::new(String::new(), false).is_err());
-        let auth = Auth::new("a".repeat(32), true).unwrap();
+        assert!(Auth::new(String::new(), false, None).is_err());
+        let auth = Auth::new("a".repeat(32), true, None).unwrap();
         assert!(!auth.valid(&HeaderMap::new()).await);
         let session = "b".repeat(64);
         let mut headers = HeaderMap::new();
@@ -276,7 +289,7 @@ mod tests {
     #[test]
     fn token_comparison_requires_exact_match() {
         let token = "a".repeat(32);
-        let auth = Auth::new(token.clone(), false).unwrap();
+        let auth = Auth::new(token.clone(), false, None).unwrap();
         assert!(auth.token_matches(&token));
         assert!(!auth.token_matches(&"a".repeat(31)));
         assert!(!auth.token_matches(&"a".repeat(33)));
@@ -288,7 +301,7 @@ mod tests {
     /// Yalnızca başarısız denemeler sayılır ve kilit adres başınadır.
     #[tokio::test]
     async fn failures_lock_out_only_the_offending_address() {
-        let auth = Auth::new("a".repeat(32), false).unwrap();
+        let auth = Auth::new("a".repeat(32), false, None).unwrap();
         let attacker: IpAddr = "203.0.113.7".parse().unwrap();
         let admin: IpAddr = "127.0.0.1".parse().unwrap();
         for _ in 0..FAILURES_PER_WINDOW {
@@ -313,24 +326,39 @@ mod tests {
             "fd00::1",
         ] {
             assert_eq!(
-                client_ip(local.parse().unwrap(), &headers),
+                client_ip(local.parse().unwrap(), &headers, None),
                 client,
                 "{local}"
             );
         }
         let public: IpAddr = "8.8.8.8".parse().unwrap();
-        assert_eq!(client_ip(public, &headers), public);
+        assert_eq!(client_ip(public, &headers, None), public);
 
         let proxy: IpAddr = "127.0.0.1".parse().unwrap();
-        assert_eq!(client_ip(proxy, &HeaderMap::new()), proxy);
-        headers.insert("x-forwarded-for", "bozuk".parse().unwrap());
-        assert_eq!(client_ip(proxy, &headers), proxy);
+        assert_eq!(client_ip(proxy, &HeaderMap::new(), None), proxy);
+        let mut broken = HeaderMap::new();
+        broken.insert("x-forwarded-for", "bozuk".parse().unwrap());
+        assert_eq!(client_ip(proxy, &broken, None), proxy);
+
+        // Liste tanımlıysa yalnızca listedeki proxy'ye güvenilir; diğer yerel istemci sahteleyemez.
+        let trusted = ["172.17.0.1".parse().unwrap()];
+        assert_eq!(
+            client_ip(
+                "::ffff:172.17.0.1".parse().unwrap(),
+                &headers,
+                Some(&trusted)
+            ),
+            client
+        );
+        let lan: IpAddr = "192.168.1.9".parse().unwrap();
+        assert_eq!(client_ip(lan, &headers, Some(&trusted)), lan);
+        assert_eq!(client_ip(lan, &headers, Some(&[])), lan);
     }
 
     /// Aynı /64 içindeki adres değişimi kilidi atlatamaz; komşu /64 etkilenmez.
     #[tokio::test]
     async fn ipv6_failures_are_counted_per_prefix() {
-        let auth = Auth::new("a".repeat(32), false).unwrap();
+        let auth = Auth::new("a".repeat(32), false, None).unwrap();
         for host in 0..FAILURES_PER_WINDOW {
             let ip: IpAddr = format!("2001:db8:1:2::{:x}", host + 1).parse().unwrap();
             auth.record_failure(ip).await;

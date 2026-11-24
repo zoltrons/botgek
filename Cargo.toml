@@ -61,6 +61,8 @@ rusqlite = { version = "0.41.1", features = ["bundled"] }
 urlencoding = "2.1.3"
 getrandom = "0.4"
 subtle = "2"
+# Çerez gönderiminde "aynı site" (kayıtlı alan adı) kararı: `co.uk` gibi çok parçalı sonekler.
+psl = "2.1"
 
 # Serenity 0.12'nin Rustls gateway arka ucu savunmasız rustls-webpki 0.102'yi sabitler; upstream
 # güncellenene kadar native-TLS kullanılır. Botun kendi HTTP istemcileri Rustls 0.23'te kalır.

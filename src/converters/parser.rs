@@ -231,17 +231,25 @@ static YOUTUBE_COMMUNITY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 // ==================== MINIFLUX ====================
-// Herkese açık paylaşım: https://miniflux.{alan}.{uzantı}/share/{40 onaltılık}. Yalnızca `miniflux`
-// alt alan adı (miniflux.site.url); kök alan adı (miniflux.site) tanınmaz.
-static MINIFLUX_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"\|\|\s*https://((?i:miniflux)\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]{1,5})?)/share/([0-9a-fA-F]{40})[^\s|]*\s*\|\|",
+// Herkese açık paylaşım: `{http|https}://{sunucu}[/alt/dizin]/share/{40 onaltılık}`. Sunucu ya
+// `miniflux.{alan}.{uzantı}` alt alan adıdır (A) ya da yol `miniflux` adlı bir dizin içerir (B,
+// ör. `site.com/miniflux/share/..`); `miniflux.site` gibi kök alan adı tek başına tanınmaz.
+// Gruplar: A için 1–4, B için 5–8 (şema, sunucu, alt dizin, kod).
+const MINIFLUX_HOST: &str = r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]{1,5})?";
+const MINIFLUX_SEGMENT: &str = r"/[A-Za-z0-9._~-]+";
+
+fn miniflux_link() -> String {
+    let (h, s) = (MINIFLUX_HOST, MINIFLUX_SEGMENT);
+    format!(
+        r"(?:(https?)://((?i:miniflux)\.{h})((?:{s})*)/share/([0-9a-fA-F]{{40}})|(https?)://({h})((?:{s})*/(?i:miniflux)(?:{s})*)/share/([0-9a-fA-F]{{40}}))"
     )
-    .expect("geçerli Miniflux spoiler regex")
+}
+static MINIFLUX_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"\|\|\s*{}[^\s|]*\s*\|\|", miniflux_link()))
+        .expect("geçerli Miniflux spoiler regex")
 });
 static MINIFLUX_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https://((?i:miniflux)\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]{1,5})?)/share/([0-9a-fA-F]{40})[^\s<>()]*")
-        .expect("geçerli Miniflux regex")
+    Regex::new(&format!(r"{}[^\s<>()]*", miniflux_link())).expect("geçerli Miniflux regex")
 });
 
 // ==================== LETTERBOXD ====================
@@ -853,8 +861,8 @@ fn parse_youtube(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
-/// Miniflux paylaşım bağlantısı. Kanonik biçim `https://{sunucu}/share/{kod}` (küçük harf kod).
-/// shortcut: alt dizinde (`/miniflux/share/..`) ve http'de çalışan sunucular tanınmaz.
+/// Miniflux paylaşım bağlantısı. Kanonik biçim `{şema}://{sunucu}{alt dizin}/share/{kod}`
+/// (küçük harf sunucu ve kod; alt dizin olduğu gibi, çünkü yol büyük/küçük harf duyarlıdır).
 fn parse_miniflux(raw_content: &str) -> Option<ParsedPost> {
     match_pair(
         raw_content,
@@ -862,9 +870,11 @@ fn parse_miniflux(raw_content: &str) -> Option<ParsedPost> {
         &MINIFLUX_SPOILER_REGEX,
         &MINIFLUX_REGEX,
         |caps| {
-            let host = caps.get(1)?.as_str().to_ascii_lowercase();
-            let code = caps.get(2)?.as_str().to_ascii_lowercase();
-            Some(format!("https://{host}/share/{code}"))
+            let first = if caps.get(1).is_some() { 1 } else { 5 };
+            let part = |i: usize| caps.get(first + i).map(|m| m.as_str());
+            let host = part(1)?.to_ascii_lowercase();
+            let code = part(3)?.to_ascii_lowercase();
+            Some(format!("{}://{host}{}/share/{code}", part(0)?, part(2)?))
         },
     )
 }
@@ -1034,7 +1044,27 @@ mod tests {
         assert!(parse_miniflux("https://miniflux.example.com/share/abc").is_none());
         assert!(parse_miniflux(&format!("https://miniflux.site/share/{code}")).is_none());
         assert!(parse_miniflux(&format!("https://wiki.example.com/share/{code}")).is_none());
-        assert!(parse_miniflux(&format!("http://miniflux.example.com/share/{code}")).is_none());
+        assert!(parse_miniflux(&format!("https://site.com/feeds/share/{code}")).is_none());
+
+        // http ve alt dizinde çalışan sunucular.
+        let url = |raw: String| parse_miniflux(&raw).unwrap().original_url;
+        assert_eq!(
+            url(format!("http://Miniflux.Example.com/share/{code}")),
+            format!("http://miniflux.example.com/share/{code}")
+        );
+        assert_eq!(
+            url(format!("oku https://Site.com/Apps/miniflux/share/{code}?x")),
+            format!("https://site.com/Apps/miniflux/share/{code}")
+        );
+        assert_eq!(
+            url(format!("https://miniflux.example.com/rss/share/{code}")),
+            format!("https://miniflux.example.com/rss/share/{code}")
+        );
+        assert!(
+            parse_message(&format!("||http://site.com/miniflux/share/{code}||"))
+                .unwrap()
+                .is_spoiler
+        );
     }
 
     #[test]

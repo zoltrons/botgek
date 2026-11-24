@@ -34,7 +34,7 @@ Amaç SSRF'yi önlemektir. İstek öncesi ve her yönlendirmede:
   adres kümesi için yeniden kullanılır.
 - En fazla 3 yönlendirme izlenir, her yönlendirme baştan doğrulanır. İstek başına zaman aşımı çağıran tarafça verilir.
 - `public_get_with` her adımda ek başlık gönderebilir (ör. Pixiv Referer'ı için). `cookie` başlığı yalnızca
-  ilk adresin sitesinde (son iki etiket) gönderilir; başka siteye yönlendirmede düşürülür.
+  ilk adresin sitesinde (Public Suffix List'e göre kayıtlı alan adı, `psl`) gönderilir; başka siteye yönlendirmede düşürülür.
 
 ### `preview`
 

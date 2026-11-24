@@ -181,7 +181,9 @@ adreslerine gider:
 - Durum değiştiren istekler `X-Botgek-Request: 1` başlığı ister; CORS açılmamıştır. Token sabit zamanlı
   karşılaştırılır ve yanıtlarda/loglarda görünmez.
 - İstemci adresi başına 60 saniyede 20 başarısız girişten sonra giriş reddedilir; izlenen adres tablosu
-  1024 girdiyle sınırlıdır. Eşzamanlı oturum sayısı 64'tür.
+  1024 girdiyle sınırlıdır. Eşzamanlı oturum sayısı 64'tür. İstemci adresi `X-Forwarded-For`'un son
+  girdisidir: `WEB_TRUSTED_PROXIES` tanımlıysa yalnızca listedeki proxy'lerden, tanımsızsa her
+  yerel/özel bağlantıdan alınır.
 - Uygulama TLS sonlandırmaz; uzak erişimde HTTPS ters proxy veya SSH tüneli gerekir.
 
 ## MCP teşhis sunucusu

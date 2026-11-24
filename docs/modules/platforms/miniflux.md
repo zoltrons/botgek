@@ -2,7 +2,9 @@
 
 ## Görev
 
-`https://miniflux.{alan}.{uzantı}/share/{40 hex}` paylaşım bağlantılarını kart yapar. Sayfada OpenGraph
+`{http|https}://{sunucu}[/alt/dizin]/share/{40 hex}` paylaşım bağlantılarını kart yapar; sunucu
+`miniflux.{alan}.{uzantı}` olmalı ya da yolda `miniflux` dizini bulunmalı. Saat dilimsiz sayfa tarihi
+`MINIFLUX_UTC_OFFSET` (varsayılan `+03:00`) ile UTC'ye çevrilir. Sayfada OpenGraph
 etiketi olmadığı için Discord önizlemesi boş kalır.
 
 ## Dosyalar
@@ -25,6 +27,8 @@ etiketi olmadığı için Discord önizlemesi boş kalır.
 
 ## Değişmezler
 
+- `custom_id` tabanı https için `sunucu[:port][/alt/dizin]`, http için `http://...`'dur; eski yalın
+  sunucu adlı kimlikler https olarak çözülür.
 - `custom_id` 100 karakteri aşarsa sayfa butonları konmaz, yalnızca ilk sayfa gösterilir.
 - Toggle sırasında sunucu adı ve kod yeniden doğrulanır.
 
