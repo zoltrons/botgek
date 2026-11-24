@@ -206,6 +206,9 @@ static AVATAR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<a class="avatar[^"]*" href="/([A-Za-z0-9_]+)/"\s*>\s*<img src="(https://(?:a\.ltrbxd\.com|secure\.gravatar\.com)/[^"]+)""#)
         .expect("geçerli avatar regex")
 });
+static AVATAR_SIZE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"-0-\d{1,4}-0-\d{1,4}-crop").expect("geçerli avatar boyutu regex")
+});
 
 // ── Profil sayfası ─────────────────────────────────────────────────────────────
 static PROFILE_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -690,8 +693,8 @@ fn reviewer_avatar(html: &str, user: &str) -> Option<String> {
     AVATAR_REGEX
         .captures_iter(html)
         .find(|caps| &caps[1] == user)
-        // Gravatar adresi HTML kaçışlı ve 48 piksel gelir; kartta keskin görünsün.
-        .map(|caps| unescape_html(&caps[2]).replace("size=48", "size=256"))
+        // Adres HTML kaçışlı ve 48 piksel gelir; kartta keskin görünsün.
+        .map(|caps| large_avatar(&unescape_html(&caps[2])))
 }
 
 /// Kayıt sayfasının başlığındaki yazar rozeti (`Patron`, `Pro`, `HQ`).
@@ -983,10 +986,12 @@ fn parse_stat_count(raw: &str) -> Option<u64> {
     super::parse_compact_count(&unescape_html(raw))
 }
 
-/// Küçük avatar varyantını kartta keskin görünen 1000×1000 varyantına çevirir (aynı dosya).
+/// Küçük avatar varyantını (48, 80, 110, 220…) kartta keskin görünen 1000×1000 varyantına
+/// çevirir (aynı dosya); Gravatar'da 48 piksel yerine 256 ister.
 fn large_avatar(url: &str) -> String {
-    url.replace("-0-220-0-220-crop", "-0-1000-0-1000-crop")
-        .replace("-0-110-0-110-crop", "-0-1000-0-1000-crop")
+    AVATAR_SIZE_REGEX
+        .replace(url, "-0-1000-0-1000-crop")
+        .replace("size=48", "size=256")
 }
 
 /// Letterboxd içi bir yolu (veya mutlak `letterboxd.com` adresini) güvenli bir adrese çevirir;
@@ -2369,7 +2374,11 @@ mod tests {
             "küçük poster büyütülür"
         );
         assert!(
-            review.avatar.as_deref().unwrap().contains("avtr-0-48-0-48"),
+            review
+                .avatar
+                .as_deref()
+                .unwrap()
+                .contains("avtr-0-1000-0-1000"),
             "başkasının avatarı alınmaz"
         );
         assert!(parse_review("<html></html>", &review_target()).is_none());
@@ -2699,8 +2708,14 @@ mod layout_tests {
         let caps = AVATAR_REGEX.captures(html).expect("gravatar eşleşmeli");
         assert_eq!(&caps[1], "biri");
         assert_eq!(
-            unescape_html(&caps[2]).replace("size=48", "size=256"),
+            large_avatar(&unescape_html(&caps[2])),
             "https://secure.gravatar.com/avatar/abc?rating=PG&size=256&border="
+        );
+        assert_eq!(
+            large_avatar(
+                "https://a.ltrbxd.com/resized/avatar/upload/1/shard/avtr-0-48-0-48-crop.jpg?v=1"
+            ),
+            "https://a.ltrbxd.com/resized/avatar/upload/1/shard/avtr-0-1000-0-1000-crop.jpg?v=1"
         );
     }
 
