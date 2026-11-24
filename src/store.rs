@@ -954,6 +954,36 @@ mod tests {
         cleanup(&path);
     }
 
+    /// Orijinal silinemeyince kaynaksız yazılmış karta kaynak sonradan bağlanır.
+    #[test]
+    fn source_can_be_attached_to_an_existing_card() {
+        let db = open_test(":memory:");
+        let url = "https://x.com/u/status/1";
+        db.remember_with_source(
+            MessageId::new(20),
+            ChannelId::new(1),
+            UserId::new(2),
+            None,
+            Some(url),
+        );
+        assert_eq!(db.card_for_source(MessageId::new(10)), None);
+        db.remember_with_source(
+            MessageId::new(20),
+            ChannelId::new(1),
+            UserId::new(2),
+            Some(MessageId::new(10)),
+            Some(url),
+        );
+        let card = db
+            .card_for_source(MessageId::new(10))
+            .expect("kart bulunmalı");
+        assert_eq!(
+            (card.card_id, card.source_url.as_str()),
+            (MessageId::new(20), url)
+        );
+        assert_eq!(db.author(MessageId::new(20)), Some(UserId::new(2)));
+    }
+
     #[test]
     fn card_is_found_by_its_source_message() {
         let db = open_test(":memory:");

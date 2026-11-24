@@ -24,7 +24,7 @@ letterboxd_follows (channel_id INTEGER, username TEXT, guild_id INTEGER, last_en
   kimliği. `set_letterboxd_last_entry` kimliği yalnızca ileri götürür. Budanmaz.
 
 - `source_url` her kartta yazılır (Apps → Yenile bağlantıyı buradan okur). `source_id` yalnızca orijinal
-  mesaj korunduğunda yazılır; düzenleme/silme takibi bu sütunla karta ulaşır.
+  mesaj korunduğunda yazılır (silme başarısız olursa sonradan eklenir); düzenleme/silme takibi bu sütunla karta ulaşır.
 - Dosya yolu `BOTGEK_DB_PATH`, yoksa `botgek.db`. Docker'da `/app/data/botgek.db`.
 - SQLite WAL modunda çalışır.
 - Kayıt sayısı `MAX_RECORDS` (200.000) ile sınırlıdır. Her `PRUNE_EVERY` (512) yazımda `prune` sınırı aşan eski kayıtları siler.

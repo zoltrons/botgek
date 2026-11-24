@@ -175,14 +175,7 @@ async fn fetch_article(share_url: &str) -> Result<Article, String> {
 fn page_timestamp(html: &str) -> Option<i64> {
     let caps = DATE_REGEX.captures(html)?;
     let n = |i: usize| caps[i].parse::<i64>().ok();
-    let (y, m, d) = (n(1)?, n(2)?, n(3)?);
-    // Takvim günü → 1970'ten gün sayısı (Howard Hinnant algoritması).
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
+    let days = super::days_from_civil(n(1)?, n(2)?, n(3)?);
     Some(days * 86400 + n(4)? * 3600 + n(5)? * 60 + n(6)? - *PAGE_UTC_OFFSET_SECS)
 }
 
@@ -734,6 +727,13 @@ mod tests {
             </span></div></header></section>
 <main id="main"><article class="entry-content gesture-nav-" dir="auto" >{content}</article></main>"#
         )
+    }
+
+    #[test]
+    fn page_time_is_read_in_the_account_time_zone() {
+        // Varsayılan UTC+3: 11:37 yerel saat 08:37 UTC'dir.
+        let html = r#"<time datetime="2026-10-30 11:37:32" title="x">"#;
+        assert_eq!(page_timestamp(html), Some(1_793_349_452));
     }
 
     #[test]

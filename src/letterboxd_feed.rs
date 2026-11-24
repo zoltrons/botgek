@@ -80,6 +80,7 @@ async fn deliver(
         return;
     };
     let mut seen = sub.last_entry;
+    let mut gone = false;
     for entry in new {
         let result = raw::send_channel_message(
             client,
@@ -96,16 +97,30 @@ async fn deliver(
                 "Letterboxd kaydı kanala gönderilemedi: {err}"
             );
         }
+        gone = channel_gone(result.as_ref().err());
         let (next, stop) = after_send(result.err().as_ref(), seen, entry.id, newest);
         seen = next;
         if stop {
             break;
         }
     }
+    // Kanal silinmiş (404): takip kalırsa her turda yoklanır, sunucu sınırını doldurur ve
+    // `/letterboxd bırak` artık o kanalda çalıştırılamaz.
+    if gone {
+        let (channel, user) = (sub.channel_id, sub.username.clone());
+        store::blocking(move || store::unfollow_letterboxd(channel, &user)).await;
+        info!(channel = %sub.channel_id, user = %sub.username, "Kanal yok; Letterboxd takibi kaldırıldı");
+        return;
+    }
     if seen > sub.last_entry {
         let (channel, user) = (sub.channel_id, sub.username.clone());
         store::blocking(move || store::set_letterboxd_last_entry(channel, &user, seen)).await;
     }
+}
+
+/// Kanal silinmiş mi? 403 sayılmaz: izin geçici olarak kaldırılmış olabilir.
+fn channel_gone(err: Option<&DiscordError>) -> bool {
+    matches!(err, Some(DiscordError::Rejected(404)))
 }
 
 /// Gönderim sonucuna göre kanalın yeni son kaydı ve turun durup durmayacağı.
@@ -153,5 +168,9 @@ mod tests {
         );
         let limited = DiscordError::RateLimited(Duration::from_secs(1));
         assert_eq!(after_send(Some(&limited), 1, 2, 5), (1, true));
+
+        assert!(channel_gone(Some(&DiscordError::Rejected(404))));
+        assert!(!channel_gone(Some(&DiscordError::Rejected(403))));
+        assert!(!channel_gone(None));
     }
 }

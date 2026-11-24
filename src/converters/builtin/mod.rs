@@ -428,7 +428,7 @@ pub(super) fn month_number(name: &str) -> Option<i64> {
 }
 
 /// Sivil tarihi (1970-01-01 = 0) gün sayısına çevirir (Howard Hinnant algoritması).
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub(super) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = if year >= 0 { year } else { year - 399 } / 400;
     let year_of_era = year - era * 400;
@@ -1283,18 +1283,22 @@ fn reply_reference(msg: &Message) -> Option<serde_json::Value> {
 /// discord-api-docs #850). Silme bu yüzden mesaj en az bu yaşa gelene kadar ertelenir.
 const DELETE_MIN_AGE: Duration = Duration::from_millis(1200);
 
-/// Orijinal mesajı siler; zaten silinmişse sessizce geçer (mükerrer silme denemesi hata üretmez).
+/// Orijinal mesajı siler; silinemezse (ör. Mesajları Yönet izni yok) `false` döner.
 ///
 /// Silmeden **önce** mesajın en az [`DELETE_MIN_AGE`] yaşında olması beklenir; bu,
 /// gönderenin istemcisinin optimistic (nonce'lu) mesajını sunucu kopyasıyla
 /// eşleştirmesine zaman tanır ve "hayalet mesaj" oluşumunu engeller. Dönüşüm bu süreyi
 /// zaten aştıysa ek gecikme olmaz.
-async fn delete_user_message(ctx: &Context, msg: &Message) {
+async fn delete_user_message(ctx: &Context, msg: &Message) -> bool {
     if let Some(wait) = delete_wait(msg.id) {
         tokio::time::sleep(wait).await;
     }
-    if let Err(err) = msg.delete(&ctx.http).await {
-        debug!("Orijinal mesaj silinemedi (zaten silinmiş olabilir): {err:?}");
+    match msg.delete(&ctx.http).await {
+        Ok(()) => true,
+        Err(err) => {
+            debug!("Orijinal mesaj silinemedi (zaten silinmiş olabilir): {err:?}");
+            false
+        }
     }
 }
 
@@ -2171,10 +2175,22 @@ async fn finish(
     // yaşına gelene kadar bekler: gönderenin istemcisi optimistic mesajını eşleştirebilsin.
     let ctx = ctx.clone();
     let msg = msg.clone();
+    let source_url = source_url.to_string();
     tokio::spawn(async move {
         let delete_started = std::time::Instant::now();
-        delete_user_message(&ctx, &msg).await;
+        let deleted = delete_user_message(&ctx, &msg).await;
         crate::telemetry::record_phase(crate::telemetry::Phase::Delete, delete_started.elapsed());
+        // Orijinal kaldı: kart ona bağlanır, yoksa düzenleme ikinci kart üretir, silme kartı bırakır.
+        if !deleted {
+            remember_card_for_source(
+                message_id,
+                msg.channel_id,
+                msg.author.id,
+                msg.id,
+                source_url,
+            )
+            .await;
+        }
     });
 }
 

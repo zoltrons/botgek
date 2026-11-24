@@ -2,7 +2,8 @@
 //!
 //! Kart, kullanıcının link attığı mesajdan üretilir ve `store` kaydında o mesajın kimliğiyle
 //! eşlenir. Eşleme yalnızca orijinal mesaj **korunduğunda** (`DELETE_ORIGINAL=false`) tutulur;
-//! orijinal bilerek siliniyorsa silme olayı kartı da götürmesin diye eşleme yazılmaz.
+//! orijinal bilerek siliniyorsa silme olayı kartı da götürmesin diye eşleme yazılmaz. Silme
+//! başarısız olursa (ör. Mesajları Yönet izni yok) eşleme sonradan yazılır.
 //!
 //! - Kaynak silinirse kart da silinir.
 //! - Kaynak düzenlenirse: bağlantı değişmediyse hiçbir şey yapılmaz; bağlantı değiştiyse eski

@@ -59,7 +59,8 @@ kartının kare aksesuarı posteri kırptığı için akış V2 kullanmaz. Buton
 - Hız: istekler tek tek, aralarında en az 1 sn; her hesap en sık 30 sn'de bir yoklanır. RSS `no-store`'dur ve
   hız sınırı başlığı yoktur; ölçümde ~2,3 istek/sn'de 429 görülmedi. 429/403/503'te aralık ikiye katlanır
   (en fazla 60 sn), başarıda yarıya iner.
-- Gönderim: Discord reddederse (kanal silinmiş, yetki yok) bekleyen kayıtlar atlanır; geçici hatada kalanlar
+- Gönderim: Discord reddederse (kanal silinmiş, yetki yok) bekleyen kayıtlar atlanır, kanal
+  silinmişse (404) takip de kaldırılır; geçici hatada kalanlar
   sonraki turda denenir; belirsiz sonuç yeniden gönderilmez. Kart `allowed_mentions: {parse: []}` ile gider.
 
 ## Değişmezler
