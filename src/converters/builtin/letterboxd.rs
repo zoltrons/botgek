@@ -206,9 +206,9 @@ static AVATAR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<a class="avatar[^"]*" href="/([A-Za-z0-9_]+)/"\s*>\s*<img src="(https://(?:a\.ltrbxd\.com|secure\.gravatar\.com)/[^"]+)""#)
         .expect("geçerli avatar regex")
 });
-static AVATAR_SIZE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"-0-\d{1,4}-0-\d{1,4}-crop").expect("geçerli avatar boyutu regex")
-});
+/// CDN'deki yeniden boyutlandırılmış görselin boyut parçası (`-0-230-0-345-crop`).
+static CROP_SIZE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"-0-\d{1,4}-0-\d{1,4}-crop").expect("geçerli boyut regex"));
 
 // ── Profil sayfası ─────────────────────────────────────────────────────────────
 static PROFILE_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -462,7 +462,9 @@ async fn resolve_poster(client: &reqwest::Client, path: &str) -> Option<String> 
         }
     };
     let value: Value = serde_json::from_str(&body).ok()?;
-    text_of(&value, "url").filter(|url| url.starts_with("https://a.ltrbxd.com/"))
+    text_of(&value, "url")
+        .filter(|url| url.starts_with("https://a.ltrbxd.com/"))
+        .map(|url| large_poster(&url))
 }
 
 // ─── Ayrıştırma ──────────────────────────────────────────────────────────────
@@ -569,9 +571,12 @@ fn iso_minutes(duration: &str) -> Option<u32> {
     Some(hours * 60 + minutes).filter(|total| *total > 0)
 }
 
-/// Küçük poster varyantını kartta keskin görünen 600×900 varyantına çevirir (aynı dosya).
+/// Poster varyantını CDN'in verdiği en büyük 1000×1500 varyantına çevirir (aynı dosya; daha
+/// büyüğü aynı baytları döner).
 fn large_poster(url: &str) -> String {
-    url.replace("-0-230-0-345-crop", "-0-600-0-900-crop")
+    CROP_SIZE_REGEX
+        .replace(url, "-0-1000-0-1500-crop")
+        .into_owned()
 }
 
 fn https_image(url: Option<String>) -> Option<String> {
@@ -989,7 +994,7 @@ fn parse_stat_count(raw: &str) -> Option<u64> {
 /// Küçük avatar varyantını (48, 80, 110, 220…) kartta keskin görünen 1000×1000 varyantına
 /// çevirir (aynı dosya); Gravatar'da 48 piksel yerine 256 ister.
 fn large_avatar(url: &str) -> String {
-    AVATAR_SIZE_REGEX
+    CROP_SIZE_REGEX
         .replace(url, "-0-1000-0-1000-crop")
         .replace("size=48", "size=256")
 }
@@ -1834,7 +1839,9 @@ fn diary_entry(item: &str) -> Option<DiaryEntry> {
         film_title: unescape_html(rss_tag(item, "letterboxd:filmTitle")?),
         film_year: rss_tag(item, "letterboxd:filmYear").map(str::to_string),
         film_url: target.film_url()?,
-        poster: https_image(first_capture(&RSS_IMAGE_REGEX, description)),
+        poster: https_image(
+            first_capture(&RSS_IMAGE_REGEX, description).map(|url| large_poster(&url)),
+        ),
         ..Review::default()
     };
     Some(DiaryEntry {
@@ -2314,7 +2321,7 @@ mod tests {
             film.poster
                 .as_deref()
                 .unwrap()
-                .contains("-0-600-0-900-crop")
+                .contains("-0-1000-0-1500-crop")
         );
         assert!(parse_film("<html></html>", "https://letterboxd.com/film/x/").is_err());
     }
@@ -2370,7 +2377,7 @@ mod tests {
                 .poster
                 .as_deref()
                 .unwrap()
-                .contains("-0-600-0-900-crop"),
+                .contains("-0-1000-0-1500-crop"),
             "küçük poster büyütülür"
         );
         assert!(
@@ -2656,7 +2663,7 @@ mod tests {
         let json = serde_json::to_string(&card.components).unwrap();
         assert!(json.contains("Hershey & Co"), "{json}");
         assert!(json.contains("Spoiler içerir"), "{json}");
-        assert!(json.contains("1-hershey-0-600-0-900-crop.jpg"), "{json}");
+        assert!(json.contains("1-hershey-0-1000-0-1500-crop.jpg"), "{json}");
 
         let watch = &review_post(&entries[1].review);
         assert!(watch.text.is_empty(), "izleme kaydında metin yok");
