@@ -157,6 +157,80 @@ fn enforce_cumulative_text_limit(top: &mut [Value], children: &mut [Value]) {
 }
 
 pub fn build_payload(card: &V2Card<'_>) -> Value {
+    let custom = card.post.custom_card.as_ref();
+    let mut payload = match custom.and_then(|custom| custom.embed.as_ref().map(|e| (custom, e))) {
+        Some((custom, embed)) => embed_payload(card, custom, embed),
+        None => components_payload(card),
+    };
+
+    if let Some(allowed_mentions) = &card.allowed_mentions {
+        payload["allowed_mentions"] = allowed_mentions.clone();
+    }
+
+    // Taklit: mesaj kullanıcının adı/avatarı ile gönderilir.
+    if let Some(identity) = card.impersonation {
+        payload["username"] = json!(identity.username);
+        if let Some(avatar) = &identity.avatar_url {
+            payload["avatar_url"] = json!(avatar);
+        }
+    }
+
+    payload
+}
+
+/// Klasik embed'li kart: kullanıcı notu mesaj metni, kart embed, buton satırı embed'in altında.
+fn embed_payload(card: &V2Card<'_>, custom: &super::CustomCard, embed: &Value) -> Value {
+    let mut embed = embed.clone();
+    if hidden(card) {
+        spoil_embed(&mut embed);
+    }
+    let mut payload = json!({
+        "embeds": [embed],
+        "components": custom.buttons,
+        "attachments": attachments_json(card.resolved),
+    });
+    if let Some(comment) = card.user_comment.map(str::trim).filter(|c| !c.is_empty()) {
+        payload["content"] = json!(crate::utils::truncate_chars(comment, 2000));
+    }
+    payload
+}
+
+/// Embed'de spoiler: görsel gizlenemediği için küçük resim atılır; başlık (markdown işlemez)
+/// açıklamaya taşınır, açıklama ve alan değerleri `||…||` içine alınır.
+fn spoil_embed(embed: &mut Value) {
+    let Some(map) = embed.as_object_mut() else {
+        return;
+    };
+    map.remove("thumbnail");
+    map.remove("image");
+    let title = map
+        .remove("title")
+        .and_then(|t| t.as_str().map(|t| format!("**{t}**")));
+    let description = map
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let body = [title, description]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !body.is_empty() {
+        map.insert("description".into(), json!(format!("||{body}||")));
+    }
+    for field in map
+        .get_mut("fields")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(value) = field["value"].as_str() {
+            field["value"] = json!(format!("||{value}||"));
+        }
+    }
+}
+
+fn components_payload(card: &V2Card<'_>) -> Value {
     // Kullanıcı notu kartın dışına çıkar: alıntı bloğuna (`>`) çevrilmez, olduğu gibi yazılır.
     let mut top: Vec<Value> = card
         .user_comment
@@ -203,25 +277,11 @@ pub fn build_payload(card: &V2Card<'_>) -> Value {
         top.extend(custom.buttons.iter().cloned());
     }
 
-    let mut payload = json!({
+    json!({
         "flags": COMPONENTS_V2_FLAG,
         "components": top,
         "attachments": attachments_json(card.resolved),
-    });
-
-    if let Some(allowed_mentions) = &card.allowed_mentions {
-        payload["allowed_mentions"] = allowed_mentions.clone();
-    }
-
-    // Taklit: mesaj kullanıcının adı/avatarı ile gönderilir.
-    if let Some(identity) = card.impersonation {
-        payload["username"] = json!(identity.username);
-        if let Some(avatar) = &identity.avatar_url {
-            payload["avatar_url"] = json!(avatar);
-        }
-    }
-
-    payload
+    })
 }
 
 /// Platforma özel kartın bileşenleri. Gönderimde ek olarak üretilen video (Spotify: kapak +
@@ -1337,6 +1397,7 @@ mod tests {
         let mut post = sample_post();
         let row = json!({"type": 1, "components": [{"type": 2, "style": 5, "label": "Aç", "url": "https://x"}]});
         post.custom_card = Some(crate::converters::builtin::CustomCard {
+            embed: None,
             components: vec![json!({"type": TYPE_TEXT_DISPLAY, "content": "kart"})],
             accent_color: None,
             video_components: None,
@@ -1351,6 +1412,41 @@ mod tests {
     }
 
     #[test]
+    fn embed_card_is_a_classic_message_with_button_and_comment() {
+        let mut post = sample_post();
+        let row = json!({"type": 1, "components": [{"type": 2, "style": 5, "label": "Aç", "url": "https://x"}]});
+        let embed = json!({
+            "title": "Ürün", "description": "# 10 TL", "thumbnail": {"url": "https://x/a.jpg"},
+            "fields": [{"name": "Renk", "value": "Siyah", "inline": true}],
+        });
+        post.custom_card = Some(crate::converters::builtin::CustomCard {
+            embed: Some(embed.clone()),
+            components: Vec::new(),
+            accent_color: None,
+            video_components: None,
+            buttons: vec![row.clone()],
+        });
+        let (options, emojis) = (options(), emojis());
+        let resolved = ResolvedMedia::default();
+        let mut c = card(&post, &options, &resolved, &emojis);
+        c.user_comment = Some(" bak buna ");
+        let payload = build_payload(&c);
+        assert!(payload.get("flags").is_none(), "V2 bayrağı yok");
+        assert_eq!(payload["embeds"], json!([embed]));
+        assert_eq!(payload["components"], json!([row]));
+        assert_eq!(payload["content"], "bak buna");
+
+        // Spoiler: görsel atılır, başlık ve metin `||…||` içinde; önbellekteki kart değişmez.
+        c.spoiler = true;
+        let hidden = build_payload(&c);
+        let e = &hidden["embeds"][0];
+        assert!(e.get("thumbnail").is_none() && e.get("title").is_none());
+        assert_eq!(e["description"], "||**Ürün**\n# 10 TL||");
+        assert_eq!(e["fields"][0]["value"], "||Siyah||");
+        assert_eq!(post.custom_card.as_ref().unwrap().embed, Some(embed));
+    }
+
+    #[test]
     fn sensitive_custom_card_hides_text_and_media_without_mutating_source_card() {
         let mut post = sample_post();
         let source_components = vec![json!({
@@ -1359,6 +1455,7 @@ mod tests {
             "accessory": {"type": TYPE_THUMBNAIL, "media": {"url": "https://cdn/cover.jpg"}}
         })];
         post.custom_card = Some(crate::converters::builtin::CustomCard {
+            embed: None,
             buttons: Vec::new(),
             components: source_components.clone(),
             accent_color: None,
@@ -1383,6 +1480,7 @@ mod tests {
     fn custom_card_plays_attached_video_below_its_section_only() {
         let mut post = sample_post();
         post.custom_card = Some(crate::converters::builtin::CustomCard {
+            embed: None,
             buttons: Vec::new(),
             components: vec![
                 json!({"type": TYPE_SECTION, "components": [], "accessory": {}}),

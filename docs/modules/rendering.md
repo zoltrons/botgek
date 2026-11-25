@@ -2,7 +2,8 @@
 
 ## Görev
 
-`BuiltinPost`'tan Discord'a gidecek Components V2 gövdesini ve ekleri üretir. Klasik embed yoktur.
+`BuiltinPost`'tan Discord'a gidecek Components V2 gövdesini ve ekleri üretir. Tek istisna mağaza ürün
+kartıdır: `CustomCard.embed` doluysa gövde klasik embed + buton satırıdır ([shop.md](platforms/shop.md)).
 
 ## Dosyalar
 

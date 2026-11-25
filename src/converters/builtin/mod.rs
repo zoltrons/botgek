@@ -9,6 +9,7 @@ pub mod bluesky;
 pub mod cache;
 mod coordination;
 pub mod facebook;
+pub mod hepsiburada;
 pub mod instagram;
 pub mod letterboxd;
 pub mod media;
@@ -23,6 +24,7 @@ mod reddit_gql;
 pub mod reddit_video;
 pub mod render;
 mod safe_http;
+pub mod shop;
 pub mod spotify;
 pub mod spotify_video;
 pub mod tiktok;
@@ -115,6 +117,7 @@ pub fn platform_key(platform: Platform) -> &'static str {
         Platform::Miniflux => "miniflux",
         Platform::Amazon => "amazon",
         Platform::Trendyol => "trendyol",
+        Platform::Hepsiburada => "hepsiburada",
     }
 }
 
@@ -136,7 +139,7 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(
     serde_json::from_str(&body).map_err(|e| format!("JSON çözümlenemedi ({url}): {e}"))
 }
 
-/// Botu engelleyen mağaza sayfalarını (Amazon, Trendyol) Markdown'a çeviren vekil.
+/// Botu engelleyen mağaza sayfalarını (Amazon, Trendyol, Hepsiburada) Markdown'a çeviren vekil.
 const DATACAT: &str = "https://datacat.2g8nbyrb.workers.dev/";
 /// Datacat önbellekte olmayan sayfayı tarayıcıda çizer: ölçülen 6,5–10,6 sn, [`REQUEST_TIMEOUT`]'u aşar.
 const DATACAT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -292,6 +295,7 @@ pub async fn fetch(
             Platform::Miniflux => miniflux::fetch(parsed).await,
             Platform::Amazon => amazon::fetch(client, parsed).await,
             Platform::Trendyol => trendyol::fetch(client, parsed).await,
+            Platform::Hepsiburada => hepsiburada::fetch(client, parsed).await,
             Platform::Facebook => facebook::fetch(client, parsed).await,
             Platform::YouTube => youtube::fetch(client, parsed).await,
         }

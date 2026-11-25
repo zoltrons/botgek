@@ -2,16 +2,16 @@
 
 ## Görev
 
-Trendyol ürün bağlantılarını (`trendyol.com` / `m.trendyol.com` `/{marka}/{ad}-p-{id}`) Amazon ile aynı
-ürün kartına çevirir.
+Trendyol ürün bağlantılarını (`trendyol.com` / `m.trendyol.com` `/{marka}/{ad}-p-{id}`) ortak mağaza
+kartına ([shop.md](shop.md)) çevirir.
 
 ## Dosyalar
 
-`builtin/trendyol.rs`; kart `builtin/amazon.rs` içindeki `Product` + `build_card`.
+`builtin/trendyol.rs`; kart `builtin/shop.rs`.
 
 ## Girdi ve çıktı
 
-`trendyol::fetch(client, &ParsedPost) -> Result<BuiltinPost, String>`: `CustomCard` (Components V2), medya yok.
+`trendyol::fetch(client, &ParsedPost) -> Result<BuiltinPost, String>`: `CustomCard` (v1 embed), medya yok.
 
 ## Nasıl çalışır
 
@@ -28,11 +28,10 @@ Trendyol ürün bağlantılarını (`trendyol.com` / `m.trendyol.com` `/{marka}/
   - Satıcı ilk `/magaza/` linki; künye ilk "… Özellikleri" bölümünün anahtar/değer çiftleri (en çok 6, uzunlar atlanır).
   - Görsel: ilk `/prod/` ürün görselinin (`tyN/prod/…` ya da `tyN/product/media/images/prod/…`) `mnresize/G/Y/` atılmış özgün boyutu.
   - Buton adresi değerlendirme linkindeki ürün yoludur (eski id başka ürüne yönlenebilir).
-- Kart: Amazon konseptinin aynısı, turuncu `#F27A1A`, "Trendyol'da aç" butonu. İade süresi sayfada yok.
+- Kart: ortak mağaza kartı, turuncu `#F27A1A`, "Trendyol'da aç" butonu. İade süresi sayfada yok.
 
 ## Değişmezler
 
-- Kart düzeni Amazon'la ortaktır; Trendyol'a özel kart dalı açılmaz, gerekirse `Product` alanı eklenir.
 - Plus üyelerine özel fiyat ana fiyat olarak gösterilmez.
 
 ## Değiştirirken

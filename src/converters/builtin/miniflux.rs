@@ -636,6 +636,7 @@ fn build_card(article: &Article, host: &str, code: &str) -> CustomCard {
         row,
     ];
     CustomCard {
+        embed: None,
         buttons: Vec::new(),
         components,
         accent_color: None,

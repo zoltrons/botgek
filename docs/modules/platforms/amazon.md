@@ -34,28 +34,11 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
   `71l4M2y8zwL.jpg`, özgün tam boy).
 - Başlık ilk `, `'de bölünür: baş kısım ürün adı, kalan parçalar (en çok 4) künye satırı. Başlıkta künye
   yoksa iki sütunlu künye tablolarından en çok 3 satır alınır; kesilmeden sığmayan satır atlanır.
-- Kart (onaylı konseptin düzeni, `amazon.rs` başındaki şema):
-  - Görselli bölüm: küçük mağaza · marka; `###` ürün adı (link değil, link butonda); `#` fiyat (kartın
-    en büyük yazısı); altında tek küçük satırda ~~eski fiyat~~ −%indirim · fırsat rozeti (ayrı rozet
-    satırı ve emoji yok); ★ puan · değerlendirme (düz yıldız); Ücretsiz teslimat · tarih · **Son N adet**.
-  - Ayraç, `Etiket: değer` künye tek akış satırı: hücreler ` · ` ile, hücre içi bölünmez boşlukla
-    (satır yalnız hücre arasında kırılır); en çok 6, aynı değer bir kez. İşlemci, ekran kartı, bellek,
-    ekran, depolama başlıktan ya da tablodan; ağırlık, klavye, garanti vb. tablodan. Küçük alt satır:
-    fiyatın alındığı saat (`<t:…:t>`; göreli `:R` saat kaymasında "sonra" yazıyordu) · satıcı (markadan
-    farklıysa) · iade.
-  - Kartın altında tek "Amazon'da aç" butonu (temiz `/dp/ASIN`).
-  - Kategori sırası, aylık satış ve 5 yıldız oranı bilerek gösterilmez (kullanıcı kararı).
-- Discord sınırı: metin renklendirilemez (kırmızı rozet, yeşil teslimat, turuncu stok), künye gerçek
-  sütun değildir (çift sütun telefonda düzensiz kırıldığı için tek akış).
-
-- Kart (`Product` + `build_card`) mağazadan bağımsızdır; Trendyol aynı kartı kullanır
-  ([trendyol.md](trendyol.md)). Kartı değiştirmek iki mağazayı birden değiştirir.
+- Kart: ortak mağaza kartı (v1 embed), bkz. [shop.md](shop.md). Amazon'a özgü: turuncu `#FF9900`,
+  "Amazon'da aç" butonu (temiz `/dp/ASIN`), alt bilgide iade süresi.
 
 ## Değişmezler
 
-- Section (tip 9) aksesuarsız gönderilmez: Discord reddeder. Görsel yoksa metin bölümsüz konur.
-- Kalın beyaz yalnız başlık, fiyat ve aciliyette ("Son N adet"); künye, rozet, teslimat düz yazı
-  (okunabilirlik; testle korunur).
 - Sıradan "Stokta var" gösterilmez; yalnız az stok / tükendi. Stok yalnızca başlıktan önceki
   satın alma kutusundan okunur (başlıktan sonraki öneri kartlarında başka ürünlerin stoğu yazar).
 - Eski fiyat ve indirim yalnızca Amazon sayfada gösterdiğinde çıkar; bot fiyat geçmişi tutmaz.

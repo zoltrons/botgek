@@ -467,6 +467,7 @@ fn build_card(view: &EntityView, open_url: &str) -> CustomCard {
     components.push(button_row);
 
     CustomCard {
+        embed: None,
         buttons: Vec::new(),
         components,
         accent_color: Some(SPOTIFY_GREEN),

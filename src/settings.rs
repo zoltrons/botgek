@@ -23,6 +23,7 @@ pub struct PlatformModules {
     pub miniflux: bool,
     pub amazon: bool,
     pub trendyol: bool,
+    pub hepsiburada: bool,
     pub ai_chat: bool,
 }
 
@@ -45,6 +46,7 @@ impl Default for PlatformModules {
             miniflux: true,
             amazon: true,
             trendyol: true,
+            hepsiburada: true,
             ai_chat: true,
         }
     }
@@ -511,6 +513,8 @@ pub struct ModuleRoleFilters {
     #[serde(default)]
     pub trendyol: RoleFilterSettings,
     #[serde(default)]
+    pub hepsiburada: RoleFilterSettings,
+    #[serde(default)]
     pub ai_chat: RoleFilterSettings,
 }
 
@@ -545,6 +549,7 @@ impl ModuleRoleFilters {
             &mut self.miniflux,
             &mut self.amazon,
             &mut self.trendyol,
+            &mut self.hepsiburada,
             &mut self.ai_chat,
         ] {
             filter.sanitize();
@@ -574,6 +579,7 @@ impl GuildSettings {
             "miniflux" => &self.role_filters.miniflux,
             "amazon" => &self.role_filters.amazon,
             "trendyol" => &self.role_filters.trendyol,
+            "hepsiburada" => &self.role_filters.hepsiburada,
             "ai_chat" => &self.role_filters.ai_chat,
             _ => &DEFAULT_DISABLED_FILTER,
         }

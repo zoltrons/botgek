@@ -35,12 +35,12 @@ async function apiFetch(path, options = {}) {
 }
 
 /* ── sabitler: Rust varsayılanlarıyla birebir aynı ───────────────────────── */
-const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'xbox', 'pixiv', 'tumblr', 'facebook', 'youtube', 'letterboxd', 'miniflux', 'amazon', 'trendyol', 'ai_chat'];
-const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, xbox: true, pixiv: true, tumblr: true, facebook: true, youtube: true, letterboxd: true, miniflux: true, amazon: true, trendyol: true, ai_chat: true };
+const MODULE_KEYS = ['twitter', 'tiktok', 'instagram', 'reddit', 'bluesky', 'spotify', 'twitch', 'xbox', 'pixiv', 'tumblr', 'facebook', 'youtube', 'letterboxd', 'miniflux', 'amazon', 'trendyol', 'hepsiburada', 'ai_chat'];
+const MODULE_DEFAULTS = { twitter: true, tiktok: true, instagram: true, reddit: true, bluesky: true, spotify: true, twitch: true, xbox: true, pixiv: true, tumblr: true, facebook: true, youtube: true, letterboxd: true, miniflux: true, amazon: true, trendyol: true, hepsiburada: true, ai_chat: true };
 const MODULE_LABELS = {
     twitter: 'Twitter / X', tiktok: 'TikTok', instagram: 'Instagram', reddit: 'Reddit',
     bluesky: 'Bluesky', spotify: 'Spotify', twitch: 'Twitch', xbox: 'Xbox', pixiv: 'Pixiv', tumblr: 'Tumblr',
-    facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', miniflux: 'Miniflux', amazon: 'Amazon', trendyol: 'Trendyol', ai_chat: 'AI sohbet'
+    facebook: 'Facebook', youtube: 'YouTube Posts', letterboxd: 'Letterboxd', miniflux: 'Miniflux', amazon: 'Amazon', trendyol: 'Trendyol', hepsiburada: 'Hepsiburada', ai_chat: 'AI sohbet'
 };
 const AI_DEFAULTS = { model: 'openai/gpt-oss-120b', system_prompt: '' };
 
@@ -66,7 +66,8 @@ const ENGINE_PLATFORMS = [
     { key: 'letterboxd', label: 'Letterboxd' },
     { key: 'miniflux', label: 'Miniflux' },
     { key: 'amazon', label: 'Amazon' },
-    { key: 'trendyol', label: 'Trendyol' }
+    { key: 'trendyol', label: 'Trendyol' },
+    { key: 'hepsiburada', label: 'Hepsiburada' }
 ];
 
 const ENGINE_DEFAULTS = {

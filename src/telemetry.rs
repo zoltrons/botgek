@@ -54,7 +54,7 @@ pub static CONVERSION_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
 const LIMITS: [u64; 8] = [100, 250, 500, 1_000, 2_500, 5_000, 10_000, u64::MAX];
 /// `builtin::platform_key` değerlerinin tamamı. Eksik bir platformun dönüşümleri hiç sayılmaz
 /// ve metrikte 0 başarı / 0 hata olarak görünürdü (ör. loglarda başarısız Twitch klipleri).
-const PLATFORMS: [&str; 16] = [
+const PLATFORMS: [&str; 17] = [
     "twitter",
     "tiktok",
     "instagram",
@@ -71,6 +71,7 @@ const PLATFORMS: [&str; 16] = [
     "miniflux",
     "amazon",
     "trendyol",
+    "hepsiburada",
 ];
 
 struct Counters {
@@ -1338,6 +1339,7 @@ mod tests {
             Platform::Miniflux,
             Platform::Amazon,
             Platform::Trendyol,
+            Platform::Hepsiburada,
         ] {
             let key = crate::converters::builtin::platform_key(platform);
             assert!(PLATFORMS.contains(&key), "{key} sayılmıyor");

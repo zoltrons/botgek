@@ -19,6 +19,7 @@ pub enum Platform {
     Miniflux,
     Amazon,
     Trendyol,
+    Hepsiburada,
 }
 
 impl Platform {
@@ -40,6 +41,7 @@ impl Platform {
             Platform::Miniflux => "Miniflux",
             Platform::Amazon => "Amazon",
             Platform::Trendyol => "Trendyol",
+            Platform::Hepsiburada => "Hepsiburada",
         }
     }
 }
@@ -461,6 +463,37 @@ fn parse_trendyol(raw_content: &str) -> Option<ParsedPost> {
     )
 }
 
+// ==================== HEPSIBURADA ====================
+
+static HEPSIBURADA_SPOILER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\|\|\s*https?://(?:www\.|m\.)?hepsiburada\.com/([a-z0-9-]+-pm?-[a-z0-9]+)[^\s|]*\s*\|\|")
+        .expect("geçerli Hepsiburada spoiler regex")
+});
+static HEPSIBURADA_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)https?://(?:www\.|m\.)?hepsiburada\.com/([a-z0-9-]+-pm?-[a-z0-9]+)[^\s<>()]*")
+        .expect("geçerli Hepsiburada regex")
+});
+
+/// Hepsiburada ürün sayfası (`/{ad}-p-{SKU}`, `/{ad}-pm-{SKU}`): sorgu parametreleri atılır.
+/// SKU büyük harflidir (`HBCV0000FFASMJ`); ad küçük harfe, SKU büyük harfe çevrilir.
+fn parse_hepsiburada(raw_content: &str) -> Option<ParsedPost> {
+    match_pair(
+        raw_content,
+        Platform::Hepsiburada,
+        &HEPSIBURADA_SPOILER_REGEX,
+        &HEPSIBURADA_REGEX,
+        |caps| {
+            let path = caps.get(1)?.as_str();
+            let (name, sku) = path.rsplit_once('-')?;
+            Some(format!(
+                "https://www.hepsiburada.com/{}-{}",
+                name.to_ascii_lowercase(),
+                sku.to_ascii_uppercase()
+            ))
+        },
+    )
+}
+
 /// Verilen mesaj içeriğini tüm desteklenen platformlar için analiz eder.
 pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
     // Hızlı ön kontrol: Link olma ihtimali olmayan mesajlarda tüm regex'leri atla
@@ -529,6 +562,9 @@ pub fn parse_message(raw_content: &str) -> Option<ParsedPost> {
         return Some(sanitize_urls(post));
     }
     if let Some(post) = parse_trendyol(raw_content) {
+        return Some(sanitize_urls(post));
+    }
+    if let Some(post) = parse_hepsiburada(raw_content) {
         return Some(sanitize_urls(post));
     }
 
@@ -1049,6 +1085,38 @@ mod trendyol_tests {
     fn non_product_trendyol_link_is_ignored() {
         assert!(parse_message("https://www.trendyol.com/sr?q=kitap").is_none());
         assert!(parse_message("https://www.trendyol.com/apple-x-b101470").is_none());
+    }
+}
+
+#[cfg(test)]
+mod hepsiburada_tests {
+    use super::*;
+
+    #[test]
+    fn hepsiburada_product_links_drop_query_and_keep_sku_case() {
+        let p = parse_message(
+            "https://www.hepsiburada.com/asus-tuf-gaming-a16-p-HBCV0000FFASMJ?magaza=Hepsiburada&wt_gl=x",
+        )
+        .unwrap();
+        assert_eq!(p.platform, Platform::Hepsiburada);
+        assert_eq!(
+            p.original_url,
+            "https://www.hepsiburada.com/asus-tuf-gaming-a16-p-HBCV0000FFASMJ"
+        );
+        let s =
+            parse_message("|| https://m.hepsiburada.com/apple-macbook-air-m5-pm-HBC0000D5X0MD ||")
+                .unwrap();
+        assert!(s.is_spoiler);
+        assert_eq!(
+            s.original_url,
+            "https://www.hepsiburada.com/apple-macbook-air-m5-pm-HBC0000D5X0MD"
+        );
+    }
+
+    #[test]
+    fn non_product_hepsiburada_link_is_ignored() {
+        assert!(parse_message("https://www.hepsiburada.com/ara?q=laptop").is_none());
+        assert!(parse_message("https://www.hepsiburada.com/kampanyalar").is_none());
     }
 }
 

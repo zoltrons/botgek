@@ -336,6 +336,7 @@ fn build_card(clip: &Clip, post: &BuiltinPost) -> CustomCard {
     }
 
     CustomCard {
+        embed: None,
         buttons: Vec::new(),
         components: vec![
             header_component,

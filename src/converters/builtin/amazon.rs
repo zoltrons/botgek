@@ -1,34 +1,20 @@
 //! Amazon ürün bağlantısı (`amazon.com.tr/.../dp/{ASIN}` ve `amzn.eu/d/{token}` kısa linki).
 //!
 //! Amazon botun isteğini engeller (503 / captcha); ürün sayfası datacat vekilinden Markdown olarak
-//! alınır (`get_markdown`). Fiyat, puan, stok, teslimat ve teknik künye bu metinden okunur (ayrı API yok). Discord'un kendi önizlemesi başlığı kırpar, fiyat göstermez ve küçük
-//! görsel olarak Amazon'un reklam şeridini koyar; bunun yerine onaylı konseptteki kart üretilir:
-//!
-//! ```text
-//! -# Amazon.com.tr · MSI
-//! ### Ürün adı                                           [görsel]
-//! # 49.911,94 TL
-//! -# ~~56.999,00 TL~~ −%12 · Fırsat rozeti   (eski fiyat yalnız Amazon gösterdiğinde)
-//! ★ 4,3 · 19 değerlendirme
-//! Ücretsiz teslimat · 24 Kasım Salı · **Son 1 adet**
-//! ───
-//! İşlemci: … · Ekran kartı: … · …  (etiketli künye tek akış, en çok 6, normal yazı)
-//! -# Fiyat 09:34 itibarıyla · satıcı Amazon.com.tr · 14 gün iade
-//! [Amazon'da aç]                      (kartın altında tek, izleme parametresiz link)
-//! ```
+//! alınır (`get_markdown`). Fiyat, puan, stok, teslimat ve teknik künye bu metinden okunur (ayrı API
+//! yok). Discord'un kendi önizlemesi başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un
+//! reklam şeridini koyar; bunun yerine ortak mağaza kartı (`shop::build_card`, v1 embed) üretilir.
 //!
 //! shortcut: satır kalıpları datacat'in Markdown çıktısına ve Amazon'un sayfa düzenine bağlı; düzen
 //! değişirse ilgili alan sessizce boş kalır (kart yine çıkar). Kırılırsa buradaki regex'ler güncellenir.
 
 use std::sync::LazyLock;
 
-use regex::Regex;
-use serde_json::{Value, json};
-
-use super::render::escape_markdown as escape;
-use super::{Author, BuiltinPost, CustomCard, unescape_html};
+use super::shop::{Product, product_post};
+use super::{BuiltinPost, unescape_html};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
+use regex::Regex;
 
 const AMAZON_ORANGE: u32 = 0xFF9900;
 const MAX_TITLE_CHARS: usize = 150;
@@ -170,33 +156,6 @@ const SPEC_SKIP: &[&str] = &[
     "form faktörü",
 ];
 
-/// Mağazadan bağımsız ürün kartı verisi; Trendyol da aynı kartı kullanır (`trendyol.rs`).
-#[derive(Debug, Default)]
-pub(super) struct Product {
-    pub(super) title: String,
-    pub(super) clean_url: String,
-    /// Kartın üst satırındaki mağaza adı, bağlantının host'undan ("Amazon.com.tr").
-    pub(super) store: String,
-    pub(super) brand: Option<String>,
-    pub(super) deal: Option<String>,
-    pub(super) price_now: Option<String>,
-    pub(super) price_was: Option<String>,
-    pub(super) savings: Option<String>,
-    pub(super) rating: Option<String>,
-    pub(super) reviews: Option<String>,
-    /// Ana teslimat: (ücret, tarih); ücret "ÜCRETSİZ", tutar ya da boş (yalnız tarih).
-    pub(super) delivery: Option<(String, String)>,
-    pub(super) availability: Option<String>,
-    pub(super) seller: Option<String>,
-    pub(super) return_days: Option<String>,
-    pub(super) image: Option<String>,
-    /// Etiketli künye: (etiket, değer).
-    pub(super) specs: Vec<(String, String)>,
-    pub(super) accent: u32,
-    /// Kartın altındaki tek buton ("Amazon'da aç").
-    pub(super) button_label: &'static str,
-}
-
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
     // Captcha atlatılmaya çalışılmaz: vekil de captcha sayfası getirirse açık hata döner.
     let markdown = super::get_markdown(client, &parsed.original_url).await?;
@@ -209,15 +168,6 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let product = parse_product(&markdown, &parsed.original_url)
         .ok_or_else(|| format!("Amazon ürünü okunamadı: {}", parsed.original_url))?;
     Ok(product_post(Platform::Amazon, "Amazon", &product))
-}
-
-/// Ürün kartlı gönderi (Amazon ve Trendyol ortak).
-pub(super) fn product_post(platform: Platform, label: &str, product: &Product) -> BuiltinPost {
-    let mut post = BuiltinPost::new(platform, product.clean_url.clone(), Author::new(label, ""));
-    post.title = Some(product.title.clone());
-    post.extra_label = Some(label.to_string());
-    post.custom_card = Some(build_card(product, crate::utils::unix_secs()));
-    post
 }
 
 fn parse_product(markdown: &str, source_url: &str) -> Option<Product> {
@@ -469,128 +419,6 @@ fn brand(raw: &str) -> Option<String> {
     (!brand.is_empty() && brand.chars().any(char::is_alphabetic)).then(|| truncate_chars(brand, 30))
 }
 
-pub(super) fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
-    // 1) Mağaza · marka (küçük) ve ürün adı (başlık; link butonda).
-    let mut head = format!("-# {}", p.store);
-    if let Some(brand) = &p.brand {
-        head.push_str(&format!(" · {}", escape(brand)));
-    }
-    head.push_str(&format!("\n### {}", escape(&p.title)));
-
-    // 2) Fiyat (kartın en büyük yazısı); altında tek küçük satırda fiyatla ilgili her şey:
-    // eski fiyat, indirim, fırsat rozeti (ayrı rozet satırı kartı kalabalıklaştırıyordu).
-    let mut price = Vec::new();
-    if let Some(now) = &p.price_now {
-        price.push(format!("# {}", escape(now)));
-    }
-    let was = [
-        p.price_was.as_ref().map(|w| format!("~~{}~~", escape(w))),
-        p.savings.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" ");
-    let note = [
-        Some(was).filter(|w| !w.is_empty()),
-        p.deal.as_ref().map(|d| escape(d)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    if !note.is_empty() {
-        price.push(format!("-# {}", note.join(" · ")));
-    }
-
-    // 3) Puan; teslimat + stok (kalın yalnız aciliyet: "Son N adet").
-    let mut trust = Vec::new();
-    if let Some(rating) = &p.rating {
-        // Düz yıldız (renkli emoji değil): puan satırı fiyatla yarışmasın.
-        let mut line = format!("★ {rating}");
-        if let Some(reviews) = &p.reviews {
-            line.push_str(&format!(" · {reviews} değerlendirme"));
-        }
-        trust.push(line);
-    }
-    let mut ship = Vec::new();
-    if let Some((fee, date)) = &p.delivery {
-        if fee.is_empty() {
-            ship.push(escape(date));
-        } else if fee.eq_ignore_ascii_case("ÜCRETSİZ") || fee.eq_ignore_ascii_case("FREE") {
-            ship.push(format!("Ücretsiz teslimat · {}", escape(date)));
-        } else {
-            ship.push(format!("Teslimat {} · {}", escape(fee), escape(date)));
-        }
-    }
-    if let Some(av) = &p.availability {
-        // Bölünmez boşluk: "Son 18 / adet" diye satır sonunda kırılmasın.
-        ship.push(format!("**{}**", escape(av).replace(' ', "\u{a0}")));
-    }
-    if !ship.is_empty() {
-        trust.push(ship.join(" · "));
-    }
-
-    let section_children: Vec<Value> = [head, price.join("\n"), trust.join("\n")]
-        .into_iter()
-        .filter(|t| !t.is_empty())
-        .map(text)
-        .collect();
-
-    // Discord, aksesuarsız Section'ı (tip 9) reddeder: görsel yoksa metin doğrudan konur.
-    let mut components = match p.image.as_deref() {
-        Some(url) => vec![json!({
-            "type": 9,
-            "components": section_children,
-            "accessory": { "type": 11, "media": { "url": url }, "description": "Ürün görseli" },
-        })],
-        None => section_children,
-    };
-
-    let mut bottom = Vec::new();
-    // Künye tek akış: hücreler " · " ile dizilir, hücre içi bölünmez boşlukla bağlanır; Discord
-    // satırı yalnız hücre arasında kırar (çift sütun telefonda düzensiz kırılıyordu). Kalın yok.
-    if !p.specs.is_empty() {
-        let cells = p.specs.iter().map(|(label, value)| {
-            format!("{}: {}", escape(label), escape(value)).replace(' ', "\u{a0}")
-        });
-        bottom.push(cells.collect::<Vec<_>>().join(" · "));
-    }
-    let mut footer = Vec::new();
-    if p.price_now.is_some() {
-        // Fiyat değişir; alındığı saat görünsün. Göreli zaman (`:R`) bot ile izleyicinin saati
-        // farklıysa yeni kartta "10 saniye sonra alındı" yazar; mutlak saat kaymadan etkilenmez.
-        footer.push(format!("Fiyat <t:{fetched_at}:t> itibarıyla"));
-    }
-    if let Some(seller) = p.seller.as_ref().filter(|s| p.brand.as_ref() != Some(*s)) {
-        footer.push(format!("satıcı {}", escape(seller)));
-    }
-    if let Some(days) = &p.return_days {
-        footer.push(format!("{days} gün iade"));
-    }
-    if !footer.is_empty() {
-        bottom.push(format!("-# {}", footer.join(" · ")));
-    }
-    if !bottom.is_empty() {
-        components.push(json!({ "type": 14, "spacing": 1 }));
-        components.push(text(bottom.join("\n")));
-    }
-
-    CustomCard {
-        components,
-        accent_color: Some(p.accent),
-        video_components: None,
-        // Kartın altında tek bağlantı butonu (izleme parametresiz temiz link).
-        buttons: vec![json!({
-            "type": 1,
-            "components": [{ "type": 2, "style": 5, "label": p.button_label, "url": p.clean_url }],
-        })],
-    }
-}
-
-fn text(content: String) -> Value {
-    json!({ "type": 10, "content": content })
-}
-
 /// Markdown hücresinden düz metin: HTML varlıklarını ve kaçışları çöz, boşlukları toparla.
 fn clean_text(raw: &str) -> String {
     unescape_html(&raw.replace('\\', ""))
@@ -672,18 +500,6 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
         parse_product(SAMPLE, "https://www.amazon.com.tr/dp/B0GHR4L88D?ref=spam").unwrap()
     }
 
-    fn card_text(card: &CustomCard) -> String {
-        let mut out = Vec::new();
-        for c in &card.components {
-            for t in std::iter::once(c).chain(c["components"].as_array().into_iter().flatten()) {
-                if let Some(s) = t["content"].as_str() {
-                    out.push(s.to_string());
-                }
-            }
-        }
-        out.join("\n")
-    }
-
     #[test]
     fn parses_every_concept_field() {
         let p = sample();
@@ -728,45 +544,14 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
     }
 
     #[test]
-    fn card_follows_the_concept_layout() {
-        let card = build_card(&sample(), 1_700_000_000);
-        assert_eq!(
-            card_text(&card),
-            "-# Amazon.com.tr · MSI\n\
-             ### MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar\n\
-             # 49.911,94 TL\n\
-             -# ~~56.999,00 TL~~ −%12 · Gülümseten Kasım fırsatı\n\
-             ★ 4,3 · 19 değerlendirme\n\
-             Ücretsiz teslimat · 24 Kasım Salı · **Son\u{a0}1\u{a0}adet**\n\
-             İşlemci:\u{a0}Intel\u{a0}Core\u{a0}I5-13420H · Ekran\u{a0}kartı:\u{a0}RTX4050\u{a0}GDDR6\u{a0}6GB · Bellek:\u{a0}16GB\u{a0}RAM\u{a0}DDR5 · Ekran:\u{a0}15.6\u{a0}FHD\u{a0}144Hz · Depolama:\u{a0}512GB\u{a0}SSD · Ağırlık:\u{a0}1,98\u{a0}kg\n\
-             -# Fiyat <t:1700000000:t> itibarıyla · satıcı Amazon.com.tr · 14 gün iade"
-        );
-        assert_eq!(card.components[0]["type"], 9, "görselli bölüm");
-        assert_eq!(card.components[1]["type"], 14, "ayraç");
-    }
-
-    #[test]
-    fn bold_is_reserved_for_title_price_and_urgency() {
-        // Okunabilirlik: künye, rozet, teslimat düz yazı; kalın yalnız aciliyette.
-        let text = card_text(&build_card(&sample(), 1));
-        assert_eq!(text.matches("**").count(), 2, "{text}");
-        assert!(text.contains("**Son\u{a0}1\u{a0}adet**"));
-    }
-
-    #[test]
-    fn single_clean_button_and_short_link_resolves_from_page() {
+    fn short_link_resolves_clean_url_from_page() {
         let p = parse_product(SAMPLE, "https://amzn.eu/d/04JNI9Sx").unwrap();
         assert_eq!(p.clean_url, "https://www.amazon.com.tr/dp/B0GHR4L88D");
-        let card = build_card(&p, 1_700_000_000);
-        assert_eq!(card.buttons.len(), 1, "kart altında tek buton satırı");
-        let row = card.buttons[0]["components"].as_array().unwrap();
-        assert_eq!(row.len(), 1);
-        assert_eq!(row[0]["label"], "Amazon'da aç");
-        assert_eq!(row[0]["url"], "https://www.amazon.com.tr/dp/B0GHR4L88D");
+        assert_eq!(p.button_label, "Amazon'da aç");
     }
 
     #[test]
-    fn missing_fields_drop_their_lines_only() {
+    fn missing_fields_stay_empty() {
         let html = SAMPLE
             .replace("Önceki Fiyat: ", "")
             .replace("\\-%12", "")
@@ -774,14 +559,19 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
             .replace("NO\\_OF\\_", "")
             .replace(" Stokta sadece 1 adet kaldı.", "Stokta var");
         let p = parse_product(&html, "https://www.amazon.com.tr/dp/B0GHR4L88D").unwrap();
-        let text = card_text(&build_card(&p, 1));
-        assert!(text.contains("\n# 49.911,94 TL"));
-        assert!(!text.contains("~~") && !text.contains("🏷️") && !text.contains("Son "));
-        assert!(text.contains("Ücretsiz teslimat · 24 Kasım Salı"));
+        assert_eq!(p.price_now.as_deref(), Some("49.911,94 TL"));
+        assert_eq!(
+            (p.price_was, p.savings, p.deal, p.availability),
+            (None, None, None, None)
+        );
+        assert_eq!(
+            p.delivery,
+            Some(("ÜCRETSİZ".into(), "24 Kasım Salı".into()))
+        );
     }
 
     #[test]
-    fn missing_price_drops_price_lines_and_fetch_time() {
+    fn missing_price_is_left_empty() {
         let html = SAMPLE
             .replace(" Yüzde 12 tasarruf ile 49.911,94 TL \\-%12 49.911,94TL", "")
             .replace(
@@ -789,25 +579,14 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
                 "",
             );
         let p = parse_product(&html, "https://www.amazon.com.tr/dp/B0GHR4L88D").unwrap();
-        assert_eq!(p.price_now, None);
-        let card = build_card(&p, 1);
-        let text = card_text(&card);
-        assert!(
-            !text.lines().any(|l| l.starts_with("# "))
-                && !text.contains("~~")
-                && !text.contains("alındı")
-        );
-        assert_eq!(card.buttons.len(), 1);
+        assert_eq!((p.price_now, p.price_was), (None, None));
     }
 
     #[test]
-    fn card_without_image_has_no_accessoryless_section() {
+    fn other_images_are_not_taken_as_product_image() {
         let html = SAMPLE.replace("- ![MSI CYBORG", "- ![Başka ürün");
         let p = parse_product(&html, "https://www.amazon.com.tr/dp/B0GHR4L88D").unwrap();
         assert_eq!(p.image, None);
-        let card = build_card(&p, 1);
-        assert!(card.components.iter().all(|c| c["type"] != 9));
-        assert!(card_text(&card).contains("\n# 49.911,94 TL"));
     }
 
     #[test]

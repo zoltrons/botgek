@@ -2,7 +2,7 @@
 //!
 //! Trendyol botun isteğine 403 döner; sayfa datacat vekilinden (`get_markdown`) Markdown olarak okunur.
 //! Fiyat, puan, stok, teslimat, satıcı ve künye bu metinden çıkarılır ve Amazon'un onaylı ürün
-//! kartı (`amazon::build_card`, Components V2) aynen kullanılır; yalnız renk ve buton değişir.
+//! kartı (`shop::build_card`, v1 embed) aynen kullanılır; yalnız renk ve buton değişir.
 //!
 //! shortcut: satır düzeni datacat'in Markdown çıktısına ve Trendyol'un sayfa düzenine bağlı;
 //! düzen değişirse ilgili alan sessizce boş kalır (başlık bulunamazsa kart hiç çıkmaz).
@@ -12,7 +12,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::BuiltinPost;
-use super::amazon::{Product, product_post};
+use super::shop::{Product, product_post, savings, value};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
 
@@ -164,23 +164,6 @@ fn prices(block: &[&str]) -> (Option<String>, Option<String>) {
     )
 }
 
-/// "83.899" / "82.172,02" → sayı.
-fn value(amount: &str) -> f64 {
-    amount
-        .trim_end_matches(" TL")
-        .replace('.', "")
-        .replace(',', ".")
-        .parse()
-        .unwrap_or(0.0)
-}
-
-/// İki fiyat da sayfada göründüğünde indirim oranı ("−%2"); Trendyol oranı ayrıca yazmaz.
-fn savings(now: Option<&str>, was: Option<&str>) -> Option<String> {
-    let (now, was) = (value(now?), value(was?));
-    let pct = ((was - now) / was * 100.0).round();
-    (was > 0.0 && pct >= 1.0).then(|| format!("−%{pct}"))
-}
-
 /// İlk "… Özellikleri" bölümündeki `anahtar` / `değer` satır çiftleri, kısa olanlar.
 fn specs(lines: &[&str]) -> Vec<(String, String)> {
     let Some(start) = lines
@@ -211,7 +194,7 @@ fn specs(lines: &[&str]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converters::builtin::amazon::build_card;
+    use crate::converters::builtin::shop::{build_card, description};
 
     /// Gerçek bir Trendyol ürün sayfasının datacat çıktısından kısaltılmış örnek.
     const SAMPLE: &str = r#"URL Source: https://www.trendyol.com/apple/iphone-16-pro-max-256gb-siyah-titanyum-p-857296077
@@ -339,7 +322,7 @@ Ekran Boyutu
         let p = parse_product(&md, "u").unwrap();
         assert_eq!(p.delivery.as_ref().unwrap().0, "");
         let card = build_card(&p, 0);
-        let all = serde_json::to_string(&card.components).unwrap();
+        let all = description(&card);
         assert!(all.contains("Tahmini 2 gün içerisinde kapında · **Son\u{a0}1\u{a0}adet**"));
         assert!(!all.contains("Ücretsiz teslimat"));
         assert_eq!(card.accent_color, Some(TRENDYOL_ORANGE));

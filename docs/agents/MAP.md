@@ -135,8 +135,10 @@ Satır sayısı yaklaşık. **1000 satır üstü dosyayı baştan sona okumayın
 | `src/converters/builtin/spotify_video.rs` | Spotify 30 sn MP3 ─► kapaklı MP4. |
 | `src/converters/builtin/twitch.rs` | Twitch klibi (GraphQL). |
 | `src/converters/builtin/xbox.rs` | Xbox oyun klibi (sayfa durumu, doğrudan MP4). |
-| `src/converters/builtin/amazon.rs` | Amazon ürün kartı: datacat vekilinin Markdown çıktısından fiyat (varsa üstü çizili + indirim), puan, stok, künye; tek temiz link butonu. Kart Trendyol ile ortak. (~830) |
-| `src/converters/builtin/trendyol.rs` | Trendyol ürün kartı: datacat vekilinin Markdown çıktısından alanlar, Amazon kartı (`amazon::build_card`) ile çizilir. (~330) |
+| `src/converters/builtin/amazon.rs` | Amazon ürün kartı: datacat vekilinin Markdown çıktısından fiyat (varsa üstü çizili + indirim), puan, stok, künye; tek temiz link butonu. Kart `shop.rs`'te. (~700) |
+| `src/converters/builtin/trendyol.rs` | Trendyol ürün kartı: datacat vekilinin Markdown çıktısından alanlar, ortak kartla (`shop::build_card`) çizilir. (~340) |
+| `src/converters/builtin/hepsiburada.rs` | Hepsiburada ürün kartı: datacat vekilinin Markdown çıktısından alanlar, ortak kartla çizilir. (~295) |
+| `src/converters/builtin/shop.rs` | Mağaza ürün kartı (Amazon/Trendyol/Hepsiburada ortak): `Product`, v1 embed kartı, tutar yardımcıları. (~295) |
 | `src/converters/builtin/zipline.rs` | Botun ürettiği videoları Zipline'a yükler (Discord eki yerine). |
 | `src/converters/builtin/pixiv.rs` | Pixiv eseri. |
 | `src/converters/builtin/tumblr.rs` | Tumblr (fxtumblr renderer + OG yedeği). |
@@ -172,8 +174,8 @@ Bunlardan birine dokunan hepsine bakar:
 
 | Terim | Anlam |
 | --- | --- |
-| Kart | Botun gönderdiği Components V2 mesajı. Klasik embed yoktur. |
-| `Platform` | Desteklenen 14 kaynak (`parser.rs`). Anahtarı küçük harf dize: `platform_key`. |
+| Kart | Botun gönderdiği Components V2 mesajı; mağaza ürün kartı klasik embed'dir (`shop.rs`). |
+| `Platform` | Desteklenen 17 kaynak (`parser.rs`). Anahtarı küçük harf dize: `platform_key`. |
 | `ParsedPost` | Ayrıştırılmış bağlantı: platform, kanonik URL, spoiler, kullanıcı yorumu. |
 | `BuiltinPost` | Platformdan bağımsız çekilmiş gönderi verisi (`builtin/model.rs`). |
 | `EngineSettings` / `GuildSettings` | Bir mesaj için çözümlenmiş etkin ayar. |

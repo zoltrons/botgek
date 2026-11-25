@@ -113,6 +113,9 @@ pub struct CustomCard {
     pub video_components: Option<Vec<serde_json::Value>>,
     /// Kartın (container) dışında, altında duran bileşenler: bağlantı butonu satırları.
     pub buttons: Vec<serde_json::Value>,
+    /// Klasik (v1) embed: doluysa mesaj Components V2 yerine bu embed + `buttons` ile gider,
+    /// `components` kullanılmaz (ör. mağaza ürün kartı: gerçek sütunlu künye alanları).
+    pub embed: Option<serde_json::Value>,
 }
 
 /// Render katmanının platformdan bağımsız girdisi.

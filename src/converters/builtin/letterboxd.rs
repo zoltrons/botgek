@@ -1327,6 +1327,7 @@ fn film_card(film: &Film, review: Option<&ReviewLink>) -> CustomCard {
     components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
 
     CustomCard {
+        embed: None,
         buttons: Vec::new(),
         components,
         accent_color: Some(LETTERBOXD_GREEN),
@@ -1375,6 +1376,7 @@ fn review_card(review: &Review) -> CustomCard {
     }
 
     CustomCard {
+        embed: None,
         components,
         accent_color: Some(LETTERBOXD_ORANGE),
         video_components: None,
@@ -1665,6 +1667,7 @@ fn profile_card(profile: &Profile) -> CustomCard {
     components.push(json!({ "type": TYPE_ACTION_ROW, "components": buttons }));
 
     CustomCard {
+        embed: None,
         buttons: Vec::new(),
         components,
         accent_color: Some(LETTERBOXD_BLUE),

@@ -160,8 +160,9 @@ adreslerine gider:
 
 ## Render ve kalıcılık
 
-- Native kartlar **yalnızca Discord Components V2** kullanır; klasik embed fallback'i veya kart stili
-  seçimi yoktur.
+- Native kartlar Discord Components V2 kullanır; klasik embed fallback'i veya kart stili seçimi yoktur.
+  Tek istisna mağaza ürün kartıdır (Amazon/Trendyol/Hepsiburada): kullanıcı kararıyla klasik embed
+  (`CustomCard.embed`, bkz. `docs/modules/platforms/shop.md`).
 - Özel emoji alanları boş bırakılırsa Unicode varsayılan kullanılır; özel emoji seti olmayan
   kurulumlar da kart üretebilir.
 - `settings.json` yazımı aynı dizinde geçici dosya, flush ve atomik replacement ile yapılır. WebUI

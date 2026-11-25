@@ -27,6 +27,7 @@ Discord'da paylaşılan sosyal medya bağlantılarını Components V2 kartların
 | Miniflux | Paylaşım bağlantısı (`miniflux.*` alt alan adı), "Devamını oku" ile genişleyen makale |
 | Amazon | Ürün bağlantısı (`amazon.com.tr`, `amzn.eu`): fiyat, puan, künye kartı |
 | Trendyol | Ürün bağlantısı (`trendyol.com/…-p-{id}`): Amazon ile aynı ürün kartı |
+| Hepsiburada | Ürün bağlantısı (`hepsiburada.com/…-p-{SKU}`, `-pm-`): Amazon ile aynı ürün kartı |
 
 ## Özellikler
 

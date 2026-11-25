@@ -54,6 +54,8 @@ handler ─► converters::enqueue_message ─► kuyruk (32) ─► builtin::ha
 | Miniflux | [miniflux.md](platforms/miniflux.md) | `miniflux.rs` |
 | Amazon | [amazon.md](platforms/amazon.md) | `amazon.rs` |
 | Trendyol | [trendyol.md](platforms/trendyol.md) | `trendyol.rs` |
+| Hepsiburada | [hepsiburada.md](platforms/hepsiburada.md) | `hepsiburada.rs` |
+| Mağaza kartı (ortak) | [shop.md](platforms/shop.md) | `shop.rs` |
 
 Platform dosyaları `src/converters/builtin/` altındadır.
 
