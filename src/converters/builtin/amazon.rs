@@ -163,6 +163,8 @@ const SPEC_SKIP: &[&str] = &[
     "işletim sistemi",
     "pil",
     "lityum",
+    "ürün ağırlığı",
+    "birim sayısı",
 ];
 
 /// Mağazadan bağımsız ürün kartı verisi; Trendyol da aynı kartı kullanır (`trendyol.rs`).
@@ -337,7 +339,8 @@ fn title_line(markdown: &str, lines: &[&str]) -> Option<usize> {
     let matches_meta = |l: &&str| {
         heading(l).is_some_and(|h| {
             let prefix: String = h.chars().take(20).collect();
-            meta.as_deref().is_some_and(|m| m.starts_with(&prefix))
+            // Meta başlık markayla başlayabilir ("Fashcolle Dynamic…"), sayfa başlığı markasız.
+            meta.as_deref().is_some_and(|m| m.contains(&prefix))
         })
     };
     lines
@@ -357,7 +360,8 @@ fn image(buy_box: &[&str], title: &str) -> Option<String> {
     buy_box
         .iter()
         .flat_map(|l| IMAGE.captures_iter(l))
-        .find(|c| clean_text(&c[1]).starts_with(&prefix))
+        // Alt metin markayla başlayabilir ("Fashcolle Dynamic…"); sayfa başlığı markasız.
+        .find(|c| clean_text(&c[1]).contains(&prefix))
         .map(|c| IMAGE_SIZE.replace(&c[2], ".$1").into_owned())
 }
 
@@ -837,6 +841,25 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
                 "Çıkış: HDMI",
                 "Platform: Android, Linux, Windows",
             ]
+        );
+    }
+
+    /// Gerçek Fashcolle sayfası: meta başlık ve görsel alt metni markayla başlar, sayfa başlığı
+    /// markasız; önce gelen "Ürün özeti" başlığı link biçimindedir.
+    #[test]
+    fn brandless_page_title_matches_branded_meta_and_image() {
+        let md = r#"Markdown Content:
+title: Fashcolle Dynamic Black Masajlı Oyuncu Koltuğu : Amazon.com.tr: Ev ve Yaşam
+# [ Ürün özeti, temel ürün bilgilerini sunar ](#)
+![](https://m.media-amazon.com/images/I/31ygo11zySL._AC_US40_.jpg)
+![Fashcolle Dynamic Black Masajlı Oyuncu Koltuğu](https://m.media-amazon.com/images/I/71CNvM0zR3L._AC_SY879_.jpg)
+# Dynamic Black Masajlı Oyuncu Koltuğu
+"#;
+        let p = parse_product(md, "https://www.amazon.com.tr/dp/B0HHDWB1JY").unwrap();
+        assert_eq!(p.title, "Dynamic Black Masajlı Oyuncu Koltuğu");
+        assert_eq!(
+            p.image.as_deref(),
+            Some("https://m.media-amazon.com/images/I/71CNvM0zR3L.jpg")
         );
     }
 
