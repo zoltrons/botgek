@@ -35,11 +35,11 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
 - Başlık ilk `, `'de bölünür: baş kısım ürün adı, kalan parçalar (en çok 4) künye satırı. Başlıkta künye
   yoksa iki sütunlu künye tablolarından en çok 3 satır alınır; kesilmeden sığmayan satır atlanır.
 - Kart (onaylı konseptin düzeni, `amazon.rs` başındaki şema):
-  - Görselli bölüm: küçük mağaza · marka; `##` ürün adı (link değil, link butonda); 🏷️ fırsat rozeti;
+  - Görselli bölüm: küçük mağaza · marka; `###` ürün adı (link değil, link butonda); 🏷️ fırsat rozeti;
     `#` fiyat (kartın en büyük yazısı); varsa küçük satırda ~~eski fiyat~~ −%indirim;
     ⭐ puan · değerlendirme; Ücretsiz teslimat · tarih · **Son N adet**.
-  - Ayraç, iki sütunlu `Etiket: değer` künye (en çok 8: işlemci, ekran kartı, bellek, ekran, depolama
-    başlıktan; ağırlık, klavye, garanti, bağlantı vb. tablodan), küçük alt satır: fiyatın alındığı an ·
+  - Ayraç, iki sütunlu `Etiket: değer` künye (çift 52 karaktere sığmazsa iki satır; aynı değer bir kez) (en çok 8: işlemci, ekran kartı, bellek, ekran, depolama
+    başlıktan; ağırlık, klavye, garanti, bağlantı vb. tablodan), küçük alt satır: fiyatın alındığı saat (`<t:…:t>`; göreli `:R` saat kaymasında "sonra" yazıyordu) ·
     satıcı · iade.
   - Kartın altında tek "Amazon'da aç" butonu (temiz `/dp/ASIN`).
   - Kategori sırası, aylık satış ve 5 yıldız oranı bilerek gösterilmez (kullanıcı kararı).

@@ -28,8 +28,10 @@ static TITLE: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// Ürün görselinin küçültülmüş adresi; `mnresize/G/Y/` atılınca özgün boyut kalır.
 static IMAGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https://cdn\.dsmcdn\.com/mnresize/[0-9]+/[0-9]+/(ty[0-9]+/prod/[^)\s]+)")
-        .expect("geçerli görsel regex")
+    Regex::new(
+        r"https://cdn\.dsmcdn\.com/mnresize/[0-9]+/[0-9]+/(ty[0-9]+/(?:[a-z]+/)*prod/[^)\s]+)",
+    )
+    .expect("geçerli görsel regex")
 });
 static RATING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-5][.,][0-9]$").expect("geçerli puan regex"));
@@ -91,7 +93,11 @@ fn parse_product(markdown: &str, source_url: &str) -> Option<Product> {
     let free = info.contains(&"Ücretsiz Kargo");
 
     Some(Product {
-        title: truncate_chars(caps[2].trim(), MAX_TITLE_CHARS),
+        // "… Kedi Damla 50 ml | Anti Hairball | Biotin Damla": "|" sonrası arama etiketidir.
+        title: truncate_chars(
+            caps[2].split(" | ").next().unwrap_or("").trim(),
+            MAX_TITLE_CHARS,
+        ),
         clean_url: CANONICAL
             .captures(markdown)
             .map(|c| format!("https://www.trendyol.com/{}", &c[1]))
@@ -334,7 +340,7 @@ Ekran Boyutu
         assert_eq!(p.delivery.as_ref().unwrap().0, "");
         let card = build_card(&p, 0);
         let all = serde_json::to_string(&card.components).unwrap();
-        assert!(all.contains("Tahmini 2 gün içerisinde kapında · **Son 1 adet**"));
+        assert!(all.contains("Tahmini 2 gün içerisinde kapında · **Son\u{a0}1\u{a0}adet**"));
         assert!(!all.contains("Ücretsiz teslimat"));
         assert_eq!(card.accent_color, Some(TRENDYOL_ORANGE));
         assert_eq!(card.buttons[0]["components"][0]["label"], "Trendyol'da aç");

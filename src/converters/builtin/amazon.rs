@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! -# Amazon.com.tr · MSI
-//! ## Ürün adı                                            [görsel]
+//! ### Ürün adı                                           [görsel]
 //! 🏷️ Fırsat rozeti
 //! # 49.911,94 TL
 //! -# ~~56.999,00 TL~~ −%12            (yalnız Amazon eski fiyat gösterdiğinde)
@@ -14,7 +14,7 @@
 //! Ücretsiz teslimat · 24 Kasım Salı · **Son 1 adet**
 //! ───
 //! İşlemci: … · Depolama: …          (etiketli künye, normal yazı)
-//! -# Fiyat 12 dakika önce alındı · satıcı Amazon.com.tr · 14 gün iade
+//! -# Fiyat 09:34 itibarıyla · satıcı Amazon.com.tr · 14 gün iade
 //! [Amazon'da aç]                      (kartın altında tek, izleme parametresiz link)
 //! ```
 //!
@@ -38,6 +38,8 @@ const MAX_SPECS: usize = 8;
 /// Tablodan etiketsiz eşlenen satır, kesilmeden sığmıyorsa alınmaz.
 const MAX_SPEC_KEY: usize = 18;
 const MAX_SPEC_VALUE: usize = 30;
+/// İki künye hücresi aynı satıra yalnız bu genişliğe sığarsa konur (telefonda satır kırılmasın).
+const MAX_SPEC_LINE: usize = 52;
 
 /// `/dp/ASIN`, `/gp/product/ASIN`, `/gp/aw/d/ASIN` biçimlerinden 10 haneli ASIN.
 static ASIN_IN_URL: LazyLock<Regex> = LazyLock::new(|| {
@@ -117,9 +119,13 @@ static SPEC_CLASSES: LazyLock<[(Regex, &'static str); 5]> = LazyLock::new(|| {
 
 /// Teknik tablo anahtarı → künye etiketi (konseptteki adlar). Sıra, künyedeki sıradır.
 const TABLE_LABELS: &[(&str, &str)] = &[
+    ("CPU Modeli", "İşlemci"),
+    ("Grafik Kartı Açıklaması", "Ekran kartı"),
     ("Yüklü RAM Belleği", "Bellek"),
+    ("Kurulu RAM Belleği Boyutu", "Bellek"),
     ("Ekran Boyutu", "Ekran"),
     ("Sabit Disk Boyutu", "Depolama"),
+    ("Hard Disk Boyutu", "Depolama"),
     ("Ürünün Ağırlığı", "Ağırlık"),
     ("Klavye Açıklaması", "Klavye"),
     ("Garanti Bilgileri", "Garanti"),
@@ -360,7 +366,8 @@ fn image(buy_box: &[&str], title: &str) -> Option<String> {
 fn specs(title_tail: Option<&str>, rows: &[(String, String)]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut push = |label: &str, value: String| {
-        if !value.is_empty() && !out.iter().any(|(l, _)| l == label) {
+        // Aynı değer iki etiketle gelebilir ("Önemli Özellik" / "Özellikleri"): bir kez.
+        if !value.is_empty() && !out.iter().any(|(l, v)| l == label || *v == value) {
             out.push((label.to_string(), value));
         }
     };
@@ -409,6 +416,12 @@ fn pretty_value(label: &str, value: &str) -> String {
             .replace(" Gram", " g")
             .replace('.', ","),
         "Garanti" if value.bytes().all(|b| b.is_ascii_digit()) => format!("{value} yıl"),
+        // Tablo depolamayı birimsiz yazar ("512"); küçük sayı TB'dir.
+        "Depolama" => match value.parse::<u32>() {
+            Ok(n) if n <= 8 => format!("{n} TB"),
+            Ok(n) => format!("{n} GB"),
+            Err(_) => value.to_string(),
+        },
         _ => value.to_string(),
     }
 }
@@ -455,7 +468,7 @@ pub(super) fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
     if let Some(brand) = &p.brand {
         head.push_str(&format!(" · {}", escape(brand)));
     }
-    head.push_str(&format!("\n## {}", escape(&p.title)));
+    head.push_str(&format!("\n### {}", escape(&p.title)));
 
     // 2) Fırsat rozeti, fiyat (kartın en büyük yazısı), Amazon'un eski fiyatı + indirimi.
     let mut price = Vec::new();
@@ -496,7 +509,8 @@ pub(super) fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
         }
     }
     if let Some(av) = &p.availability {
-        ship.push(format!("**{}**", escape(av)));
+        // Bölünmez boşluk: "Son 18 / adet" diye satır sonunda kırılmasın.
+        ship.push(format!("**{}**", escape(av).replace(' ', "\u{a0}")));
     }
     if !ship.is_empty() {
         trust.push(ship.join(" · "));
@@ -519,26 +533,26 @@ pub(super) fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
     };
 
     let mut bottom = Vec::new();
-    if !p.specs.is_empty() {
-        // İki sütun: sol sütun ilk yarı, sağ sütun ikinci yarı (konseptteki sıra). Kalın yok:
-        // kalın beyaz yalnız başlık, fiyat ve aciliyette; künye düz okunur.
-        let half = p.specs.len().div_ceil(2);
-        let cell =
-            |(label, value): &(String, String)| format!("{}: {}", escape(label), escape(value));
-        for i in 0..half {
-            let mut line = cell(&p.specs[i]);
-            if let Some(right) = p.specs.get(i + half) {
-                line.push_str(&format!(" · {}", cell(right)));
+    // İki sütun: sol sütun ilk yarı, sağ sütun ikinci yarı (konseptteki sıra); çift telefona
+    // sığmıyorsa iki satıra bölünür. Kalın yok: kalın beyaz yalnız başlık, fiyat ve aciliyette.
+    let half = p.specs.len().div_ceil(2);
+    let cell = |(label, value): &(String, String)| format!("{}: {}", escape(label), escape(value));
+    for i in 0..half {
+        let left = cell(&p.specs[i]);
+        match p.specs.get(i + half).map(cell) {
+            Some(right) if left.chars().count() + 3 + right.chars().count() <= MAX_SPEC_LINE => {
+                bottom.push(format!("{left} · {right}"));
             }
-            bottom.push(line);
+            right => bottom.extend(std::iter::once(left).chain(right)),
         }
     }
     let mut footer = Vec::new();
     if p.price_now.is_some() {
-        // Fiyat değişir; kart sohbette kaldıkça ne kadar eski olduğu görünsün.
-        footer.push(format!("Fiyat <t:{fetched_at}:R> alındı"));
+        // Fiyat değişir; alındığı saat görünsün. Göreli zaman (`:R`) bot ile izleyicinin saati
+        // farklıysa yeni kartta "10 saniye sonra alındı" yazar; mutlak saat kaymadan etkilenmez.
+        footer.push(format!("Fiyat <t:{fetched_at}:t> itibarıyla"));
     }
-    if let Some(seller) = &p.seller {
+    if let Some(seller) = p.seller.as_ref().filter(|s| p.brand.as_ref() != Some(*s)) {
         footer.push(format!("satıcı {}", escape(seller)));
     }
     if let Some(days) = &p.return_days {
@@ -712,17 +726,17 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
         assert_eq!(
             card_text(&card),
             "-# Amazon.com.tr · MSI\n\
-             ## MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar\n\
+             ### MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar\n\
              🏷️ Gülümseten Kasım fırsatı\n\
              # 49.911,94 TL\n\
              -# ~~56.999,00 TL~~ −%12\n\
              ⭐ 4,3 · 19 değerlendirme\n\
-             Ücretsiz teslimat · 24 Kasım Salı · **Son 1 adet**\n\
+             Ücretsiz teslimat · 24 Kasım Salı · **Son\u{a0}1\u{a0}adet**\n\
              İşlemci: Intel Core I5-13420H · Depolama: 512GB SSD\n\
              Ekran kartı: RTX4050 GDDR6 6GB · Ağırlık: 1,98 kg\n\
              Bellek: 16GB RAM DDR5 · Klavye: Arkadan Aydınlatmalı\n\
              Ekran: 15.6 FHD 144Hz · Garanti: 2 yıl\n\
-             -# Fiyat <t:1700000000:R> alındı · satıcı Amazon.com.tr · 14 gün iade"
+             -# Fiyat <t:1700000000:t> itibarıyla · satıcı Amazon.com.tr · 14 gün iade"
         );
         assert_eq!(card.components[0]["type"], 9, "görselli bölüm");
         assert_eq!(card.components[1]["type"], 14, "ayraç");
@@ -733,7 +747,7 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
         // Okunabilirlik: künye, rozet, teslimat düz yazı; kalın yalnız aciliyette.
         let text = card_text(&build_card(&sample(), 1));
         assert_eq!(text.matches("**").count(), 2, "{text}");
-        assert!(text.contains("**Son 1 adet**"));
+        assert!(text.contains("**Son\u{a0}1\u{a0}adet**"));
     }
 
     #[test]

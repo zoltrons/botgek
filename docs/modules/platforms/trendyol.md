@@ -18,7 +18,7 @@ Trendyol ürün bağlantılarını (`trendyol.com` / `m.trendyol.com` `/{marka}/
 - Parser sorgu parametrelerini (`boutiqueId`, `merchantId`, izleme) atar.
 - Trendyol botun isteğine 403 döner. Sayfa ortak `get_markdown` ile datacat vekilinden
   (`https://datacat.2g8nbyrb.workers.dev/{url}`, Amazon da kullanır) Markdown olarak alınır; alanlar satır düzeninden okunur:
-  - Başlık `# [**Marka**](…) Ürün adı`; başlık yoksa (silinmiş ürün, "Sayfa Bulunamadı") kart çıkmaz.
+  - Başlık `# [**Marka**](…) Ürün adı`, ilk ` | `'ye kadar (sonrası arama etiketi); başlık yoksa (silinmiş ürün, "Sayfa Bulunamadı") kart çıkmaz.
   - Puan başlıktan sonraki ilk satır, değerlendirme `**N** Değerlendirme`.
   - Fiyat: başlıktan "Ek Hizmetler" / "Şimdi Al"a kadar yalnız tutardan oluşan satırlar. İlk tutar ödenecek
     fiyat, son tutar (daha yüksekse) eski fiyat; indirim oranı bu ikisinden hesaplanır. "Trendyol Plus'a Özel"
@@ -26,7 +26,7 @@ Trendyol ürün bağlantılarını (`trendyol.com` / `m.trendyol.com` `/{marka}/
   - "Kampanyalı Fiyat" varsa 🏷️ rozet; "Son N Ürün!" → **Son N adet**.
   - Teslimat: "…kapında" satırı; "Ücretsiz Kargo" varsa ücretsiz, koşullu kargoda ("350 TL ve Üzeri") yalnız tarih.
   - Satıcı ilk `/magaza/` linki; künye ilk "… Özellikleri" bölümünün anahtar/değer çiftleri (en çok 8, uzunlar atlanır).
-  - Görsel: ilk `/prod/` ürün görselinin `mnresize/G/Y/` atılmış özgün boyutu.
+  - Görsel: ilk `/prod/` ürün görselinin (`tyN/prod/…` ya da `tyN/product/media/images/prod/…`) `mnresize/G/Y/` atılmış özgün boyutu.
   - Buton adresi değerlendirme linkindeki ürün yoludur (eski id başka ürüne yönlenebilir).
 - Kart: Amazon konseptinin aynısı, turuncu `#F27A1A`, "Trendyol'da aç" butonu. İade süresi sayfada yok.
 
