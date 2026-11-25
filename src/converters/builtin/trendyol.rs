@@ -23,7 +23,9 @@ const MAX_SPEC_VALUE: usize = 30;
 
 /// `# [**Marka**](marka-linki) Ürün adı`
 static TITLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^# \[\*\*(.+?)\*\*\]\([^)]*\)\s*(.+)$").expect("geçerli başlık regex")
+    // Markanın kendi sayfası yoksa ad bağlantısız gelir: "# **TP Tekinoğlu Plastik** …".
+    Regex::new(r"^# (?:\[\*\*(.+?)\*\*\]\([^)]*\)|\*\*(.+?)\*\*)\s*(.+)$")
+        .expect("geçerli başlık regex")
 });
 /// Ürün görselinin küçültülmüş adresi; `mnresize/G/Y/` atılınca özgün boyut kalır.
 static IMAGE: LazyLock<Regex> = LazyLock::new(|| {
@@ -91,7 +93,7 @@ fn parse_product(markdown: &str, source_url: &str) -> Option<Product> {
     Some(Product {
         // "… Kedi Damla 50 ml | Anti Hairball | Biotin Damla": "|" sonrası arama etiketidir.
         title: truncate_chars(
-            caps[2].split(" | ").next().unwrap_or("").trim(),
+            caps[3].split(" | ").next().unwrap_or("").trim(),
             MAX_TITLE_CHARS,
         ),
         clean_url: CANONICAL
@@ -99,7 +101,10 @@ fn parse_product(markdown: &str, source_url: &str) -> Option<Product> {
             .map(|c| format!("https://www.trendyol.com/{}", &c[1]))
             .unwrap_or_else(|| source_url.to_string()),
         store: "Trendyol".to_string(),
-        brand: Some(truncate_chars(caps[1].trim(), 30)),
+        brand: Some(truncate_chars(
+            caps.get(1).or(caps.get(2))?.as_str().trim(),
+            30,
+        )),
         deal: after[..buy_end]
             .contains(&"Kampanyalı Fiyat")
             .then(|| "Kampanyalı fiyat".to_string()),
@@ -323,6 +328,17 @@ Ekran Boyutu
         assert!(!all.contains("Ücretsiz teslimat"));
         assert_eq!(card.accent_color, Some(TRENDYOL_ORANGE));
         assert_eq!(card.buttons[0]["components"][0]["label"], "Trendyol'da aç");
+    }
+
+    #[test]
+    fn brand_without_its_own_page_is_read_too() {
+        let md = SAMPLE.replace(
+            "# [**Apple**](https://www.trendyol.com/apple-x-b101470)",
+            "# **TP Tekinoğlu Plastik**",
+        );
+        let p = parse_product(&md, "u").unwrap();
+        assert_eq!(p.brand.as_deref(), Some("TP Tekinoğlu Plastik"));
+        assert!(p.title.starts_with("Yenilenmiş iPhone 16 Pro Max"));
     }
 
     #[test]
