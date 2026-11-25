@@ -15,11 +15,24 @@
 //! [Amazon'da aç]                                      (kartın altında tek, temiz link)
 //! ```
 
+use std::sync::LazyLock;
+
+use regex::Regex;
 use serde_json::json;
 
 use super::render::escape_markdown as escape;
 use super::{Author, BuiltinPost, CustomCard};
 use crate::converters::parser::Platform;
+
+/// Ürün adı en çok bu kadar karakter (embed başlık sınırı 256).
+pub(super) const MAX_TITLE_CHARS: usize = 150;
+/// Başlıktan sonraki puan satırı ("4,6"); Trendyol ve Hepsiburada aynı yazar.
+pub(super) static RATING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[0-5][.,][0-9]$").expect("geçerli puan regex"));
+/// "[**34** Değerlendirme](…)"; Trendyol ve Hepsiburada aynı yazar.
+pub(super) static REVIEWS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\*\*([0-9][0-9.]*)\*\* Değerlendirme").expect("geçerli yorum regex")
+});
 
 /// Mağazadan bağımsız ürün kartı verisi.
 #[derive(Debug, Default)]

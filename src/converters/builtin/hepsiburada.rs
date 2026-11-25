@@ -11,12 +11,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::BuiltinPost;
-use super::shop::{Product, product_post, savings, value};
+use super::shop::{MAX_TITLE_CHARS, Product, RATING, REVIEWS, product_post, savings, value};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
 
 const HEPSIBURADA_ORANGE: u32 = 0xFF6000;
-const MAX_TITLE_CHARS: usize = 150;
 const MAX_SPECS: usize = 6;
 const MAX_SPEC_KEY: usize = 24;
 const MAX_SPEC_VALUE: usize = 30;
@@ -31,11 +30,6 @@ static IMAGE: LazyLock<Regex> = LazyLock::new(|| {
         r"https://productimages\.hepsiburada\.net/s/([0-9]+)/[0-9-]+/([0-9]+\.(?:jpg|jpeg|png|webp))",
     )
     .expect("geçerli görsel regex")
-});
-static RATING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[0-5][.,][0-9]$").expect("geçerli puan regex"));
-static REVIEWS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\*\*([0-9][0-9.]*)\*\* Değerlendirme").expect("geçerli yorum regex")
 });
 static SELLER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^Satıcı: \[([^\]]+)\]\(/magaza/").expect("geçerli satıcı regex"));

@@ -10,14 +10,13 @@
 
 use std::sync::LazyLock;
 
-use super::shop::{Product, product_post};
+use super::shop::{MAX_TITLE_CHARS, Product, product_post};
 use super::{BuiltinPost, unescape_html};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
 use regex::Regex;
 
 const AMAZON_ORANGE: u32 = 0xFF9900;
-const MAX_TITLE_CHARS: usize = 150;
 /// Künye en çok 6 hücre (telefonda iki-üç satır); fazlası kartı kalabalıklaştırıyordu.
 const MAX_SPECS: usize = 6;
 /// Tablodan etiketsiz eşlenen satır, kesilmeden sığmıyorsa alınmaz.

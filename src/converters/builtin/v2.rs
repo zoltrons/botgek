@@ -44,6 +44,10 @@ pub const COMPONENTS_V2_FLAG: u64 = 1 << 15;
 pub const TEXT_DISPLAY_LIMIT: usize = 4000;
 /// Tüm bileşenler genelinde toplam kümülatif metin sınırı (Discord Developer Docs: max 4,000 chars across all components).
 pub const CUMULATIVE_TEXT_LIMIT: usize = 4000;
+/// Mesaj metni (`content`) sınırı.
+const MESSAGE_CONTENT_LIMIT: usize = 2000;
+/// Embed açıklaması sınırı.
+const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 /// `Media Gallery` bileşeni en fazla 10 öğe alır.
 pub const MEDIA_GALLERY_LIMIT: usize = 10;
 /// Kart (Container) içindeki üst düzey bileşen sayısı. Discord kapsayıcı başına sınırı Nisan 2025'te
@@ -184,49 +188,68 @@ fn embed_payload(card: &V2Card<'_>, custom: &super::CustomCard, embed: &Value) -
     if hidden(card) {
         spoil_embed(&mut embed);
     }
+    let mut embeds = vec![embed];
+    let mut content = None;
+    if let Some(comment) = card.user_comment.map(str::trim).filter(|c| !c.is_empty()) {
+        // Mesaj metni en çok 2000 karakter; asıl mesaj silindiği için uzun not kesilmez, kartın
+        // üstünde yalnız açıklamalı bir embed'e (4096) taşınır.
+        if comment.chars().count() <= MESSAGE_CONTENT_LIMIT {
+            content = Some(comment.to_string());
+        } else {
+            let note = crate::utils::truncate_chars(comment, EMBED_DESCRIPTION_LIMIT);
+            embeds.insert(0, json!({ "description": note }));
+        }
+    }
     let mut payload = json!({
-        "embeds": [embed],
+        "embeds": embeds,
         "components": custom.buttons,
         "attachments": attachments_json(card.resolved),
     });
-    if let Some(comment) = card.user_comment.map(str::trim).filter(|c| !c.is_empty()) {
-        payload["content"] = json!(crate::utils::truncate_chars(comment, 2000));
+    if let Some(content) = content {
+        payload["content"] = json!(content);
     }
     payload
 }
 
-/// Embed'de spoiler: görsel gizlenemediği için küçük resim atılır; başlık (markdown işlemez)
-/// açıklamaya taşınır, açıklama ve alan değerleri `||…||` içine alınır.
+/// Embed'de spoiler: görsel, yazar satırı (mağaza · marka) ve alt bilgi (satıcı) gizlenemediği
+/// için atılır; başlık, açıklama ve künye tek `||…||` bloğuna düz satır olarak konur. Başlık
+/// işaretleri (`#`, `-#`) atılır: satır başı başlığı spoiler'ın içinde açık görünebilir.
 fn spoil_embed(embed: &mut Value) {
     let Some(map) = embed.as_object_mut() else {
         return;
     };
-    map.remove("thumbnail");
-    map.remove("image");
-    let title = map
-        .remove("title")
-        .and_then(|t| t.as_str().map(|t| format!("**{t}**")));
-    let description = map
-        .get("description")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let body = [title, description]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !body.is_empty() {
-        map.insert("description".into(), json!(format!("||{body}||")));
+    for key in ["thumbnail", "image", "author", "footer"] {
+        map.remove(key);
     }
-    for field in map
-        .get_mut("fields")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(title) = map
+        .remove("title")
+        .and_then(|t| t.as_str().map(str::to_string))
     {
-        if let Some(value) = field["value"].as_str() {
-            field["value"] = json!(format!("||{value}||"));
-        }
+        lines.push(format!("**{title}**"));
+    }
+    if let Some(description) = map.remove("description") {
+        lines.extend(description.as_str().unwrap_or("").lines().map(|line| {
+            line.trim_start_matches("-# ")
+                .trim_start_matches("# ")
+                .to_string()
+        }));
+    }
+    if let Some(fields) = map.remove("fields") {
+        lines.extend(fields.as_array().into_iter().flatten().map(|f| {
+            format!(
+                "{}: {}",
+                f["name"].as_str().unwrap_or(""),
+                f["value"].as_str().unwrap_or("")
+            )
+        }));
+    }
+    lines.retain(|line| !line.trim().is_empty());
+    if !lines.is_empty() {
+        map.insert(
+            "description".into(),
+            json!(format!("||{}||", lines.join("\n"))),
+        );
     }
 }
 
@@ -1417,6 +1440,7 @@ mod tests {
         let row = json!({"type": 1, "components": [{"type": 2, "style": 5, "label": "Aç", "url": "https://x"}]});
         let embed = json!({
             "title": "Ürün", "description": "# 10 TL", "thumbnail": {"url": "https://x/a.jpg"},
+            "author": {"name": "Mağaza · Marka"}, "footer": {"text": "satıcı X"},
             "fields": [{"name": "Renk", "value": "Siyah", "inline": true}],
         });
         post.custom_card = Some(crate::converters::builtin::CustomCard {
@@ -1440,10 +1464,20 @@ mod tests {
         c.spoiler = true;
         let hidden = build_payload(&c);
         let e = &hidden["embeds"][0];
-        assert!(e.get("thumbnail").is_none() && e.get("title").is_none());
-        assert_eq!(e["description"], "||**Ürün**\n# 10 TL||");
-        assert_eq!(e["fields"][0]["value"], "||Siyah||");
+        for key in ["thumbnail", "title", "author", "footer", "fields"] {
+            assert!(e.get(key).is_none(), "{key} gizli kartta kalmamalı");
+        }
+        assert_eq!(e["description"], "||**Ürün**\n10 TL\nRenk: Siyah||");
         assert_eq!(post.custom_card.as_ref().unwrap().embed, Some(embed));
+
+        // 2000 karakteri aşan not kesilmez: kartın üstünde ayrı embed olur.
+        c.spoiler = false;
+        let long = "a".repeat(2500);
+        c.user_comment = Some(&long);
+        let payload = build_payload(&c);
+        assert!(payload.get("content").is_none());
+        assert_eq!(payload["embeds"][0]["description"], long);
+        assert_eq!(payload["embeds"][1]["title"], "Ürün");
     }
 
     #[test]

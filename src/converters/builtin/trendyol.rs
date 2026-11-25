@@ -12,12 +12,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::BuiltinPost;
-use super::shop::{Product, product_post, savings, value};
+use super::shop::{MAX_TITLE_CHARS, Product, RATING, REVIEWS, product_post, savings, value};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
 
 const TRENDYOL_ORANGE: u32 = 0xF27A1A;
-const MAX_TITLE_CHARS: usize = 150;
 const MAX_SPECS: usize = 6;
 const MAX_SPEC_KEY: usize = 22;
 const MAX_SPEC_VALUE: usize = 30;
@@ -32,11 +31,6 @@ static IMAGE: LazyLock<Regex> = LazyLock::new(|| {
         r"https://cdn\.dsmcdn\.com/mnresize/[0-9]+/[0-9]+/(ty[0-9]+/(?:[a-z]+/)*prod/[^)\s]+)",
     )
     .expect("geçerli görsel regex")
-});
-static RATING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[0-5][.,][0-9]$").expect("geçerli puan regex"));
-static REVIEWS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\*\*([0-9][0-9.]*)\*\* Değerlendirme").expect("geçerli yorum regex")
 });
 static LOW_STOCK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^Son ([0-9]+) Ürün!?$").expect("geçerli stok regex"));

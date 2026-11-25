@@ -6,7 +6,8 @@ Amazon, Trendyol ve Hepsiburada ürün sayfalarından okunan `Product`'ı tek, o
 
 ## Dosyalar
 
-`builtin/shop.rs`: `Product`, `product_post`, `build_card`, tutar yardımcıları (`value`, `savings`).
+`builtin/shop.rs`: `Product`, `product_post`, `build_card`, tutar yardımcıları (`value`, `savings`), ortak
+`MAX_TITLE_CHARS` ve Trendyol/Hepsiburada'nın aynı puan/değerlendirme desenleri (`RATING`, `REVIEWS`).
 Mağaza modülleri (`amazon.rs`, `trendyol.rs`, `hepsiburada.rs`) yalnız sayfayı `Product`'a çevirir.
 
 ## Kart
@@ -30,8 +31,11 @@ alanlar gerçek sütundur ve zaman damgasını izleyicinin cihazı yerel saatle 
 
 - Kalın yalnız aciliyette ("Son N adet"); künye, rozet, teslimat düz yazı (testle korunur).
 - Boş alan kendi parçasını düşürür; kart yine çıkar (açıklama boşsa alan hiç konmaz: Discord boş dizeyi reddeder).
-- Spoiler/hassas kartta (`v2::spoil_embed`) küçük resim atılır, başlık açıklamaya taşınır, metin ve alan
-  değerleri `||…||` içine alınır; önbellekteki kart değişmez.
+- Spoiler/hassas kartta (`v2::spoil_embed`) küçük resim, yazar satırı (mağaza · marka) ve alt bilgi
+  (satıcı) atılır; başlık, açıklama ve künye (`Etiket: değer`) başlık işaretleri (`#`, `-#`) atılmış düz
+  satırlar olarak tek `||…||` bloğuna konur. Önbellekteki kart değişmez.
+- Kullanıcı notu 2000 karakteri aşarsa (Nitro) mesaj metni yerine kartın üstünde yalnız açıklamalı bir
+  embed olur (4096'ya kadar): asıl mesaj silindiği için not kesilmez.
 - Mağazaya özel kart dalı açılmaz; gerekirse `Product` alanı eklenir. Kartı değiştirmek üç mağazayı birden değiştirir.
 
 ## Değiştirirken
