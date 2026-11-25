@@ -16,7 +16,7 @@ ortak mağaza kartına ([shop.md](shop.md)) çevirir.
 ## Nasıl çalışır
 
 - Parser sorgu parametrelerini atar; ad küçük harfe, SKU büyük harfe çevrilir (`HBCV0000FFASMJ`).
-- Sayfa ortak `get_markdown` ile datacat vekilinden Markdown olarak alınır (vekil arada 403 döndürebilir;
+- Sayfa ortak `read_markdown` ile datacat vekilinden (önce tarayıcısız `x-render: off`, okunamazsa tarayıcıyla) Markdown olarak alınır (vekil arada 403 döndürebilir;
   hata 30 sn önbelleğe girer, özgün mesaj kalır). Alanlar satır düzeninden okunur:
   - Başlık `# [Marka](/marka) Ürün adı`; başlık yoksa kart çıkmaz.
   - Puan başlıktan sonraki ilk satır, değerlendirme `**N** Değerlendirme`, satıcı ilk `Satıcı: [ad](/magaza/…)`.

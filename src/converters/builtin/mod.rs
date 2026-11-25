@@ -141,35 +141,48 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(
 
 /// Botu engelleyen mağaza sayfalarını (Amazon, Trendyol, Hepsiburada) Markdown'a çeviren vekil.
 const DATACAT: &str = "https://datacat.2g8nbyrb.workers.dev/";
-/// Datacat önbellekte olmayan sayfayı tarayıcıda çizer: ölçülen 6,5–10,6 sn, [`REQUEST_TIMEOUT`]'u aşar.
+/// Datacat sayfayı tarayıcıda çizerse ölçülen 6,5–10,6 sn sürer, [`REQUEST_TIMEOUT`]'u aşar.
 const DATACAT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Sayfayı datacat vekilinden Markdown olarak çeker: `GET {DATACAT}{url}`.
-pub(super) async fn get_markdown(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    get_text_with_timeout(client, &format!("{DATACAT}{url}"), DATACAT_TIMEOUT).await
+/// Sayfayı datacat vekilinden Markdown olarak çekip `read` ile okur: `GET {DATACAT}{url}`.
+/// Önce `x-render: off` ister (sunucuda çizilen mağaza sayfası tarayıcısız ~0,5–2 sn gelir);
+/// sayfa öyle okunamazsa tarayıcıda çizilmiş haliyle bir kez daha dener.
+pub(super) async fn read_markdown<T>(
+    client: &reqwest::Client,
+    url: &str,
+    read: impl Fn(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    let proxied = format!("{DATACAT}{url}");
+    let fast = get_text_with_timeout(client, &proxied, DATACAT_TIMEOUT, &[("x-render", "off")]);
+    if let Ok(read) = fast.await.and_then(|markdown| read(&markdown)) {
+        return Ok(read);
+    }
+    read(&get_text_with_timeout(client, &proxied, DATACAT_TIMEOUT, &[]).await?)
 }
 
 /// Metin yanıtını çeker. `Content-Length` veya akış `MAX_BODY_BYTES`'ı aşarsa hata verir.
 pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    get_text_with_timeout(client, url, REQUEST_TIMEOUT).await
+    get_text_with_timeout(client, url, REQUEST_TIMEOUT, &[]).await
 }
 
 async fn get_text_with_timeout(
     client: &reqwest::Client,
     url: &str,
     timeout: Duration,
+    headers: &[(&str, &str)],
 ) -> Result<String, String> {
     use crate::telemetry::{HttpHost, InFlight};
     let host = HttpHost::classify(url);
     let request = InFlight::start(host);
-    let response = match client
+    let mut builder = client
         .get(url)
         .header("user-agent", USER_AGENT)
         .header("accept", "application/json, text/html;q=0.8, */*;q=0.5")
-        .timeout(timeout)
-        .send()
-        .await
-    {
+        .timeout(timeout);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let response = match builder.send().await {
         Ok(response) => response,
         Err(error) => {
             request.error();

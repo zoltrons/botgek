@@ -16,7 +16,7 @@ kartına ([shop.md](shop.md)) çevirir.
 ## Nasıl çalışır
 
 - Parser sorgu parametrelerini (`boutiqueId`, `merchantId`, izleme) atar.
-- Trendyol botun isteğine 403 döner. Sayfa ortak `get_markdown` ile datacat vekilinden
+- Trendyol botun isteğine 403 döner. Sayfa ortak `read_markdown` ile datacat vekilinden (önce tarayıcısız `x-render: off`, okunamazsa tarayıcıyla)
   (`https://datacat.2g8nbyrb.workers.dev/{url}`, Amazon da kullanır) Markdown olarak alınır; alanlar satır düzeninden okunur:
   - Başlık `# [**Marka**](…) Ürün adı`, ilk ` | `'ye kadar (sonrası arama etiketi); başlık yoksa (silinmiş ürün, "Sayfa Bulunamadı") kart çıkmaz.
   - Puan başlıktan sonraki ilk satır, değerlendirme `**N** Değerlendirme`.

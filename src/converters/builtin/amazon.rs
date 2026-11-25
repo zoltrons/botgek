@@ -1,7 +1,7 @@
 //! Amazon ürün bağlantısı (`amazon.com.tr/.../dp/{ASIN}` ve `amzn.eu/d/{token}` kısa linki).
 //!
 //! Amazon botun isteğini engeller (503 / captcha); ürün sayfası datacat vekilinden Markdown olarak
-//! alınır (`get_markdown`). Fiyat, puan, stok, teslimat ve teknik künye bu metinden okunur (ayrı API
+//! alınır (`read_markdown`). Fiyat, puan, stok, teslimat ve teknik künye bu metinden okunur (ayrı API
 //! yok). Discord'un kendi önizlemesi başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un
 //! reklam şeridini koyar; bunun yerine ortak mağaza kartı (`shop::build_card`, v1 embed) üretilir.
 //!
@@ -157,15 +157,14 @@ const SPEC_SKIP: &[&str] = &[
 
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
     // Captcha atlatılmaya çalışılmaz: vekil de captcha sayfası getirirse açık hata döner.
-    let markdown = super::get_markdown(client, &parsed.original_url).await?;
-    if is_captcha(&markdown) {
-        return Err(format!(
-            "Amazon robot doğrulaması istedi (captcha): {}",
-            parsed.original_url
-        ));
-    }
-    let product = parse_product(&markdown, &parsed.original_url)
-        .ok_or_else(|| format!("Amazon ürünü okunamadı: {}", parsed.original_url))?;
+    let url = &parsed.original_url;
+    let product = super::read_markdown(client, url, |markdown| {
+        if is_captcha(markdown) {
+            return Err(format!("Amazon robot doğrulaması istedi (captcha): {url}"));
+        }
+        parse_product(markdown, url).ok_or_else(|| format!("Amazon ürünü okunamadı: {url}"))
+    })
+    .await?;
     Ok(product_post(Platform::Amazon, "Amazon", &product))
 }
 

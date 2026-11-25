@@ -19,7 +19,7 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
 - Parser `/dp/ASIN` bağlantısını izleme parametresiz `https://www.{alan}/dp/{ASIN}` adresine indirger. Kısa
   link olduğu gibi kalır; ASIN, yönlendirme sonrası sayfadan (künye tablosundaki `ASIN` satırı ya da marka
   linkindeki `lp_asin`) okunur.
-- Amazon botun doğrudan isteğine 503 ya da captcha döner. Sayfa ortak `get_markdown` ile datacat vekilinden
+- Amazon botun doğrudan isteğine 503 ya da captcha döner. Sayfa ortak `read_markdown` ile datacat vekilinden (önce tarayıcısız `x-render: off`, okunamazsa tarayıcıyla)
   Markdown olarak çekilir (~100–450 KB; HTML seçeneği yok). Datacat önbellekte olmayan sayfayı
   6,5–15 sn'de döndürdüğü için istek sınırı ortak 6 sn değil, 20 sn'dir (`DATACAT_TIMEOUT`). Captcha atlatılmaya çalışılmaz: `is_captcha`
   açık hata döner, kart üretilmez ve özgün mesaj kalır.

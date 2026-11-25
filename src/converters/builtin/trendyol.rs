@@ -1,6 +1,6 @@
 //! Trendyol ürün bağlantısı (`trendyol.com/{marka}/{ad}-p-{id}`).
 //!
-//! Trendyol botun isteğine 403 döner; sayfa datacat vekilinden (`get_markdown`) Markdown olarak okunur.
+//! Trendyol botun isteğine 403 döner; sayfa datacat vekilinden (`read_markdown`) Markdown olarak okunur.
 //! Fiyat, puan, stok, teslimat, satıcı ve künye bu metinden çıkarılır ve Amazon'un onaylı ürün
 //! kartı (`shop::build_card`, v1 embed) aynen kullanılır; yalnız renk ve buton değişir.
 //!
@@ -52,9 +52,11 @@ static CANONICAL: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let markdown = super::get_markdown(client, &parsed.original_url).await?;
-    let product = parse_product(&markdown, &parsed.original_url)
-        .ok_or_else(|| format!("Trendyol ürünü okunamadı: {}", parsed.original_url))?;
+    let url = &parsed.original_url;
+    let product = super::read_markdown(client, url, |markdown| {
+        parse_product(markdown, url).ok_or_else(|| format!("Trendyol ürünü okunamadı: {url}"))
+    })
+    .await?;
     Ok(product_post(Platform::Trendyol, "Trendyol", &product))
 }
 

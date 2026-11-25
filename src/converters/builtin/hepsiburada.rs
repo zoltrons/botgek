@@ -1,6 +1,6 @@
 //! Hepsiburada ürün bağlantısı (`hepsiburada.com/{ad}-p-{SKU}` ve `-pm-{SKU}`).
 //!
-//! Sayfa datacat vekilinden (`get_markdown`) Markdown olarak okunur; fiyat, puan, teslimat, satıcı
+//! Sayfa datacat vekilinden (`read_markdown`) Markdown olarak okunur; fiyat, puan, teslimat, satıcı
 //! ve künye bu metinden çıkarılır ve ortak mağaza kartı (`shop::build_card`) kullanılır.
 //!
 //! shortcut: satır düzeni datacat'in Markdown çıktısına ve Hepsiburada'nın sayfa düzenine bağlı;
@@ -43,9 +43,11 @@ static VARIANT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([^:\[\]!*]+): (\S.*)$").expect("geçerli varyant regex"));
 
 pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<BuiltinPost, String> {
-    let markdown = super::get_markdown(client, &parsed.original_url).await?;
-    let product = parse_product(&markdown, &parsed.original_url)
-        .ok_or_else(|| format!("Hepsiburada ürünü okunamadı: {}", parsed.original_url))?;
+    let url = &parsed.original_url;
+    let product = super::read_markdown(client, url, |markdown| {
+        parse_product(markdown, url).ok_or_else(|| format!("Hepsiburada ürünü okunamadı: {url}"))
+    })
+    .await?;
     Ok(product_post(Platform::Hepsiburada, "Hepsiburada", &product))
 }
 
