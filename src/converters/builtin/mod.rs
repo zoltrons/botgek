@@ -1608,6 +1608,14 @@ pub async fn handle(
 /// Miniflux) `[Link](...)` satırı taşımaz. Bağlantısı kaydedilmemiş eski kartlarda alt
 /// bilgideki `[Link](...)` okunur.
 fn card_source(card: &serde_json::Value, stored: Option<&str>) -> Option<ParsedPost> {
+    // Klasik embed'li kart (mağaza): bileşenlerde yalnız buton satırı var, kart embed'de.
+    if let Some(embeds) = card
+        .get("embeds")
+        .and_then(serde_json::Value::as_array)
+        .filter(|embeds| !embeds.is_empty())
+    {
+        return embed_card_source(card, embeds, stored);
+    }
     fn texts<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>, hidden: &mut bool) {
         match value {
             serde_json::Value::Object(map) => {
@@ -1647,6 +1655,45 @@ fn card_source(card: &serde_json::Value, stored: Option<&str>) -> Option<ParsedP
         .iter()
         .filter_map(|component| component.get("content")?.as_str())
         .next()
+        .map(str::to_string);
+    Some(parsed)
+}
+
+/// Embed kartının kaynağı: kart son embed'dir (spoiler'da açıklaması `||` ile başlar). Not mesaj
+/// metnidir; 2000 karakteri aşan not kartın üstündeki ilk embed'in açıklamasıdır. Kayıt yoksa
+/// link butonun adresidir.
+fn embed_card_source(
+    card: &serde_json::Value,
+    embeds: &[serde_json::Value],
+    stored: Option<&str>,
+) -> Option<ParsedPost> {
+    fn description(embed: &serde_json::Value) -> Option<&str> {
+        embed.get("description")?.as_str()
+    }
+    let button = card
+        .get("components")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|row| row.get("components").and_then(serde_json::Value::as_array))
+        .flatten()
+        .find_map(|component| component.get("url")?.as_str());
+    let url = stored.filter(|url| !url.is_empty()).or(button)?;
+
+    let mut parsed = super::parser::parse_message(url)?;
+    parsed.is_spoiler = embeds
+        .last()
+        .and_then(description)
+        .is_some_and(|text| text.starts_with("||"));
+    parsed.user_comment = card
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .filter(|content| !content.trim().is_empty())
+        .or_else(|| {
+            (embeds.len() > 1)
+                .then(|| description(&embeds[0]))
+                .flatten()
+        })
         .map(str::to_string);
     Some(parsed)
 }
@@ -2253,6 +2300,40 @@ mod message_tests {
         after.reply_to = Some(Box::new(parent));
         assert!(card_changed(&before, &after));
         assert!(!card_changed(&before, &before));
+    }
+
+    #[test]
+    fn embed_card_source_keeps_spoiler_and_long_note() {
+        let button = serde_json::json!([{"type": 1, "components": [
+            {"type": 2, "style": 5, "label": "Amazon'da aç", "url": "https://www.amazon.com.tr/dp/B0HHDWB1JY"}
+        ]}]);
+        // Uzun not ilk embed'de, gizli kart son embed'de; kayıtlı link yok: buton adresi kullanılır.
+        let long = "n".repeat(2500);
+        let hidden = serde_json::json!({
+            "content": "",
+            "embeds": [{"description": long}, {"description": "||**Koltuk**\n3.599,00 TL||"}],
+            "components": button,
+        });
+        let parsed = card_source(&hidden, None).expect("kart çözülmeli");
+        assert_eq!(parsed.platform, Platform::Amazon);
+        assert!(parsed.original_url.contains("B0HHDWB1JY"));
+        assert!(parsed.is_spoiler);
+        assert_eq!(parsed.user_comment.as_deref(), Some(long.as_str()));
+
+        // Kısa not mesaj metninde; açık kart.
+        let open = serde_json::json!({
+            "content": "bak buna",
+            "embeds": [{"title": "Koltuk", "description": "# 3.599,00 TL"}],
+            "components": button,
+        });
+        let parsed = card_source(&open, Some("https://www.trendyol.com/a/b-p-1")).unwrap();
+        assert_eq!(
+            parsed.platform,
+            Platform::Trendyol,
+            "kayıtlı link önce gelir"
+        );
+        assert!(!parsed.is_spoiler);
+        assert_eq!(parsed.user_comment.as_deref(), Some("bak buna"));
     }
 
     #[test]

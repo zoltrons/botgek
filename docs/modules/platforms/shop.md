@@ -36,6 +36,9 @@ alanlar gerçek sütundur ve zaman damgasını izleyicinin cihazı yerel saatle 
   satırlar olarak tek `||…||` bloğuna konur. Önbellekteki kart değişmez.
 - Kullanıcı notu 2000 karakteri aşarsa (Nitro) mesaj metni yerine kartın üstünde yalnız açıklamalı bir
   embed olur (4096'ya kadar): asıl mesaj silindiği için not kesilmez.
+- Apps → Yenile (`builtin::regenerate`) embed kartı `embed_card_source` ile okur: spoiler son embed'in
+  `||` ile başlayan açıklamasından, not `content`'ten ya da (uzun notta) ilk embed'den, link kayıttan ya
+  da butondan gelir. Yenileme kartı açığa çıkarmaz ve notu silmez.
 - Mağazaya özel kart dalı açılmaz; gerekirse `Product` alanı eklenir. Kartı değiştirmek üç mağazayı birden değiştirir.
 
 ## Değiştirirken
