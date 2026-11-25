@@ -7,13 +7,12 @@
 //! ```text
 //! -# Amazon.com.tr · MSI
 //! ### Ürün adı                                           [görsel]
-//! 🏷️ Fırsat rozeti
 //! # 49.911,94 TL
-//! -# ~~56.999,00 TL~~ −%12            (yalnız Amazon eski fiyat gösterdiğinde)
-//! ⭐ 4,3 · 19 değerlendirme
+//! -# ~~56.999,00 TL~~ −%12 · Fırsat rozeti   (eski fiyat yalnız Amazon gösterdiğinde)
+//! ★ 4,3 · 19 değerlendirme
 //! Ücretsiz teslimat · 24 Kasım Salı · **Son 1 adet**
 //! ───
-//! İşlemci: … · Depolama: …          (etiketli künye, normal yazı)
+//! İşlemci: … · Ekran kartı: … · …  (etiketli künye tek akış, en çok 6, normal yazı)
 //! -# Fiyat 09:34 itibarıyla · satıcı Amazon.com.tr · 14 gün iade
 //! [Amazon'da aç]                      (kartın altında tek, izleme parametresiz link)
 //! ```
@@ -33,13 +32,11 @@ use crate::utils::truncate_chars;
 
 const AMAZON_ORANGE: u32 = 0xFF9900;
 const MAX_TITLE_CHARS: usize = 150;
-/// Künye en çok 8 satır (iki sütunda 4 satır), konseptteki gibi.
-const MAX_SPECS: usize = 8;
+/// Künye en çok 6 hücre (telefonda iki-üç satır); fazlası kartı kalabalıklaştırıyordu.
+const MAX_SPECS: usize = 6;
 /// Tablodan etiketsiz eşlenen satır, kesilmeden sığmıyorsa alınmaz.
 const MAX_SPEC_KEY: usize = 18;
 const MAX_SPEC_VALUE: usize = 30;
-/// İki künye hücresi aynı satıra yalnız bu genişliğe sığarsa konur (telefonda satır kırılmasın).
-const MAX_SPEC_LINE: usize = 52;
 
 /// `/dp/ASIN`, `/gp/product/ASIN`, `/gp/aw/d/ASIN` biçimlerinden 10 haneli ASIN.
 static ASIN_IN_URL: LazyLock<Regex> = LazyLock::new(|| {
@@ -165,6 +162,12 @@ const SPEC_SKIP: &[&str] = &[
     "lityum",
     "ürün ağırlığı",
     "birim sayısı",
+    // Pazarlama/oda/desen satırları başlığı tekrarlar ya da bilgi taşımaz.
+    "önemli özellik",
+    "özellikleri",
+    "desen",
+    "oda tipi",
+    "form faktörü",
 ];
 
 /// Mağazadan bağımsız ürün kartı verisi; Trendyol da aynı kartı kullanır (`trendyol.rs`).
@@ -474,29 +477,36 @@ pub(super) fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
     }
     head.push_str(&format!("\n### {}", escape(&p.title)));
 
-    // 2) Fırsat rozeti, fiyat (kartın en büyük yazısı), Amazon'un eski fiyatı + indirimi.
+    // 2) Fiyat (kartın en büyük yazısı); altında tek küçük satırda fiyatla ilgili her şey:
+    // eski fiyat, indirim, fırsat rozeti (ayrı rozet satırı kartı kalabalıklaştırıyordu).
     let mut price = Vec::new();
-    if let Some(deal) = &p.deal {
-        price.push(format!("🏷️ {}", escape(deal)));
-    }
     if let Some(now) = &p.price_now {
         price.push(format!("# {}", escape(now)));
-        let was = [
-            p.price_was.as_ref().map(|w| format!("~~{}~~", escape(w))),
-            p.savings.clone(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-        if !was.is_empty() {
-            price.push(format!("-# {}", was.join(" ")));
-        }
+    }
+    let was = [
+        p.price_was.as_ref().map(|w| format!("~~{}~~", escape(w))),
+        p.savings.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    let note = [
+        Some(was).filter(|w| !w.is_empty()),
+        p.deal.as_ref().map(|d| escape(d)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if !note.is_empty() {
+        price.push(format!("-# {}", note.join(" · ")));
     }
 
     // 3) Puan; teslimat + stok (kalın yalnız aciliyet: "Son N adet").
     let mut trust = Vec::new();
     if let Some(rating) = &p.rating {
-        let mut line = format!("⭐ {rating}");
+        // Düz yıldız (renkli emoji değil): puan satırı fiyatla yarışmasın.
+        let mut line = format!("★ {rating}");
         if let Some(reviews) = &p.reviews {
             line.push_str(&format!(" · {reviews} değerlendirme"));
         }
@@ -537,18 +547,13 @@ pub(super) fn build_card(p: &Product, fetched_at: u64) -> CustomCard {
     };
 
     let mut bottom = Vec::new();
-    // İki sütun: sol sütun ilk yarı, sağ sütun ikinci yarı (konseptteki sıra); çift telefona
-    // sığmıyorsa iki satıra bölünür. Kalın yok: kalın beyaz yalnız başlık, fiyat ve aciliyette.
-    let half = p.specs.len().div_ceil(2);
-    let cell = |(label, value): &(String, String)| format!("{}: {}", escape(label), escape(value));
-    for i in 0..half {
-        let left = cell(&p.specs[i]);
-        match p.specs.get(i + half).map(cell) {
-            Some(right) if left.chars().count() + 3 + right.chars().count() <= MAX_SPEC_LINE => {
-                bottom.push(format!("{left} · {right}"));
-            }
-            right => bottom.extend(std::iter::once(left).chain(right)),
-        }
+    // Künye tek akış: hücreler " · " ile dizilir, hücre içi bölünmez boşlukla bağlanır; Discord
+    // satırı yalnız hücre arasında kırar (çift sütun telefonda düzensiz kırılıyordu). Kalın yok.
+    if !p.specs.is_empty() {
+        let cells = p.specs.iter().map(|(label, value)| {
+            format!("{}: {}", escape(label), escape(value)).replace(' ', "\u{a0}")
+        });
+        bottom.push(cells.collect::<Vec<_>>().join(" · "));
     }
     let mut footer = Vec::new();
     if p.price_now.is_some() {
@@ -717,8 +722,6 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
                 ("Ekran", "15.6 FHD 144Hz"),
                 ("Depolama", "512GB SSD"),
                 ("Ağırlık", "1,98 kg"),
-                ("Klavye", "Arkadan Aydınlatmalı"),
-                ("Garanti", "2 yıl"),
             ]
             .map(|(l, v)| (l.to_string(), v.to_string()))
         );
@@ -731,15 +734,11 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
             card_text(&card),
             "-# Amazon.com.tr · MSI\n\
              ### MSI CYBORG 15 A13VE-2269XTRNN Dizüstü Bilgisayar\n\
-             🏷️ Gülümseten Kasım fırsatı\n\
              # 49.911,94 TL\n\
-             -# ~~56.999,00 TL~~ −%12\n\
-             ⭐ 4,3 · 19 değerlendirme\n\
+             -# ~~56.999,00 TL~~ −%12 · Gülümseten Kasım fırsatı\n\
+             ★ 4,3 · 19 değerlendirme\n\
              Ücretsiz teslimat · 24 Kasım Salı · **Son\u{a0}1\u{a0}adet**\n\
-             İşlemci: Intel Core I5-13420H · Depolama: 512GB SSD\n\
-             Ekran kartı: RTX4050 GDDR6 6GB · Ağırlık: 1,98 kg\n\
-             Bellek: 16GB RAM DDR5 · Klavye: Arkadan Aydınlatmalı\n\
-             Ekran: 15.6 FHD 144Hz · Garanti: 2 yıl\n\
+             İşlemci:\u{a0}Intel\u{a0}Core\u{a0}I5-13420H · Ekran\u{a0}kartı:\u{a0}RTX4050\u{a0}GDDR6\u{a0}6GB · Bellek:\u{a0}16GB\u{a0}RAM\u{a0}DDR5 · Ekran:\u{a0}15.6\u{a0}FHD\u{a0}144Hz · Depolama:\u{a0}512GB\u{a0}SSD · Ağırlık:\u{a0}1,98\u{a0}kg\n\
              -# Fiyat <t:1700000000:t> itibarıyla · satıcı Amazon.com.tr · 14 gün iade"
         );
         assert_eq!(card.components[0]["type"], 9, "görselli bölüm");

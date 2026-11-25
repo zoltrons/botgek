@@ -35,16 +35,18 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
 - Başlık ilk `, `'de bölünür: baş kısım ürün adı, kalan parçalar (en çok 4) künye satırı. Başlıkta künye
   yoksa iki sütunlu künye tablolarından en çok 3 satır alınır; kesilmeden sığmayan satır atlanır.
 - Kart (onaylı konseptin düzeni, `amazon.rs` başındaki şema):
-  - Görselli bölüm: küçük mağaza · marka; `###` ürün adı (link değil, link butonda); 🏷️ fırsat rozeti;
-    `#` fiyat (kartın en büyük yazısı); varsa küçük satırda ~~eski fiyat~~ −%indirim;
-    ⭐ puan · değerlendirme; Ücretsiz teslimat · tarih · **Son N adet**.
-  - Ayraç, iki sütunlu `Etiket: değer` künye (çift 52 karaktere sığmazsa iki satır; aynı değer bir kez) (en çok 8: işlemci, ekran kartı, bellek, ekran, depolama
-    başlıktan; ağırlık, klavye, garanti, bağlantı vb. tablodan), küçük alt satır: fiyatın alındığı saat (`<t:…:t>`; göreli `:R` saat kaymasında "sonra" yazıyordu) ·
-    satıcı · iade.
+  - Görselli bölüm: küçük mağaza · marka; `###` ürün adı (link değil, link butonda); `#` fiyat (kartın
+    en büyük yazısı); altında tek küçük satırda ~~eski fiyat~~ −%indirim · fırsat rozeti (ayrı rozet
+    satırı ve emoji yok); ★ puan · değerlendirme (düz yıldız); Ücretsiz teslimat · tarih · **Son N adet**.
+  - Ayraç, `Etiket: değer` künye tek akış satırı: hücreler ` · ` ile, hücre içi bölünmez boşlukla
+    (satır yalnız hücre arasında kırılır); en çok 6, aynı değer bir kez. İşlemci, ekran kartı, bellek,
+    ekran, depolama başlıktan ya da tablodan; ağırlık, klavye, garanti vb. tablodan. Küçük alt satır:
+    fiyatın alındığı saat (`<t:…:t>`; göreli `:R` saat kaymasında "sonra" yazıyordu) · satıcı (markadan
+    farklıysa) · iade.
   - Kartın altında tek "Amazon'da aç" butonu (temiz `/dp/ASIN`).
   - Kategori sırası, aylık satış ve 5 yıldız oranı bilerek gösterilmez (kullanıcı kararı).
 - Discord sınırı: metin renklendirilemez (kırmızı rozet, yeşil teslimat, turuncu stok), künye gerçek
-  sütun değildir (her satırda iki hücre `·` ile).
+  sütun değildir (çift sütun telefonda düzensiz kırıldığı için tek akış).
 
 - Kart (`Product` + `build_card`) mağazadan bağımsızdır; Trendyol aynı kartı kullanır
   ([trendyol.md](trendyol.md)). Kartı değiştirmek iki mağazayı birden değiştirir.

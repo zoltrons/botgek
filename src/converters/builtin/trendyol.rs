@@ -18,7 +18,7 @@ use crate::utils::truncate_chars;
 
 const TRENDYOL_ORANGE: u32 = 0xF27A1A;
 const MAX_TITLE_CHARS: usize = 150;
-const MAX_SPECS: usize = 8;
+const MAX_SPECS: usize = 6;
 const MAX_SPEC_KEY: usize = 22;
 const MAX_SPEC_VALUE: usize = 30;
 

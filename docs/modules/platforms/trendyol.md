@@ -23,9 +23,9 @@ Trendyol ürün bağlantılarını (`trendyol.com` / `m.trendyol.com` `/{marka}/
   - Fiyat: başlıktan "Ek Hizmetler" / "Şimdi Al"a kadar yalnız tutardan oluşan satırlar. İlk tutar ödenecek
     fiyat, son tutar (daha yüksekse) eski fiyat; indirim oranı bu ikisinden hesaplanır. "Trendyol Plus'a Özel"
     fiyat yalnız üyelere geçerli olduğu için atlanır. Taksit ve ek hizmet tutarları okunmaz.
-  - "Kampanyalı Fiyat" varsa 🏷️ rozet; "Son N Ürün!" → **Son N adet**.
+  - "Kampanyalı Fiyat" varsa fiyatın altındaki küçük satırda rozet; "Son N Ürün!" → **Son N adet**.
   - Teslimat: "…kapında" satırı; "Ücretsiz Kargo" varsa ücretsiz, koşullu kargoda ("350 TL ve Üzeri") yalnız tarih.
-  - Satıcı ilk `/magaza/` linki; künye ilk "… Özellikleri" bölümünün anahtar/değer çiftleri (en çok 8, uzunlar atlanır).
+  - Satıcı ilk `/magaza/` linki; künye ilk "… Özellikleri" bölümünün anahtar/değer çiftleri (en çok 6, uzunlar atlanır).
   - Görsel: ilk `/prod/` ürün görselinin (`tyN/prod/…` ya da `tyN/product/media/images/prod/…`) `mnresize/G/Y/` atılmış özgün boyutu.
   - Buton adresi değerlendirme linkindeki ürün yoludur (eski id başka ürüne yönlenebilir).
 - Kart: Amazon konseptinin aynısı, turuncu `#F27A1A`, "Trendyol'da aç" butonu. İade süresi sayfada yok.
