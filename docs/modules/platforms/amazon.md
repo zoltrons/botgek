@@ -20,7 +20,8 @@ başlığı kırpar, fiyat göstermez ve küçük görsel olarak Amazon'un tanı
   link olduğu gibi kalır; ASIN, yönlendirme sonrası sayfadan (künye tablosundaki `ASIN` satırı ya da marka
   linkindeki `lp_asin`) okunur.
 - Amazon botun doğrudan isteğine 503 ya da captcha döner. Sayfa ortak `get_markdown` ile datacat vekilinden
-  Markdown olarak çekilir (~100–450 KB; HTML seçeneği yok). Captcha atlatılmaya çalışılmaz: `is_captcha`
+  Markdown olarak çekilir (~100–450 KB; HTML seçeneği yok). Datacat önbellekte olmayan sayfayı
+  6,5–15 sn'de döndürdüğü için istek sınırı ortak 6 sn değil, 20 sn'dir (`DATACAT_TIMEOUT`). Captcha atlatılmaya çalışılmaz: `is_captcha`
   açık hata döner, kart üretilmez ve özgün mesaj kalır.
 - Datacat iki biçim üretebilir (temiz Markdown ya da HTML artıklı); kalıplar satır başı boşluklarına ve
   `*`/`_` farkına dayanıklıdır. Ürün başlığı sayfadaki ilk tek `# ` başlığıdır. Satın alma kutusu (teslimat,

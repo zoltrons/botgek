@@ -136,16 +136,26 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(
     serde_json::from_str(&body).map_err(|e| format!("JSON çözümlenemedi ({url}): {e}"))
 }
 
-/// Metin yanıtını çeker. `Content-Length` veya akış `MAX_BODY_BYTES`'ı aşarsa hata verir.
 /// Botu engelleyen mağaza sayfalarını (Amazon, Trendyol) Markdown'a çeviren vekil.
 const DATACAT: &str = "https://datacat.2g8nbyrb.workers.dev/";
+/// Datacat önbellekte olmayan sayfayı tarayıcıda çizer: ölçülen 6,5–10,6 sn, [`REQUEST_TIMEOUT`]'u aşar.
+const DATACAT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Sayfayı datacat vekilinden Markdown olarak çeker: `GET {DATACAT}{url}`.
 pub(super) async fn get_markdown(client: &reqwest::Client, url: &str) -> Result<String, String> {
-    get_text(client, &format!("{DATACAT}{url}")).await
+    get_text_with_timeout(client, &format!("{DATACAT}{url}"), DATACAT_TIMEOUT).await
 }
 
+/// Metin yanıtını çeker. `Content-Length` veya akış `MAX_BODY_BYTES`'ı aşarsa hata verir.
 pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    get_text_with_timeout(client, url, REQUEST_TIMEOUT).await
+}
+
+async fn get_text_with_timeout(
+    client: &reqwest::Client,
+    url: &str,
+    timeout: Duration,
+) -> Result<String, String> {
     use crate::telemetry::{HttpHost, InFlight};
     let host = HttpHost::classify(url);
     let request = InFlight::start(host);
@@ -153,7 +163,7 @@ pub async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, Str
         .get(url)
         .header("user-agent", USER_AGENT)
         .header("accept", "application/json, text/html;q=0.8, */*;q=0.5")
-        .timeout(REQUEST_TIMEOUT)
+        .timeout(timeout)
         .send()
         .await
     {

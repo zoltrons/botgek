@@ -197,16 +197,16 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     }
     let product = parse_product(&markdown, &parsed.original_url)
         .ok_or_else(|| format!("Amazon ürünü okunamadı: {}", parsed.original_url))?;
+    Ok(product_post(Platform::Amazon, "Amazon", &product))
+}
 
-    let mut post = BuiltinPost::new(
-        Platform::Amazon,
-        product.clean_url.clone(),
-        Author::new("Amazon", ""),
-    );
+/// Ürün kartlı gönderi (Amazon ve Trendyol ortak).
+pub(super) fn product_post(platform: Platform, label: &str, product: &Product) -> BuiltinPost {
+    let mut post = BuiltinPost::new(platform, product.clean_url.clone(), Author::new(label, ""));
     post.title = Some(product.title.clone());
-    post.extra_label = Some("Amazon".to_string());
-    post.custom_card = Some(build_card(&product, crate::utils::unix_secs()));
-    Ok(post)
+    post.extra_label = Some(label.to_string());
+    post.custom_card = Some(build_card(product, crate::utils::unix_secs()));
+    post
 }
 
 fn parse_product(markdown: &str, source_url: &str) -> Option<Product> {
@@ -823,6 +823,38 @@ Gülümseten Kasım fırsatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika Gülüms
                 "Çıkış: HDMI",
                 "Platform: Android, Linux, Windows",
             ]
+        );
+    }
+
+    /// Datacat'in HTML artıklı ikinci biçimi (gerçek Lenovo sayfasından): satır başı boşluk,
+    /// `_` italik, parantez içi boşluk, kaçışlı `\-%`.
+    #[test]
+    fn second_datacat_format_is_read_too() {
+        let md = r#"Markdown Content:
+title: Lenovo IdeaPad Slim 3 Intel Core 5 320 16GB 512GB SSD 15.3&quot; WUXGA FreeDOS 83RR00HUTR : Amazon.com.tr: Bilgisayar
+ ÜCRETSİZ teslimat 28 Kasım Cumartesi 
+ Stokta sadece 3 adet kaldı.   
+#  Lenovo IdeaPad Slim 3 Intel Core 5 320 16GB 512GB SSD 15.3" WUXGA FreeDOS 83RR00HUTR 
+[Lenovo Store’u ziyaret edin](/stores/Lenovo/page/6B75?lp%5Fasin=B0HCYVGLS3&ref%5F=ast%5Fbln) 
+[  5,0 _5 yıldız üzerinden 5,0_ ](javascript:void%280%29) [ (2) ](#averageCustomerReviewsAnchor) div> 
+365 günün en düşük fiyatı NO\_OF\_HOURS saat NO\_OF\_MINUTES dakika
+ Yüzde 3 tasarruf ile 38.999,00 TL \-%3 38.999,00TL 
+Önceki Fiyat: 39.999,00 TLÖnceki Fiyat: 39.999,00TL39.999,00TL [ ![](https://m.media-amazon.com/images/S/sash//GN8m.svg) ](#) 
+12 aya varan taksit seçenekleri [ Taksitler ](javascript:void%280%29) 
+"#;
+        let p = parse_product(md, "https://amzn.eu/d/x").unwrap();
+        assert_eq!(p.clean_url, "https://www.amazon.com.tr/dp/B0HCYVGLS3");
+        assert_eq!(p.brand.as_deref(), Some("Lenovo"));
+        assert_eq!(p.rating.as_deref(), Some("5,0"));
+        assert_eq!(p.reviews.as_deref(), Some("2"));
+        assert_eq!(p.deal.as_deref(), Some("365 günün en düşük fiyatı"));
+        assert_eq!(p.price_now.as_deref(), Some("38.999,00 TL"));
+        assert_eq!(p.price_was.as_deref(), Some("39.999,00 TL"));
+        assert_eq!(p.savings.as_deref(), Some("−%3"));
+        assert_eq!(p.availability.as_deref(), Some("Son 3 adet"));
+        assert_eq!(
+            p.delivery,
+            Some(("ÜCRETSİZ".into(), "28 Kasım Cumartesi".into()))
         );
     }
 

@@ -11,8 +11,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::amazon::{Product, build_card};
-use super::{Author, BuiltinPost};
+use super::BuiltinPost;
+use super::amazon::{Product, product_post};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
 
@@ -59,16 +59,7 @@ pub async fn fetch(client: &reqwest::Client, parsed: &ParsedPost) -> Result<Buil
     let markdown = super::get_markdown(client, &parsed.original_url).await?;
     let product = parse_product(&markdown, &parsed.original_url)
         .ok_or_else(|| format!("Trendyol ürünü okunamadı: {}", parsed.original_url))?;
-
-    let mut post = BuiltinPost::new(
-        Platform::Trendyol,
-        product.clean_url.clone(),
-        Author::new("Trendyol", ""),
-    );
-    post.title = Some(product.title.clone());
-    post.extra_label = Some("Trendyol".to_string());
-    post.custom_card = Some(build_card(&product, crate::utils::unix_secs()));
-    Ok(post)
+    Ok(product_post(Platform::Trendyol, "Trendyol", &product))
 }
 
 fn parse_product(markdown: &str, source_url: &str) -> Option<Product> {
@@ -214,6 +205,7 @@ fn specs(lines: &[&str]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::converters::builtin::amazon::build_card;
 
     /// Gerçek bir Trendyol ürün sayfasının datacat çıktısından kısaltılmış örnek.
     const SAMPLE: &str = r#"URL Source: https://www.trendyol.com/apple/iphone-16-pro-max-256gb-siyah-titanyum-p-857296077
