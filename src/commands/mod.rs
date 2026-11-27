@@ -30,7 +30,7 @@ use serenity::all::{
     CommandOptionType, CommandType, ComponentInteraction, Context, CreateCommand,
     CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
     EditInteractionResponse, GuildId, Http, InstallationContext, Interaction, InteractionContext,
-    MessageId,
+    MessageFlags, MessageId,
 };
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -256,7 +256,11 @@ async fn dispatch(
                 || component
                     .data
                     .custom_id
-                    .starts_with(pager::CUSTOM_ID_PREFIX) =>
+                    .starts_with(pager::CUSTOM_ID_PREFIX)
+                || component
+                    .data
+                    .custom_id
+                    .starts_with(pager::TEXT_CUSTOM_ID_PREFIX) =>
         {
             return edit_card_component(ctx, component, http_client, config, app_settings).await;
         }
@@ -432,6 +436,9 @@ fn string_option<'a>(data: &'a CommandData, name: &str) -> Option<&'a str> {
 /// Önce "güncelleme ertelendi" (type 6) yanıtı verilir (embed yeniden çekilirken üç saniyelik
 /// pencere kaçmasın), mesaj ham JSON olarak okunur, yalnızca liste + sayfa butonları değiştirilir
 /// ve `@original` düzenlenir. Sayfa herkes için değişir; tıklayan kişiye yetki aranmaz.
+///
+/// Reddit "Devamını oku" kartı değiştirmez: tıklayana görünen yeni bir mesaj (type 5, ephemeral)
+/// açılır, o mesajdaki ◀ ▶ butonları yalnızca onu düzenler.
 async fn edit_card_component(
     ctx: &Context,
     component: &ComponentInteraction,
@@ -439,14 +446,21 @@ async fn edit_card_component(
     config: &Config,
     app_settings: &Arc<RwLock<AppSettings>>,
 ) {
+    let custom_id = &component.data.custom_id;
+    let reading = custom_id.starts_with(pager::TEXT_CUSTOM_ID_PREFIX);
+    let opening = reading
+        && !component
+            .message
+            .flags
+            .is_some_and(|flags| flags.contains(MessageFlags::EPHEMERAL));
+    let ack = if opening {
+        serde_json::json!({ "type": 5, "data": { "flags": 64 } })
+    } else {
+        serde_json::json!({ "type": 6 })
+    };
     let deferred = ctx
         .http
-        .create_interaction_response(
-            component.id,
-            &component.token,
-            &serde_json::json!({ "type": 6 }),
-            Vec::new(),
-        )
+        .create_interaction_response(component.id, &component.token, &ack, Vec::new())
         .await;
     if let Err(err) = deferred {
         warn!(interaction = %component.id, "kart etkileşimi ertelenemedi: {err:?}");
@@ -454,7 +468,29 @@ async fn edit_card_component(
     }
 
     let application_id = component.application_id.get();
+    let engine = async || {
+        let parent_id =
+            crate::handler::discord_thread_parent(ctx, component.guild_id, component.channel_id)
+                .await;
+        app_settings
+            .read()
+            .await
+            .get_message_settings(component.guild_id, component.channel_id, parent_id)
+            .engine
+    };
     let result = async {
+        if reading {
+            let payload = pager::text_page(client, config, &engine().await, custom_id).await?;
+            return raw::edit_interaction_response(
+                client,
+                application_id,
+                &component.token,
+                &payload,
+                &[],
+            )
+            .await
+            .map_err(|err| format!("mesaj düzenlenemedi: {err:?}"));
+        }
         let message = raw::get_interaction_original(client, application_id, &component.token)
             .await
             .map_err(|err| format!("mesaj okunamadı: {err:?}"))?;
@@ -462,22 +498,10 @@ async fn edit_card_component(
             .get("components")
             .cloned()
             .ok_or("mesajda bileşen yok")?;
-        let custom_id = &component.data.custom_id;
         if custom_id.starts_with(miniflux::CUSTOM_ID_PREFIX) {
             miniflux::toggle(custom_id, &mut components).await?;
         } else if custom_id.starts_with(pager::CUSTOM_ID_PREFIX) {
-            let parent_id = crate::handler::discord_thread_parent(
-                ctx,
-                component.guild_id,
-                component.channel_id,
-            )
-            .await;
-            let settings = app_settings.read().await.get_message_settings(
-                component.guild_id,
-                component.channel_id,
-                parent_id,
-            );
-            pager::turn_page(client, config, &settings.engine, custom_id, &mut components).await?;
+            pager::turn_page(client, config, &engine().await, custom_id, &mut components).await?;
         } else {
             spotify::turn_page(client, custom_id, &mut components).await?;
         }
@@ -493,14 +517,26 @@ async fn edit_card_component(
 
     if let Err(err) = result {
         warn!(interaction = %component.id, "kart bileşeni değiştirilemedi: {err}");
-        let body = serde_json::json!({
-            "content": "Kart güncellenemedi, biraz sonra tekrar dene.",
-            "flags": 64,
-        });
-        let _ = ctx
-            .http
-            .create_followup_message(&component.token, &body, Vec::new())
+        if opening {
+            let notice = "Metin açılamadı, biraz sonra tekrar dene.";
+            // Ertelenmiş yanıt "düşünüyor…" olarak kalmasın: hata o mesaja yazılır.
+            let body = serde_json::json!({ "content": notice });
+            let _ = raw::edit_interaction_response(
+                client,
+                application_id,
+                &component.token,
+                &body,
+                &[],
+            )
             .await;
+        } else {
+            let notice = "Kart güncellenemedi, biraz sonra tekrar dene.";
+            let body = serde_json::json!({ "content": notice, "flags": 64 });
+            let _ = ctx
+                .http
+                .create_followup_message(&component.token, &body, Vec::new())
+                .await;
+        }
     }
 }
 

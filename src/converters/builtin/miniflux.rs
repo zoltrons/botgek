@@ -10,6 +10,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 use url::Url;
 
+use super::pager::paginate;
 use super::{Author, BuiltinPost, CustomCard, render::escape_markdown, unescape_html};
 use crate::converters::parser::{ParsedPost, Platform};
 use crate::utils::truncate_chars;
@@ -514,26 +515,6 @@ fn text_display(id: Option<u64>, content: String) -> Value {
         value["id"] = json!(id);
     }
     value
-}
-
-/// Metni en fazla `max` karakterlik sayfalara böler; kesim önce paragraf, sonra satır, sonra
-/// boşluk sınırında yapılır.
-fn paginate(text: &str, max: usize) -> Vec<String> {
-    let mut pages = Vec::new();
-    let mut rest = text.trim();
-    while rest.chars().count() > max {
-        let limit = rest.char_indices().nth(max).map_or(rest.len(), |(i, _)| i);
-        let window = &rest[..limit];
-        let half = window.len() / 2;
-        let cut = ["\n\n", "\n", " "]
-            .iter()
-            .find_map(|sep| window.rfind(sep).filter(|at| *at >= half))
-            .unwrap_or(limit);
-        pages.push(rest[..cut].trim().to_string());
-        rest = rest[cut..].trim_start();
-    }
-    pages.push(rest.to_string());
-    pages
 }
 
 /// Kartın gösterim durumu.

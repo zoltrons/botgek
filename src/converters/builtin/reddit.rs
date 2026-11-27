@@ -366,6 +366,16 @@ fn post_id_from_url(original_url: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
+/// Etkileşim düğmesinde (`custom_id` ≤ 100) taşınan kısa gönderi yolu: `comments/{id}`, yorumda
+/// `comments/{id}/_/{yorum}`. `parse_message` ve [`fetch`] bu yolu kalıcı adres gibi çözer.
+pub(super) fn compact_path(url: &str) -> Option<String> {
+    let id = post_id_from_url(url)?;
+    Some(match comment_id_from_url(url) {
+        Some(comment) => format!("comments/{id}/_/{comment}"),
+        None => format!("comments/{id}"),
+    })
+}
+
 fn comment_id_from_url(original_url: &str) -> Option<&str> {
     COMMENT_ID_REGEX
         .captures(original_url)

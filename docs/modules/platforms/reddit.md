@@ -40,6 +40,10 @@ bağlantılarını yanıt kartı olarak `BuiltinPost`'a çevirir. Videonun gör�
 - `source_spoiler` Reddit'in `spoiler` bayrağından, `sensitive` NSFW'den gelir. `extra_label` flair ve
   benzerini taşır. Skor `Stats.likes` alanındadır.
 - Dış bağlantı paylaşımında hedef sayfanın önizlemesi (500 ms) eklenir.
+- 2500 karakterden uzun gövde kartta kısaltılır, altına "Devamını oku" düğmesi (`rtext:` + `compact_path`)
+  konur. Tıklayana görünen (ephemeral) bir mesajda tam metin açılır; 3500 karakteri aşan metin ◀ ▶ sayfalarına bölünür,
+  kart değişmez (`pager::text_page`). Gizli kartta metin de spoiler'lı gelir.
+  Gövde sınırı, kartın geri kalanı (kullanıcı notu, alıntı, önizleme) kurulduktan sonra kalan yere göre düşer (en az 700); böylece düğmesiz kesilmez, not kesilmez.
 
 ### Video birleştirme (`reddit_video.rs`)
 

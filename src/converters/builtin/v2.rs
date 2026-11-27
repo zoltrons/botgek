@@ -446,12 +446,11 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
         });
     }
     let post_text = card.post.text.trim();
-    if !post_text.is_empty() {
-        body.push(if card.post.platform == Platform::Reddit {
-            clamp_body(post_text, REDDIT_BODY_LIMIT, &card.post.url)
-        } else {
-            escape_block_markers(post_text)
-        });
+    // Reddit gövdesi kartın geri kalanı kurulduktan sonra, kalan yere göre kısaltılır (aşağıda).
+    let reddit_body = card.post.platform == Platform::Reddit && !post_text.is_empty();
+    let body_index = body.len();
+    if !post_text.is_empty() && !reddit_body {
+        body.push(escape_block_markers(post_text));
     }
     let body_pos = children.len();
     if card.options.show_community_note
@@ -545,6 +544,22 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
             }
         }
     }
+    let mut read_more = None;
+    if reddit_body {
+        // Kullanıcı notu, alıntı ve önizleme de aynı 4000 karakterlik sınıra sayılır. Sınır aşılırsa
+        // en uzun metin düğmesiz kesilirdi (not geri gelmez); gövde kalan yere sığacak kadar kısalır.
+        let used = card.user_comment.map_or(0, |c| c.trim().chars().count())
+            + total_text_chars(&[], &children)
+            + body.iter().map(|part| part.chars().count()).sum::<usize>();
+        let limit = REDDIT_BODY_LIMIT
+            .min(CUMULATIVE_TEXT_LIMIT.saturating_sub(used + REDDIT_FOOTER_RESERVE))
+            .max(REDDIT_BODY_MIN);
+        if post_text.chars().count() > limit {
+            read_more = pager::read_more_row(card.post, hidden);
+        }
+        let link = read_more.is_none().then_some(card.post.url.as_str());
+        body.insert(body_index, clamp_body(post_text, limit, link));
+    }
     if !body.is_empty() {
         // Reddit başlığı bir başlık satırıdır; altındaki metinle arasına boş satır gerekmez.
         let joined = match body.split_first() {
@@ -555,6 +570,10 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
         };
         children.insert(body_pos, text(spoiler_wrap(&joined, hidden)));
         quote_start += 1;
+        if let Some(row) = read_more {
+            children.insert(body_pos + 1, row);
+            quote_start += 1;
+        }
     }
     if let Some(gallery) = media_gallery(card, nested_has_thumbnail) {
         let mut at = if card.post.media.is_empty() {
@@ -592,8 +611,12 @@ fn generic_children(card: &V2Card<'_>) -> Vec<Value> {
     children
 }
 
-/// Reddit metin gönderisinin kartta gösterilen en uzun gövdesi; devamı bağlantıyla okunur.
-const REDDIT_BODY_LIMIT: usize = 700;
+/// Reddit metin gönderisinin kartta gösterilen en uzun gövdesi; devamı "Devamını oku" düğmesiyle okunur.
+const REDDIT_BODY_LIMIT: usize = 2500;
+/// Uzun kullanıcı notunda gövde en az bu kadar gösterilir (eski varsayılan).
+const REDDIT_BODY_MIN: usize = 700;
+/// Gövdeden sonra eklenen metrik ve alt bilgi satırları için ayrılan pay.
+const REDDIT_FOOTER_RESERVE: usize = 400;
 /// Yanıt bağlamında üst gönderiden gösterilen en fazla satır ve karakter.
 const REPLY_CONTEXT_LINES: usize = 3;
 const REPLY_CONTEXT_CHARS: usize = 220;
@@ -690,8 +713,9 @@ fn escape_block_markers(text: &str) -> String {
         .join("\n")
 }
 
-/// Uzun gövdeyi kısaltır ve sonuna `Devamını oku` bağlantısı ekler. Mümkünse paragraf sonunda kesilir.
-fn clamp_body(text: &str, max: usize, url: &str) -> String {
+/// Uzun gövdeyi kısaltır; devamı kartın altındaki düğmeyle Discord'da okunur, düğme kurulamazsa
+/// sona `Devamını oku` bağlantısı (`url`) eklenir. Mümkünse paragraf sonunda kesilir.
+fn clamp_body(text: &str, max: usize, url: Option<&str>) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }
@@ -701,8 +725,11 @@ fn clamp_body(text: &str, max: usize, url: &str) -> String {
         _ => cut,
     };
     let ellipsis = if cut.ends_with('…') { "" } else { "…" };
-    // Satır içi kalır: `-#` satırı spoiler (`||…||`) içinde çalışmazdı.
-    format!("{cut}{ellipsis} [Devamını oku]({url})")
+    match url {
+        // Satır içi kalır: `-#` satırı spoiler (`||…||`) içinde çalışmazdı.
+        Some(url) => format!("{cut}{ellipsis} [Devamını oku]({url})"),
+        None => format!("{cut}{ellipsis}"),
+    }
 }
 
 /// X'in "Readers added context" bloğu (topluluk notu).
@@ -1704,6 +1731,72 @@ mod tests {
     }
 
     #[test]
+    fn long_note_shrinks_reddit_body_instead_of_being_cut() {
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/rust/comments/abc/x/",
+            Author::new("u/a", "a"),
+        );
+        post.title = Some("Başlık".into());
+        post.text = "gövde ".repeat(320); // ~1900 karakter, varsayılan sınırın altında
+        let note = "not ".repeat(500); // 2000 karakter
+        let options = options();
+        let emojis = emojis();
+        let resolved = ResolvedMedia::default();
+        let mut c = card(&post, &options, &resolved, &emojis);
+        c.user_comment = Some(&note);
+        let payload = build_payload(&c);
+
+        assert_eq!(
+            top_level(&payload),
+            vec![note.trim().to_string()],
+            "not kesilmemeli"
+        );
+        let has_button = components(&payload).iter().any(|c| {
+            c["components"][0]["custom_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with(pager::TEXT_CUSTOM_ID_PREFIX))
+        });
+        assert!(has_button, "kısalan gövdenin devamı okunabilmeli");
+    }
+
+    #[test]
+    fn long_parent_quote_shrinks_reply_body_with_button() {
+        let mut post = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/rust/comments/abc/x/def/",
+            Author::new("u/a", "a"),
+        );
+        post.text = "yanıt ".repeat(400); // ~2400 karakter, varsayılan sınırın altında
+        let mut parent = BuiltinPost::new(
+            Platform::Reddit,
+            "https://www.reddit.com/r/rust/comments/abc/x/ust/",
+            Author::new("u/b", "b"),
+        );
+        parent.text = "üst ".repeat(600); // tek paragraf, ~2400 karakter
+        post.quote = Some(Box::new(parent));
+        let mut options = options();
+        options.show_quote = true;
+        let emojis = emojis();
+        let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
+
+        let children = components(&payload);
+        let at = children
+            .iter()
+            .position(|c| {
+                c["content"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("yanıt"))
+            })
+            .unwrap();
+        assert_eq!(
+            children[at + 1]["components"][0]["custom_id"],
+            "rtext:0:a:comments/abc/_/def",
+            "kısalan yanıtın devamı okunabilmeli"
+        );
+    }
+
+    #[test]
     fn user_comment_is_sent_above_the_card_like_a_user_message() {
         let post = sample_post();
         let options = options();
@@ -2350,17 +2443,23 @@ mod tests {
             "https://www.reddit.com/r/rust/comments/abc/x/",
             Author::new("u/a", "a"),
         );
-        post.text = format!("> alıntı\n\n{}", "uzun ".repeat(300));
+        post.text = format!("> alıntı\n\n{}", "uzun ".repeat(700));
         let options = options();
         let emojis = emojis();
         let payload = build_payload(&card(&post, &options, &ResolvedMedia::default(), &emojis));
         let body = texts(&payload)[1].clone();
         assert!(body.starts_with("> alıntı"), "{body}");
-        assert!(
-            body.ends_with("… [Devamını oku](https://www.reddit.com/r/rust/comments/abc/x/)"),
-            "{body}"
-        );
+        assert!(body.ends_with('…') && !body.contains("]("), "{body}");
         assert!(body.chars().count() < REDDIT_BODY_LIMIT + 80);
+        // Devamı Reddit'e gitmeden okunur: gövdenin hemen altında düğme durur.
+        let children = components(&payload);
+        let at = children
+            .iter()
+            .position(|c| c["content"].as_str() == Some(body.as_str()))
+            .unwrap();
+        let button = &children[at + 1]["components"][0];
+        assert_eq!(button["label"], "Devamını oku");
+        assert_eq!(button["custom_id"], "rtext:0:a:comments/abc");
     }
 
     #[test]
