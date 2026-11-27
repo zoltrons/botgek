@@ -52,6 +52,18 @@ static COMMENT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("geçerli reddit yorum regex")
 });
 
+/// Art arda boş satırlar: Reddit markdown'ı bunları tek paragraf aralığına indirir, Discord ise her
+/// boş satırı ayrıca çizer (eski düzenleyici paragraflar arasına `\n\n\n\n` koyuyor).
+static BLANK_LINES_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\n(?:[ \t]*\n){2,}").expect("geçerli boş satır regex"));
+
+/// Gönderi/yorum metnini Discord'da Reddit'teki gibi görünecek hâle getirir.
+fn reddit_text(text: &str) -> String {
+    BLANK_LINES_REGEX
+        .replace_all(text.trim(), "\n\n")
+        .into_owned()
+}
+
 /// Harici bağlantı önizlemesi için toplam süre.
 ///
 /// Önizleme kart gönderildikten **sonra** çekilir ([`enrich`]) ve kart yerinde düzenlenir; kritik
@@ -451,7 +463,7 @@ fn comment_post(comment: &RedditPost) -> Option<BuiltinPost> {
         .map(str::trim)
         .filter(|body| !body.is_empty() && *body != "[removed]" && *body != "[deleted]")?;
     let mut card = reddit_to_post(comment, comment);
-    card.text = body.to_string();
+    card.text = reddit_text(body);
     Some(card)
 }
 
@@ -575,7 +587,7 @@ fn reddit_to_post(post: &RedditPost, content: &RedditPost) -> BuiltinPost {
         .as_deref()
         .map(str::trim)
         .filter(|text| !text.is_empty() && *text != "[removed]" && *text != "[deleted]")
-        .map(str::to_string)
+        .map(reddit_text)
         .unwrap_or_default();
     // Galeri görsellerinin kendi açıklamaları (görsel üstüne yazılan metin) karta girer:
     // galeri bileşeni yalnızca görsel taşıdığı için açıklamalar metne numaralı eklenir.
@@ -1637,6 +1649,14 @@ mod tests {
             "https://www.reddit.com/r/original/comments/parent1/asil/"
         );
         assert_eq!(post.media[0].url, "https://i.redd.it/asil.jpg");
+    }
+
+    #[test]
+    fn blank_line_runs_collapse_to_one_paragraph_break() {
+        assert_eq!(
+            reddit_text("bir\n\n\n\niki\n\n- a\n\n- b\n \n\t\n\nüç\nsatır"),
+            "bir\n\niki\n\n- a\n\n- b\n\nüç\nsatır"
+        );
     }
 
     #[test]
